@@ -155,9 +155,9 @@ fzf_main() {
     sessions=$(fzf_list_sessions)
 
     if [[ -z "$sessions" ]]; then
-        echo "No agent sessions found."
-        echo ""
-        echo "Create a new session with: am new [directory]"
+        echo "No agent sessions found." >&2
+        echo "" >&2
+        echo "Create a new session with: am new [directory]" >&2
         return 0
     fi
 
