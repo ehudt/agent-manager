@@ -183,23 +183,13 @@ cmd_new() {
         fi
     fi
 
-    # Prompt for task description if not provided
-    if [[ -z "$task" && -t 0 ]]; then
-        echo -n "Task description (optional): "
-        read -r task
-    fi
-
     # Launch agent
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
 
+    # Auto-attach to new session
     if [[ -n "$session_name" ]]; then
-        # Ask if user wants to attach
-        echo -n "Attach to session? [Y/n] "
-        read -r answer
-        if [[ "$answer" != "n" && "$answer" != "N" ]]; then
-            tmux_attach "$session_name"
-        fi
+        tmux_attach "$session_name"
     fi
 }
 
