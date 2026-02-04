@@ -64,11 +64,11 @@ tmux_attach() {
 # Usage: tmux_capture_pane <name> [lines] [skip_bottom]
 # Returns the captured content to stdout
 # Note: Captures top pane (pane 1) where agent runs, not bottom shell pane
-# skip_bottom: lines to skip from bottom (default 3 to hide input/status bar)
+# skip_bottom: lines to skip from bottom (default 0)
 tmux_capture_pane() {
     local name="$1"
     local lines="${2:-50}"
-    local skip_bottom="${3:-3}"
+    local skip_bottom="${3:-0}"
 
     if ! tmux_session_exists "$name"; then
         echo "(Session not found)"
