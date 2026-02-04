@@ -23,7 +23,8 @@ bind a display-popup -E -w 90% -h 80% "am"
 # Custom command: ":am" opens agent manager in popup
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
 
-# Thicker pane borders (heavy uses bold Unicode line chars)
-set -g pane-border-lines heavy
-set -g pane-border-style fg=colour240
-set -g pane-active-border-style fg=colour75
+# Pane border - double lines with bright color
+set -g pane-border-status off
+set -g pane-border-lines double
+set -g pane-border-style 'fg=colour250'
+set -g pane-active-border-style 'fg=colour51'
