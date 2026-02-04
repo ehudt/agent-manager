@@ -112,12 +112,19 @@ agent_launch() {
     # Register session metadata
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
 
-    # Launch the agent in the session
+    # Create horizontal split: top pane (65%) for agent, bottom pane (35%) for shell
+    # split-window -v creates a vertical split (panes stacked), -p is percentage for new pane
+    tmux split-window -t "$session_name" -v -p 35 -c "$directory"
+
+    # Select top pane (pane 1, since base-index is 1) for the agent
+    tmux select-pane -t "$session_name:1.1"
+
+    # Launch the agent in the top pane
     local full_cmd="$agent_cmd"
     if [[ ${#agent_args[@]} -gt 0 ]]; then
         full_cmd="$agent_cmd ${agent_args[*]}"
     fi
-    tmux_send_keys "$session_name" "$full_cmd" Enter
+    tmux_send_keys "$session_name:1.1" "$full_cmd" Enter
 
     log_success "Created session: $session_name"
     echo "$session_name"
