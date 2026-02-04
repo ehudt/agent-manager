@@ -238,7 +238,7 @@ fzf_main() {
         --with-nth=2 \
         --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill" \
         --preview="bash -c '$src_libs && fzf_preview {1}'" \
-        --preview-window="bottom:75%:wrap:+100" \
+        --preview-window="bottom:75%:wrap" \
         --bind="ctrl-r:reload(bash -c '$src_libs && fzf_list_sessions')" \
         --bind="ctrl-p:toggle-preview" \
         --bind="ctrl-x:execute-silent(bash -c '$src_libs && agent_kill {1}')+reload(bash -c '$src_libs && fzf_list_sessions')" \
