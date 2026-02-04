@@ -22,13 +22,13 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' DIM='' RESET=''
 fi
 
-# Logging functions
+# Logging functions (all to stderr to avoid polluting stdout for return values)
 log_info() {
-    echo -e "${BLUE}info:${RESET} $*"
+    echo -e "${BLUE}info:${RESET} $*" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}success:${RESET} $*"
+    echo -e "${GREEN}success:${RESET} $*" >&2
 }
 
 log_warn() {
