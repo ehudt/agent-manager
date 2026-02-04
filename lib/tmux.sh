@@ -64,28 +64,40 @@ tmux_attach() {
 # Usage: tmux_capture_pane <name> [lines] [skip_bottom]
 # Returns the captured content to stdout
 # Note: Captures top pane (pane 1) where agent runs, not bottom shell pane
-# skip_bottom: lines to skip from bottom (default 6 to hide input/status bar)
+# skip_bottom: lines to skip from bottom (default 3 to hide input/status bar)
 tmux_capture_pane() {
     local name="$1"
     local lines="${2:-50}"
-    local skip_bottom="${3:-6}"
+    local skip_bottom="${3:-3}"
 
     if ! tmux_session_exists "$name"; then
         echo "(Session not found)"
         return 1
     fi
 
-    # Calculate range: from (lines + skip_bottom) above bottom to skip_bottom above bottom
-    local start_line=$((lines + skip_bottom))
-
+    # Capture the visible pane content (no -S means just visible area)
     # -p: print to stdout
     # -e: include escape sequences (colors)
-    # -S: start line (negative = from end)
-    # -E: end line (negative = from end, skip status bar/input area)
     # -t: target the agent pane (window 1, pane 1 - top pane)
-    tmux capture-pane -t "$name:1.1" -p -e -S "-$start_line" -E "-$skip_bottom" 2>/dev/null || \
-        tmux capture-pane -t "$name" -p -e -S "-$start_line" -E "-$skip_bottom" 2>/dev/null || \
+    local output
+    output=$(tmux capture-pane -t "$name:1.1" -p -e 2>/dev/null || \
+             tmux capture-pane -t "$name" -p -e 2>/dev/null)
+
+    if [[ -z "$output" ]]; then
         echo "(Unable to capture)"
+        return 1
+    fi
+
+    # Count total lines, remove bottom N (status bar), show last N lines
+    local total_lines
+    total_lines=$(echo "$output" | wc -l | tr -d ' ')
+    local keep_lines=$((total_lines - skip_bottom))
+
+    if (( keep_lines > 0 )); then
+        echo "$output" | head -n "$keep_lines" | tail -n "$lines"
+    else
+        echo "$output" | tail -n "$lines"
+    fi
 }
 
 # Get session activity timestamp (seconds since epoch)

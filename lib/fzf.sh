@@ -168,8 +168,9 @@ fzf_preview() {
     fi
 
     # Capture terminal output - just show the raw capture
+    # Only capture ~40 lines so they fit in preview without scrolling
     # Args: session_name, lines_to_capture, lines_to_skip_from_bottom
-    tmux_capture_pane "$session_name" 100 3
+    tmux_capture_pane "$session_name" 40 2
 }
 
 # Export functions for fzf subshells
