@@ -47,6 +47,38 @@ export PATH="$PATH:$(pwd)"
 ln -s "$(pwd)/am" /usr/local/bin/am
 ```
 
+### Configure tmux (recommended)
+
+Copy the example tmux config for optimal experience:
+
+```bash
+cp config/tmux.conf.example ~/.tmux.conf
+```
+
+Or add to your existing `~/.tmux.conf`:
+
+```bash
+# Prefix: Ctrl-z (Ctrl-z Ctrl-z sends actual Ctrl-z to shell)
+unbind C-b
+set -g prefix C-z
+bind C-z send-keys C-z
+
+# Mouse/trackpad scrolling
+set -g mouse on
+
+# Agent manager popup: Ctrl-z a
+bind a display-popup -E -w 90% -h 80% "am"
+
+# Command alias: ":am" opens agent manager
+set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
+```
+
+Add a reload alias to your shell config (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+alias tmux-reload='tmux source-file ~/.tmux.conf && echo "tmux config reloaded"'
+```
+
 ### Verify installation
 
 ```bash
@@ -106,7 +138,7 @@ Just run `am` to open the fzf browser:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Keybindings
+### Keybindings (fzf browser)
 
 | Key | Action |
 |-----|--------|
@@ -115,8 +147,19 @@ Just run `am` to open the fzf browser:
 | `Ctrl-X` | Kill selected session |
 | `Ctrl-R` | Refresh session list |
 | `Ctrl-P` | Toggle preview panel |
+| `?` | Show help |
 | `↑/↓` | Navigate sessions |
 | `Esc` | Exit |
+
+### Keybindings (inside tmux session)
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-z a` | Open am browser (popup) |
+| `Ctrl-z d` | Detach from session |
+| `Ctrl-z Ctrl-z` | Send Ctrl-z to shell (suspend) |
+| `Ctrl-z :am` | Open am browser (popup) |
+| `Ctrl-z ↑/↓` | Switch panes (agent/shell) |
 
 ### Commands
 
@@ -147,6 +190,21 @@ Sessions and metadata are stored in `~/.agent-manager/`:
 ├── sessions.json       # Session metadata registry
 └── config.yaml         # (future) User configuration
 ```
+
+## Session Layout
+
+Each session has a split layout:
+
+```
+┌─────────────────────────────────────┐
+│  Agent (Claude/Gemini) - 65%        │  ← Preview shows this pane
+│                                     │
+├─────────────────────────────────────┤
+│  Shell - 35%                        │  ← Same working directory
+└─────────────────────────────────────┘
+```
+
+Use `Ctrl-z ↑/↓` to switch between panes.
 
 ## Session Naming
 

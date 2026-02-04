@@ -1,0 +1,24 @@
+# Change prefix to Ctrl-z
+# Ctrl-z Ctrl-z sends actual Ctrl-z to shell (suspend)
+unbind C-b
+set -g prefix C-z
+bind C-z send-keys C-z
+
+# Enable mouse support (trackpad scrolling, click to select pane, etc.)
+set -g mouse on
+
+# Increase scrollback buffer
+set -g history-limit 50000
+
+# Don't exit copy mode when mouse is released
+unbind -T copy-mode-vi MouseDragEnd1Pane
+
+# Start windows and panes at 1, not 0
+set -g base-index 1
+setw -g pane-base-index 1
+
+# Agent manager popup: Ctrl-z a
+bind a display-popup -E -w 90% -h 80% "am"
+
+# Custom command: ":am" opens agent manager in popup
+set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
