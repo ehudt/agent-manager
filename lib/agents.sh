@@ -60,12 +60,14 @@ generate_session_name() {
 }
 
 # Launch an agent in a new tmux session
-# Usage: agent_launch <directory> [agent_type] [task_description]
+# Usage: agent_launch <directory> [agent_type] [task_description] [agent_args...]
 # Returns: session name on success, empty on failure
 agent_launch() {
     local directory="$1"
     local agent_type="${2:-claude}"
     local task="${3:-}"
+    shift 3 2>/dev/null || shift $#
+    local agent_args=("$@")
 
     # Validate directory
     if [[ ! -d "$directory" ]]; then
@@ -111,7 +113,11 @@ agent_launch() {
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
 
     # Launch the agent in the session
-    tmux_send_keys "$session_name" "$agent_cmd" Enter
+    local full_cmd="$agent_cmd"
+    if [[ ${#agent_args[@]} -gt 0 ]]; then
+        full_cmd="$agent_cmd ${agent_args[*]}"
+    fi
+    tmux_send_keys "$session_name" "$full_cmd" Enter
 
     log_success "Created session: $session_name"
     echo "$session_name"

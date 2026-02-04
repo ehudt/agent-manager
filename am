@@ -37,6 +37,7 @@ OPTIONS FOR 'new':
     -t, --type      Agent type: claude (default), gemini, aider
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
+    --              Pass remaining args to agent (e.g., -- --resume)
 
 KEYBINDINGS (in interactive mode):
     Enter           Attach to selected session
@@ -120,6 +121,7 @@ cmd_new() {
     local directory="."
     local agent_type="claude"
     local task=""
+    local agent_args=()
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -135,13 +137,23 @@ cmd_new() {
                 directory="$2"
                 shift 2
                 ;;
+            --)
+                shift
+                agent_args=("$@")
+                break
+                ;;
             -h|--help)
-                echo "Usage: am new [options] [directory]"
+                echo "Usage: am new [options] [directory] [-- agent_args...]"
                 echo ""
                 echo "Options:"
                 echo "  -t, --type    Agent type (claude, gemini, aider)"
                 echo "  -n, --name    Task description"
                 echo "  -d, --dir     Working directory"
+                echo "  --            Pass remaining args to agent command"
+                echo ""
+                echo "Examples:"
+                echo "  am new ~/project -- --resume    # Start claude with --resume"
+                echo "  am new -- --dangerously-skip-permissions"
                 return 0
                 ;;
             -*)
@@ -163,7 +175,7 @@ cmd_new() {
 
     # Launch agent
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "$task")
+    session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         # Ask if user wants to attach
