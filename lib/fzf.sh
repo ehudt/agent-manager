@@ -11,53 +11,65 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 # Ensure fzf is available
 require_cmd fzf
 
-# Pick a directory using fzf
-# Uses zoxide if available, otherwise browses from home
-# Usage: fzf_pick_directory
-# Returns: selected directory path or empty if cancelled
-fzf_pick_directory() {
-    local selected=""
+# Helper: List directories for picker (frecent + git repos)
+_list_directories() {
+    local query="${1:-}"
 
-    # Build list of directories
-    local dirs=""
-
-    # Option 1: Current directory
-    dirs=". (current directory)"$'\n'
-
-    # Option 2: Use zoxide if available (frecent directories)
-    if command -v zoxide &>/dev/null; then
-        local zoxide_dirs
-        zoxide_dirs=$(zoxide query -l 2>/dev/null | head -20)
-        if [[ -n "$zoxide_dirs" ]]; then
-            dirs+="$zoxide_dirs"$'\n'
+    # If query looks like a path, show completions for that path
+    if [[ "$query" == /* || "$query" == ~* || "$query" == .* ]]; then
+        local base_path="${query/#\~/$HOME}"
+        # If it's a directory, show its contents
+        if [[ -d "$base_path" ]]; then
+            find "$base_path" -maxdepth 1 -type d 2>/dev/null | grep -v "^$base_path$" | sort
+        else
+            # Show parent directory contents that match
+            local parent_dir=$(dirname "$base_path")
+            local prefix=$(basename "$base_path")
+            if [[ -d "$parent_dir" ]]; then
+                find "$parent_dir" -maxdepth 1 -type d -name "${prefix}*" 2>/dev/null | sort
+            fi
         fi
+        return
     fi
 
-    # Option 3: Recent git repos from common locations
+    # Default: show frecent directories and git repos
+    echo ". (current directory)"
+
+    # Zoxide frecent directories
+    if command -v zoxide &>/dev/null; then
+        zoxide query -l 2>/dev/null | head -30
+    fi
+
+    # Git repos from common locations
     local search_paths=("$HOME/code" "$HOME/projects" "$HOME/src" "$HOME/dev" "$HOME/work")
     for search_path in "${search_paths[@]}"; do
         if [[ -d "$search_path" ]]; then
-            # Find directories with .git (limit depth and count)
-            local git_dirs
-            git_dirs=$(find "$search_path" -maxdepth 3 -type d -name ".git" 2>/dev/null | \
-                       sed 's/\/\.git$//' | head -20)
-            if [[ -n "$git_dirs" ]]; then
-                dirs+="$git_dirs"$'\n'
-            fi
+            find "$search_path" -maxdepth 3 -type d -name ".git" 2>/dev/null | \
+                sed 's/\/\.git$//' | head -20
         fi
     done
+}
 
-    # Remove duplicates and empty lines
-    dirs=$(echo "$dirs" | awk '!seen[$0]++' | grep -v '^$')
+# Pick a directory using fzf with interactive path completion
+# Usage: fzf_pick_directory
+# Returns: selected directory path or empty if cancelled
+fzf_pick_directory() {
+    # Export helper for fzf reload
+    export -f _list_directories
 
-    # Run fzf
-    selected=$(echo "$dirs" | fzf \
+    local initial_list
+    initial_list=$(_list_directories | awk '!seen[$0]++' | grep -v '^$')
+
+    # Run fzf with dynamic completion
+    local selected
+    selected=$(echo "$initial_list" | fzf \
         --ansi \
-        --header="Select directory (or type path)" \
-        --preview='[[ -d {} ]] && ls -la {} 2>/dev/null | head -20 || echo "Current directory"' \
-        --preview-window="right:50%:wrap" \
+        --header="Directory: type path or select  |  Tab: complete  |  Ctrl-U: parent dir" \
+        --preview='d={};[[ "$d" == ". (current directory)" ]] && d="."; d="${d/#\~/$HOME}"; [[ -d "$d" ]] && command ls -la "$d" 2>/dev/null | head -20 || echo "Type a path or select from list"' \
+        --preview-window="right:40%:wrap" \
         --print-query \
-        --bind="ctrl-h:become(echo $HOME)" \
+        --bind="tab:reload(bash -c '_list_directories {q}' | awk '!seen[\$0]++' | grep -v '^$')+clear-query" \
+        --bind="ctrl-u:reload(bash -c '_list_directories \$(dirname {q})' | awk '!seen[\$0]++' | grep -v '^$')+transform-query(dirname {q})" \
     )
 
     # Parse result - fzf --print-query outputs: query on line 1, selection on line 2
@@ -171,7 +183,7 @@ _fzf_export_functions() {
     export -f fzf_preview agent_info agent_display_name
     export -f registry_get_field registry_init
     export -f tmux_capture_pane tmux_session_exists tmux_get_activity tmux_get_created
-    export -f format_time_ago format_duration dir_basename truncate abspath epoch_now
+    export -f format_time_ago format_duration dir_basename truncate abspath epoch_now get_claude_session_title
     export -f require_cmd log_info log_error log_warn log_success am_init
 }
 
@@ -230,7 +242,7 @@ fzf_main() {
         --with-nth=2 \
         --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill" \
         --preview="bash -c '$src_libs && fzf_preview {1}'" \
-        --preview-window="right:60%:wrap" \
+        --preview-window="bottom:70%:wrap" \
         --bind="ctrl-r:reload(bash -c '$src_libs && fzf_list_sessions')" \
         --bind="ctrl-p:toggle-preview" \
         --bind="ctrl-x:execute-silent(bash -c '$src_libs && agent_kill {1}')+reload(bash -c '$src_libs && fzf_list_sessions')" \

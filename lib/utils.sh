@@ -163,3 +163,43 @@ generate_hash() {
         echo "$RANDOM$RANDOM" | head -c 6
     fi
 }
+
+# Get Claude session title from session JSONL file
+# Usage: get_claude_session_title <directory>
+# Returns: First user message truncated as title, or empty if not found
+get_claude_session_title() {
+    local directory="$1"
+
+    # Convert directory to Claude's project path format
+    # Claude replaces / and . with -
+    local abs_dir
+    abs_dir=$(abspath "$directory" 2>/dev/null) || return 1
+    local project_path="${abs_dir//\//-}"
+    project_path="${project_path//./-}"
+    local claude_project_dir="$HOME/.claude/projects/$project_path"
+
+    if [[ ! -d "$claude_project_dir" ]]; then
+        return 1
+    fi
+
+    # Find the most recently modified JSONL file
+    # Use 'command ls' to bypass any aliases (e.g., eza)
+    local session_file
+    session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
+
+    if [[ -z "$session_file" || ! -f "$session_file" ]]; then
+        return 1
+    fi
+
+    # Extract first user message content
+    local title
+    title=$(grep -m1 '"type":"user"' "$session_file" 2>/dev/null | \
+            jq -r '.message.content // empty' 2>/dev/null | \
+            head -1 | \
+            tr -d '\n' | \
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    if [[ -n "$title" ]]; then
+        truncate "$title" 60
+    fi
+}

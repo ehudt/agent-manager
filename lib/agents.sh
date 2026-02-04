@@ -112,9 +112,9 @@ agent_launch() {
     # Register session metadata
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
 
-    # Create horizontal split: top pane (65%) for agent, bottom pane (35%) for shell
+    # Create horizontal split: top pane (75%) for agent, bottom pane (25%) for shell
     # split-window -v creates a vertical split (panes stacked), -p is percentage for new pane
-    tmux split-window -t "$session_name" -v -p 35 -c "$directory"
+    tmux split-window -t "$session_name" -v -p 25 -c "$directory"
 
     # Select top pane (pane 1, since base-index is 1) for the agent
     tmux select-pane -t "$session_name:1.1"
@@ -132,7 +132,7 @@ agent_launch() {
 
 # Get display name for a session (for fzf listing)
 # Usage: agent_display_name <session_name>
-# Returns: "dirname/branch [type] (Xm ago) task"
+# Returns: "dirname/branch [type] (Xm ago) title"
 agent_display_name() {
     local session_name="$1"
 
@@ -174,9 +174,20 @@ agent_display_name() {
     # Add activity
     display="${display} ($(format_time_ago "$idle"))"
 
-    # Add task (truncated)
-    if [[ -n "$task" ]]; then
-        display="${display} \"$(truncate "$task" 40)\""
+    # Try to get Claude session title, fall back to task
+    local title=""
+    if [[ -n "$directory" ]]; then
+        title=$(get_claude_session_title "$directory" 2>/dev/null)
+    fi
+
+    # Use task if no Claude title found
+    if [[ -z "$title" && -n "$task" ]]; then
+        title="$task"
+    fi
+
+    # Add title (truncated)
+    if [[ -n "$title" ]]; then
+        display="${display} \"$(truncate "$title" 50)\""
     fi
 
     echo "$display"
