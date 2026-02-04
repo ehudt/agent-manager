@@ -174,7 +174,7 @@ fzf_preview() {
     echo ""
 
     # Capture pane content (last 100 lines)
-    tmux_capture_pane "$session_name" 100
+    tmux_capture_pane "$session_name" 200
 }
 
 # Export functions for fzf subshells
@@ -238,6 +238,7 @@ fzf_main() {
     local selected
     selected=$(echo "$sessions" | fzf \
         --ansi \
+        --height=100% \
         --delimiter='|' \
         --with-nth=2 \
         --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill" \
