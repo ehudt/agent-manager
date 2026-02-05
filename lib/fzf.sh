@@ -249,6 +249,7 @@ fzf_main() {
     # Run fzf
     local selected
     selected=$(echo "$sessions" | fzf \
+        --sync \
         --ansi \
         --height=100% \
         --delimiter='|' \
