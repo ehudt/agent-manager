@@ -25,7 +25,9 @@ tmux_create_session() {
         return 1
     fi
 
-    tmux new-session -d -s "$name" -c "$directory"
+    # Create with explicit dimensions to work around tmux sizing bugs in detached sessions
+    # https://github.com/tmux/tmux/issues/3060
+    tmux new-session -d -s "$name" -c "$directory" -x 200 -y 60
 }
 
 # Kill a tmux session

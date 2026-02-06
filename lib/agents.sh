@@ -103,7 +103,7 @@ agent_launch() {
     local session_name
     session_name=$(generate_session_name "$directory")
 
-    # Create tmux session
+    # Create tmux session (with explicit dimensions for sizing workaround)
     if ! tmux_create_session "$session_name" "$directory"; then
         log_error "Failed to create tmux session"
         return 1
@@ -112,9 +112,10 @@ agent_launch() {
     # Register session metadata
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
 
-    # Create horizontal split: top pane (75%) for agent, bottom pane (25%) for shell
-    # split-window -v creates a vertical split (panes stacked), -p is percentage for new pane
-    tmux split-window -t "$session_name" -v -p 25 -c "$directory"
+    # Create horizontal split: top pane for agent, bottom pane (15 lines) for shell
+    # Split without size, then resize (workaround for detached session sizing issues)
+    tmux split-window -t "$session_name" -v -c "$directory"
+    tmux resize-pane -t "$session_name:1.2" -y 15
 
     # Select top pane (pane 1, since base-index is 1) for the agent
     tmux select-pane -t "$session_name:1.1"
