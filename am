@@ -7,8 +7,14 @@ set -euo pipefail
 # Version
 AM_VERSION="0.1.0"
 
-# Determine script directory
-AM_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Determine script directory (resolve symlinks)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    AM_SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$AM_SCRIPT_DIR/$SOURCE"
+done
+AM_SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 AM_LIB_DIR="$AM_SCRIPT_DIR/lib"
 
 # Usage information (no dependencies needed)
@@ -37,6 +43,7 @@ OPTIONS FOR 'new':
     -t, --type      Agent type: claude (default), gemini, aider
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
+    --yolo          Run with --dangerously-skip-permissions
     --              Pass remaining args to agent (e.g., -- --resume)
 
 KEYBINDINGS (in interactive mode):
@@ -158,6 +165,10 @@ cmd_new() {
                 directory="$2"
                 shift 2
                 ;;
+            --yolo|--dangerously-skip-permissions)
+                agent_args+=("--dangerously-skip-permissions")
+                shift
+                ;;
             --)
                 shift
                 agent_args=("$@")
@@ -172,11 +183,13 @@ cmd_new() {
                 echo "  -t, --type    Agent type (claude, gemini, aider)"
                 echo "  -n, --name    Task description"
                 echo "  -d, --dir     Working directory"
+                echo "  --yolo        Run with --dangerously-skip-permissions"
                 echo "  --            Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
                 echo "  am new                          # Interactive directory picker"
                 echo "  am new ~/project                # Specific directory"
+                echo "  am new --yolo ~/project         # Skip permissions"
                 echo "  am new ~/project -- --resume    # With agent args"
                 return 0
                 ;;

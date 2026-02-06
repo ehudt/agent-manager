@@ -103,18 +103,21 @@ fzf_pick_directory() {
 
 # Pick session mode (new/resume/continue)
 # Usage: fzf_pick_mode
-# Returns: flags string (always includes --dangerously-skip-permissions), or empty if cancelled
+# Returns: flags string, or empty if cancelled
 fzf_pick_mode() {
     local options="New session
 Resume (--resume)
-Continue (--continue)"
+Continue (--continue)
+New session (--dangerously-skip-permissions)
+Resume (--resume --dangerously-skip-permissions)
+Continue (--continue --dangerously-skip-permissions)"
 
     local selected
     selected=$(echo "$options" | fzf \
         --ansi \
         --no-multi \
         --header="Select mode (Enter to confirm, Esc to cancel)" \
-        --height=8 \
+        --height=11 \
         --layout=reverse \
     )
 
@@ -124,13 +127,16 @@ Continue (--continue)"
         return 1
     fi
 
-    # Always include --dangerously-skip-permissions
-    local flags="--dangerously-skip-permissions"
+    local flags=""
 
     case "$selected" in
         *--resume*) flags+=" --resume" ;;
         *--continue*) flags+=" --continue" ;;
     esac
+
+    if [[ "$selected" == *--dangerously-skip-permissions* ]]; then
+        flags+=" --dangerously-skip-permissions"
+    fi
 
     echo "$flags"
 }
@@ -282,8 +288,7 @@ fzf_main() {
 
         # Pick mode (new/resume/continue)
         local flags
-        flags=$(fzf_pick_mode)
-        if [[ -z "$flags" ]]; then
+        if ! flags=$(fzf_pick_mode); then
             # Cancelled - return to main menu
             fzf_main
             return $?
