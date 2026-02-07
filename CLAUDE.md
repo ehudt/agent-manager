@@ -9,9 +9,3 @@ See AINAV.md for architecture, key functions, and extension points.
 - Run tests: `./tests/test_all.sh`
 - Shell style: bash, no shebang in libs (sourced), functions prefixed by module name
 - Dependencies: tmux, fzf, jq
-
-## Delegation
-
-- Prefer delegating work to subagents over doing it yourself
-- This includes research, code exploration, and implementation tasks
-- Minimize direct token usage by spawning Task agents
