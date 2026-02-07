@@ -1,10 +1,6 @@
 # AI Navigation Guide
 
-Quick reference for AI agents working with this codebase.
-
-## What This Is
-
-CLI tool managing multiple AI coding sessions (Claude, Gemini) via tmux + fzf.
+Architecture reference for AI agents working with this codebase.
 
 ## Key Files
 
@@ -20,18 +16,8 @@ CLI tool managing multiple AI coding sessions (Claude, Gemini) via tmux + fzf.
 ## Data Flow
 
 ```
-User runs `am`
-  → am (parse args)
-  → fzf_main() (interactive UI)
-  → tmux_attach() (connect to session)
-```
-
-```
-User runs `am new ~/project`
-  → agent_launch()
-  → tmux_create_session()
-  → registry_add()
-  → tmux_send_keys (start claude/gemini)
+am → fzf_main() → tmux_attach()
+am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
 ```
 
 ## Key Functions
@@ -54,53 +40,18 @@ User runs `am new ~/project`
 - `fzf_preview(name)` - Renders preview panel
 - `fzf_main()` - Main loop with keybindings
 
-## Extension Points
-
-**Add new agent type:**
-```bash
-# In lib/agents.sh, add to AGENT_COMMANDS:
-declare -A AGENT_COMMANDS=(
-    [claude]="claude"
-    [gemini]="gemini"
-    [newagent]="newagent-cli"  # Add here
-)
-```
-
-**Add new CLI command:**
-```bash
-# In am, add case in main():
-case "$cmd" in
-    mycommand)
-        shift
-        cmd_mycommand "$@"
-        ;;
-```
-
-**Modify preview display:**
-Edit `agent_info()` in `lib/agents.sh` and `fzf_preview()` in `lib/fzf.sh`.
-
 ## Session Naming
 
 Format: `am-XXXXXX` where XXXXXX = md5(directory + timestamp)[:6]
 
-Display format: `dirname/branch [agent] (Xm ago) "task"`
+Display: `dirname/branch [agent] (Xm ago) "task"`
 
-## Dependencies
-
-- tmux (session management)
-- fzf (interactive UI)
-- jq (JSON handling)
-
-## Testing
-
-```bash
-./tests/test_all.sh  # Skips tmux tests if not installed
-```
-
-## Common Tasks
+## Extension Points
 
 | Task | Where |
 |------|-------|
+| Add agent type | `lib/agents.sh` → `AGENT_COMMANDS` associative array |
+| Add CLI command | `am` → `case "$cmd"` in `main()` |
 | Change fzf keybindings | `lib/fzf.sh` → `fzf_main()` |
 | Modify session display | `lib/agents.sh` → `agent_display_name()` |
 | Add metadata field | `lib/registry.sh` → `registry_add()` |
