@@ -1,3 +1,6 @@
+# Suggested tmux settings for agent-manager
+# Add these to your ~/.tmux.conf
+
 # Change prefix to Ctrl-z
 # Ctrl-z Ctrl-z sends actual Ctrl-z to shell (suspend)
 unbind C-b
@@ -12,10 +15,6 @@ set -g history-limit 50000
 
 # Don't exit copy mode when mouse is released
 unbind -T copy-mode-vi MouseDragEnd1Pane
-
-# Start windows and panes at 1, not 0
-set -g base-index 1
-setw -g pane-base-index 1
 
 # Agent manager popup: Ctrl-z a
 # Use bash directly for faster startup (skips shell initialization)
