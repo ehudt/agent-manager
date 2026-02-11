@@ -55,11 +55,11 @@ if [[ -f "$AM_REGISTRY" ]]; then
     fi
 fi
 
-# Capture terminal output from the agent pane (window 1, pane 1)
+# Capture terminal output from the agent pane (top pane)
 # -p: print to stdout
 # -e: include escape sequences (colors)
 # No -S flag = capture visible area only
-output=$(tmux capture-pane -t "$session_name:1.1" -p -e 2>/dev/null || \
+output=$(tmux capture-pane -t "$session_name:.{top}" -p -e 2>/dev/null || \
          tmux capture-pane -t "$session_name" -p -e 2>/dev/null)
 
 # Show last 33 lines of captured content

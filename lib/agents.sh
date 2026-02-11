@@ -115,17 +115,17 @@ agent_launch() {
     # Create horizontal split: top pane for agent, bottom pane (15 lines) for shell
     # Split without size, then resize (workaround for detached session sizing issues)
     tmux split-window -t "$session_name" -v -c "$directory"
-    tmux resize-pane -t "$session_name:1.2" -y 15
+    tmux resize-pane -t "$session_name:.{bottom}" -y 15
 
-    # Select top pane (pane 1, since base-index is 1) for the agent
-    tmux select-pane -t "$session_name:1.1"
+    # Select top pane for the agent
+    tmux select-pane -t "$session_name:.{top}"
 
     # Launch the agent in the top pane
     local full_cmd="$agent_cmd"
     if [[ ${#agent_args[@]} -gt 0 ]]; then
         full_cmd="$agent_cmd ${agent_args[*]}"
     fi
-    tmux_send_keys "$session_name:1.1" "$full_cmd" Enter
+    tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
 
     log_success "Created session: $session_name"
     echo "$session_name"

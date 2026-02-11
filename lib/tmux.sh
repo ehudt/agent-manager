@@ -80,9 +80,9 @@ tmux_capture_pane() {
     # Capture the visible pane content (no -S means just visible area)
     # -p: print to stdout
     # -e: include escape sequences (colors)
-    # -t: target the agent pane (window 1, pane 1 - top pane)
+    # -t: target the agent pane (top pane)
     local output
-    output=$(tmux capture-pane -t "$name:1.1" -p -e 2>/dev/null || \
+    output=$(tmux capture-pane -t "$name:.{top}" -p -e 2>/dev/null || \
              tmux capture-pane -t "$name" -p -e 2>/dev/null)
 
     if [[ -z "$output" ]]; then
