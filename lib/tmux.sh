@@ -53,7 +53,7 @@ tmux_attach() {
         return 1
     fi
 
-    if in_tmux; then
+    if [[ -n "${TMUX:-}" ]]; then
         # Already in tmux, switch client
         tmux switch-client -t "$name"
     else
@@ -140,39 +140,6 @@ tmux_list_am_sessions_with_activity() {
         || true
 }
 
-# Get detailed info about a session
-# Usage: tmux_session_info <name>
-# Returns JSON-like output
-tmux_session_info() {
-    local name="$1"
-
-    if ! tmux_session_exists "$name"; then
-        echo "{}"
-        return 1
-    fi
-
-    local info
-    info=$(tmux list-sessions -F '#{session_name}|#{session_created}|#{session_activity}|#{session_windows}|#{session_attached}' 2>/dev/null \
-        | grep "^$name|")
-
-    if [[ -n "$info" ]]; then
-        local created activity windows attached
-        IFS='|' read -r _ created activity windows attached <<< "$info"
-
-        local now
-        now=$(epoch_now)
-        local age=$((now - created))
-        local idle=$((now - activity))
-
-        echo "created=$created"
-        echo "activity=$activity"
-        echo "windows=$windows"
-        echo "attached=$attached"
-        echo "age=$age"
-        echo "idle=$idle"
-    fi
-}
-
 # Send keys to a tmux session
 # Usage: tmux_send_keys <name> <keys...>
 tmux_send_keys() {
@@ -191,17 +158,4 @@ tmux_count_am_sessions() {
     else
         echo "$sessions" | wc -l | tr -d ' '
     fi
-}
-
-# Kill all agent-manager sessions
-# Usage: tmux_kill_all_am_sessions
-tmux_kill_all_am_sessions() {
-    local session
-    local count=0
-
-    for session in $(tmux_list_am_sessions); do
-        tmux_kill_session "$session" && ((count++))
-    done
-
-    echo "$count"
 }

@@ -158,46 +158,14 @@ fzf_list_sessions() {
     done
 }
 
-# Preview function for fzf
-# Usage: fzf_preview <session_name>
-fzf_preview() {
-    local session_name="$1"
-
-    if [[ -z "$session_name" ]]; then
-        echo "No session selected"
-        return
-    fi
-
-    if ! tmux_session_exists "$session_name"; then
-        echo "Session not found: $session_name"
-        return
-    fi
-
-    # Show session title if available (moved from list for faster startup)
-    local directory
-    directory=$(registry_get_field "$session_name" "directory")
-    if [[ -n "$directory" ]]; then
-        local title
-        title=$(get_claude_session_title "$directory" 2>/dev/null)
-        if [[ -n "$title" ]]; then
-            echo -e "\033[1;36m📝 $title\033[0m"
-            echo ""
-        fi
-    fi
-
-    # Capture terminal output - just show the raw capture
-    # Args: session_name, lines_to_capture, lines_to_skip_from_bottom
-    tmux_capture_pane "$session_name" 33 0
-}
-
-# Export functions for fzf subshells
+# Export functions for fzf subshells (reload uses fzf_list_sessions -> agent_display_name)
 _fzf_export_functions() {
     export AM_DIR AM_REGISTRY AM_SESSION_PREFIX
-    export -f fzf_preview agent_info agent_display_name
-    export -f registry_get_field registry_get_session registry_init
-    export -f tmux_capture_pane tmux_session_exists tmux_get_activity tmux_get_created
-    export -f format_time_ago format_duration dir_basename truncate abspath epoch_now get_claude_session_title
-    export -f require_cmd log_info log_error log_warn log_success am_init
+    export -f fzf_list_sessions agent_display_name
+    export -f registry_gc registry_list registry_remove registry_init
+    export -f tmux_list_am_sessions_with_activity tmux_get_activity
+    export -f dir_basename format_time_ago epoch_now
+    export -f require_cmd log_info log_error log_warn am_init
 }
 
 # Main fzf interface
@@ -226,30 +194,28 @@ fzf_main() {
 
     # Help text for ? key
     local help_text="
-╔══════════════════════════════════════════════════════════════╗
-║                    Agent Manager Help                        ║
-╠══════════════════════════════════════════════════════════════╣
-║  Navigation                                                  ║
-║    ↑/↓         Move selection                                ║
-║    Enter       Attach to selected session                    ║
-║    Esc/q       Exit without action                           ║
-║                                                              ║
-║  Actions                                                     ║
-║    Ctrl-N      Create new session                            ║
-║    Ctrl-X      Kill selected session                         ║
-║    Ctrl-R      Refresh session list                          ║
-║                                                              ║
-║  View                                                        ║
-║    Ctrl-P      Toggle preview panel                          ║
-║    Ctrl-J/K    Scroll preview down/up                        ║
-║    Ctrl-D/U    Scroll preview half-page                      ║
-║    ?           Show this help                                ║
-║                                                              ║
-║  In tmux session                                             ║
-║    Ctrl-Z a    Open am menu (popup)                          ║
-║    Ctrl-Z d    Detach (return to shell)                      ║
-║    Ctrl-Z [    Scroll mode (q to exit)                       ║
-╚══════════════════════════════════════════════════════════════╝
+  Agent Manager Help
+
+  Navigation
+    Up/Down     Move selection
+    Enter       Attach to selected session
+    Esc/q       Exit without action
+
+  Actions
+    Ctrl-N      Create new session
+    Ctrl-X      Kill selected session
+    Ctrl-R      Refresh session list
+
+  View
+    Ctrl-P      Toggle preview panel
+    Ctrl-J/K    Scroll preview down/up
+    Ctrl-D/U    Scroll preview half-page
+    ?           Show this help
+
+  In tmux session
+    Ctrl-Z a    Open am menu (popup)
+    Ctrl-Z d    Detach (return to shell)
+    Ctrl-Z [    Scroll mode (q to exit)
 "
 
     # Run fzf
@@ -325,11 +291,14 @@ fzf_list_json() {
     local session
 
     for session in $(tmux_list_am_sessions_with_activity | awk '{print $1}'); do
+        # Get all registry fields in one jq call
+        local fields
+        fields=$(jq -r --arg name "$session" \
+            '.sessions[$name] | "\(.directory // "")\t\(.branch // "")\t\(.agent_type // "")\t\(.task // "")"' \
+            "$AM_REGISTRY" 2>/dev/null)
+
         local directory branch agent_type task
-        directory=$(registry_get_field "$session" "directory")
-        branch=$(registry_get_field "$session" "branch")
-        agent_type=$(registry_get_field "$session" "agent_type")
-        task=$(registry_get_field "$session" "task")
+        IFS=$'\t' read -r directory branch agent_type task <<< "$fields"
 
         local activity
         activity=$(tmux_get_activity "$session")

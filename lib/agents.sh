@@ -28,24 +28,11 @@ agent_type_supported() {
     [[ -n "${AGENT_COMMANDS[$agent_type]}" ]]
 }
 
-# List supported agent types
-# Usage: agent_list_types
-agent_list_types() {
-    printf '%s\n' "${!AGENT_COMMANDS[@]}"
-}
-
 # Detect git branch for a directory
 # Usage: detect_git_branch <directory>
 detect_git_branch() {
     local directory="$1"
     git -C "$directory" branch --show-current 2>/dev/null || echo ""
-}
-
-# Check if directory is a git repo
-# Usage: is_git_repo <directory>
-is_git_repo() {
-    local directory="$1"
-    git -C "$directory" rev-parse --git-dir &>/dev/null
 }
 
 # Generate a unique session name
@@ -95,9 +82,7 @@ agent_launch() {
 
     # Detect git branch
     local branch=""
-    if is_git_repo "$directory"; then
-        branch=$(detect_git_branch "$directory")
-    fi
+    branch=$(detect_git_branch "$directory")
 
     # Generate session name
     local session_name
@@ -186,12 +171,14 @@ agent_display_name() {
 agent_info() {
     local session_name="$1"
 
-    local directory branch agent_type task created_at
-    directory=$(registry_get_field "$session_name" "directory")
-    branch=$(registry_get_field "$session_name" "branch")
-    agent_type=$(registry_get_field "$session_name" "agent_type")
-    task=$(registry_get_field "$session_name" "task")
-    created_at=$(registry_get_field "$session_name" "created_at")
+    # Get all metadata fields in one jq call
+    local fields
+    fields=$(jq -r --arg name "$session_name" \
+        '.sessions[$name] | "\(.directory // "")\t\(.branch // "")\t\(.agent_type // "")\t\(.task // "")"' \
+        "$AM_REGISTRY" 2>/dev/null)
+
+    local directory branch agent_type task
+    IFS=$'\t' read -r directory branch agent_type task <<< "$fields"
 
     # Get tmux info
     local activity created_ts
@@ -225,16 +212,18 @@ agent_info() {
 # Usage: agent_kill <session_name>
 agent_kill() {
     local session_name="$1"
+    local rc=0
 
-    if tmux_kill_session "$session_name"; then
-        registry_remove "$session_name"
+    tmux_kill_session "$session_name" || rc=$?
+
+    # Always clean up registry (session might already be dead)
+    registry_remove "$session_name"
+
+    if [[ $rc -eq 0 ]]; then
         log_success "Killed session: $session_name"
-        return 0
-    else
-        # Session might already be dead, clean up registry anyway
-        registry_remove "$session_name"
-        return 1
     fi
+
+    return $rc
 }
 
 # Kill all agent sessions

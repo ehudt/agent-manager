@@ -210,8 +210,7 @@ cmd_new() {
         picked=$(fzf_pick_directory)
         if [[ -n "$picked" ]]; then
             directory="$picked"
-        elif [[ -z "$picked" ]]; then
-            # User cancelled
+        else
             log_info "Cancelled"
             return 0
         fi
@@ -239,6 +238,20 @@ cmd_new() {
     fi
 }
 
+# Resolve a session name: try exact match, then with prefix
+# Usage: resolve_session <name>
+# Returns: resolved session name on stdout, or returns 1 if not found
+resolve_session() {
+    local name="$1"
+    if tmux_session_exists "$name"; then
+        echo "$name"
+    elif tmux_session_exists "${AM_SESSION_PREFIX}${name}"; then
+        echo "${AM_SESSION_PREFIX}${name}"
+    else
+        return 1
+    fi
+}
+
 # Command: attach
 cmd_attach() {
     local name="${1:-}"
@@ -249,15 +262,10 @@ cmd_attach() {
         return 1
     fi
 
-    # Try exact match first
-    if tmux_session_exists "$name"; then
-        tmux_attach "$name"
-        return 0
-    fi
-
-    # Try with prefix
-    if tmux_session_exists "${AM_SESSION_PREFIX}${name}"; then
-        tmux_attach "${AM_SESSION_PREFIX}${name}"
+    # Try exact or prefixed match
+    local resolved
+    if resolved=$(resolve_session "$name"); then
+        tmux_attach "$resolved"
         return 0
     fi
 
@@ -305,22 +313,13 @@ cmd_kill() {
             fi
             ;;
         *)
-            local name="$1"
-
-            # Try exact match first
-            if tmux_session_exists "$name"; then
-                agent_kill "$name"
-                return 0
+            local resolved
+            if resolved=$(resolve_session "$1"); then
+                agent_kill "$resolved"
+            else
+                log_error "Session not found: $1"
+                return 1
             fi
-
-            # Try with prefix
-            if tmux_session_exists "${AM_SESSION_PREFIX}${name}"; then
-                agent_kill "${AM_SESSION_PREFIX}${name}"
-                return 0
-            fi
-
-            log_error "Session not found: $name"
-            return 1
             ;;
     esac
 }
@@ -335,19 +334,15 @@ cmd_info() {
         return 1
     fi
 
-    # Try with prefix if needed
-    if ! tmux_session_exists "$name" && tmux_session_exists "${AM_SESSION_PREFIX}${name}"; then
-        name="${AM_SESSION_PREFIX}${name}"
-    fi
-
-    if ! tmux_session_exists "$name"; then
+    local resolved
+    if ! resolved=$(resolve_session "$name"); then
         log_error "Session not found: $name"
         return 1
     fi
 
-    echo "${BOLD}Session: $name${RESET}"
+    echo "${BOLD}Session: $resolved${RESET}"
     echo ""
-    agent_info "$name"
+    agent_info "$resolved"
 }
 
 # Command: status
@@ -381,27 +376,23 @@ main() {
 
     # Parse command
     local cmd="${1:-list}"
+    [[ $# -gt 0 ]] && shift
 
     case "$cmd" in
-        list|ls|"")
-            shift 2>/dev/null || true
+        list|ls)
             cmd_list "$@"
             ;;
         new|create|n)
-            shift
             cmd_new "$@"
             ;;
         attach|a)
-            shift
-            cmd_attach "${@:-}"
+            cmd_attach "$@"
             ;;
         kill|rm|k)
-            shift
             cmd_kill "$@"
             ;;
         info|i)
-            shift
-            cmd_info "${@:-}"
+            cmd_info "$@"
             ;;
         status|s)
             cmd_status
@@ -409,7 +400,7 @@ main() {
         *)
             # If it looks like a path, treat as "new <path>"
             if [[ -d "$cmd" ]]; then
-                cmd_new "$@"
+                cmd_new "$cmd" "$@"
             else
                 log_error "Unknown command: $cmd"
                 echo "Run 'am help' for usage"

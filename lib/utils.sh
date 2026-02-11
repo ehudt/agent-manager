@@ -4,7 +4,6 @@
 # Configuration
 AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
 AM_REGISTRY="$AM_DIR/sessions.json"
-AM_CONFIG="$AM_DIR/config.yaml"
 AM_SESSION_PREFIX="am-"
 
 # Colors (only if terminal supports it)
@@ -120,8 +119,7 @@ abspath() {
 
 # Get directory basename (last component)
 dir_basename() {
-    local path="$1"
-    basename "$(abspath "$path")"
+    basename "$1"
 }
 
 # Truncate string with ellipsis
@@ -134,16 +132,6 @@ truncate() {
     else
         echo "$str"
     fi
-}
-
-# Check if we're inside a tmux session
-in_tmux() {
-    [[ -n "${TMUX:-}" ]]
-}
-
-# Get current timestamp in ISO format
-iso_timestamp() {
-    date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
 
 # Get current timestamp as epoch seconds

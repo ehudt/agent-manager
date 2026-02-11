@@ -24,7 +24,7 @@ registry_add() {
     registry_init
 
     local created_at
-    created_at=$(iso_timestamp)
+    created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     local tmp_file
     tmp_file=$(mktemp)
@@ -45,15 +45,6 @@ registry_add() {
        }' "$AM_REGISTRY" > "$tmp_file" && mv "$tmp_file" "$AM_REGISTRY"
 }
 
-# Get a session from the registry
-# Usage: registry_get <name>
-# Returns JSON object or empty if not found
-registry_get() {
-    local name="$1"
-    registry_init
-    jq -r --arg name "$name" '.sessions[$name] // empty' "$AM_REGISTRY"
-}
-
 # Get a specific field from a session
 # Usage: registry_get_field <name> <field>
 registry_get_field() {
@@ -61,15 +52,6 @@ registry_get_field() {
     local field="$2"
     registry_init
     jq -r --arg name "$name" --arg field "$field" '.sessions[$name][$field] // empty' "$AM_REGISTRY"
-}
-
-# Get all fields for a session in one call (performance optimization)
-# Usage: registry_get_session <name>
-# Returns: JSON object with all session fields
-registry_get_session() {
-    local name="$1"
-    registry_init
-    jq -c --arg name "$name" '.sessions[$name] // {}' "$AM_REGISTRY"
 }
 
 # Update a session field
@@ -109,13 +91,6 @@ registry_remove() {
 registry_list() {
     registry_init
     jq -r '.sessions | keys[]' "$AM_REGISTRY" 2>/dev/null
-}
-
-# List all sessions with full data as JSON array
-# Usage: registry_list_json
-registry_list_json() {
-    registry_init
-    jq '.sessions | to_entries | map(.value)' "$AM_REGISTRY"
 }
 
 # Check if a session exists in registry
@@ -173,11 +148,4 @@ registry_gc() {
 registry_count() {
     registry_init
     jq '.sessions | length' "$AM_REGISTRY"
-}
-
-# Export registry to stdout as formatted JSON
-# Usage: registry_export
-registry_export() {
-    registry_init
-    jq '.' "$AM_REGISTRY"
 }
