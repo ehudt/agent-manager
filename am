@@ -217,6 +217,18 @@ cmd_new() {
         fi
     fi
 
+    # If running interactively and no agent args provided via CLI, show mode picker
+    if [[ ${#agent_args[@]} -eq 0 && -t 0 ]]; then
+        local mode_flags
+        if mode_flags=$(fzf_pick_mode); then
+            # shellcheck disable=SC2086
+            agent_args=($mode_flags)
+        else
+            log_info "Cancelled"
+            return 0
+        fi
+    fi
+
     # Launch agent
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
