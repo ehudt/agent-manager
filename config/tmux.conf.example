@@ -1,33 +1,47 @@
-# Suggested tmux settings for agent-manager
-# Add these to your ~/.tmux.conf
+# Recommended tmux.conf for agent-manager
+# Copy to ~/.tmux.conf or source from it
 
-# Change prefix to Ctrl-z
-# Ctrl-z Ctrl-z sends actual Ctrl-z to shell (suspend)
+# --- Prefix ---
+# Remap prefix from Ctrl-B to Ctrl-Z
+# Ctrl-z Ctrl-z sends actual Ctrl-z to shell (suspend processes)
 unbind C-b
 set -g prefix C-z
 bind C-z send-keys C-z
 
-# Enable mouse support (trackpad scrolling, click to select pane, etc.)
+# --- General ---
 set -g mouse on
-
-# Increase scrollback buffer
 set -g history-limit 50000
+set -sg escape-time 10
+set -g focus-events on
+set -g renumber-windows on
+
+# 256-color and true color support
+set -g default-terminal "tmux-256color"
+set -ga terminal-overrides ",xterm-256color:Tc"
 
 # Don't exit copy mode when mouse is released
 unbind -T copy-mode-vi MouseDragEnd1Pane
 
-# Agent manager popup: Ctrl-z a
-# Use bash directly for faster startup (skips shell initialization)
-bind a display-popup -E -w 90% -h 80% "bash $HOME/code/agent-manager/am"
+# --- Status bar ---
+set -g status-style 'bg=colour235 fg=colour136'
+set -g status-left '#[fg=colour148,bold]#S '
+set -g status-right '#[fg=colour244]%H:%M'
+set -g status-left-length 20
+setw -g window-status-current-style 'fg=colour148,bold'
+setw -g window-status-style 'fg=colour244'
 
-# Custom command: ":am" opens agent manager in popup
-set -s command-alias[100] am='display-popup -E -w 90% -h 80% "bash $HOME/code/agent-manager/am"'
-
-# Switch to last used agent session: Ctrl-z s
-bind s run-shell "$HOME/code/agent-manager/bin/switch-last"
-
-# Pane border - double lines with bright color
+# --- Pane borders ---
 set -g pane-border-status off
 set -g pane-border-lines double
 set -g pane-border-style 'fg=colour250'
 set -g pane-active-border-style 'fg=colour51'
+
+# --- Agent Manager ---
+# Popup: Ctrl-z a
+bind a display-popup -E -w 90% -h 80% "bash $HOME/code/agent-manager/am"
+
+# Command alias: ":am" opens agent manager in popup
+set -s command-alias[100] am='display-popup -E -w 90% -h 80% "bash $HOME/code/agent-manager/am"'
+
+# Switch to last used agent session: Ctrl-z s
+bind s run-shell "$HOME/code/agent-manager/bin/switch-last"
