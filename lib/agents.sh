@@ -122,9 +122,9 @@ agent_launch() {
 
     if $use_sandbox && command -v sb &>/dev/null; then
         # Enter sandbox in both panes, clear init noise, then launch agent
-        tmux_send_keys "$session_name:.{bottom}" "sb" Enter
+        tmux_send_keys "$session_name:.{bottom}" "sb ." Enter
         tmux_send_keys "$session_name:.{bottom}" "clear" Enter
-        tmux_send_keys "$session_name:.{top}" "sb" Enter
+        tmux_send_keys "$session_name:.{top}" "sb ." Enter
         tmux_send_keys "$session_name:.{top}" "clear" Enter
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     else
