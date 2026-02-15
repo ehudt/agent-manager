@@ -122,9 +122,9 @@ agent_launch() {
 
     if $use_sandbox && command -v sb &>/dev/null; then
         # Start sandbox once, then attach both panes to it
-        sb "$directory" --start
-        tmux_send_keys "$session_name:.{bottom}" "sb . --attach" Enter
-        tmux_send_keys "$session_name:.{top}" "sb . --attach" Enter
+        sb "$directory" --start >&2
+        tmux_send_keys "$session_name:.{bottom}" "sb . --attach && clear" Enter
+        tmux_send_keys "$session_name:.{top}" "sb . --attach && clear" Enter
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
