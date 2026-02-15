@@ -105,12 +105,31 @@ agent_launch() {
     # Select top pane for the agent
     tmux select-pane -t "$session_name:.{top}"
 
-    # Launch the agent in the top pane
+    # Build the full agent command
     local full_cmd="$agent_cmd"
     if [[ ${#agent_args[@]} -gt 0 ]]; then
         full_cmd="$agent_cmd ${agent_args[*]}"
     fi
-    tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+
+    # Check if sandbox mode is needed (--yolo implies sandbox)
+    local use_sandbox=false
+    for arg in "${agent_args[@]}"; do
+        if [[ "$arg" == "--dangerously-skip-permissions" ]]; then
+            use_sandbox=true
+            break
+        fi
+    done
+
+    if $use_sandbox && command -v sb &>/dev/null; then
+        # Enter sandbox in both panes, clear init noise, then launch agent
+        tmux_send_keys "$session_name:.{bottom}" "sb" Enter
+        tmux_send_keys "$session_name:.{bottom}" "clear" Enter
+        tmux_send_keys "$session_name:.{top}" "sb" Enter
+        tmux_send_keys "$session_name:.{top}" "clear" Enter
+        tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+    else
+        tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+    fi
 
     log_success "Created session: $session_name"
     echo "$session_name"

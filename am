@@ -43,7 +43,7 @@ OPTIONS FOR 'new':
     -t, --type      Agent type: claude (default), gemini, aider
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
-    --yolo          Run with --dangerously-skip-permissions
+    --yolo          Run with --dangerously-skip-permissions (uses sb sandbox)
     --              Pass remaining args to agent (e.g., -- --resume)
 
 KEYBINDINGS (in interactive mode):
@@ -183,7 +183,7 @@ cmd_new() {
                 echo "  -t, --type    Agent type (claude, gemini, aider)"
                 echo "  -n, --name    Task description"
                 echo "  -d, --dir     Working directory"
-                echo "  --yolo        Run with --dangerously-skip-permissions"
+                echo "  --yolo        Run with --dangerously-skip-permissions (uses sb sandbox)"
                 echo "  --            Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
