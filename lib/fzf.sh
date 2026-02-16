@@ -155,7 +155,6 @@ fzf_pick_agent() {
         --header="Select agent type (Enter to confirm, Esc to cancel)" \
         --height=10 \
         --layout=reverse \
-        --query="claude" \
     )
 
     if [[ -z "$selected" ]]; then
