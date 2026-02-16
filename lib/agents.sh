@@ -10,9 +10,21 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 # Supported agent types and their commands
 declare -A AGENT_COMMANDS=(
     [claude]="claude"
+    [codex]="codex"
     [gemini]="gemini"
     [aider]="aider"
 )
+
+# Get the permissive/sandbox-bypass flag for an agent type.
+# Usage: agent_get_yolo_flag <type>
+agent_get_yolo_flag() {
+    local agent_type="$1"
+    case "$agent_type" in
+        claude) echo "--dangerously-skip-permissions" ;;
+        codex) echo "--yolo" ;;
+        *) echo "--yolo" ;;
+    esac
+}
 
 # Get the command for an agent type
 # Usage: agent_get_command <type>
@@ -74,6 +86,26 @@ agent_launch() {
     local agent_cmd
     agent_cmd=$(agent_get_command "$agent_type")
 
+    # Normalize permissive mode args to the target agent's expected flag.
+    local normalized_args=()
+    local wants_yolo=false
+    local arg
+    for arg in "${agent_args[@]}"; do
+        case "$arg" in
+            --yolo|--dangerously-skip-permissions)
+                wants_yolo=true
+                ;;
+            *)
+                normalized_args+=("$arg")
+                ;;
+        esac
+    done
+
+    if $wants_yolo; then
+        normalized_args+=("$(agent_get_yolo_flag "$agent_type")")
+    fi
+    agent_args=("${normalized_args[@]}")
+
     # Check if agent command exists
     if ! command -v "$agent_cmd" &>/dev/null; then
         log_error "Agent command not found: $agent_cmd"
@@ -111,10 +143,10 @@ agent_launch() {
         full_cmd="$agent_cmd ${agent_args[*]}"
     fi
 
-    # Check if sandbox mode is needed (--yolo implies sandbox)
+    # Check if sandbox mode is needed (--yolo/permissive mode implies sandbox)
     local use_sandbox=false
     for arg in "${agent_args[@]}"; do
-        if [[ "$arg" == "--dangerously-skip-permissions" ]]; then
+        if [[ "$arg" == "--dangerously-skip-permissions" || "$arg" == "--yolo" ]]; then
             use_sandbox=true
             break
         fi

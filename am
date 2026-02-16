@@ -40,10 +40,10 @@ COMMANDS:
     help            Show this help message
 
 OPTIONS FOR 'new':
-    -t, --type      Agent type: claude (default), gemini, aider
+    -t, --type      Agent type: claude (default), codex, gemini, aider
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
-    --yolo          Run with --dangerously-skip-permissions (uses sb sandbox)
+    --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
     --              Pass remaining args to agent (e.g., -- --resume)
 
 KEYBINDINGS (in interactive mode):
@@ -57,7 +57,7 @@ EXAMPLES:
     am                              # Open interactive browser
     am new                          # New claude session in current dir
     am new ~/code/myproject         # New session in specific directory
-    am new -t gemini ~/code/proj    # New gemini session
+    am new -t codex ~/code/proj     # New codex session
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
 
@@ -114,14 +114,15 @@ cmd_list() {
         result=$(fzf_main)
 
         if [[ "$result" == __NEW_SESSION__* ]]; then
-            # Parse: __NEW_SESSION__|directory|flags
-            local directory flags
+            # Parse: __NEW_SESSION__|directory|agent_type|flags
+            local directory agent_type flags
             directory=$(echo "$result" | cut -d'|' -f2)
-            flags=$(echo "$result" | cut -d'|' -f3-)
+            agent_type=$(echo "$result" | cut -d'|' -f3)
+            flags=$(echo "$result" | cut -d'|' -f4-)
 
-            # Create new session with selected directory and flags
+            # Create new session with selected directory, type, and flags
             # shellcheck disable=SC2086
-            cmd_new_internal "$directory" $flags
+            cmd_new_internal "$directory" "$agent_type" $flags
         elif [[ -n "$result" ]]; then
             # Attach to selected session
             tmux_attach "$result"
@@ -129,15 +130,16 @@ cmd_list() {
     fi
 }
 
-# Internal: create session with directory and flags (called from fzf_main)
-# Usage: cmd_new_internal <directory> [flags...]
+# Internal: create session with directory, type, and flags (called from fzf_main)
+# Usage: cmd_new_internal <directory> [agent_type] [flags...]
 cmd_new_internal() {
     local directory="$1"
-    shift
+    local agent_type="${2:-claude}"
+    shift 2 2>/dev/null || shift $#
     local agent_args=("$@")
 
     local session_name
-    session_name=$(agent_launch "$directory" "claude" "" "${agent_args[@]}")
+    session_name=$(agent_launch "$directory" "$agent_type" "" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         tmux_attach "$session_name"
@@ -166,7 +168,7 @@ cmd_new() {
                 shift 2
                 ;;
             --yolo|--dangerously-skip-permissions)
-                agent_args+=("--dangerously-skip-permissions")
+                agent_args+=("--yolo")
                 shift
                 ;;
             --)
@@ -180,16 +182,16 @@ cmd_new() {
                 echo "If no directory specified, opens interactive picker."
                 echo ""
                 echo "Options:"
-                echo "  -t, --type    Agent type (claude, gemini, aider)"
+                echo "  -t, --type    Agent type (claude, codex, gemini, aider)"
                 echo "  -n, --name    Task description"
                 echo "  -d, --dir     Working directory"
-                echo "  --yolo        Run with --dangerously-skip-permissions (uses sb sandbox)"
+                echo "  --yolo        Enable permissive mode (mapped per agent, uses sb sandbox)"
                 echo "  --            Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
                 echo "  am new                          # Interactive directory picker"
                 echo "  am new ~/project                # Specific directory"
-                echo "  am new --yolo ~/project         # Skip permissions"
+                echo "  am new --yolo ~/project         # Permissive mode"
                 echo "  am new ~/project -- --resume    # With agent args"
                 return 0
                 ;;

@@ -260,7 +260,12 @@ test_agents() {
 
     # Test agent_get_command
     assert_eq "claude" "$(agent_get_command claude)" "agent_get_command: claude"
+    assert_eq "codex" "$(agent_get_command codex)" "agent_get_command: codex"
     assert_eq "gemini" "$(agent_get_command gemini)" "agent_get_command: gemini"
+
+    # Test yolo flag mapping
+    assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
+    assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
 
     echo ""
 }

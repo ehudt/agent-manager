@@ -8,7 +8,7 @@ A CLI tool for managing multiple AI coding agent sessions using tmux and fzf.
 - **Rich metadata** - See directory, git branch, agent type, and activity status
 - **Live preview** - View terminal output from any session without attaching
 - **Persistent sessions** - Sessions survive terminal close (tmux-based)
-- **Multiple agent types** - Claude Code, Gemini CLI, Aider (extensible)
+- **Multiple agent types** - Claude Code, Codex CLI, Gemini CLI, Aider (extensible)
 
 ## Installation
 
@@ -101,8 +101,12 @@ am new ~/code/myproject
 # Create session with task description
 am new ~/code/myproject -n "implement auth flow"
 
-# Use different agent (gemini, aider)
+# Use different agent (codex, gemini, aider)
 am new -t gemini ~/code/myproject
+am new -t codex ~/code/myproject
+
+# Enable permissive mode (mapped to each agent's flag)
+am new -t codex --yolo ~/code/myproject
 
 # Attach to a session
 am attach am-abc123
@@ -171,6 +175,7 @@ am list --json          # Output JSON for scripting
 am new [dir]            # Create new session
 am new -t TYPE          # Specify agent type
 am new -n "task"        # Add task description
+am new --yolo [dir]     # Permissive mode (mapped per agent)
 
 am attach NAME          # Attach to session
 am kill NAME            # Kill session
@@ -197,7 +202,7 @@ Each session has a split layout:
 
 ```
 ┌─────────────────────────────────────┐
-│  Agent (Claude/Gemini) - 65%        │  ← Preview shows this pane
+│  Agent (Claude/Codex/Gemini) - 65%  │  ← Preview shows this pane
 │                                     │
 ├─────────────────────────────────────┤
 │  Shell - 35%                        │  ← Same working directory

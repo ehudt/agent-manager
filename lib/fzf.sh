@@ -108,9 +108,9 @@ fzf_pick_mode() {
     local options="New session
 Resume (--resume)
 Continue (--continue)
-New session (--dangerously-skip-permissions)
-Resume (--resume --dangerously-skip-permissions)
-Continue (--continue --dangerously-skip-permissions)"
+New session (--yolo)
+Resume (--resume --yolo)
+Continue (--continue --yolo)"
 
     local selected
     selected=$(echo "$options" | fzf \
@@ -134,11 +134,36 @@ Continue (--continue --dangerously-skip-permissions)"
         *--continue*) flags+=" --continue" ;;
     esac
 
-    if [[ "$selected" == *--dangerously-skip-permissions* ]]; then
-        flags+=" --dangerously-skip-permissions"
+    if [[ "$selected" == *--yolo* ]]; then
+        flags+=" --yolo"
     fi
 
     echo "$flags"
+}
+
+# Pick agent type for a new session
+# Usage: fzf_pick_agent
+# Returns: selected agent type, or empty if cancelled
+fzf_pick_agent() {
+    local options
+    options=$(printf '%s\n' "${!AGENT_COMMANDS[@]}" | sort)
+
+    local selected
+    selected=$(echo "$options" | fzf \
+        --ansi \
+        --no-multi \
+        --header="Select agent type (Enter to confirm, Esc to cancel)" \
+        --height=10 \
+        --layout=reverse \
+        --query="claude" \
+    )
+
+    if [[ -z "$selected" ]]; then
+        echo ""
+        return 1
+    fi
+
+    echo "$selected"
 }
 
 # Generate session list for fzf
@@ -252,6 +277,13 @@ fzf_main() {
             return 0  # Cancelled
         fi
 
+        # Pick agent type
+        local agent_type
+        if ! agent_type=$(fzf_pick_agent); then
+            fzf_main
+            return $?
+        fi
+
         # Pick mode (new/resume/continue)
         local flags
         if ! flags=$(fzf_pick_mode); then
@@ -261,7 +293,7 @@ fzf_main() {
         fi
 
         # Return new session command
-        echo "__NEW_SESSION__|${directory}|${flags}"
+        echo "__NEW_SESSION__|${directory}|${agent_type}|${flags}"
         return 0
     fi
 
