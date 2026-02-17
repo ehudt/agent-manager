@@ -2,7 +2,7 @@
 
 Bash CLI tool managing multiple AI coding sessions (Claude, Gemini) via tmux + fzf.
 
-See AINAV.md for architecture, key functions, and extension points.
+See AGENTS.md for architecture, key functions, and extension points.
 
 ## Dev
 
