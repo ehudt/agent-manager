@@ -76,7 +76,7 @@ Or add to your existing `~/.tmux.conf`:
 
 ```bash
 # Mouse/trackpad scrolling
-set -g mouse on
+set -g mouse on # optional, for easier pane switching
 
 # These keybindings only activate inside am-* sessions.
 # Use your existing tmux prefix key.
@@ -91,27 +91,11 @@ bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
 ```
 
-Add a reload alias to your shell config (`~/.zshrc` or `~/.bashrc`):
-
-```bash
-alias tmux-reload='tmux source-file ~/.tmux.conf && echo "tmux config reloaded"'
-```
-
 ### Verify installation
 
 ```bash
 am help
 am version
-```
-
-### New machine procedure
-
-```bash
-git clone https://github.com/ehudt/agent-manager.git
-cd agent-manager
-./scripts/install.sh --yes
-source ~/.zshrc 2>/dev/null || source ~/.bashrc
-tmux source-file ~/.tmux.conf
 ```
 
 ## Quick Start
@@ -129,8 +113,8 @@ am new ~/code/myproject
 # Create session with task description
 am new ~/code/myproject -n "implement auth flow"
 
-# Use different agent (codex, gemini, aider)
-am new -t gemini ~/code/myproject
+# Use different agent (codex, claude, gemini)
+am new -t claude ~/code/myproject
 am new -t codex ~/code/myproject
 
 # Enable permissive mode (mapped to each agent's flag)
@@ -285,7 +269,11 @@ Run tests:
 ./tests/test_all.sh
 ```
 
-Tests skip tmux-dependent tests if tmux isn't installed.
+Tests require all prerequisites (`tmux`, `fzf`, `jq`) and fail fast if any are missing.
+
+## Security Checks
+
+Run these before publishing to catch accidentally committed credentials in current files and git history:
 
 Run secret scans:
 
@@ -308,5 +296,3 @@ Release checklist: see `RELEASE.md`.
 
 ## License
 MIT (see `LICENSE`)
-
-MIT

@@ -90,9 +90,10 @@ check_deps() {
     command -v fzf &>/dev/null || missing+=("fzf")
 
     if [[ ${#missing[@]} -gt 0 ]]; then
-        echo -e "${YELLOW}Warning: Missing dependencies: ${missing[*]}${RESET}"
-        echo "Some tests will be skipped."
-        echo ""
+        echo -e "${RED}Missing required dependencies: ${missing[*]}${RESET}"
+        echo "Install prerequisites first, then rerun tests."
+        echo "See README prerequisites section."
+        exit 1
     fi
 }
 
