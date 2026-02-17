@@ -15,7 +15,7 @@
 - Scan tracked files: `./scripts/scan-secrets.sh`
 - Scan git history: `./scripts/scan-secrets.sh --history`
 - Check for machine-specific paths/placeholders:
-  - `rg -n "(/home/|your-org|youruser)" README.md DESIGN.md AINAV.md config am lib tests scripts`
+  - `rg -n "(/home/|your-org|youruser)" README.md DESIGN.md AGENTS.md config am lib tests scripts`
 
 ## 3. Docs + metadata
 
