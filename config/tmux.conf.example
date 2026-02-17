@@ -38,10 +38,10 @@ set -g pane-active-border-style 'fg=colour51'
 
 # --- Agent Manager ---
 # Popup: Ctrl-z a
-bind a display-popup -E -w 90% -h 80% "bash $HOME/code/agent-manager/am"
+bind a display-popup -E -w 90% -h 80% "am"
 
 # Command alias: ":am" opens agent manager in popup
-set -s command-alias[100] am='display-popup -E -w 90% -h 80% "bash $HOME/code/agent-manager/am"'
+set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
 
 # Switch to last used agent session: Ctrl-z s
-bind s run-shell "$HOME/code/agent-manager/bin/switch-last"
+bind s run-shell "switch-last"

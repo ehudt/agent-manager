@@ -1,0 +1,10 @@
+# macOS / editor
+.DS_Store
+*.swp
+*.swo
+
+# Local runtime data
+.agent-manager/
+
+# Test/debug artifacts
+*.log

@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bash tmux fzf jq
+
+      - name: Bash syntax check
+        run: |
+          bash -n am lib/*.sh bin/* scripts/*.sh tests/test_all.sh
+
+      - name: Run test suite
+        run: ./tests/test_all.sh

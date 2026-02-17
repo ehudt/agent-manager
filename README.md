@@ -33,23 +33,40 @@ Version requirements:
 - jq >= 1.6
 - bash >= 4.0
 
+Shell support:
+- zsh: supported (`~/.zshrc` auto-detected by installer)
+- bash: supported (`~/.bashrc` auto-detected when zshrc is absent)
+- other shells: command still works via shebang, but rc-file automation is not built-in
+
 ### Install agent-manager
 
 ```bash
 # Clone or download
-git clone https://github.com/youruser/agent-manager.git
+git clone https://github.com/ehudt/agent-manager.git
 cd agent-manager
 
-# Add to PATH (add to ~/.bashrc or ~/.zshrc)
-export PATH="$PATH:$(pwd)"
+# Recommended: install command links + optional shell/tmux config
+./scripts/install.sh
+```
 
-# Or create symlink
-ln -s "$(pwd)/am" /usr/local/bin/am
+This installs `am` (plus helper commands used by tmux bindings) into `~/.local/bin` by default.
+
+Common install options:
+
+```bash
+# Non-interactive install (accept shell + tmux updates)
+./scripts/install.sh --yes
+
+# Only install command links (no shell/tmux edits)
+./scripts/install.sh --no-shell --no-tmux
+
+# Use a custom install location
+./scripts/install.sh --prefix /usr/local/bin
 ```
 
 ### Configure tmux (recommended)
 
-Copy the example tmux config for optimal experience:
+The installer can append tmux bindings automatically. If you prefer manual setup, copy the example tmux config:
 
 ```bash
 cp config/tmux.conf.example ~/.tmux.conf
@@ -71,6 +88,9 @@ bind a display-popup -E -w 90% -h 80% "am"
 
 # Command alias: ":am" opens agent manager
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
+
+# Switch to the last active am session
+bind s run-shell "switch-last"
 ```
 
 Add a reload alias to your shell config (`~/.zshrc` or `~/.bashrc`):
@@ -84,6 +104,16 @@ alias tmux-reload='tmux source-file ~/.tmux.conf && echo "tmux config reloaded"'
 ```bash
 am help
 am version
+```
+
+### New machine procedure
+
+```bash
+git clone https://github.com/ehudt/agent-manager.git
+cd agent-manager
+./scripts/install.sh --yes
+source ~/.zshrc 2>/dev/null || source ~/.bashrc
+tmux source-file ~/.tmux.conf
 ```
 
 ## Quick Start
@@ -222,6 +252,8 @@ Sessions are named with prefix `am-` followed by a 6-character hash:
 ```
 agent-manager/
 ├── am                  # Main executable
+├── scripts/
+│   └── install.sh      # Installer for shell + tmux integration
 ├── lib/
 │   ├── utils.sh        # Common utilities
 │   ├── registry.sh     # JSON metadata storage
@@ -257,6 +289,26 @@ Run tests:
 
 Tests skip tmux-dependent tests if tmux isn't installed.
 
+Run secret scans:
+
+```bash
+./scripts/scan-secrets.sh
+./scripts/scan-secrets.sh --history
+```
+
+Optional local pre-commit hook:
+
+```bash
+./scripts/setup-git-hooks.sh
+```
+
+This enables `.githooks/pre-commit`, which runs:
+- `bash -n` syntax checks
+- `./scripts/scan-secrets.sh` on tracked files
+
+Release checklist: see `RELEASE.md`.
+
 ## License
+MIT (see `LICENSE`)
 
 MIT
