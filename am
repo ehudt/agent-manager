@@ -304,6 +304,12 @@ cmd_kill() {
 
     case "$1" in
         --all|-a)
+            local session_count
+            session_count=$(tmux_count_am_sessions)
+            if [[ $session_count -eq 0 ]]; then
+                log_info "No sessions to kill"
+                return 0
+            fi
             echo -n "Kill ALL agent-manager sessions? [y/N] "
             read -r answer
             if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
@@ -363,6 +369,8 @@ cmd_status() {
     if [[ $count -gt 0 ]]; then
         echo "${BOLD}Sessions:${RESET}"
         fzf_list_simple
+    else
+        echo "Run 'am new' to create your first session."
     fi
 }
 
