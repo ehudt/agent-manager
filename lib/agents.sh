@@ -285,6 +285,5 @@ agent_kill_all() {
         agent_kill "$session" && ((count++))
     done
 
-    log_info "Killed $count sessions"
     echo "$count"
 }
