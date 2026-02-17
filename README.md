@@ -1,20 +1,15 @@
 # Agent Manager (`am`)
 
-A CLI tool for managing multiple AI coding agent sessions using tmux and fzf.
+Manage multiple AI coding agents from one terminal. Tmux + fzf powered.
 
-## Features
-
-- **Interactive browser** - Browse and switch between agent sessions with fzf
-- **Rich metadata** - See directory, git branch, agent type, and activity status
-- **Live preview** - View terminal output from any session without attaching
-- **Persistent sessions** - Sessions survive terminal close (tmux-based)
-- **Multiple agent types** - Claude Code, Codex CLI, Gemini CLI, Aider (extensible)
+- **Interactive browser** — browse, switch, and manage agent sessions with fzf
+- **Multiple agents** — Claude Code, Codex CLI, Gemini CLI (extensible)
+- **Rich preview** — see terminal output, git branch, and activity at a glance
+- **Persistent sessions** — tmux-based, survive terminal close
 
 ## Installation
 
 ### Prerequisites
-
-Install required dependencies:
 
 ```bash
 # macOS
@@ -27,71 +22,19 @@ sudo apt install tmux fzf jq
 sudo pacman -S tmux fzf jq
 ```
 
-Version requirements:
-- tmux >= 3.0
-- fzf >= 0.40
-- jq >= 1.6
-- bash >= 4.0
+Requires: tmux >= 3.0, fzf >= 0.40, jq >= 1.6, bash >= 4.0
 
-Shell support:
-- zsh: supported (`~/.zshrc` auto-detected by installer)
-- bash: supported (`~/.bashrc` auto-detected when zshrc is absent)
-- other shells: command still works via shebang, but rc-file automation is not built-in
-
-### Install agent-manager
+### Install
 
 ```bash
-# Clone or download
 git clone https://github.com/ehudt/agent-manager.git
 cd agent-manager
-
-# Recommended: install command links + optional shell/tmux config
 ./scripts/install.sh
 ```
 
-This installs `am` (plus helper commands used by tmux bindings) into `~/.local/bin` by default.
+This installs `am` into `~/.local/bin`. See [Configuration](#configuration) for tmux keybindings and install options.
 
-Common install options:
-
-```bash
-# Non-interactive install (accept shell + tmux updates)
-./scripts/install.sh --yes
-
-# Only install command links (no shell/tmux edits)
-./scripts/install.sh --no-shell --no-tmux
-
-# Use a custom install location
-./scripts/install.sh --prefix /usr/local/bin
-```
-
-### Configure tmux (recommended)
-
-The installer can append tmux bindings automatically. If you prefer manual setup, append the example snippet to your existing `~/.tmux.conf`:
-
-```bash
-cat config/tmux.conf.example >> ~/.tmux.conf
-```
-
-Or add to your existing `~/.tmux.conf`:
-
-```bash
-# Mouse/trackpad scrolling
-set -g mouse on # optional, for easier pane switching
-
-# These keybindings only activate inside am-* sessions.
-# Use your existing tmux prefix key.
-
-# Prefix + a: switch to last used am session
-bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
-
-# Prefix + s: open agent manager popup
-bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "am"' 'display-message "am shortcuts are active only in am-* sessions"'
-
-# Command alias: ":am" opens agent manager
-set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
-```
-
-### Verify installation
+### Verify
 
 ```bash
 am help
@@ -101,40 +44,16 @@ am version
 ## Quick Start
 
 ```bash
-# Open interactive session browser
-am
-
-# Create new Claude session in current directory
-am new
-
-# Create session in specific directory
-am new ~/code/myproject
-
-# Create session with task description
-am new ~/code/myproject -n "implement auth flow"
-
-# Use different agent (codex, claude, gemini)
-am new -t claude ~/code/myproject
-am new -t codex ~/code/myproject
-
-# Enable permissive mode (mapped to each agent's flag)
-am new -t codex --yolo ~/code/myproject
-
-# Attach to a session
-am attach am-abc123
-
-# Kill a session
-am kill am-abc123
-
-# See all sessions status
-am status
+am new ~/code/myproject              # Create a Claude session
+am                                    # Browse all sessions
+am new -t gemini ~/code/other        # Use a different agent
+am new -n "fix auth bug" .           # Add a task description
+am attach am-abc123                  # Attach to a session by name
 ```
 
-## Usage
+## Browsing Sessions
 
-### Interactive Mode (default)
-
-Just run `am` to open the fzf browser:
+Run `am` to open the interactive browser:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -154,104 +73,161 @@ Just run `am` to open the fzf browser:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Keybindings (fzf browser)
+### Keybindings
 
 | Key | Action |
 |-----|--------|
 | `Enter` | Attach to selected session |
-| `Ctrl-N` | Create new session |
+| `Ctrl-N` | Create new session (interactive flow) |
 | `Ctrl-X` | Kill selected session |
 | `Ctrl-R` | Refresh session list |
 | `Ctrl-P` | Toggle preview panel |
+| `Ctrl-J` / `Ctrl-K` | Scroll preview down / up |
+| `Ctrl-D` / `Ctrl-U` | Scroll preview half-page down / up |
 | `?` | Show help |
-| `↑/↓` | Navigate sessions |
 | `Esc` | Exit |
 
-### Keybindings (inside tmux session)
+## Creating Sessions
 
-| Key | Action |
-|-----|--------|
-| `Prefix a` | Switch to last used am session (active only in `am-*` sessions) |
-| `Prefix s` | Open am browser popup (active only in `am-*` sessions) |
-| `Prefix d` | Detach from session |
-| `Prefix :am` | Open am browser (popup) |
-| `Prefix ↑/↓` | Switch panes (agent/shell) |
+### Interactive Flow
 
-### Commands
+Pressing `Ctrl-N` in the browser (or running `am new` with no directory) launches a 3-step interactive flow:
+
+1. **Directory picker** — type to filter, `Tab` to complete, `Ctrl-U` to go up. Uses [zoxide](https://github.com/ajeetdsouza/zoxide) frecent directories if installed.
+2. **Mode picker** — choose from: New session, Resume (`--resume`), Continue (`--continue`), or any of those with `--yolo` (permissive mode).
+3. **Agent picker** — select the agent type (claude, codex, gemini).
+
+### CLI Usage
 
 ```bash
-am                      # Interactive browser (default)
-am list                 # Same as above
-am list --json          # Output JSON for scripting
-
-am new [dir]            # Create new session
-am new -t TYPE          # Specify agent type
-am new -n "task"        # Add task description
-am new --yolo [dir]     # Permissive mode (mapped per agent)
-
-am attach NAME          # Attach to session
-am kill NAME            # Kill session
-am kill --all           # Kill all sessions
-
-am info NAME            # Show session details
-am status               # Summary of all sessions
-am help                 # Show help
+am new [dir]                    # New session (default: current dir, claude)
+am new -t codex ~/project       # Specify agent type
+am new -n "task description" .  # Add task description
+am new --yolo ~/project         # Permissive mode (flag mapped per agent)
+am new ~/project -- --resume    # Pass extra args to the agent
 ```
 
-## Configuration
+## Inside a Session
 
-Sessions and metadata are stored in `~/.agent-manager/`:
-
-```
-~/.agent-manager/
-├── sessions.json       # Session metadata registry
-└── config.yaml         # (future) User configuration
-```
-
-## Session Layout
-
-Each session has a split layout:
+Each session has a split-pane layout:
 
 ```
 ┌─────────────────────────────────────┐
-│  Agent (Claude/Codex/Gemini) - 65%  │  ← Preview shows this pane
+│  Agent (Claude/Codex/Gemini) - top  │  ← Preview shows this pane
 │                                     │
 ├─────────────────────────────────────┤
-│  Shell - 35%                        │  ← Same working directory
+│  Shell - bottom                     │  ← Same working directory
 └─────────────────────────────────────┘
 ```
 
-Use `Prefix ↑/↓` to switch between panes.
+### tmux Keybindings
 
-## Session Naming
+These work inside `am-*` sessions (requires [tmux configuration](#tmux-keybindings-1)):
 
-Sessions are named with prefix `am-` followed by a 6-character hash:
-- `am-abc123` - internal session name
-- Display shows: `dirname/branch [agent] (time) "task"`
+| Key | Action |
+|-----|--------|
+| `Prefix + a` | Switch to last used am session |
+| `Prefix + s` | Open am browser popup |
+| `Prefix + d` | Detach from session |
+| `Prefix ↑/↓` | Switch between agent and shell panes |
+| `:am` | Open am browser (tmux command) |
 
-## Architecture
+## Agent Types
+
+| Agent | Command | `--yolo` maps to |
+|-------|---------|-------------------|
+| claude | `claude` | `--dangerously-skip-permissions` |
+| codex | `codex` | `--yolo` |
+| gemini | `gemini` | `--yolo` |
+
+Unknown agent types are passed through as the command name directly.
+
+## Advanced Features
+
+### Zoxide Integration
+
+If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, the directory picker shows frecent (frequently + recently used) directories instead of a flat listing.
+
+### Sandbox Integration
+
+When `--yolo` is used and the `sb` command is on PATH, agent-manager automatically starts a sandbox (`sb <dir> --start`) and attaches both panes to it before launching the agent.
+
+### Claude Session Titles
+
+For Claude sessions, the preview panel extracts and displays the first user message from Claude's session logs, giving you a quick summary of what each session is working on.
+
+### Resume and Continue
+
+Pass `--resume` or `--continue` to the agent via the mode picker (interactive) or CLI:
+
+```bash
+am new ~/project -- --resume      # Resume last session
+am new ~/project -- --continue    # Continue from where you left off
+```
+
+## Commands Reference
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `am` | `am list`, `am ls` | Open interactive browser |
+| `am list --json` | `-j` | Output sessions as JSON |
+| `am new [dir]` | `create`, `n` | Create new agent session |
+| `am attach <name>` | `a` | Attach to session (exact, prefix, or fuzzy match) |
+| `am kill <name>` | `rm`, `k` | Kill a session |
+| `am kill --all` | `-a` | Kill all sessions |
+| `am info <name>` | `i` | Show session details |
+| `am status` | `s` | Summary of all sessions |
+| `am <path>` | | Shortcut for `am new <path>` |
+| `am help` | `-h`, `--help` | Show help |
+| `am version` | `-v`, `--version` | Show version |
+
+## Configuration
+
+### tmux Keybindings
+
+The installer can append tmux bindings automatically (`./scripts/install.sh`). For manual setup, add to `~/.tmux.conf`:
+
+```bash
+# These keybindings only activate inside am-* sessions.
+
+# Prefix + a: switch to last used am session
+bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Prefix + s: open agent manager popup
+bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "am"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Command alias: ":am" opens agent manager
+set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
+```
+
+### Install Options
+
+```bash
+./scripts/install.sh --yes             # Non-interactive (accept all)
+./scripts/install.sh --no-shell        # Skip shell rc updates
+./scripts/install.sh --no-tmux         # Skip tmux config updates
+./scripts/install.sh --prefix /usr/local/bin  # Custom install path
+./scripts/install.sh --copy            # Copy files instead of symlink
+```
+
+### Session Storage
 
 ```
-agent-manager/
-├── am                  # Main executable
-├── scripts/
-│   └── install.sh      # Installer for shell + tmux integration
-├── lib/
-│   ├── utils.sh        # Common utilities
-│   ├── registry.sh     # JSON metadata storage
-│   ├── tmux.sh         # tmux wrapper functions
-│   ├── agents.sh       # Agent launcher
-│   └── fzf.sh          # fzf interface
-├── tests/
-│   └── test_all.sh     # Test suite
-└── README.md
+~/.agent-manager/
+└── sessions.json       # Session metadata registry
 ```
+
+### Shell Support
+
+- **zsh**: `~/.zshrc` auto-detected by installer
+- **bash**: `~/.bashrc` auto-detected when zshrc is absent
+- Other shells: command works via shebang, but rc-file automation is not built-in
 
 ## Troubleshooting
 
 ### "Required command not found: tmux"
 
-Install tmux: `brew install tmux` (macOS) or `apt install tmux` (Ubuntu)
+Install tmux: `brew install tmux` (macOS) or `apt install tmux` (Ubuntu).
 
 ### Sessions not showing
 
@@ -271,28 +247,6 @@ Run tests:
 
 Tests require all prerequisites (`tmux`, `fzf`, `jq`) and fail fast if any are missing.
 
-## Security Checks
-
-Run these before publishing to catch accidentally committed credentials in current files and git history:
-
-Run secret scans:
-
-```bash
-./scripts/scan-secrets.sh
-./scripts/scan-secrets.sh --history
-```
-
-Optional local pre-commit hook:
-
-```bash
-./scripts/setup-git-hooks.sh
-```
-
-This enables `.githooks/pre-commit`, which runs:
-- `bash -n` syntax checks
-- `./scripts/scan-secrets.sh` on tracked files
-
-Release checklist: see `RELEASE.md`.
-
 ## License
+
 MIT (see `LICENSE`)
