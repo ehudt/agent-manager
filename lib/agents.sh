@@ -136,6 +136,16 @@ agent_launch() {
     # Select top pane for the agent
     tmux select-pane -t "$session_name:.{top}"
 
+    # Set up log streaming if enabled
+    if [[ "${AM_STREAM_LOGS:-}" == "1" ]]; then
+        local log_dir="/tmp/am-logs/${session_name}"
+        mkdir -p "$log_dir"
+        tmux_enable_pipe_pane "$session_name" ".{top}" "$log_dir/agent.log"
+        tmux_enable_pipe_pane "$session_name" ".{bottom}" "$log_dir/shell.log"
+        tmux_send_keys "$session_name:.{top}" "export AM_LOG_DIR='$log_dir'" Enter
+        tmux_send_keys "$session_name:.{bottom}" "export AM_LOG_DIR='$log_dir'" Enter
+    fi
+
     # Build the full agent command
     local full_cmd="$agent_cmd"
     if [[ ${#agent_args[@]} -gt 0 ]]; then

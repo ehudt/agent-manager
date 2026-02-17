@@ -40,7 +40,27 @@ tmux_kill_session() {
         return 1
     fi
 
+    tmux_cleanup_logs "$name"
     tmux kill-session -t "$name"
+}
+
+# Stream pane output to a log file using tmux pipe-pane
+tmux_enable_pipe_pane() {
+    local session="$1"
+    local pane="$2"
+    local log_file="$3"
+
+    tmux pipe-pane -t "${session}:${pane}" -o "cat >> '${log_file}'"
+}
+
+# Remove log directory for a session
+tmux_cleanup_logs() {
+    local name="$1"
+    local log_dir="/tmp/am-logs/${name}"
+
+    if [[ -d "$log_dir" ]]; then
+        rm -rf "$log_dir"
+    fi
 }
 
 # Attach to a tmux session
