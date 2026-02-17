@@ -166,10 +166,10 @@ if $UPDATE_TMUX; then
 # Use your existing tmux prefix key.
 
 # Prefix + a: switch to last used am session
-bind a if-shell -F '#{m:^am-,#{session_name}}' 'run-shell "$PREFIX/switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$PREFIX/switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Prefix + s: open agent manager popup
-bind s if-shell -F '#{m:^am-,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Optional alias: :am
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$PREFIX/am"'
