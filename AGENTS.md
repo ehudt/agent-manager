@@ -34,6 +34,8 @@ am new ~/project → agent_launch() → tmux_create_session() → registry_add()
 - `tmux_create_session(name, dir)` - New detached session
 - `tmux_capture_pane(name, lines)` - Get terminal content for preview
 - `tmux_get_activity(name)` - Last activity timestamp
+- `tmux_enable_pipe_pane(session, pane, file)` - Stream pane output to log file
+- `tmux_cleanup_logs(name)` - Remove log directory for a session
 
 **fzf:**
 - `fzf_list_sessions()` - Format: `session|display_name`

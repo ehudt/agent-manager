@@ -156,6 +156,17 @@ When `--yolo` is used and the `sb` command is on PATH, agent-manager automatical
 
 For Claude sessions, the preview panel extracts and displays the first user message from Claude's session logs, giving you a quick summary of what each session is working on.
 
+### Shell Output Streaming
+
+Set `AM_STREAM_LOGS=1` to stream all pane output to log files. Each session gets a log directory at `/tmp/am-logs/<session-name>/` with `agent.log` and `shell.log`. The `$AM_LOG_DIR` environment variable is available in both panes.
+
+```bash
+export AM_STREAM_LOGS=1
+am new ~/project
+# Inside the session:
+cat $AM_LOG_DIR/agent.log    # Read agent output
+```
+
 ### Resume and Continue
 
 Pass `--resume` or `--continue` to the agent via the mode picker (interactive) or CLI:
