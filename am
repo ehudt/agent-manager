@@ -40,7 +40,7 @@ COMMANDS:
     help            Show this help message
 
 OPTIONS FOR 'new':
-    -t, --type      Agent type: claude (default), codex, gemini, aider
+    -t, --type      Agent type: claude (default), codex, gemini
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
     --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
@@ -182,7 +182,7 @@ cmd_new() {
                 echo "If no directory specified, opens interactive picker."
                 echo ""
                 echo "Options:"
-                echo "  -t, --type    Agent type (claude, codex, gemini, aider)"
+                echo "  -t, --type    Agent type (claude, codex, gemini)"
                 echo "  -n, --name    Task description"
                 echo "  -d, --dir     Working directory"
                 echo "  --yolo        Enable permissive mode (mapped per agent, uses sb sandbox)"

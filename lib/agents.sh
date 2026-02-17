@@ -12,7 +12,6 @@ declare -A AGENT_COMMANDS=(
     [claude]="claude"
     [codex]="codex"
     [gemini]="gemini"
-    [aider]="aider"
 )
 
 # Get the permissive/sandbox-bypass flag for an agent type.
