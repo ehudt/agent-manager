@@ -1,13 +1,6 @@
 # Recommended tmux.conf for agent-manager
 # Copy to ~/.tmux.conf or source from it
 
-# --- Prefix ---
-# Remap prefix from Ctrl-B to Ctrl-Z
-# Ctrl-z Ctrl-z sends actual Ctrl-z to shell (suspend processes)
-unbind C-b
-set -g prefix C-z
-bind C-z send-keys C-z
-
 # --- General ---
 set -g mouse on
 set -g history-limit 50000
@@ -37,11 +30,14 @@ set -g pane-border-style 'fg=colour250'
 set -g pane-active-border-style 'fg=colour51'
 
 # --- Agent Manager ---
-# Popup: Ctrl-z a
-bind a display-popup -E -w 90% -h 80% "am"
+# These keybindings only activate inside am-* sessions.
+# Use your existing tmux prefix key.
+
+# Prefix + a: switch to last used am session
+bind a if-shell -F '#{m:^am-,#{session_name}}' 'run-shell "switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Prefix + s: open agent manager popup
+bind s if-shell -F '#{m:^am-,#{session_name}}' 'display-popup -E -w 90% -h 80% "am"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Command alias: ":am" opens agent manager in popup
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
-
-# Switch to last used agent session: Ctrl-z s
-bind s run-shell "switch-last"

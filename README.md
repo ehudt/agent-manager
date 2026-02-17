@@ -75,22 +75,20 @@ cp config/tmux.conf.example ~/.tmux.conf
 Or add to your existing `~/.tmux.conf`:
 
 ```bash
-# Prefix: Ctrl-z (Ctrl-z Ctrl-z sends actual Ctrl-z to shell)
-unbind C-b
-set -g prefix C-z
-bind C-z send-keys C-z
-
 # Mouse/trackpad scrolling
 set -g mouse on
 
-# Agent manager popup: Ctrl-z a
-bind a display-popup -E -w 90% -h 80% "am"
+# These keybindings only activate inside am-* sessions.
+# Use your existing tmux prefix key.
+
+# Prefix + a: switch to last used am session
+bind a if-shell -F '#{m:^am-,#{session_name}}' 'run-shell "switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Prefix + s: open agent manager popup
+bind s if-shell -F '#{m:^am-,#{session_name}}' 'display-popup -E -w 90% -h 80% "am"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Command alias: ":am" opens agent manager
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
-
-# Switch to the last active am session
-bind s run-shell "switch-last"
 ```
 
 Add a reload alias to your shell config (`~/.zshrc` or `~/.bashrc`):
@@ -189,11 +187,11 @@ Just run `am` to open the fzf browser:
 
 | Key | Action |
 |-----|--------|
-| `Ctrl-z a` | Open am browser (popup) |
-| `Ctrl-z d` | Detach from session |
-| `Ctrl-z Ctrl-z` | Send Ctrl-z to shell (suspend) |
-| `Ctrl-z :am` | Open am browser (popup) |
-| `Ctrl-z ↑/↓` | Switch panes (agent/shell) |
+| `Prefix a` | Switch to last used am session (active only in `am-*` sessions) |
+| `Prefix s` | Open am browser popup (active only in `am-*` sessions) |
+| `Prefix d` | Detach from session |
+| `Prefix :am` | Open am browser (popup) |
+| `Prefix ↑/↓` | Switch panes (agent/shell) |
 
 ### Commands
 
@@ -239,7 +237,7 @@ Each session has a split layout:
 └─────────────────────────────────────┘
 ```
 
-Use `Ctrl-z ↑/↓` to switch between panes.
+Use `Prefix ↑/↓` to switch between panes.
 
 ## Session Naming
 

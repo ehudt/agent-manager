@@ -162,14 +162,17 @@ fi
 if $UPDATE_TMUX; then
     if confirm "Update $TMUX_CONF with agent-manager keybindings?"; then
         tmux_block=$(cat <<EOF
-# Open agent manager popup
-bind a display-popup -E -w 90% -h 80% "$PREFIX/am"
+# These keybindings only activate inside am-* sessions.
+# Use your existing tmux prefix key.
+
+# Prefix + a: switch to last used am session
+bind a if-shell -F '#{m:^am-,#{session_name}}' 'run-shell "$PREFIX/switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Prefix + s: open agent manager popup
+bind s if-shell -F '#{m:^am-,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Optional alias: :am
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$PREFIX/am"'
-
-# Switch to most recently active agent-manager session
-bind s run-shell "$PREFIX/switch-last"
 EOF
 )
         append_block_once "$TMUX_CONF" \
