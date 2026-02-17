@@ -1,35 +1,4 @@
-# Recommended tmux.conf for agent-manager
-# Copy to ~/.tmux.conf or source from it
-
-# --- General ---
-set -g mouse on
-set -g history-limit 50000
-set -sg escape-time 10
-set -g focus-events on
-set -g renumber-windows on
-
-# 256-color and true color support
-set -g default-terminal "tmux-256color"
-set -ga terminal-overrides ",xterm-256color:Tc"
-
-# Don't exit copy mode when mouse is released
-unbind -T copy-mode-vi MouseDragEnd1Pane
-
-# --- Status bar ---
-set -g status-style 'bg=colour235 fg=colour136'
-set -g status-left '#[fg=colour148,bold]#S '
-set -g status-right '#[fg=colour244]%H:%M'
-set -g status-left-length 20
-setw -g window-status-current-style 'fg=colour148,bold'
-setw -g window-status-style 'fg=colour244'
-
-# --- Pane borders ---
-set -g pane-border-status off
-set -g pane-border-lines double
-set -g pane-border-style 'fg=colour250'
-set -g pane-active-border-style 'fg=colour51'
-
-# --- Agent Manager ---
+# Agent Manager tmux bindings snippet
 # These keybindings only activate inside am-* sessions.
 # Use your existing tmux prefix key.
 

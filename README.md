@@ -66,10 +66,10 @@ Common install options:
 
 ### Configure tmux (recommended)
 
-The installer can append tmux bindings automatically. If you prefer manual setup, copy the example tmux config:
+The installer can append tmux bindings automatically. If you prefer manual setup, append the example snippet to your existing `~/.tmux.conf`:
 
 ```bash
-cp config/tmux.conf.example ~/.tmux.conf
+cat config/tmux.conf.example >> ~/.tmux.conf
 ```
 
 Or add to your existing `~/.tmux.conf`:
