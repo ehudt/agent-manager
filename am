@@ -28,16 +28,19 @@ USAGE:
     am [command] [options]
 
 COMMANDS:
-    (none)          Open interactive session browser (default)
-    list            List all sessions (same as no command)
-    list --json     Output sessions as JSON
-    new [dir]       Create a new agent session
-    attach <name>   Attach to a session by name
-    kill <name>     Kill a session
-    kill --all      Kill all agent-manager sessions
-    info <name>     Show detailed session info
-    status          Show summary of all sessions
-    help            Show this help message
+    (default)           Open interactive session browser
+    list, ls            List all sessions
+    list --json, -j     Output sessions as JSON
+    new, create, n      Create a new agent session
+    attach, a           Attach to a session by name (exact, prefix, or fuzzy)
+    kill, rm, k         Kill a session
+    kill --all, -a      Kill all agent-manager sessions
+    info, i             Show detailed session info
+    status, s           Show summary of all sessions
+    help                Show this help message
+
+SHORTCUT:
+    am <path>           Same as 'am new <path>'
 
 OPTIONS FOR 'new':
     -t, --type      Agent type: claude (default), codex, gemini
@@ -46,18 +49,29 @@ OPTIONS FOR 'new':
     --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
     --              Pass remaining args to agent (e.g., -- --resume)
 
-KEYBINDINGS (in interactive mode):
+KEYBINDINGS (interactive browser):
     Enter           Attach to selected session
-    Ctrl-N          Create new session
+    Ctrl-N          Create new session (interactive: directory > mode > agent)
     Ctrl-X          Kill selected session
     Ctrl-R          Refresh session list
     Ctrl-P          Toggle preview panel
+    Ctrl-J/K        Scroll preview up/down
+    Ctrl-D/U        Scroll preview half-page down/up
+    ?               Show inline help
+
+KEYBINDINGS (inside tmux session):
+    Prefix + a      Switch to last am session
+    Prefix + s      Open am browser popup
+    Prefix + d      Detach from session
+    Prefix Up/Down  Switch panes (agent/shell)
+    :am             Open am browser (tmux command)
 
 EXAMPLES:
     am                              # Open interactive browser
     am new                          # New claude session in current dir
     am new ~/code/myproject         # New session in specific directory
     am new -t codex ~/code/proj     # New codex session
+    am new -n "fix auth" .          # Session with task description
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
 
@@ -65,8 +79,8 @@ DEPENDENCIES:
     tmux >= 3.0, fzf >= 0.40, jq, git
 
 CONFIGURATION:
-    Sessions are stored in: ~/.agent-manager/
-
+    Sessions stored in: ~/.agent-manager/
+    See README for tmux keybinding setup.
 EOF
 }
 
