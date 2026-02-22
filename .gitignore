@@ -8,3 +8,4 @@
 
 # Test/debug artifacts
 *.log
+.claude/worktrees
