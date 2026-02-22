@@ -232,26 +232,29 @@ auto_title_session() {
         project_path="${project_path//./-}"
         local claude_project_dir="$HOME/.claude/projects/$project_path"
 
-        # Poll for JSONL content
+        # Poll for JSONL content - extract first real user message
         local first_msg=""
         for _i in $(seq 1 30); do
             if [[ -d "$claude_project_dir" ]]; then
                 local session_file
                 session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
                 if [[ -n "$session_file" && -f "$session_file" ]]; then
-                    local line content cleaned
-                    while IFS= read -r line; do
-                        content=$(echo "$line" | jq -r '.message.content // empty' 2>/dev/null) || continue
-                        [[ -z "$content" ]] && continue
-                        cleaned=$(echo "$content" | \
-                            sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
-                            tr '\n' ' ' | \
-                            sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                        if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
-                            first_msg="$cleaned"
-                            break
-                        fi
-                    done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
+                    # Extract text from user messages; content can be string or array
+                    first_msg=$(grep '"type":"user"' "$session_file" 2>/dev/null | head -10 | \
+                        jq -r '
+                            .message.content |
+                            if type == "string" then .
+                            elif type == "array" then
+                                [.[] | select(.type == "text") | .text] | join(" ")
+                            else empty
+                            end
+                        ' 2>/dev/null | \
+                        sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
+                        tr '\n' ' ' | \
+                        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
+                        head -c 500)
+                    # Only accept if we got meaningful text
+                    [[ ${#first_msg} -gt 10 ]] || first_msg=""
                 fi
             fi
             [[ -n "$first_msg" ]] && break
@@ -267,10 +270,16 @@ auto_title_session() {
         local title=""
         if command -v claude &>/dev/null; then
             title=$(printf '%s' "$first_msg" | claude -p --model haiku \
-                "Generate a 2-5 word title for this coding task. Output ONLY the title, nothing else." 2>/dev/null) || true
+                "Reply with a short 2-5 word title summarizing this task. Plain text only, no markdown, no quotes, no punctuation. Examples: Fix auth login bug, Add user settings page, Refactor database layer" 2>/dev/null) || true
+            # Strip any markdown/quotes Haiku might add despite instructions
+            title=$(echo "$title" | sed 's/^[#*"`'\'']*//; s/[#*"`'\'']*$//' | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            # Reject if too long or multiline (Haiku went off-script)
+            if [[ ${#title} -gt 60 || "$title" == *$'\n'* ]]; then
+                title=""
+            fi
         fi
 
-        # Fallback: raw first-sentence extraction
+        # Fallback: first sentence, cleaned up
         if [[ -z "$title" ]]; then
             title=$(echo "$first_msg" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60)
         fi
@@ -294,11 +303,11 @@ agent_display_name() {
     # Get all metadata fields in ONE jq call (critical for performance)
     local fields
     fields=$(jq -r --arg name "$session_name" \
-        '.sessions[$name] | "\(.directory // "")\t\(.branch // "")\t\(.agent_type // "")"' \
+        '.sessions[$name] | "\(.directory // "")\t\(.branch // "")\t\(.agent_type // "")\t\(.task // "")"' \
         "$AM_REGISTRY" 2>/dev/null)
 
-    local directory branch agent_type
-    IFS=$'\t' read -r directory branch agent_type <<< "$fields"
+    local directory branch agent_type task
+    IFS=$'\t' read -r directory branch agent_type task <<< "$fields"
 
     # Get activity from tmux
     local activity
@@ -327,6 +336,11 @@ agent_display_name() {
 
     # Add agent type
     display="${display} [${agent_type:-unknown}]"
+
+    # Add task/title if available
+    if [[ -n "$task" ]]; then
+        display="${display} ${task}"
+    fi
 
     # Add activity
     display="${display} ($(format_time_ago "$idle"))"
