@@ -155,7 +155,7 @@ cmd_new_internal() {
     local agent_args=("$@")
 
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "" "${agent_args[@]}")
+    session_name=$(agent_launch "$directory" "$agent_type" "" "" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         tmux_attach "$session_name"
