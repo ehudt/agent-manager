@@ -282,6 +282,7 @@ test_cli() {
     assert_contains "$help_output" "Agent Manager" "am help: shows title"
     assert_contains "$help_output" "USAGE" "am help: shows usage"
     assert_contains "$help_output" "COMMANDS" "am help: shows commands"
+    assert_contains "$help_output" "--worktree" "am help: shows worktree flag"
 
     # Test version
     local version_output=$("$PROJECT_DIR/am" version)
