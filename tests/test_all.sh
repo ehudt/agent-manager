@@ -268,6 +268,16 @@ test_agents() {
     assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
     assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
 
+    # Test worktree name generation
+    if git -C "$PROJECT_DIR" rev-parse --git-dir &>/dev/null; then
+        local wt_name="test-feature"
+        assert_eq "test-feature" "$wt_name" "worktree: explicit name preserved"
+
+        local auto_hash=$(generate_hash "/tmp/test$(date +%s)")
+        local auto_name="am-${auto_hash}"
+        assert_contains "$auto_name" "am-" "worktree: auto name has am- prefix"
+    fi
+
     echo ""
 }
 

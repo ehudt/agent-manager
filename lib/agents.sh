@@ -58,13 +58,14 @@ generate_session_name() {
 }
 
 # Launch an agent in a new tmux session
-# Usage: agent_launch <directory> [agent_type] [task_description] [agent_args...]
+# Usage: agent_launch <directory> [agent_type] [task_description] [worktree_name] [agent_args...]
 # Returns: session name on success, empty on failure
 agent_launch() {
     local directory="$1"
     local agent_type="${2:-claude}"
     local task="${3:-}"
-    shift 3 2>/dev/null || shift $#
+    local worktree_name="${4:-}"
+    shift 4 2>/dev/null || shift $#
     local agent_args=("$@")
 
     # Validate directory
@@ -119,6 +120,24 @@ agent_launch() {
     local session_name
     session_name=$(generate_session_name "$directory")
 
+    # Resolve worktree name
+    local worktree_path=""
+    if [[ -n "$worktree_name" ]]; then
+        if [[ "$agent_type" != "claude" ]]; then
+            log_warn "Worktree isolation only supported for Claude, ignoring -w"
+            worktree_name=""
+        elif ! git -C "$directory" rev-parse --git-dir &>/dev/null; then
+            log_warn "Not a git repo, ignoring -w"
+            worktree_name=""
+        else
+            # Resolve __auto__ sentinel to am-hash name
+            if [[ "$worktree_name" == "__auto__" ]]; then
+                worktree_name="am-${session_name#am-}"
+            fi
+            worktree_path="$directory/.claude/worktrees/$worktree_name"
+        fi
+    fi
+
     # Create tmux session (with explicit dimensions for sizing workaround)
     if ! tmux_create_session "$session_name" "$directory"; then
         log_error "Failed to create tmux session"
@@ -148,8 +167,11 @@ agent_launch() {
 
     # Build the full agent command
     local full_cmd="$agent_cmd"
+    if [[ -n "$worktree_name" ]]; then
+        full_cmd="$full_cmd -w '$worktree_name'"
+    fi
     if [[ ${#agent_args[@]} -gt 0 ]]; then
-        full_cmd="$agent_cmd ${agent_args[*]}"
+        full_cmd="$full_cmd ${agent_args[*]}"
     fi
 
     # Check if sandbox mode is needed (--yolo/permissive mode implies sandbox)
@@ -169,6 +191,18 @@ agent_launch() {
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+    fi
+
+    # Background: wait for worktree directory to appear, then cd shell pane into it
+    if [[ -n "$worktree_path" ]]; then
+        (for _i in $(seq 1 20); do
+            if [ -d "$worktree_path" ]; then
+                tmux send-keys -t "${session_name}:0.1" "cd '$worktree_path'" Enter
+                break
+            fi
+            sleep 0.5
+        done) &
+        registry_update "$session_name" "worktree_path" "$worktree_path"
     fi
 
     log_success "Created session: $session_name"
