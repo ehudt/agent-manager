@@ -740,6 +740,136 @@ test_registry_gc() {
 }
 
 # ============================================
+# Test: Worktree feature (-w/--worktree)
+# ============================================
+test_worktree() {
+    echo "=== Testing Worktree Feature ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "worktree tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    # Create a temp git repo for worktree tests
+    local git_dir=$(mktemp -d)
+    git -C "$git_dir" init -q
+    git -C "$git_dir" commit --allow-empty -m "init" -q
+
+    # Also create a non-git temp dir
+    local nongit_dir=$(mktemp -d)
+
+    # --- Test: help text includes -w/--worktree ---
+    local help_output=$("$PROJECT_DIR/am" help)
+    assert_contains "$help_output" "--worktree" "help: mentions --worktree flag"
+
+    # --- Test: agent_launch with worktree_name sets registry worktree_path ---
+    local session_name
+    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "my-wt" 2>/dev/null)
+    assert_not_empty "$session_name" "worktree launch: returns session name"
+
+    local wt_path
+    wt_path=$(registry_get_field "$session_name" worktree_path)
+    assert_eq "$git_dir/.claude/worktrees/my-wt" "$wt_path" \
+        "worktree launch: registry has correct worktree_path"
+
+    # Verify the agent info shows the worktree
+    local info_output
+    info_output=$(agent_info "$session_name")
+    assert_contains "$info_output" "Worktree:" "worktree launch: info shows Worktree line"
+
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: agent_launch WITHOUT worktree has no worktree_path ---
+    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "" 2>/dev/null)
+    assert_not_empty "$session_name" "no-worktree launch: returns session name"
+
+    wt_path=$(registry_get_field "$session_name" worktree_path)
+    assert_eq "" "$wt_path" "no-worktree launch: registry has no worktree_path"
+
+    # Verify info does NOT show worktree line
+    info_output=$(agent_info "$session_name")
+    if [[ "$info_output" != *"Worktree:"* ]]; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: no-worktree launch: info omits Worktree line"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: no-worktree launch: info unexpectedly shows Worktree"
+    fi
+
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: __auto__ sentinel resolves to am-<hash> ---
+    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "__auto__" 2>/dev/null)
+    assert_not_empty "$session_name" "auto-worktree launch: returns session name"
+
+    wt_path=$(registry_get_field "$session_name" worktree_path)
+    assert_contains "$wt_path" ".claude/worktrees/am-" \
+        "auto-worktree: worktree_path contains am- prefix"
+
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: non-claude agent type ignores worktree ---
+    local warn_output
+    warn_output=$(set +u; agent_launch "$git_dir" "codex" "" "my-wt" 2>&1 >/dev/null)
+    # The launch itself may return a session (worktree is just ignored)
+    session_name=$(set +u; agent_launch "$git_dir" "codex" "" "my-wt" 2>/dev/null)
+    if [[ -n "$session_name" ]]; then
+        wt_path=$(registry_get_field "$session_name" worktree_path)
+        assert_eq "" "$wt_path" "non-claude worktree: worktree_path not set"
+        agent_kill "$session_name" 2>/dev/null
+    else
+        skip_test "non-claude worktree: agent_launch failed"
+    fi
+
+    # --- Test: non-git directory ignores worktree ---
+    session_name=$(set +u; agent_launch "$nongit_dir" "claude" "" "my-wt" 2>/dev/null)
+    if [[ -n "$session_name" ]]; then
+        wt_path=$(registry_get_field "$session_name" worktree_path)
+        assert_eq "" "$wt_path" "non-git worktree: worktree_path not set"
+        agent_kill "$session_name" 2>/dev/null
+    else
+        skip_test "non-git worktree: agent_launch failed"
+    fi
+
+    # --- Test: agent_display_name shows task when set ---
+    session_name=$(set +u; agent_launch "$git_dir" "claude" "fix login bug" "" 2>/dev/null)
+    if [[ -n "$session_name" ]]; then
+        local display
+        display=$(agent_display_name "$session_name")
+        assert_contains "$display" "fix login bug" "display_name: shows task"
+        agent_kill "$session_name" 2>/dev/null
+    else
+        skip_test "display_name: agent_launch failed"
+    fi
+
+    # --- Test: agent_display_name omits task when empty ---
+    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "" 2>/dev/null)
+    if [[ -n "$session_name" ]]; then
+        local display
+        display=$(agent_display_name "$session_name")
+        # Should have [claude] but no extra task text between type and time
+        assert_contains "$display" "[claude]" "display_name no task: shows agent type"
+        agent_kill "$session_name" 2>/dev/null
+    else
+        skip_test "display_name no task: agent_launch failed"
+    fi
+
+    # Cleanup
+    rm -rf "$git_dir" "$nongit_dir"
+    teardown_integration_env
+
+    echo ""
+}
+
+# ============================================
 # Main
 # ============================================
 main() {
@@ -761,6 +891,7 @@ main() {
     test_integration_lifecycle
     test_cli_extended
     test_registry_gc
+    test_worktree
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

@@ -46,6 +46,8 @@ OPTIONS FOR 'new':
     -t, --type      Agent type: claude (default), codex, gemini
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
+    -w, --worktree  Enable git worktree isolation (Claude only)
+                    Optional: -w <name> to set worktree name (default: am-XXXXXX)
     --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
     --              Pass remaining args to agent (e.g., -- --resume)
 
@@ -153,7 +155,7 @@ cmd_new_internal() {
     local agent_args=("$@")
 
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "" "${agent_args[@]}")
+    session_name=$(agent_launch "$directory" "$agent_type" "" "" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         tmux_attach "$session_name"
@@ -165,6 +167,7 @@ cmd_new() {
     local directory="."
     local agent_type="claude"
     local task=""
+    local worktree_name=""
     local agent_args=()
 
     while [[ $# -gt 0 ]]; do
@@ -180,6 +183,16 @@ cmd_new() {
             -d|--dir)
                 directory="$2"
                 shift 2
+                ;;
+            -w|--worktree)
+                shift
+                # Next arg is optional name — if it starts with - or is a directory, use default
+                if [[ $# -gt 0 && "$1" != -* && ! -d "$1" ]]; then
+                    worktree_name="$1"
+                    shift
+                else
+                    worktree_name="__auto__"  # sentinel: generate from session hash
+                fi
                 ;;
             --yolo|--dangerously-skip-permissions)
                 agent_args+=("--yolo")
@@ -199,6 +212,8 @@ cmd_new() {
                 echo "  -t, --type    Agent type (claude, codex, gemini)"
                 echo "  -n, --name    Task description"
                 echo "  -d, --dir     Working directory"
+                echo "  -w, --worktree  Enable git worktree isolation (Claude only)"
+                echo "                  Optional: -w <name> for custom worktree name"
                 echo "  --yolo        Enable permissive mode (mapped per agent, uses sb sandbox)"
                 echo "  --            Pass remaining args to agent command"
                 echo ""
@@ -246,7 +261,7 @@ cmd_new() {
 
     # Launch agent
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
+    session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
 
     # Auto-attach to new session
     if [[ -n "$session_name" ]]; then
