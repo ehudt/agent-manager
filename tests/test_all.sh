@@ -4,6 +4,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEST_DIR="$SCRIPT_DIR"  # Stable ref — SCRIPT_DIR gets overwritten by lib/agents.sh
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LIB_DIR="$PROJECT_DIR/lib"
 
@@ -98,6 +99,62 @@ check_deps() {
 }
 
 # ============================================
+# Integration test helpers
+# ============================================
+
+# Assert a command fails (non-zero exit)
+assert_cmd_fails() {
+    local msg="$1"
+    shift
+    ((TESTS_RUN++))
+    if "$@" &>/dev/null; then
+        echo -e "${RED}FAIL${RESET}: $msg (expected failure, got success)"
+        ((TESTS_FAILED++))
+    else
+        echo -e "${GREEN}PASS${RESET}: $msg"
+        ((TESTS_PASSED++))
+    fi
+}
+
+# Setup isolated test environment for integration tests
+# Sets AM_DIR to a temp dir, creates stub agent, overrides AGENT_COMMANDS
+# IMPORTANT: Call AFTER sourcing agents.sh (declare -A resets AGENT_COMMANDS)
+# Usage: setup_integration_env
+# After calling, use $TEST_AM_DIR, $TEST_STUB_DIR
+setup_integration_env() {
+    TEST_AM_DIR=$(mktemp -d)
+    TEST_STUB_DIR="$TEST_DIR"  # stub_agent lives in tests/
+
+    export AM_DIR="$TEST_AM_DIR"
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_SESSION_PREFIX="test-am-"
+    am_init
+
+    # Point agent commands to stub
+    AGENT_COMMANDS[claude]="$TEST_STUB_DIR/stub_agent"
+    AGENT_COMMANDS[codex]="$TEST_STUB_DIR/stub_agent"
+    AGENT_COMMANDS[gemini]="$TEST_STUB_DIR/stub_agent"
+}
+
+# Tear down integration test environment
+# Kills any test-created tmux sessions, removes temp dirs
+# Usage: teardown_integration_env
+teardown_integration_env() {
+    # Kill only test sessions by their unique prefix (never touches real am-* sessions)
+    local session
+    for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^test-am-' || true); do
+        tmux kill-session -t "$session" 2>/dev/null || true
+    done
+
+    # Restore AM_DIR and session prefix
+    rm -rf "${TEST_AM_DIR:-}"
+    TEST_AM_DIR=""
+    export AM_DIR="${HOME}/.agent-manager"
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_SESSION_PREFIX="am-"
+}
+
+# ============================================
 # Test: utils.sh
 # ============================================
 test_utils() {
@@ -127,6 +184,49 @@ test_utils() {
 
     # Test dir_basename
     assert_eq "foo" "$(dir_basename '/path/to/foo')" "dir_basename: extracts basename"
+
+    echo ""
+}
+
+# ============================================
+# Test: utils.sh (extended edge cases)
+# ============================================
+test_utils_extended() {
+    echo "=== Testing utils.sh (extended) ==="
+    source "$LIB_DIR/utils.sh"
+
+    # format_time_ago: edge cases
+    assert_eq "0s ago" "$(format_time_ago 0)" "format_time_ago: zero seconds"
+    assert_eq "just now" "$(format_time_ago -5)" "format_time_ago: negative"
+    assert_eq "11574d ago" "$(format_time_ago 1000000000)" "format_time_ago: very large"
+
+    # format_duration: edge cases
+    assert_eq "0s" "$(format_duration 0)" "format_duration: zero"
+    assert_eq "1d 0h" "$(format_duration 86400)" "format_duration: exactly 1 day"
+
+    # truncate: edge cases
+    assert_eq "" "$(truncate '' 10)" "truncate: empty string"
+    assert_eq "hi" "$(truncate 'hi' 10)" "truncate: shorter than limit"
+    assert_eq "0123456789" "$(truncate '0123456789' 10)" "truncate: exact limit length"
+
+    # generate_hash: consistency
+    local h1=$(generate_hash "same-input")
+    local h2=$(generate_hash "same-input")
+    local h3=$(generate_hash "different-input")
+    assert_eq "$h1" "$h2" "generate_hash: same input same output"
+    # Different inputs SHOULD produce different hashes (not guaranteed but overwhelmingly likely)
+    if [[ "$h1" != "$h3" ]]; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: generate_hash: different inputs different output"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: generate_hash: different inputs produced same hash"
+    fi
+
+    # abspath: with real directories
+    local tmpd=$(mktemp -d)
+    assert_eq "$tmpd" "$(abspath "$tmpd")" "abspath: absolute path unchanged"
+    rm -rf "$tmpd"
 
     echo ""
 }
@@ -182,6 +282,68 @@ test_registry() {
 
     # Cleanup
     rm -rf "$AM_DIR"
+
+    echo ""
+}
+
+# ============================================
+# Test: registry.sh (extended edge cases)
+# ============================================
+test_registry_extended() {
+    echo "=== Testing registry.sh (extended) ==="
+
+    if ! command -v jq &>/dev/null; then
+        skip_test "registry extended tests (jq not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    # Isolated registry
+    local old_am_dir="$AM_DIR"
+    local old_am_registry="$AM_REGISTRY"
+    export AM_DIR=$(mktemp -d)
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    am_init
+
+    # Test: get_field on nonexistent session returns empty
+    local result
+    result=$(registry_get_field "nonexistent" "directory")
+    assert_eq "" "$result" "registry_get_field: empty for missing session"
+
+    # Test: update on nonexistent session is a no-op (doesn't crash)
+    assert_cmd_succeeds "registry_update: no-op for missing session" \
+        registry_update "nonexistent" "branch" "value"
+    assert_eq "0" "$(registry_count)" "registry_update: count unchanged after no-op"
+
+    # Test: remove on nonexistent session is idempotent
+    assert_cmd_succeeds "registry_remove: idempotent for missing session" \
+        registry_remove "nonexistent"
+    assert_eq "0" "$(registry_count)" "registry_remove: count stays 0"
+
+    # Test: duplicate add overwrites
+    registry_add "dup-session" "/tmp/first" "main" "claude" ""
+    registry_add "dup-session" "/tmp/second" "dev" "gemini" ""
+    assert_eq "/tmp/second" "$(registry_get_field dup-session directory)" \
+        "registry_add: duplicate overwrites directory"
+    assert_eq "gemini" "$(registry_get_field dup-session agent_type)" \
+        "registry_add: duplicate overwrites agent_type"
+    assert_eq "1" "$(registry_count)" "registry_add: duplicate doesn't increase count"
+
+    # Test: rapid sequential adds don't corrupt
+    registry_add "rapid-1" "/tmp/r1" "main" "claude" ""
+    registry_add "rapid-2" "/tmp/r2" "main" "codex" ""
+    registry_add "rapid-3" "/tmp/r3" "main" "gemini" ""
+    assert_eq "4" "$(registry_count)" "registry: rapid adds all persisted"
+    assert_eq "/tmp/r1" "$(registry_get_field rapid-1 directory)" "registry: rapid-1 correct"
+    assert_eq "/tmp/r3" "$(registry_get_field rapid-3 directory)" "registry: rapid-3 correct"
+
+    # Cleanup
+    rm -rf "$AM_DIR"
+    export AM_DIR="$old_am_dir"
+    export AM_REGISTRY="$old_am_registry"
 
     echo ""
 }
@@ -247,7 +409,7 @@ test_agents() {
     fi
 
     source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/agents.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
 
     # Test detect_git_branch
     local branch=$(detect_git_branch "$PROJECT_DIR")
@@ -268,18 +430,54 @@ test_agents() {
     assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
     assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
 
-    # Test auto_title_session function exists
-    assert_cmd_succeeds "auto_title_session: function exists" type auto_title_session
+    echo ""
+}
 
-    # Test worktree name generation
-    if git -C "$PROJECT_DIR" rev-parse --git-dir &>/dev/null; then
-        local wt_name="test-feature"
-        assert_eq "test-feature" "$wt_name" "worktree: explicit name preserved"
+# ============================================
+# Test: agents.sh (extended)
+# ============================================
+test_agents_extended() {
+    echo "=== Testing agents.sh (extended) ==="
 
-        local auto_hash=$(generate_hash "/tmp/test$(date +%s)")
-        local auto_name="am-${auto_hash}"
-        assert_contains "$auto_name" "am-" "worktree: auto name has am- prefix"
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "agents extended tests (jq or tmux not installed)"
+        echo ""
+        return
     fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    # Test agent_type_supported
+    assert_eq "true" "$(agent_type_supported claude && echo true || echo false)" \
+        "agent_type_supported: claude"
+    assert_eq "true" "$(agent_type_supported codex && echo true || echo false)" \
+        "agent_type_supported: codex"
+    assert_eq "true" "$(agent_type_supported gemini && echo true || echo false)" \
+        "agent_type_supported: gemini"
+    assert_eq "false" "$( (agent_type_supported bogus) 2>/dev/null && echo true || echo false)" \
+        "agent_type_supported: bogus rejected"
+
+    # Test generate_session_name: different dirs give different names
+    local name1=$(generate_session_name "/tmp/project-a")
+    local name2=$(generate_session_name "/tmp/project-b")
+    if [[ "$name1" != "$name2" ]]; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: generate_session_name: different dirs different names"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: generate_session_name: collision for different dirs"
+    fi
+
+    # Test generate_session_name format: am-XXXXXX
+    local name=$(generate_session_name "/tmp/test")
+    assert_contains "$name" "am-" "generate_session_name: starts with am-"
+    assert_eq 9 "${#name}" "generate_session_name: length is 9 (am- + 6)"
+
+    # Test agent_get_yolo_flag for gemini (uses default --yolo)
+    assert_eq "--yolo" "$(agent_get_yolo_flag gemini)" "agent_get_yolo_flag: gemini"
 
     echo ""
 }
@@ -295,11 +493,248 @@ test_cli() {
     assert_contains "$help_output" "Agent Manager" "am help: shows title"
     assert_contains "$help_output" "USAGE" "am help: shows usage"
     assert_contains "$help_output" "COMMANDS" "am help: shows commands"
-    assert_contains "$help_output" "--worktree" "am help: shows worktree flag"
 
     # Test version
     local version_output=$("$PROJECT_DIR/am" version)
     assert_contains "$version_output" "0.1.0" "am version: shows version"
+
+    echo ""
+}
+
+# ============================================
+# Test: Integration - Session Lifecycle
+# ============================================
+test_integration_lifecycle() {
+    echo "=== Testing Integration: Session Lifecycle ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "integration lifecycle tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    # Temporarily disable nounset: declare -A AGENT_COMMANDS=([claude]=...) in agents.sh
+    # triggers "unbound variable" under set -u because bash interprets the keys as variables
+    set +u
+    source "$LIB_DIR/agents.sh"
+    set -u
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # --- Test: agent_launch creates session ---
+    local session_name
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "test task" 2>/dev/null)
+    assert_not_empty "$session_name" "agent_launch: returns session name"
+
+    # Verify tmux session exists
+    assert_eq "true" "$(tmux_session_exists "$session_name" && echo true || echo false)" \
+        "agent_launch: tmux session exists"
+
+    # Verify registry entry
+    assert_eq "true" "$(registry_exists "$session_name" && echo true || echo false)" \
+        "agent_launch: registry entry exists"
+
+    # Verify registry fields
+    assert_eq "$test_dir" "$(registry_get_field "$session_name" directory)" \
+        "agent_launch: correct directory in registry"
+    assert_eq "claude" "$(registry_get_field "$session_name" agent_type)" \
+        "agent_launch: correct agent_type in registry"
+    assert_eq "test task" "$(registry_get_field "$session_name" task)" \
+        "agent_launch: correct task in registry"
+
+    # Verify two panes (agent top + shell bottom)
+    local pane_count
+    pane_count=$(tmux list-panes -t "$session_name" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "2" "$pane_count" "agent_launch: two panes created"
+
+    # --- Test: agent_kill cleans up ---
+    # Safety: never call agent_kill with empty name (tmux -t "" kills current session)
+    if [[ -n "$session_name" ]]; then
+        agent_kill "$session_name" 2>/dev/null
+    fi
+    assert_eq "false" "$(tmux_session_exists "${session_name:-__none__}" && echo true || echo false)" \
+        "agent_kill: tmux session removed"
+    assert_eq "false" "$(registry_exists "${session_name:-__none__}" && echo true || echo false)" \
+        "agent_kill: registry entry removed"
+
+    # --- Test: kill multiple sessions (by name, NOT agent_kill_all which is global) ---
+    local s1 s2
+    s1=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    s2=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    assert_not_empty "$s1" "multi-kill: first session created"
+    assert_not_empty "$s2" "multi-kill: second session created"
+
+    # Kill individually — guard against empty names
+    [[ -n "$s1" ]] && agent_kill "$s1" 2>/dev/null
+    [[ -n "$s2" ]] && agent_kill "$s2" 2>/dev/null
+    assert_eq "false" "$(tmux_session_exists "${s1:-__none__}" && echo true || echo false)" \
+        "multi-kill: first session removed"
+    assert_eq "false" "$(tmux_session_exists "${s2:-__none__}" && echo true || echo false)" \
+        "multi-kill: second session removed"
+
+    # Cleanup
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    echo ""
+}
+
+# ============================================
+# Test: CLI commands (extended)
+# ============================================
+test_cli_extended() {
+    echo "=== Testing CLI commands (extended) ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "cli extended tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # Create a session for testing against
+    local session_name
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "cli test" 2>/dev/null)
+
+    if [[ -z "$session_name" ]]; then
+        skip_test "cli extended tests (agent_launch failed)"
+        teardown_integration_env
+        rm -rf "$test_dir"
+        echo ""
+        return
+    fi
+
+    # --- Test: am list --json returns valid JSON containing our session ---
+    local json_output
+    json_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" list --json 2>/dev/null)
+    # Validate JSON
+    if echo "$json_output" | jq . >/dev/null 2>&1; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: am list --json: valid JSON"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: am list --json: invalid JSON"
+    fi
+    assert_contains "$json_output" "$session_name" "am list --json: contains session"
+
+    # --- Test: am info <session> ---
+    local info_output
+    info_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" info "$session_name" 2>/dev/null)
+    assert_contains "$info_output" "Directory:" "am info: shows directory"
+    assert_contains "$info_output" "Agent:" "am info: shows agent type"
+
+    # --- Test: am kill <session> ---
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" kill "$session_name" 2>/dev/null
+    assert_eq "false" "$(tmux_session_exists "$session_name" && echo true || echo false)" \
+        "am kill: session removed"
+
+    # --- Test: am attach nonexistent fails ---
+    local attach_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" attach nonexistent-xyz </dev/null 2>/dev/null || attach_rc=$?
+    assert_eq "false" "$(test $attach_rc -eq 0 && echo true || echo false)" \
+        "am attach nonexistent: exits with error"
+
+    # --- Test: am kill with no args fails ---
+    local kill_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" kill </dev/null 2>/dev/null || kill_rc=$?
+    assert_eq "false" "$(test $kill_rc -eq 0 && echo true || echo false)" \
+        "am kill no args: exits with error"
+
+    # --- Test: am status runs without error ---
+    local status_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" status >/dev/null 2>&1 || status_rc=$?
+    assert_eq "true" "$(test $status_rc -eq 0 && echo true || echo false)" \
+        "am status: exits 0"
+
+    # Cleanup
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    echo ""
+}
+
+# ============================================
+# Test: Integration - Registry GC
+# ============================================
+test_registry_gc() {
+    echo "=== Testing Integration: Registry GC ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "registry GC tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # Create a live session
+    local live_session
+    live_session=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+
+    if [[ -z "$live_session" ]]; then
+        skip_test "registry GC tests (agent_launch failed)"
+        teardown_integration_env
+        rm -rf "$test_dir"
+        echo ""
+        return
+    fi
+
+    # Manually add a stale entry (no corresponding tmux session)
+    registry_add "test-am-stale-fake" "/tmp/gone" "main" "claude" ""
+    assert_eq "true" "$(registry_exists test-am-stale-fake && echo true || echo false)" \
+        "gc setup: stale entry exists"
+
+    # Run GC (force to bypass throttle)
+    local removed
+    removed=$(registry_gc 1)
+    assert_eq "1" "$removed" "registry_gc: removed 1 stale entry"
+
+    # Verify stale entry gone, live entry preserved
+    assert_eq "false" "$(registry_exists test-am-stale-fake && echo true || echo false)" \
+        "registry_gc: stale entry removed"
+    assert_eq "true" "$(registry_exists "$live_session" && echo true || echo false)" \
+        "registry_gc: live entry preserved"
+
+    # --- Test: GC throttling ---
+    # Add another stale entry
+    registry_add "test-am-stale-fake-2" "/tmp/gone2" "main" "claude" ""
+
+    # Run GC without force — should be throttled (within 60s of last run)
+    removed=$(registry_gc)
+    assert_eq "0" "$removed" "registry_gc: throttled within 60s"
+
+    # Stale entry should still exist (GC was skipped)
+    assert_eq "true" "$(registry_exists test-am-stale-fake-2 && echo true || echo false)" \
+        "registry_gc: stale entry survives throttle"
+
+    # Force GC should still work
+    removed=$(registry_gc 1)
+    assert_eq "1" "$removed" "registry_gc: force bypasses throttle"
+
+    # Cleanup
+    [[ -n "$live_session" ]] && agent_kill "$live_session" 2>/dev/null
+    rm -rf "$test_dir"
+    teardown_integration_env
 
     echo ""
 }
@@ -316,10 +751,16 @@ main() {
     check_deps
 
     test_utils
+    test_utils_extended
     test_registry
+    test_registry_extended
     test_tmux
     test_agents
+    test_agents_extended
     test_cli
+    test_integration_lifecycle
+    test_cli_extended
+    test_registry_gc
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

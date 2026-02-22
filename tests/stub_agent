@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# stub_agent - Fake agent for integration tests
+# Stays alive until killed, prints a marker so tests can verify it started
+echo "stub-agent-ready"
+exec tail -f /dev/null

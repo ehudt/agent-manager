@@ -4,7 +4,7 @@
 # Configuration
 AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
 AM_REGISTRY="$AM_DIR/sessions.json"
-AM_SESSION_PREFIX="am-"
+AM_SESSION_PREFIX="${AM_SESSION_PREFIX:-am-}"
 
 # Colors (only if terminal supports it)
 if [[ -t 1 ]]; then
