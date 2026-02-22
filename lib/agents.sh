@@ -267,11 +267,11 @@ agent_info() {
     # Get all metadata fields in one jq call
     local fields
     fields=$(jq -r --arg name "$session_name" \
-        '.sessions[$name] | "\(.directory // "")\t\(.branch // "")\t\(.agent_type // "")\t\(.task // "")"' \
+        '.sessions[$name] | "\(.directory // "")\t\(.branch // "")\t\(.agent_type // "")\t\(.task // "")\t\(.worktree_path // "")"' \
         "$AM_REGISTRY" 2>/dev/null)
 
-    local directory branch agent_type task
-    IFS=$'\t' read -r directory branch agent_type task <<< "$fields"
+    local directory branch agent_type task worktree_path
+    IFS=$'\t' read -r directory branch agent_type task worktree_path <<< "$fields"
 
     # Get tmux info
     local activity created_ts
@@ -298,6 +298,9 @@ agent_info() {
     echo "Last active: $(format_time_ago "$idle_time")"
     if [[ -n "$task" ]]; then
         echo "Task: $task"
+    fi
+    if [[ -n "$worktree_path" ]]; then
+        echo "Worktree: $worktree_path"
     fi
 }
 
