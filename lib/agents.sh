@@ -197,7 +197,7 @@ agent_launch() {
     if [[ -n "$worktree_path" ]]; then
         (for _i in $(seq 1 20); do
             if [ -d "$worktree_path" ]; then
-                tmux send-keys -t "${session_name}:0.1" "cd '$worktree_path'" Enter
+                tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
                 break
             fi
             sleep 0.5
