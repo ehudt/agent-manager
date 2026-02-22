@@ -205,8 +205,83 @@ agent_launch() {
         registry_update "$session_name" "worktree_path" "$worktree_path"
     fi
 
+    # Auto-title in background (Claude only, no task already set)
+    if [[ "$agent_type" == "claude" && -z "$task" ]]; then
+        auto_title_session "$session_name" "$directory"
+    fi
+
     log_success "Created session: $session_name"
     echo "$session_name"
+}
+
+# Generate a session title from first user message using Haiku
+# Runs in background, updates registry when done
+# Usage: auto_title_session <session_name> <directory>
+auto_title_session() {
+    local session_name="$1"
+    local directory="$2"
+
+    (
+        # Wait for Claude session to start and receive first message
+        sleep 5
+
+        # Convert directory to Claude's project path format
+        local abs_dir
+        abs_dir=$(cd "$directory" && pwd)
+        local project_path="${abs_dir//\//-}"
+        project_path="${project_path//./-}"
+        local claude_project_dir="$HOME/.claude/projects/$project_path"
+
+        # Poll for JSONL content
+        local first_msg=""
+        for _i in $(seq 1 30); do
+            if [[ -d "$claude_project_dir" ]]; then
+                local session_file
+                session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
+                if [[ -n "$session_file" && -f "$session_file" ]]; then
+                    local line content cleaned
+                    while IFS= read -r line; do
+                        content=$(echo "$line" | jq -r '.message.content // empty' 2>/dev/null) || continue
+                        [[ -z "$content" ]] && continue
+                        cleaned=$(echo "$content" | \
+                            sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
+                            tr '\n' ' ' | \
+                            sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                        if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
+                            first_msg="$cleaned"
+                            break
+                        fi
+                    done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
+                fi
+            fi
+            [[ -n "$first_msg" ]] && break
+            sleep 2
+        done
+
+        [[ -z "$first_msg" ]] && return 0
+
+        # Truncate input to ~200 chars to keep Haiku call cheap
+        first_msg="${first_msg:0:200}"
+
+        # Try Haiku for a clean title
+        local title=""
+        if command -v claude &>/dev/null; then
+            title=$(printf '%s' "$first_msg" | claude -p --model haiku \
+                "Generate a 2-5 word title for this coding task. Output ONLY the title, nothing else." 2>/dev/null) || true
+        fi
+
+        # Fallback: raw first-sentence extraction
+        if [[ -z "$title" ]]; then
+            title=$(echo "$first_msg" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60)
+        fi
+
+        # Write to registry
+        if [[ -n "$title" ]]; then
+            source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+            source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
+            registry_update "$session_name" "task" "$title"
+        fi
+    ) &
 }
 
 # Get display name for a session (for fzf listing)

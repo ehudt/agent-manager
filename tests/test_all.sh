@@ -268,6 +268,9 @@ test_agents() {
     assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
     assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
 
+    # Test auto_title_session function exists
+    assert_cmd_succeeds "auto_title_session: function exists" type auto_title_session
+
     # Test worktree name generation
     if git -C "$PROJECT_DIR" rev-parse --git-dir &>/dev/null; then
         local wt_name="test-feature"
