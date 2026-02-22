@@ -201,7 +201,7 @@ agent_launch() {
                 break
             fi
             sleep 0.5
-        done) &
+        done) >/dev/null 2>&1 &
         registry_update "$session_name" "worktree_path" "$worktree_path"
     fi
 
@@ -281,7 +281,7 @@ auto_title_session() {
             source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
             registry_update "$session_name" "task" "$title"
         fi
-    ) &
+    ) >/dev/null 2>&1 &
 }
 
 # Get display name for a session (for fzf listing)
