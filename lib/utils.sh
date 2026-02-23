@@ -4,6 +4,7 @@
 # Configuration
 AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
 AM_REGISTRY="$AM_DIR/sessions.json"
+AM_HISTORY="$AM_DIR/history.jsonl"
 AM_SESSION_PREFIX="${AM_SESSION_PREFIX:-am-}"
 
 # Colors (only if terminal supports it)

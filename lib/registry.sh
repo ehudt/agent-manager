@@ -149,3 +149,59 @@ registry_count() {
     registry_init
     jq '.sessions | length' "$AM_REGISTRY"
 }
+
+# --- Session History ---
+# Persistent log of sessions with their tasks, survives GC.
+# Format: one JSON object per line in $AM_HISTORY
+
+# Append a session to history and prune old entries
+# Usage: history_append <directory> <task> <agent_type> <branch>
+history_append() {
+    local directory="$1"
+    local task="$2"
+    local agent_type="$3"
+    local branch="$4"
+
+    [[ -z "$task" ]] && return 0
+
+    am_init
+
+    local created_at
+    created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    printf '%s\n' "$(jq -cn \
+        --arg dir "$directory" \
+        --arg task "$task" \
+        --arg agent "$agent_type" \
+        --arg branch "$branch" \
+        --arg created "$created_at" \
+        '{directory: $dir, task: $task, agent_type: $agent, branch: $branch, created_at: $created}')" \
+        >> "$AM_HISTORY"
+
+    history_prune
+}
+
+# Remove history entries older than 7 days
+history_prune() {
+    [[ -f "$AM_HISTORY" ]] || return 0
+
+    local cutoff
+    cutoff=$(date -u -v-7d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d "7 days ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    jq -c --arg cutoff "$cutoff" 'select(.created_at >= $cutoff)' "$AM_HISTORY" > "$tmp_file" 2>/dev/null
+    mv "$tmp_file" "$AM_HISTORY"
+}
+
+# Get recent sessions for a directory, most recent first
+# Usage: history_for_directory <path>
+# Returns: JSONL lines filtered to directory, newest first
+history_for_directory() {
+    local path="$1"
+    [[ -f "$AM_HISTORY" ]] || return 0
+
+    jq -c --arg dir "$path" 'select(.directory == $dir)' "$AM_HISTORY" 2>/dev/null | \
+        jq -sc 'sort_by(.created_at) | reverse | .[]' 2>/dev/null
+}

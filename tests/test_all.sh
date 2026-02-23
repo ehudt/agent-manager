@@ -740,6 +740,114 @@ test_registry_gc() {
 }
 
 # ============================================
+# Test: Session History (history.jsonl)
+# ============================================
+test_history() {
+    echo "=== Testing Session History ==="
+
+    if ! command -v jq &>/dev/null; then
+        skip_test "history tests (jq not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    # Isolated environment
+    local old_am_dir="$AM_DIR"
+    local old_am_registry="$AM_REGISTRY"
+    local old_am_history="${AM_HISTORY:-}"
+    export AM_DIR=$(mktemp -d)
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_HISTORY="$AM_DIR/history.jsonl"
+    am_init
+
+    # --- Test: history_append creates file and writes correct JSON ---
+    history_append "/tmp/project-a" "fix login bug" "claude" "main"
+    assert_cmd_succeeds "history_append: creates history file" test -f "$AM_HISTORY"
+
+    local first_line
+    first_line=$(head -1 "$AM_HISTORY")
+    assert_contains "$first_line" '"task":"fix login bug"' "history_append: correct task"
+    assert_contains "$first_line" '"directory":"/tmp/project-a"' "history_append: correct directory"
+    assert_contains "$first_line" '"agent_type":"claude"' "history_append: correct agent_type"
+    assert_contains "$first_line" '"branch":"main"' "history_append: correct branch"
+
+    # Validate it's proper JSON
+    assert_cmd_succeeds "history_append: valid JSON" jq . <<< "$first_line"
+
+    # --- Test: multiple entries accumulate ---
+    history_append "/tmp/project-a" "add tests" "claude" "main"
+    history_append "/tmp/project-b" "refactor utils" "gemini" "dev"
+
+    local line_count
+    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_eq "3" "$line_count" "history_append: multiple entries accumulate"
+
+    # --- Test: history_append with empty task is a no-op ---
+    history_append "/tmp/project-a" "" "claude" "main"
+    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_eq "3" "$line_count" "history_append: empty task is no-op"
+
+    # --- Test: history_for_directory filters correctly and returns most recent first ---
+    local dir_a_entries
+    dir_a_entries=$(history_for_directory "/tmp/project-a")
+    local dir_a_count
+    dir_a_count=$(echo "$dir_a_entries" | wc -l | tr -d ' ')
+    assert_eq "2" "$dir_a_count" "history_for_directory: filters to correct directory"
+
+    # Most recent first: "add tests" should be before "fix login bug"
+    local first_task
+    first_task=$(echo "$dir_a_entries" | head -1 | jq -r '.task')
+    assert_eq "add tests" "$first_task" "history_for_directory: most recent first"
+
+    local second_task
+    second_task=$(echo "$dir_a_entries" | tail -1 | jq -r '.task')
+    assert_eq "fix login bug" "$second_task" "history_for_directory: oldest last"
+
+    # --- Test: history_for_directory returns empty for unknown paths ---
+    local unknown_entries
+    unknown_entries=$(history_for_directory "/tmp/nonexistent-path")
+    assert_eq "" "$unknown_entries" "history_for_directory: empty for unknown path"
+
+    # --- Test: history_prune removes entries older than 7 days ---
+    # Inject an old entry manually (8 days ago)
+    local old_date
+    old_date=$(date -u -v-8d +"%Y-%m-%dT%H:%M:%SZ")
+    printf '%s\n' "$(jq -cn \
+        --arg dir "/tmp/project-a" \
+        --arg task "ancient task" \
+        --arg agent "claude" \
+        --arg branch "main" \
+        --arg created "$old_date" \
+        '{directory: $dir, task: $task, agent_type: $agent, branch: $branch, created_at: $created}')" \
+        >> "$AM_HISTORY"
+
+    # Verify old entry was added
+    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_eq "4" "$line_count" "history_prune setup: old entry injected"
+
+    # Run prune
+    history_prune
+    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_eq "3" "$line_count" "history_prune: removed old entry"
+
+    # Verify the old entry is gone
+    local ancient_count
+    ancient_count=$(jq -c 'select(.task == "ancient task")' "$AM_HISTORY" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "0" "$ancient_count" "history_prune: ancient task removed"
+
+    # Cleanup
+    rm -rf "$AM_DIR"
+    export AM_DIR="$old_am_dir"
+    export AM_REGISTRY="$old_am_registry"
+    export AM_HISTORY="$old_am_history"
+
+    echo ""
+}
+
+# ============================================
 # Test: Worktree feature (-w/--worktree)
 # ============================================
 test_worktree() {
@@ -891,6 +999,7 @@ main() {
     test_integration_lifecycle
     test_cli_extended
     test_registry_gc
+    test_history
     test_worktree
 
     echo "========================================"
