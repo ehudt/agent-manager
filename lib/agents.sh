@@ -210,85 +210,8 @@ agent_launch() {
         registry_update "$session_name" "worktree_path" "$worktree_path"
     fi
 
-    # Auto-title in background (Claude only, no task already set)
-    if [[ "$agent_type" == "claude" && -z "$task" ]]; then
-        auto_title_session "$session_name" "$directory"
-    fi
-
     log_success "Created session: $session_name"
     echo "$session_name"
-}
-
-# Generate a session title from first user message using Haiku
-# Runs in background, updates registry when done
-# Usage: auto_title_session <session_name> <directory>
-auto_title_session() {
-    local session_name="$1"
-    local directory="$2"
-
-    (
-        # Disable errexit+pipefail inherited from am's set -euo pipefail.
-        # Without this, grep returning no matches (no user messages yet)
-        # kills the subshell via errexit+pipefail before we can retry.
-        set +e +o pipefail
-
-        # Unset CLAUDECODE so the nested `claude -p` (Haiku title call)
-        # doesn't refuse to start with "cannot be launched inside another
-        # Claude Code session".
-        unset CLAUDECODE
-
-        # Wait for Claude session to start and receive first message
-        sleep 5
-
-        # Resolve absolute path for Claude project lookup
-        local abs_dir
-        abs_dir=$(cd "$directory" && pwd)
-
-        # Poll for JSONL content - extract first real user message
-        local first_msg=""
-        for _i in $(seq 1 30); do
-            first_msg=$(claude_first_user_message "$abs_dir")
-            first_msg="${first_msg:0:500}"
-            [[ -n "$first_msg" ]] && break
-            sleep 2
-        done
-
-        [[ -z "$first_msg" ]] && return 0
-
-        # Truncate input to ~200 chars to keep Haiku call cheap
-        first_msg="${first_msg:0:200}"
-
-        # Try Haiku for a clean title
-        local title=""
-        if command -v claude &>/dev/null; then
-            title=$(printf '%s' "$first_msg" | claude -p --model haiku \
-                "Reply with a short 2-5 word title summarizing this task. Plain text only, no markdown, no quotes, no punctuation. Examples: Fix auth login bug, Add user settings page, Refactor database layer" 2>/dev/null) || true
-            # Strip any markdown/quotes Haiku might add despite instructions
-            title=$(echo "$title" | sed 's/^[#*"`'\'']*//; s/[#*"`'\'']*$//' | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            # Reject if too long or multiline (Haiku went off-script)
-            if [[ ${#title} -gt 60 || "$title" == *$'\n'* ]]; then
-                title=""
-            fi
-        fi
-
-        # Fallback: first sentence, cleaned up
-        if [[ -z "$title" ]]; then
-            title=$(echo "$first_msg" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60)
-        fi
-
-        # Write to registry
-        if [[ -n "$title" ]]; then
-            source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
-            source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
-            registry_update "$session_name" "task" "$title"
-            # Log to persistent history
-            local dir branch agent
-            dir=$(registry_get_field "$session_name" "directory")
-            branch=$(registry_get_field "$session_name" "branch")
-            agent=$(registry_get_field "$session_name" "agent_type")
-            history_append "$dir" "$title" "$agent" "$branch"
-        fi
-    ) >/dev/null 2>&1 &
 }
 
 # Get display name for a session (for fzf listing)

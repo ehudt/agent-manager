@@ -252,6 +252,7 @@ fzf_list_sessions() {
 
     # Clean up stale registry entries first
     registry_gc >/dev/null 2>&1
+    auto_title_scan >/dev/null 2>&1
 
     # Get sessions sorted by activity
     for session in $(tmux_list_am_sessions_with_activity | awk '{print $1}'); do
@@ -266,6 +267,9 @@ _fzf_export_functions() {
     export AM_DIR AM_REGISTRY AM_SESSION_PREFIX AM_HISTORY
     export -f fzf_list_sessions agent_display_name
     export -f registry_gc registry_list registry_remove am_init
+    export -f registry_get_field registry_update history_append history_prune
+    export -f auto_title_scan _title_fallback _title_strip_haiku _title_valid
+    export -f claude_first_user_message
     export -f tmux_list_am_sessions_with_activity tmux_get_activity
     export -f dir_basename format_time_ago epoch_now
     export -f require_cmd log_info log_error log_warn am_init
@@ -396,6 +400,7 @@ fzf_list_simple() {
 # Usage: fzf_list_json
 fzf_list_json() {
     registry_gc >/dev/null 2>&1
+    auto_title_scan >/dev/null 2>&1
 
     local sessions=()
     local session
