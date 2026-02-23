@@ -199,3 +199,65 @@ _title_valid() {
     local t="$1"
     [[ -n "$t" && ${#t} -le 60 && "$t" != *$'\n'* ]]
 }
+
+# Scan untitled active sessions and generate titles.
+# Writes fallback immediately, spawns fire-and-forget Haiku upgrade.
+# Throttled to once per 60s unless force=1.
+# Usage: auto_title_scan [force]
+auto_title_scan() {
+    local force="${1:-0}"
+
+    # Throttle
+    local marker="$AM_DIR/.title_scan_last"
+    local now
+    now=$(date +%s)
+    if [[ "$force" != "1" && -f "$marker" ]]; then
+        local last
+        last=$(cat "$marker" 2>/dev/null || echo 0)
+        if (( now - last < 60 )); then
+            return 0
+        fi
+    fi
+    echo "$now" > "$marker"
+
+    local name dir task first_msg fallback
+    for name in $(registry_list); do
+        task=$(registry_get_field "$name" "task")
+        [[ -n "$task" ]] && continue  # already titled
+
+        dir=$(registry_get_field "$name" "directory")
+        [[ -z "$dir" ]] && continue
+
+        first_msg=$(claude_first_user_message "$dir" 2>/dev/null)
+        first_msg="${first_msg:0:200}"
+        [[ -z "$first_msg" ]] && continue
+
+        # Write fallback title immediately
+        fallback=$(_title_fallback "$first_msg")
+        [[ -z "$fallback" ]] && continue
+
+        registry_update "$name" "task" "$fallback"
+        local branch agent
+        branch=$(registry_get_field "$name" "branch")
+        agent=$(registry_get_field "$name" "agent_type")
+        history_append "$dir" "$fallback" "$agent" "$branch"
+
+        # Fire-and-forget Haiku upgrade
+        if command -v claude &>/dev/null; then
+            (
+                set +e +o pipefail
+                unset CLAUDECODE
+
+                local haiku_title
+                haiku_title=$(printf '%s' "$first_msg" | claude -p --model haiku \
+                    "Reply with a short 2-5 word title summarizing this task. Plain text only, no markdown, no quotes, no punctuation. Examples: Fix auth login bug, Add user settings page, Refactor database layer" 2>/dev/null) || true
+
+                haiku_title=$(_title_strip_haiku "$haiku_title")
+                if _title_valid "$haiku_title"; then
+                    source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
+                    registry_update "$name" "task" "$haiku_title"
+                fi
+            ) >/dev/null 2>&1 &
+        fi
+    done
+}
