@@ -42,7 +42,7 @@ registry_add() {
            "agent_type": $agent,
            "created_at": $created,
            "task": $task
-       }' "$AM_REGISTRY" > "$tmp_file" && mv "$tmp_file" "$AM_REGISTRY"
+       }' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
 }
 
 # Get a specific field from a session
@@ -70,7 +70,7 @@ registry_update() {
        --arg field "$field" \
        --arg value "$value" \
        'if .sessions[$name] then .sessions[$name][$field] = $value else . end' \
-       "$AM_REGISTRY" > "$tmp_file" && mv "$tmp_file" "$AM_REGISTRY"
+       "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
 }
 
 # Remove a session from the registry
@@ -82,7 +82,7 @@ registry_remove() {
     local tmp_file
     tmp_file=$(mktemp)
 
-    jq --arg name "$name" 'del(.sessions[$name])' "$AM_REGISTRY" > "$tmp_file" && mv "$tmp_file" "$AM_REGISTRY"
+    jq --arg name "$name" 'del(.sessions[$name])' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
 }
 
 # List all sessions in the registry
@@ -192,7 +192,7 @@ history_prune() {
     tmp_file=$(mktemp)
 
     jq -c --arg cutoff "$cutoff" 'select(.created_at >= $cutoff)' "$AM_HISTORY" > "$tmp_file" 2>/dev/null
-    mv "$tmp_file" "$AM_HISTORY"
+    command mv "$tmp_file" "$AM_HISTORY"
 }
 
 # Get recent sessions for a directory, most recent first
