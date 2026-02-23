@@ -227,6 +227,11 @@ auto_title_session() {
     local directory="$2"
 
     (
+        # Disable errexit+pipefail inherited from am's set -euo pipefail.
+        # Without this, grep returning no matches (no user messages yet)
+        # kills the subshell via errexit+pipefail before we can retry.
+        set +e +o pipefail
+
         # Wait for Claude session to start and receive first message
         sleep 5
 

@@ -1110,6 +1110,114 @@ test_annotated_directories() {
 }
 
 # ============================================
+# Test: Auto-title survives set -euo pipefail
+# Bug: auto_title_session's background subshell inherits set -euo pipefail
+# from the am script. When grep finds no user messages, pipefail propagates
+# the non-zero exit and errexit kills the subshell silently — so titles
+# are never set, history is never written, and annotations never appear.
+# Fix: set +e +o pipefail at the top of auto_title_session's subshell.
+# ============================================
+test_auto_title_survives_pipefail() {
+    echo ""
+    echo "=== Auto-Title Under Pipefail Tests ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "auto-title pipefail tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    # Isolated AM environment
+    local old_am_dir="$AM_DIR"
+    local old_am_registry="$AM_REGISTRY"
+    local old_am_history="${AM_HISTORY:-}"
+    export AM_DIR=$(mktemp -d)
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_HISTORY="$AM_DIR/history.jsonl"
+    am_init
+
+    # Create a temp directory as the "project"
+    local test_project_dir
+    test_project_dir=$(mktemp -d)
+
+    # Compute the Claude project path (same logic as auto_title_session)
+    local abs_dir
+    abs_dir=$(cd "$test_project_dir" && pwd)
+    local project_path="${abs_dir//\//-}"
+    project_path="${project_path//./-}"
+    local claude_project_dir="$HOME/.claude/projects/$project_path"
+
+    # --- Test: auto_title_session survives when no JSONL files exist initially ---
+    # Create project dir but leave it EMPTY (no .jsonl files).
+    # The ls pipeline fails on the first poll, which with inherited
+    # set -euo pipefail would kill the subshell. The fix prevents this.
+    # A user message JSONL is injected after 0.2s so a later poll finds it.
+    mkdir -p "$claude_project_dir"
+    registry_add "test-at-1" "$test_project_dir" "main" "claude" ""
+
+    # Pre-seed: inject JSONL just after a short delay (between first and second polls)
+    (
+        command sleep 0.2
+        echo '{"type":"user","message":{"role":"user","content":"Fix the login bug in the auth module"}}' \
+            > "$claude_project_dir/test-session.jsonl"
+    ) &
+    local injector_pid=$!
+
+    # Call the real auto_title_session with accelerated sleep and no Haiku call.
+    # Override sleep so polling is fast; hide claude CLI from PATH so the
+    # fallback title is used instantly (avoids slow CLI startup).
+    # Enable errexit+pipefail so the background subshell inherits them — this is
+    # what happens when am (set -euo pipefail) calls auto_title_session.
+    sleep() { command sleep 0.05; }
+    local old_path="$PATH"
+    PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$(dirname "$(command -v claude)")" | tr '\n' ':')
+    set -eo pipefail
+    auto_title_session "test-at-1" "$test_project_dir"
+    local auto_title_pid=$!
+    set +eo pipefail
+    unset -f sleep
+    PATH="$old_path"
+
+    # Wait for both background processes
+    wait "$injector_pid" 2>/dev/null
+    wait "$auto_title_pid" 2>/dev/null
+
+    # Verify: task should be set in registry via fallback title
+    local task=""
+    task=$(registry_get_field "test-at-1" "task")
+    assert_not_empty "$task" \
+        "auto_title real: sets task in registry (survives empty ls + grep)"
+
+    # Verify: history should have an entry
+    local hist_count=0
+    [[ -f "$AM_HISTORY" ]] && hist_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_eq "1" "$hist_count" \
+        "auto_title real: appends to history after title generation"
+
+    # Verify: annotation works for the directory
+    if command -v fzf &>/dev/null; then
+        source "$LIB_DIR/fzf.sh"
+        local annotation
+        annotation=$(_annotate_directory "$test_project_dir")
+        assert_not_empty "$annotation" \
+            "auto_title real: directory annotation appears after title generation"
+    fi
+
+    # Cleanup
+    rm -rf "$claude_project_dir" "$test_project_dir" "$AM_DIR"
+    export AM_DIR="$old_am_dir"
+    export AM_REGISTRY="$old_am_registry"
+    export AM_HISTORY="$old_am_history"
+
+    echo ""
+}
+
+# ============================================
 # Main
 # ============================================
 main() {
@@ -1135,6 +1243,7 @@ main() {
     test_history_integration
     test_worktree
     test_annotated_directories
+    test_auto_title_survives_pipefail
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"
