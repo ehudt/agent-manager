@@ -1257,6 +1257,90 @@ test_auto_title_session() {
 }
 
 # ============================================
+# Test: auto_title_scan (piggyback scanner)
+# ============================================
+test_auto_title_scan() {
+    echo ""
+    echo "=== Auto-Title Scan Tests ==="
+
+    if ! command -v jq &>/dev/null; then
+        skip_test "auto-title scan tests (jq not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    # Isolated AM environment
+    local old_am_dir="$AM_DIR"
+    local old_am_registry="$AM_REGISTRY"
+    local old_am_history="${AM_HISTORY:-}"
+    export AM_DIR=$(mktemp -d)
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_HISTORY="$AM_DIR/history.jsonl"
+    am_init
+
+    # Stub claude_first_user_message
+    claude_first_user_message() {
+        case "$1" in
+            */has-msg) echo "Fix the login bug in auth. Also refactor." ;;
+            *) echo "" ;;
+        esac
+    }
+
+    # --- Test 1: Titles untitled session with fallback ---
+    registry_add "test-scan-1" "/tmp/has-msg" "main" "claude" ""
+    auto_title_scan 1  # force
+    local task
+    task=$(registry_get_field "test-scan-1" "task")
+    assert_contains "$task" "Fix the login bug in auth" \
+        "scan: writes fallback title for untitled session"
+
+    # --- Test 2: Skips already-titled sessions ---
+    registry_add "test-scan-2" "/tmp/has-msg" "main" "claude" "Existing Title"
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-2" "task")
+    assert_eq "Existing Title" "$task" \
+        "scan: skips already-titled session"
+
+    # --- Test 3: Skips sessions with no user message ---
+    registry_add "test-scan-3" "/tmp/no-msg" "main" "claude" ""
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-3" "task")
+    assert_eq "" "$task" \
+        "scan: skips session with no user message"
+
+    # --- Test 4: Throttling works ---
+    registry_add "test-scan-4" "/tmp/has-msg" "main" "claude" ""
+    auto_title_scan  # throttled (ran <60s ago from test 1)
+    task=$(registry_get_field "test-scan-4" "task")
+    assert_eq "" "$task" \
+        "scan: throttled within 60s"
+
+    # --- Test 5: Force bypasses throttle ---
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-4" "task")
+    assert_contains "$task" "Fix the login bug" \
+        "scan: force bypasses throttle"
+
+    # --- Test 6: History entry created ---
+    local hist_count=0
+    [[ -f "$AM_HISTORY" ]] && hist_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_not_empty "$hist_count" \
+        "scan: history entries created"
+
+    # --- Cleanup ---
+    unset -f claude_first_user_message
+    rm -rf "$AM_DIR"
+    export AM_DIR="$old_am_dir"
+    export AM_REGISTRY="$old_am_registry"
+    export AM_HISTORY="$old_am_history"
+
+    echo ""
+}
+
+# ============================================
 # Test: resolve_session (from am CLI)
 # ============================================
 test_resolve_session() {
@@ -1462,6 +1546,7 @@ main() {
     test_worktree
     test_annotated_directories
     test_auto_title_session
+    test_auto_title_scan
     test_resolve_session
     test_tmux_listing
     test_claude_first_user_message
