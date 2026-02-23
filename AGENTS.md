@@ -21,7 +21,7 @@ Architecture reference for AI agents working with this codebase.
 ```
 am → fzf_main() → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
-                                   └→ auto_title_session() (background) → registry_update() + history_append()
+fzf_list_sessions() / fzf_list_json() → auto_title_scan() → _title_fallback() → registry_update() + history_append()
 Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for_directory()
 ```
 
@@ -30,7 +30,12 @@ Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for
 **Session lifecycle:**
 - `agent_launch(dir, type, task, worktree_name, agent_args...)` - Creates session, registers, starts agent
 - `agent_kill(name)` - Kills tmux + removes from registry
-- `auto_title_session(session_name, dir)` - Background: polls Claude JSONL, generates title via Haiku, updates registry + history
+- `auto_title_scan([force])` - Piggyback scanner: titles untitled sessions during fzf touchpoints (throttled 60s), writes fallback immediately, spawns fire-and-forget Haiku upgrade
+
+**Title helpers:**
+- `_title_fallback(message)` - Generate fallback title from first sentence of user message
+- `_title_strip_haiku(raw_title)` - Strip markdown/quotes from Haiku output
+- `_title_valid(title)` - Validate title (<=60 chars, no newlines)
 
 **Registry (JSON metadata):**
 - `registry_add/get/update/remove/list` - CRUD for sessions.json
