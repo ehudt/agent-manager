@@ -152,9 +152,28 @@ If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, the directory p
 
 When `--yolo` is used and the `sb` command is on PATH, agent-manager automatically starts a sandbox (`sb <dir> --start`) and attaches both panes to it before launching the agent.
 
-### Claude Session Titles
+### Auto-Titling (Claude)
 
-For Claude sessions, the preview panel extracts and displays the first user message from Claude's session logs, giving you a quick summary of what each session is working on.
+Claude sessions are automatically titled based on their first user message. A background process polls for Claude's session JSONL, extracts the first message, and sends it to Claude Haiku to generate a short 2-5 word title (e.g., "Fix auth login bug"). The title appears in the session list and is persisted in the registry and session history.
+
+### Worktree Isolation
+
+Use `-w` to run Claude in a git worktree, isolating changes from your main working tree:
+
+```bash
+am new -w ~/project                  # Auto-named worktree (am-XXXXXX)
+am new -w my-feature ~/project       # Custom worktree name
+```
+
+The worktree is created at `<project>/.claude/worktrees/<name>`. The shell pane automatically `cd`s into the worktree directory once Claude creates it. Only works with Claude agent type in git repositories.
+
+### Session History
+
+Sessions are logged to a persistent JSONL history file (`~/.agent-manager/history.jsonl`) that survives session cleanup. History entries include the directory, task title, agent type, branch, and timestamp.
+
+The directory picker (`Ctrl-N`) annotates directories with their recent session history, showing up to 3 recent tasks with agent type and age. The preview panel for the directory picker also shows recent sessions for the selected directory.
+
+History is auto-pruned to keep only the last 7 days.
 
 ### Shell Output Streaming
 
@@ -225,7 +244,8 @@ set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
 
 ```
 ~/.agent-manager/
-└── sessions.json       # Session metadata registry
+├── sessions.json       # Live session metadata registry
+└── history.jsonl       # Persistent session history (survives GC)
 ```
 
 ### Shell Support

@@ -51,8 +51,8 @@ Stores metadata that tmux doesn't track natively:
       "branch": "feature/auth",
       "agent_type": "claude",
       "created_at": "2024-01-15T10:30:00Z",
-      "last_command": "implement user auth flow",
-      "pid": 12345
+      "task": "implement user auth flow",
+      "worktree_path": "/home/user/code/myapp/.claude/worktrees/am-abc123"
     }
   }
 }
@@ -69,7 +69,7 @@ Where `<short-hash>` is derived from `directory + timestamp` for uniqueness.
 The **display name** shown in fzf is composed from metadata:
 ```
 myapp/feature/auth [claude] (2h ago) "implement user auth flow"
-│       │             │        │        └── last command/task
+│       │             │        │        └── task (auto-titled or manual)
 │       │             │        └── activity indicator
 │       │             └── agent type
 │       └── git branch
@@ -88,7 +88,8 @@ myapp/feature/auth [claude] (2h ago) "implement user auth flow"
 ```
 tmux session: am-abc123
   └── window 0: agent
-        └── pane 0: claude (or gemini, etc.)
+        ├── pane 0 (top): agent (claude, gemini, codex)  ← preview captures this
+        └── pane 1 (bottom, 15 lines): shell             ← same working directory
 ```
 
 ### 4. Preview System
@@ -148,7 +149,10 @@ am status               # Summary of all sessions
 | `Ctrl-R` | Refresh session list |
 | `Ctrl-D` | Detach from current (when inside tmux) |
 | `Ctrl-P` | Toggle preview panel |
-| `Tab` | Multi-select (for bulk operations) |
+| `Ctrl-J/K` | Scroll preview down/up |
+| `Ctrl-D/U` | Scroll preview half-page down/up |
+| `?` | Show help |
+| `Esc` | Exit |
 
 ## Implementation Plan
 
@@ -206,14 +210,20 @@ am status               # Summary of all sessions
 agent-manager/
 ├── am                      # Main executable (bash)
 ├── lib/
-│   ├── registry.sh         # Session registry functions
+│   ├── agents.sh           # Agent lifecycle, launch, kill, auto-titling
+│   ├── fzf.sh              # fzf UI, directory picker with history annotations
+│   ├── preview             # Standalone preview script for fzf panel
+│   ├── registry.sh         # Session registry + persistent history (JSONL)
 │   ├── tmux.sh             # tmux wrapper functions
-│   ├── agents.sh           # Agent launcher functions
-│   ├── fzf.sh              # fzf interface functions
 │   └── utils.sh            # Common utilities
-├── config/
-│   └── default.yaml        # Default configuration
-└── DESIGN.md               # This file
+├── bin/
+│   ├── kill-and-switch     # tmux helper: kill session + switch to next
+│   └── switch-last         # tmux helper: switch to most recent am-* session
+├── scripts/
+│   └── install.sh          # Installer (symlinks, shell rc, tmux config)
+├── tests/
+│   └── test_all.sh         # Test suite
+└── docs/                   # Design plans and notes
 ```
 
 ## Technical Details
@@ -260,6 +270,48 @@ registry_add "$name" "$directory" "$branch" "$agent_type"
 tmux send-keys -t "$name" "claude" Enter
 ```
 
+### Auto-Titling (Claude Sessions)
+
+Claude sessions are automatically titled via a background process:
+
+1. Background subshell spawned after session creation
+2. Polls Claude's session JSONL (up to 30 retries, 2s apart) for first user message
+3. Sends truncated message (~200 chars) to Claude Haiku for a 2-5 word title
+4. Falls back to first sentence extraction if Haiku unavailable
+5. Updates registry `task` field and appends to session history
+
+Key implementation details:
+- Unsets `CLAUDECODE` env var to avoid "nested session" rejection
+- Disables `errexit`/`pipefail` inherited from parent shell
+- Rejects titles over 60 chars or multiline (Haiku went off-script)
+
+### Session History
+
+Persistent JSONL log at `~/.agent-manager/history.jsonl`:
+
+```json
+{"directory":"/path","task":"Fix auth bug","agent_type":"claude","branch":"main","created_at":"2024-01-15T10:30:00Z"}
+```
+
+- Written at launch (if task known) and after auto-titling
+- Auto-pruned to 7 days
+- Survives session GC (unlike registry entries)
+- Used by directory picker to annotate directories with recent tasks
+
+### Worktree Isolation
+
+The `-w` flag creates a git worktree for Claude sessions:
+
+```bash
+am new -w ~/project              # worktree at .claude/worktrees/am-XXXXXX
+am new -w my-feature ~/project   # worktree at .claude/worktrees/my-feature
+```
+
+- Only applies to Claude agent type in git repositories
+- Shell pane auto-`cd`s into worktree once created
+- Worktree path stored in registry as `worktree_path`
+- Claude is launched with `-w <name>` flag
+
 ## Dependencies
 
 - **Required:**
@@ -275,9 +327,10 @@ tmux send-keys -t "$name" "claude" Enter
 
 ## Future Enhancements
 
-1. **Multi-agent types:** Gemini CLI, Cursor, Aider, etc.
+1. ~~**Multi-agent types:** Gemini CLI, Cursor, Aider, etc.~~ *(Implemented: claude, codex, gemini + extensible)*
 2. **Session groups:** Group related sessions
 3. **Task tracking:** Integration with todo systems
 4. **Remote sessions:** SSH tunnel support
 5. **Web UI:** Optional browser-based view
 6. **Notifications:** Alert when agent needs input
+7. **Reboot persistence:** tmux-resurrect integration or custom solution
