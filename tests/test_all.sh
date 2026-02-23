@@ -1173,24 +1173,35 @@ test_auto_title_survives_pipefail() {
     ) &
     local injector_pid=$!
 
-    # Call the real auto_title_session with accelerated sleep and no Haiku call.
-    # Override sleep so polling is fast; hide claude CLI from PATH so the
-    # fallback title is used instantly (avoids slow CLI startup).
+    # Call the real auto_title_session with accelerated sleep and a mock claude
+    # that mimics the real CLI's CLAUDECODE check + Haiku title generation.
     # Enable errexit+pipefail so the background subshell inherits them — this is
     # what happens when am (set -euo pipefail) calls auto_title_session.
     sleep() { command sleep 0.05; }
     local old_path="$PATH"
-    local claude_bin_dir=""
-    if command -v claude &>/dev/null; then
-        claude_bin_dir=$(dirname "$(command -v claude)")
-    fi
-    if [[ -n "$claude_bin_dir" ]]; then
-        PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^${claude_bin_dir}$" | tr '\n' ':')
-    fi
+
+    # Create mock claude that: (1) rejects if CLAUDECODE is set (like real CLI),
+    # (2) echoes a fixed title when invoked with -p.
+    local mock_bin
+    mock_bin=$(mktemp -d)
+    cat > "$mock_bin/claude" <<'MOCK'
+#!/usr/bin/env bash
+if [[ -n "${CLAUDECODE:-}" ]]; then
+    echo "Error: Claude Code cannot be launched inside another Claude Code session." >&2
+    exit 1
+fi
+# Simulate Haiku title output
+echo "Mock Haiku Title"
+MOCK
+    chmod +x "$mock_bin/claude"
+    PATH="$mock_bin:$old_path"
+
+    export CLAUDECODE=1   # simulate running inside a Claude session
     set -eo pipefail
     auto_title_session "test-at-1" "$test_project_dir"
     local auto_title_pid=$!
     set +eo pipefail
+    unset CLAUDECODE
     unset -f sleep
     PATH="$old_path"
 
@@ -1198,11 +1209,11 @@ test_auto_title_survives_pipefail() {
     wait "$injector_pid" 2>/dev/null
     wait "$auto_title_pid" 2>/dev/null
 
-    # Verify: task should be set in registry via fallback title
+    # Verify: task should be set in registry via mock Haiku title (not fallback)
     local task=""
     task=$(registry_get_field "test-at-1" "task")
-    assert_not_empty "$task" \
-        "auto_title real: sets task in registry (survives empty ls + grep)"
+    assert_eq "Mock Haiku Title" "$task" \
+        "auto_title real: uses Haiku title despite CLAUDECODE being set in parent"
 
     # Verify: history should have an entry
     local hist_count=0
@@ -1220,7 +1231,7 @@ test_auto_title_survives_pipefail() {
     fi
 
     # Cleanup
-    rm -rf "$claude_project_dir" "$test_project_dir" "$AM_DIR"
+    rm -rf "$claude_project_dir" "$test_project_dir" "$AM_DIR" "$mock_bin"
     export AM_DIR="$old_am_dir"
     export AM_REGISTRY="$old_am_registry"
     export AM_HISTORY="$old_am_history"

@@ -232,6 +232,11 @@ auto_title_session() {
         # kills the subshell via errexit+pipefail before we can retry.
         set +e +o pipefail
 
+        # Unset CLAUDECODE so the nested `claude -p` (Haiku title call)
+        # doesn't refuse to start with "cannot be launched inside another
+        # Claude Code session".
+        unset CLAUDECODE
+
         # Wait for Claude session to start and receive first message
         sleep 5
 
