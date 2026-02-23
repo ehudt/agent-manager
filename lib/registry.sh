@@ -177,3 +177,25 @@ history_for_directory() {
     jq -c --arg dir "$path" 'select(.directory == $dir)' "$AM_HISTORY" 2>/dev/null | \
         jq -sc 'sort_by(.created_at) | reverse | .[]' 2>/dev/null
 }
+
+# --- Title Helpers ---
+
+# Generate a fallback title from a user message (first sentence, cleaned)
+# Usage: _title_fallback <message>
+_title_fallback() {
+    local msg="$1"
+    echo "$msg" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60
+}
+
+# Strip markdown/quotes from Haiku output
+# Usage: _title_strip_haiku <raw_title>
+_title_strip_haiku() {
+    echo "$1" | sed 's/^[#*"`'\'']*//; s/[#*"`'\'']*$//' | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# Check if a title is valid (<=60 chars, no newlines)
+# Usage: _title_valid <title> && echo yes
+_title_valid() {
+    local t="$1"
+    [[ -n "$t" && ${#t} -le 60 && "$t" != *$'\n'* ]]
+}
