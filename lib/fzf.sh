@@ -265,7 +265,7 @@ fzf_list_sessions() {
 _fzf_export_functions() {
     export AM_DIR AM_REGISTRY AM_SESSION_PREFIX AM_HISTORY
     export -f fzf_list_sessions agent_display_name
-    export -f registry_gc registry_list registry_remove registry_init
+    export -f registry_gc registry_list registry_remove am_init
     export -f tmux_list_am_sessions_with_activity tmux_get_activity
     export -f dir_basename format_time_ago epoch_now
     export -f require_cmd log_info log_error log_warn am_init

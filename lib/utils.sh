@@ -13,13 +13,10 @@ if [[ -t 1 ]]; then
     GREEN='\033[0;32m'
     YELLOW='\033[0;33m'
     BLUE='\033[0;34m'
-    MAGENTA='\033[0;35m'
-    CYAN='\033[0;36m'
     BOLD='\033[1m'
-    DIM='\033[2m'
     RESET='\033[0m'
 else
-    RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' DIM='' RESET=''
+    RED='' GREEN='' YELLOW='' BLUE='' BOLD='' RESET=''
 fi
 
 # Logging functions (all to stderr to avoid polluting stdout for return values)
@@ -153,71 +150,46 @@ generate_hash() {
     fi
 }
 
-# Get Claude session title from session JSONL file
-# Usage: get_claude_session_title <directory>
-# Returns: First user message truncated as title, or empty if not found
-get_claude_session_title() {
+# Extract first meaningful user message from Claude session JSONL
+# Usage: claude_first_user_message <directory>
+# Returns: cleaned text of the first user message with >10 chars, or empty
+claude_first_user_message() {
     local directory="$1"
 
-    # Convert directory to Claude's project path format
-    # Claude replaces / and . with -
-    local abs_dir
-    abs_dir=$(abspath "$directory" 2>/dev/null) || return 1
-    local project_path="${abs_dir//\//-}"
+    # Convert directory to Claude's project path format (/ and . become -)
+    local project_path="${directory//\//-}"
     project_path="${project_path//./-}"
     local claude_project_dir="$HOME/.claude/projects/$project_path"
 
-    if [[ ! -d "$claude_project_dir" ]]; then
-        return 1
-    fi
+    [[ -d "$claude_project_dir" ]] || return 0
 
-    # Find the most recently modified JSONL file
-    # Use 'command ls' to bypass any aliases (e.g., eza)
     local session_file
     session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
+    [[ -n "$session_file" && -f "$session_file" ]] || return 0
 
-    if [[ -z "$session_file" || ! -f "$session_file" ]]; then
-        return 1
-    fi
-
-    # Extract first meaningful user message content
-    # Skip messages that are just system tags (local-command-caveat, command-name, etc.)
-    local raw_content=""
     local line content cleaned
     while IFS= read -r line; do
-        content=$(echo "$line" | jq -r '.message.content // empty' 2>/dev/null) || continue
+        content=$(echo "$line" | jq -r '
+            .message.content |
+            if type == "string" then .
+            elif type == "array" then
+                [.[] | select(.type == "text") | .text] | join(" ")
+            else empty
+            end
+        ' 2>/dev/null) || continue
 
-        # Skip if empty or just XML tags
         [[ -z "$content" ]] && continue
 
-        # Remove XML tags and check if there's real content left
+        # Strip XML tags, collapse whitespace
         cleaned=$(echo "$content" | \
             sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
             tr '\n' ' ' | \
             sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
         if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
-            raw_content="$cleaned"
-            break
+            echo "$cleaned"
+            return 0
         fi
     done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
-
-    if [[ -z "$raw_content" ]]; then
-        return 1
-    fi
-
-    # Clean up the title:
-    # Remove URLs and extra spaces
-    local title
-    title=$(echo "$raw_content" | \
-            sed 's/https\?:\/\/[^ ]*//g' | \
-            sed 's/  */ /g')
-
-    # Extract first sentence (up to period, question mark, or exclamation)
-    local first_sentence
-    first_sentence=$(echo "$title" | sed 's/[.?!].*//' | head -c 80)
-
-    if [[ -n "$first_sentence" ]]; then
-        truncate "$first_sentence" 60
-    fi
 }
+

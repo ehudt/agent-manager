@@ -83,6 +83,15 @@ skip_test() {
     echo -e "${YELLOW}SKIP${RESET}: $msg"
 }
 
+# Test-only helpers (these functions were removed from production code)
+registry_exists() {
+    [[ -n "$(registry_get_field "$1" "name")" ]]
+}
+
+registry_count() {
+    jq '.sessions | length' "$AM_REGISTRY"
+}
+
 # Check dependencies
 check_deps() {
     local missing=()
@@ -251,8 +260,8 @@ test_registry() {
     export AM_REGISTRY="$AM_DIR/sessions.json"
 
     # Test init
-    registry_init
-    assert_cmd_succeeds "registry_init creates file" test -f "$AM_REGISTRY"
+    am_init
+    assert_cmd_succeeds "am_init creates registry file" test -f "$AM_REGISTRY"
 
     # Test add
     registry_add "test-session" "/tmp/test" "main" "claude" "test task"
@@ -370,10 +379,6 @@ test_tmux() {
     local test_session="am-test-$$"
     if tmux_create_session "$test_session" "/tmp"; then
         assert_eq "true" "$(tmux_session_exists "$test_session" && echo true || echo false)" "tmux_create_session: creates session"
-
-        # Test capture (may be empty for new session, just ensure no error)
-        local content=$(tmux_capture_pane "$test_session" 10)
-        assert_cmd_succeeds "tmux_capture_pane: runs without error" true
 
         # Cleanup
         tmux_kill_session "$test_session"
@@ -938,7 +943,7 @@ test_worktree() {
     # Create a temp git repo for worktree tests
     local git_dir=$(mktemp -d)
     git -C "$git_dir" init -q
-    git -C "$git_dir" commit --allow-empty -m "init" -q
+    git -C "$git_dir" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
 
     # Also create a non-git temp dir
     local nongit_dir=$(mktemp -d)
@@ -1077,7 +1082,7 @@ test_annotated_directories() {
     export AM_DIR=$(mktemp -d)
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_HISTORY="$AM_DIR/history.jsonl"
-    registry_init
+    am_init
 
     # Seed history
     history_append "/tmp/project-alpha" "Fix auth bug" "claude" "main"
@@ -1175,7 +1180,13 @@ test_auto_title_survives_pipefail() {
     # what happens when am (set -euo pipefail) calls auto_title_session.
     sleep() { command sleep 0.05; }
     local old_path="$PATH"
-    PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$(dirname "$(command -v claude)")" | tr '\n' ':')
+    local claude_bin_dir=""
+    if command -v claude &>/dev/null; then
+        claude_bin_dir=$(dirname "$(command -v claude)")
+    fi
+    if [[ -n "$claude_bin_dir" ]]; then
+        PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^${claude_bin_dir}$" | tr '\n' ':')
+    fi
     set -eo pipefail
     auto_title_session "test-at-1" "$test_project_dir"
     local auto_title_pid=$!
@@ -1218,6 +1229,185 @@ test_auto_title_survives_pipefail() {
 }
 
 # ============================================
+# Test: resolve_session (from am CLI)
+# ============================================
+test_resolve_session() {
+    echo "=== Testing resolve_session ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "resolve_session tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    # Source am to get resolve_session function
+    # It's defined in the am script, so we extract it
+    eval "$(sed -n '/^resolve_session()/,/^}/p' "$PROJECT_DIR/am")"
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # Create a session
+    local session_name
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "resolve test" 2>/dev/null)
+
+    if [[ -z "$session_name" ]]; then
+        skip_test "resolve_session tests (agent_launch failed)"
+        teardown_integration_env
+        rm -rf "$test_dir"
+        echo ""
+        return
+    fi
+
+    # Test: exact match
+    local resolved
+    resolved=$(resolve_session "$session_name")
+    assert_eq "$session_name" "$resolved" "resolve_session: exact match"
+
+    # Test: short hash (without prefix) resolves via prefix expansion
+    local short_name="${session_name#test-am-}"
+    resolved=$(resolve_session "$short_name")
+    assert_eq "$session_name" "$resolved" "resolve_session: prefix expansion"
+
+    # Test: nonexistent returns failure
+    assert_cmd_fails "resolve_session: nonexistent fails" resolve_session "nonexistent-xyz-999"
+
+    # Cleanup
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    echo ""
+}
+
+# ============================================
+# Test: tmux session listing and counting
+# ============================================
+test_tmux_listing() {
+    echo "=== Testing tmux listing ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "tmux listing tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # Test: count is 0 before any sessions
+    local count
+    count=$(tmux_count_am_sessions)
+    assert_eq "0" "$count" "tmux_count: zero before sessions"
+
+    # Test: list is empty before any sessions
+    local list
+    list=$(tmux_list_am_sessions)
+    assert_eq "" "$list" "tmux_list: empty before sessions"
+
+    # Create two sessions
+    local s1 s2
+    s1=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    s2=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+
+    # Test: count is 2
+    count=$(tmux_count_am_sessions)
+    assert_eq "2" "$count" "tmux_count: two sessions"
+
+    # Test: list contains both sessions
+    list=$(tmux_list_am_sessions)
+    assert_contains "$list" "$s1" "tmux_list: contains first session"
+    assert_contains "$list" "$s2" "tmux_list: contains second session"
+
+    # Test: list_with_activity returns both, sorted by activity
+    local activity_list
+    activity_list=$(tmux_list_am_sessions_with_activity)
+    assert_contains "$activity_list" "$s1" "tmux_list_with_activity: contains first"
+    assert_contains "$activity_list" "$s2" "tmux_list_with_activity: contains second"
+
+    # Kill one, count should drop
+    [[ -n "$s1" ]] && agent_kill "$s1" 2>/dev/null
+    count=$(tmux_count_am_sessions)
+    assert_eq "1" "$count" "tmux_count: one after kill"
+
+    # Cleanup
+    [[ -n "$s2" ]] && agent_kill "$s2" 2>/dev/null
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    echo ""
+}
+
+# ============================================
+# Test: claude_first_user_message helper
+# ============================================
+test_claude_first_user_message() {
+    echo "=== Testing claude_first_user_message ==="
+
+    if ! command -v jq &>/dev/null; then
+        skip_test "claude_first_user_message tests (jq not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+
+    # Create a fake Claude project directory structure
+    local test_dir
+    test_dir=$(mktemp -d)
+
+    local project_path="${test_dir//\//-}"
+    project_path="${project_path//./-}"
+    local claude_dir="$HOME/.claude/projects/$project_path"
+    mkdir -p "$claude_dir"
+
+    # Test: no JSONL files returns empty
+    local result
+    result=$(claude_first_user_message "$test_dir")
+    assert_eq "" "$result" "claude_first_msg: empty when no JSONL"
+
+    # Test: JSONL with string content
+    echo '{"type":"user","message":{"role":"user","content":"Fix the login bug in the auth module"}}' \
+        > "$claude_dir/session1.jsonl"
+    result=$(claude_first_user_message "$test_dir")
+    assert_contains "$result" "Fix the login bug" "claude_first_msg: extracts string content"
+
+    # Test: skips messages with only XML tags
+    echo '{"type":"user","message":{"role":"user","content":"<system-tag>short</system-tag>"}}
+{"type":"user","message":{"role":"user","content":"Refactor the database connection pooling"}}' \
+        > "$claude_dir/session2.jsonl"
+    result=$(claude_first_user_message "$test_dir")
+    assert_contains "$result" "Refactor the database" "claude_first_msg: skips XML-only messages"
+
+    # Test: handles array content format
+    echo '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Add pagination to the API endpoints"}]}}' \
+        > "$claude_dir/session3.jsonl"
+    result=$(claude_first_user_message "$test_dir")
+    assert_contains "$result" "Add pagination" "claude_first_msg: handles array content"
+
+    # Test: nonexistent directory returns empty
+    result=$(claude_first_user_message "/tmp/nonexistent-dir-xyz-$$")
+    assert_eq "" "$result" "claude_first_msg: empty for nonexistent dir"
+
+    # Cleanup
+    rm -rf "$claude_dir" "$test_dir"
+
+    echo ""
+}
+
+# ============================================
 # Main
 # ============================================
 main() {
@@ -1244,6 +1434,9 @@ main() {
     test_worktree
     test_annotated_directories
     test_auto_title_survives_pipefail
+    test_resolve_session
+    test_tmux_listing
+    test_claude_first_user_message
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

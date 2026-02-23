@@ -235,38 +235,15 @@ auto_title_session() {
         # Wait for Claude session to start and receive first message
         sleep 5
 
-        # Convert directory to Claude's project path format
+        # Resolve absolute path for Claude project lookup
         local abs_dir
         abs_dir=$(cd "$directory" && pwd)
-        local project_path="${abs_dir//\//-}"
-        project_path="${project_path//./-}"
-        local claude_project_dir="$HOME/.claude/projects/$project_path"
 
         # Poll for JSONL content - extract first real user message
         local first_msg=""
         for _i in $(seq 1 30); do
-            if [[ -d "$claude_project_dir" ]]; then
-                local session_file
-                session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
-                if [[ -n "$session_file" && -f "$session_file" ]]; then
-                    # Extract text from user messages; content can be string or array
-                    first_msg=$(grep '"type":"user"' "$session_file" 2>/dev/null | head -10 | \
-                        jq -r '
-                            .message.content |
-                            if type == "string" then .
-                            elif type == "array" then
-                                [.[] | select(.type == "text") | .text] | join(" ")
-                            else empty
-                            end
-                        ' 2>/dev/null | \
-                        sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
-                        tr '\n' ' ' | \
-                        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
-                        head -c 500)
-                    # Only accept if we got meaningful text
-                    [[ ${#first_msg} -gt 10 ]] || first_msg=""
-                fi
-            fi
+            first_msg=$(claude_first_user_message "$abs_dir")
+            first_msg="${first_msg:0:500}"
             [[ -n "$first_msg" ]] && break
             sleep 2
         done

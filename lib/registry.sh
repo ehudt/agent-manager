@@ -7,11 +7,6 @@
 # Ensure jq is available
 require_cmd jq
 
-# Initialize registry file if needed
-registry_init() {
-    am_init
-}
-
 # Add a session to the registry
 # Usage: registry_add <name> <directory> <branch> <agent_type> [task_description]
 registry_add() {
@@ -20,8 +15,6 @@ registry_add() {
     local branch="$3"
     local agent_type="$4"
     local task="${5:-}"
-
-    registry_init
 
     local created_at
     created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -50,7 +43,6 @@ registry_add() {
 registry_get_field() {
     local name="$1"
     local field="$2"
-    registry_init
     jq -r --arg name "$name" --arg field "$field" '.sessions[$name][$field] // empty' "$AM_REGISTRY"
 }
 
@@ -60,8 +52,6 @@ registry_update() {
     local name="$1"
     local field="$2"
     local value="$3"
-
-    registry_init
 
     local tmp_file
     tmp_file=$(mktemp)
@@ -77,7 +67,6 @@ registry_update() {
 # Usage: registry_remove <name>
 registry_remove() {
     local name="$1"
-    registry_init
 
     local tmp_file
     tmp_file=$(mktemp)
@@ -89,16 +78,7 @@ registry_remove() {
 # Usage: registry_list
 # Returns newline-separated session names
 registry_list() {
-    registry_init
     jq -r '.sessions | keys[]' "$AM_REGISTRY" 2>/dev/null
-}
-
-# Check if a session exists in registry
-# Usage: registry_exists <name>
-registry_exists() {
-    local name="$1"
-    registry_init
-    jq -e --arg name "$name" '.sessions[$name] != null' "$AM_REGISTRY" &>/dev/null
 }
 
 # Garbage collection: remove registry entries for sessions that no longer exist in tmux
@@ -106,7 +86,6 @@ registry_exists() {
 # Runs at most once per 60 seconds unless force=1
 registry_gc() {
     local force="${1:-0}"
-    registry_init
 
     # Time-based throttling: only run every 60 seconds
     local gc_marker="$AM_DIR/.gc_last"
@@ -141,13 +120,6 @@ registry_gc() {
     fi
 
     echo "$removed"
-}
-
-# Count sessions in registry
-# Usage: registry_count
-registry_count() {
-    registry_init
-    jq '.sessions | length' "$AM_REGISTRY"
 }
 
 # --- Session History ---

@@ -82,46 +82,6 @@ tmux_attach() {
     fi
 }
 
-# Capture pane content from a session
-# Usage: tmux_capture_pane <name> [lines] [skip_bottom]
-# Returns the captured content to stdout
-# Note: Captures top pane (pane 1) where agent runs, not bottom shell pane
-# skip_bottom: lines to skip from bottom (default 0)
-tmux_capture_pane() {
-    local name="$1"
-    local lines="${2:-50}"
-    local skip_bottom="${3:-0}"
-
-    if ! tmux_session_exists "$name"; then
-        echo "(Session not found)"
-        return 1
-    fi
-
-    # Capture the visible pane content (no -S means just visible area)
-    # -p: print to stdout
-    # -e: include escape sequences (colors)
-    # -t: target the agent pane (top pane)
-    local output
-    output=$(tmux capture-pane -t "$name:.{top}" -p -e 2>/dev/null || \
-             tmux capture-pane -t "$name" -p -e 2>/dev/null)
-
-    if [[ -z "$output" ]]; then
-        echo "(Unable to capture)"
-        return 1
-    fi
-
-    # Count total lines, remove bottom N (status bar), show last N lines
-    local total_lines
-    total_lines=$(echo "$output" | wc -l | tr -d ' ')
-    local keep_lines=$((total_lines - skip_bottom))
-
-    if (( keep_lines > 0 )); then
-        echo "$output" | head -n "$keep_lines" | tail -n "$lines"
-    else
-        echo "$output" | tail -n "$lines"
-    fi
-}
-
 # Get session activity timestamp (seconds since epoch)
 # Usage: tmux_get_activity <name>
 tmux_get_activity() {

@@ -7,9 +7,9 @@ Architecture reference for AI agents working with this codebase.
 | File | Purpose |
 |------|---------|
 | `am` | Main entry point. Handles CLI args, routes to commands. |
-| `lib/utils.sh` | Shared: colors, logging, time formatting, paths |
+| `lib/utils.sh` | Shared: colors, logging, time formatting, paths, Claude JSONL extraction |
 | `lib/registry.sh` | JSON storage for session metadata (`~/.agent-manager/sessions.json`) |
-| `lib/tmux.sh` | tmux wrappers: create/kill/attach/capture sessions |
+| `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
 | `lib/fzf.sh` | fzf UI: list generation, preview, main loop |
 
@@ -30,16 +30,18 @@ am new ~/project → agent_launch() → tmux_create_session() → registry_add()
 - `registry_add/get/update/remove/list` - CRUD for sessions.json
 - `registry_gc()` - Remove entries for dead tmux sessions
 
+**Utils:**
+- `claude_first_user_message(dir)` - Extract first user message from Claude session JSONL
+
 **tmux:**
 - `tmux_create_session(name, dir)` - New detached session
-- `tmux_capture_pane(name, lines)` - Get terminal content for preview
 - `tmux_get_activity(name)` - Last activity timestamp
 - `tmux_enable_pipe_pane(session, pane, file)` - Stream pane output to log file
 - `tmux_cleanup_logs(name)` - Remove log directory for a session
 
 **fzf:**
 - `fzf_list_sessions()` - Format: `session|display_name`
-- `lib/preview` - Standalone preview script for fzf panel
+- `lib/preview` - Preview script for fzf panel (sources utils.sh)
 - `fzf_main()` - Main loop with keybindings
 
 ## Session Naming

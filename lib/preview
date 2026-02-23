@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # preview - Fast standalone preview for fzf
 # Usage: preview <session_name>
-# Designed to be fast by avoiding library sourcing
 
 set -euo pipefail
 
@@ -18,39 +17,21 @@ if ! tmux has-session -t "$session_name" 2>/dev/null; then
     exit 0
 fi
 
-# Get session title from Claude JSONL (simplified, inline)
-AM_REGISTRY="${HOME}/.agent-manager/sessions.json"
+# Source utils for claude_first_user_message helper
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+
+# Get session title from Claude JSONL
+AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
 if [[ -f "$AM_REGISTRY" ]]; then
     directory=$(jq -r --arg name "$session_name" '.sessions[$name].directory // empty' "$AM_REGISTRY" 2>/dev/null)
 
     if [[ -n "$directory" ]]; then
-        # Convert directory to Claude's project path format
-        project_path="${directory//\//-}"
-        project_path="${project_path//./-}"
-        claude_project_dir="$HOME/.claude/projects/$project_path"
-
-        if [[ -d "$claude_project_dir" ]]; then
-            session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
-            if [[ -n "$session_file" && -f "$session_file" ]]; then
-                # Extract first meaningful user message
-                title=""
-                while IFS= read -r line; do
-                    content=$(echo "$line" | jq -r '.message.content // empty' 2>/dev/null) || continue
-                    [[ -z "$content" ]] && continue
-                    # Remove XML tags and check for real content
-                    cleaned=$(echo "$content" | sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                    if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
-                        # Truncate and clean
-                        title=$(echo "$cleaned" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60)
-                        break
-                    fi
-                done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
-
-                if [[ -n "$title" ]]; then
-                    echo -e "\033[1;36m📝 $title\033[0m"
-                    echo ""
-                fi
-            fi
+        title=$(claude_first_user_message "$directory" || true)
+        if [[ -n "$title" ]]; then
+            # Clean up for display: remove URLs, extract first sentence
+            title=$(echo "$title" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60)
+            echo -e "\033[1;36m📝 $title\033[0m"
+            echo ""
         fi
     fi
 fi
