@@ -848,6 +848,75 @@ test_history() {
 }
 
 # ============================================
+# Test: History Integration (wiring into lifecycle)
+# ============================================
+test_history_integration() {
+    echo "=== Testing History Integration ==="
+
+    if ! command -v jq &>/dev/null; then
+        skip_test "history integration tests (jq not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    # Isolated environment
+    local old_am_dir="$AM_DIR"
+    local old_am_registry="$AM_REGISTRY"
+    local old_am_history="${AM_HISTORY:-}"
+    export AM_DIR=$(mktemp -d)
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_HISTORY="$AM_DIR/history.jsonl"
+    am_init
+
+    # Simulate what agent_launch does: registry_add + history_append
+    registry_add "test-hist-session" "/tmp/myproject" "main" "claude" "fix auth bug"
+    history_append "/tmp/myproject" "fix auth bug" "claude" "main"
+
+    # Verify history file exists and contains the task
+    assert_cmd_succeeds "history_integration: history file created" test -f "$AM_HISTORY"
+
+    local hist_content
+    hist_content=$(cat "$AM_HISTORY")
+    assert_contains "$hist_content" '"task":"fix auth bug"' \
+        "history_integration: task recorded in history"
+    assert_contains "$hist_content" '"directory":"/tmp/myproject"' \
+        "history_integration: directory recorded in history"
+
+    # Simulate auto_title_session path: registry_update + history_append via registry_get_field
+    registry_add "test-hist-auto" "/tmp/another" "dev" "gemini" ""
+    # Simulate what auto_title_session does after getting a title
+    registry_update "test-hist-auto" "task" "refactor utils"
+    local dir branch agent
+    dir=$(registry_get_field "test-hist-auto" "directory")
+    branch=$(registry_get_field "test-hist-auto" "branch")
+    agent=$(registry_get_field "test-hist-auto" "agent_type")
+    history_append "$dir" "refactor utils" "$agent" "$branch"
+
+    local line_count
+    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_eq "2" "$line_count" "history_integration: two entries after both paths"
+
+    # Verify the second entry
+    local second_line
+    second_line=$(tail -1 "$AM_HISTORY")
+    assert_contains "$second_line" '"task":"refactor utils"' \
+        "history_integration: auto-title task recorded"
+    assert_contains "$second_line" '"agent_type":"gemini"' \
+        "history_integration: auto-title agent_type correct"
+
+    # Cleanup
+    rm -rf "$AM_DIR"
+    export AM_DIR="$old_am_dir"
+    export AM_REGISTRY="$old_am_registry"
+    export AM_HISTORY="$old_am_history"
+
+    echo ""
+}
+
+# ============================================
 # Test: Worktree feature (-w/--worktree)
 # ============================================
 test_worktree() {
@@ -1000,6 +1069,7 @@ main() {
     test_cli_extended
     test_registry_gc
     test_history
+    test_history_integration
     test_worktree
 
     echo "========================================"

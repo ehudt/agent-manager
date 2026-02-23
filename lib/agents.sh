@@ -147,6 +147,11 @@ agent_launch() {
     # Register session metadata
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
 
+    # Log to persistent history if task is known at launch
+    if [[ -n "$task" ]]; then
+        history_append "$directory" "$task" "$agent_type" "$branch"
+    fi
+
     # Create horizontal split: top pane for agent, bottom pane (15 lines) for shell
     # Split without size, then resize (workaround for detached session sizing issues)
     tmux split-window -t "$session_name" -v -c "$directory"
@@ -289,6 +294,12 @@ auto_title_session() {
             source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
             source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
             registry_update "$session_name" "task" "$title"
+            # Log to persistent history
+            local dir branch agent
+            dir=$(registry_get_field "$session_name" "directory")
+            branch=$(registry_get_field "$session_name" "branch")
+            agent=$(registry_get_field "$session_name" "agent_type")
+            history_append "$dir" "$title" "$agent" "$branch"
         fi
     ) >/dev/null 2>&1 &
 }
