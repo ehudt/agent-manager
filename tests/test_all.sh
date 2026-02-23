@@ -1047,6 +1047,69 @@ test_worktree() {
 }
 
 # ============================================
+# Test: Annotated Directories (_annotate_directory, _strip_annotation)
+# ============================================
+test_annotated_directories() {
+    echo ""
+    echo "=== Annotated Directory Tests ==="
+
+    if ! command -v jq &>/dev/null; then
+        skip_test "annotated directory tests (jq not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    # Need fzf.sh helpers but it requires fzf + tmux + agents.sh
+    # Source dependencies in the right order
+    if ! command -v tmux &>/dev/null || ! command -v fzf &>/dev/null; then
+        skip_test "annotated directory tests (tmux or fzf not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/tmux.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+    source "$LIB_DIR/fzf.sh"
+
+    export AM_DIR=$(mktemp -d)
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_HISTORY="$AM_DIR/history.jsonl"
+    registry_init
+
+    # Seed history
+    history_append "/tmp/project-alpha" "Fix auth bug" "claude" "main"
+    history_append "/tmp/project-alpha" "Add tests" "claude" "dev"
+    history_append "/tmp/project-beta" "Dark mode" "gemini" "feature/ui"
+
+    # Test _annotate_directory with history
+    local annotation
+    annotation=$(_annotate_directory "/tmp/project-alpha")
+    assert_contains "$annotation" "Add tests" "annotate: shows most recent task"
+    assert_contains "$annotation" "Fix auth" "annotate: shows older task"
+    assert_contains "$annotation" "claude" "annotate: shows agent type"
+
+    # Test _annotate_directory with no history
+    annotation=$(_annotate_directory "/tmp/no-history")
+    assert_eq "" "$annotation" "annotate: empty for unknown path"
+
+    # Test _strip_annotation with tab-separated line
+    local stripped
+    stripped=$(_strip_annotation "/tmp/project-alpha	claude: Add tests (0m) | claude: Fix auth (0m)")
+    assert_eq "/tmp/project-alpha" "$stripped" "strip: extracts path from annotated line"
+
+    # Test _strip_annotation with plain path
+    stripped=$(_strip_annotation "/tmp/plain-path")
+    assert_eq "/tmp/plain-path" "$stripped" "strip: handles plain path"
+
+    rm -rf "$AM_DIR"
+
+    echo ""
+}
+
+# ============================================
 # Main
 # ============================================
 main() {
@@ -1071,6 +1134,7 @@ main() {
     test_history
     test_history_integration
     test_worktree
+    test_annotated_directories
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

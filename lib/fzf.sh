@@ -32,44 +32,124 @@ _list_directories() {
         return
     fi
 
-    # Default: show frecent directories and git repos
-    echo ". (current directory)"
+    # Build raw path list
+    local paths=()
+    paths+=("$(pwd)")
 
-    # Zoxide frecent directories
     if command -v zoxide &>/dev/null; then
-        zoxide query -l 2>/dev/null | head -30
+        while IFS= read -r p; do
+            paths+=("$p")
+        done < <(zoxide query -l 2>/dev/null | head -30)
     fi
 
-    # Git repos from common locations
     local search_paths=("$HOME/code" "$HOME/projects" "$HOME/src" "$HOME/dev" "$HOME/work")
     for search_path in "${search_paths[@]}"; do
         if [[ -d "$search_path" ]]; then
-            find "$search_path" -maxdepth 3 -type d -name ".git" 2>/dev/null | \
-                sed 's/\/\.git$//' | head -20
+            while IFS= read -r p; do
+                paths+=("$p")
+            done < <(find "$search_path" -maxdepth 3 -type d -name ".git" 2>/dev/null | sed 's/\/\.git$//' | head -20)
         fi
     done
+
+    # Deduplicate preserving order
+    local -A seen
+    local unique_paths=()
+    for p in "${paths[@]}"; do
+        if [[ -z "${seen[$p]:-}" ]]; then
+            seen[$p]=1
+            unique_paths+=("$p")
+        fi
+    done
+
+    # Output with annotations
+    for p in "${unique_paths[@]}"; do
+        local annotation
+        annotation=$(_annotate_directory "$p")
+        if [[ -n "$annotation" ]]; then
+            printf '%s\t%s\n' "$p" "$annotation"
+        else
+            echo "$p"
+        fi
+    done
+}
+
+# Annotate a directory path with recent session history
+# Usage: _annotate_directory <path>
+# Returns: annotation string like 'claude: "Task" (2h) | gemini: "Task2" (1d)' or empty
+_annotate_directory() {
+    local dir_path="$1"
+    [[ -f "$AM_HISTORY" ]] || return 0
+
+    local entries
+    entries=$(history_for_directory "$dir_path" | head -3)
+    [[ -z "$entries" ]] && return 0
+
+    local parts=()
+    local now
+    now=$(date +%s)
+
+    while IFS= read -r line; do
+        local task agent created_at
+        task=$(echo "$line" | jq -r '.task')
+        agent=$(echo "$line" | jq -r '.agent_type')
+        created_at=$(echo "$line" | jq -r '.created_at')
+
+        # Calculate relative time
+        local ts
+        ts=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null || \
+             date -d "$created_at" +%s 2>/dev/null || echo "$now")
+        local age=$(( now - ts ))
+        local age_str
+        if (( age < 3600 )); then
+            age_str="$(( age / 60 ))m"
+        elif (( age < 86400 )); then
+            age_str="$(( age / 3600 ))h"
+        else
+            age_str="$(( age / 86400 ))d"
+        fi
+
+        # Truncate task to 30 chars
+        [[ ${#task} -gt 30 ]] && task="${task:0:27}..."
+
+        parts+=("${agent}: ${task} (${age_str})")
+    done <<< "$entries"
+
+    local IFS='|'
+    echo " ${parts[*]}"
+}
+
+# Strip annotation from a picker line, returning just the path
+# Usage: _strip_annotation <line>
+_strip_annotation() {
+    local line="$1"
+    # Tab separates path from annotation; if no tab, line is the path
+    echo "$line" | cut -f1
 }
 
 # Pick a directory using fzf with interactive path completion
 # Usage: fzf_pick_directory
 # Returns: selected directory path or empty if cancelled
 fzf_pick_directory() {
-    # Export helper for fzf reload
+    # Export helpers for fzf reload
     export -f _list_directories
+    export -f _annotate_directory
+    export -f _strip_annotation
+    export -f history_for_directory
+    export AM_HISTORY
 
     local initial_list
-    initial_list=$(_list_directories | awk '!seen[$0]++' | grep -v '^$')
+    initial_list=$(_list_directories | grep -v '^$')
 
     # Run fzf with dynamic completion
     local selected
     selected=$(echo "$initial_list" | fzf \
         --ansi \
         --header="Directory: type path or select  |  Tab: complete  |  Ctrl-U: parent dir" \
-        --preview='d={};[[ "$d" == ". (current directory)" ]] && d="."; d="${d/#\~/$HOME}"; [[ -d "$d" ]] && command ls -la "$d" 2>/dev/null | head -20 || echo "Type a path or select from list"' \
+        --preview='d="{}"; d=$(echo "$d" | cut -f1); d="${d/#\~/$HOME}"; if [[ -d "$d" ]]; then echo "── Recent Sessions ──"; if [[ -f "'"$AM_HISTORY"'" ]]; then jq -r --arg dir "$d" "select(.directory == \$dir) | \"\(.agent_type): \(.task) [\(.branch)]\"" "'"$AM_HISTORY"'" 2>/dev/null | tail -r 2>/dev/null || tac 2>/dev/null || cat | head -5; else echo "(no history)"; fi; echo ""; echo "── Files ──"; command ls -la "$d" 2>/dev/null | head -15; else echo "Type a path or select from list"; fi' \
         --preview-window="right:40%:wrap" \
         --print-query \
-        --bind="tab:reload(bash -c '_list_directories {q}' | awk '!seen[\$0]++' | grep -v '^$')+clear-query" \
-        --bind="ctrl-u:reload(bash -c '_list_directories \$(dirname {q})' | awk '!seen[\$0]++' | grep -v '^$')+transform-query(dirname {q})" \
+        --bind="tab:reload(bash -c '_list_directories {q}' | grep -v '^$')+clear-query" \
+        --bind="ctrl-u:reload(bash -c '_list_directories \$(dirname {q})' | grep -v '^$')+transform-query(dirname {q})" \
     )
 
     # Parse result - fzf --print-query outputs: query on line 1, selection on line 2
@@ -77,14 +157,13 @@ fzf_pick_directory() {
     query=$(echo "$selected" | head -n1)
     selection=$(echo "$selected" | tail -n1)
 
+    # Strip annotation (everything after tab)
+    selection=$(_strip_annotation "$selection")
+    query=$(_strip_annotation "$query")
+
     # If selection is empty but query exists, use query as typed path
     if [[ -z "$selection" && -n "$query" ]]; then
         selection="$query"
-    fi
-
-    # Handle special case
-    if [[ "$selection" == ". (current directory)" ]]; then
-        selection="."
     fi
 
     # Expand ~ if present
@@ -184,7 +263,7 @@ fzf_list_sessions() {
 
 # Export functions for fzf subshells (reload uses fzf_list_sessions -> agent_display_name)
 _fzf_export_functions() {
-    export AM_DIR AM_REGISTRY AM_SESSION_PREFIX
+    export AM_DIR AM_REGISTRY AM_SESSION_PREFIX AM_HISTORY
     export -f fzf_list_sessions agent_display_name
     export -f registry_gc registry_list registry_remove registry_init
     export -f tmux_list_am_sessions_with_activity tmux_get_activity
