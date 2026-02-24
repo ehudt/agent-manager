@@ -184,7 +184,7 @@ history_for_directory() {
 # Usage: _title_fallback <message>
 _title_fallback() {
     local msg="$1"
-    echo "$msg" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60
+    echo "$msg" | sed -E 's/https?:\/\/[^ ]*//g; s/  +/ /g; s/[.?!].*//' | head -c 60
 }
 
 # Strip markdown/quotes from Haiku output

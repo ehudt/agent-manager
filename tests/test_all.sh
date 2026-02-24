@@ -1148,7 +1148,7 @@ test_auto_title_session() {
     # This tests the PURE LOGIC (sed/echo) without the background subshell
     _generate_fallback_title() {
         local msg="$1"
-        echo "$msg" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60
+        echo "$msg" | sed -E 's/https?:\/\/[^ ]*//g; s/  +/ /g; s/[.?!].*//' | head -c 60
     }
 
     _strip_haiku_output() {
