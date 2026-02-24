@@ -252,7 +252,7 @@ fzf_list_sessions() {
 
     # Clean up stale registry entries first
     registry_gc >/dev/null 2>&1
-    auto_title_scan >/dev/null 2>&1
+    auto_title_scan >/dev/null 2>&1 &
 
     # Get sessions sorted by activity
     for session in $(tmux_list_am_sessions_with_activity | awk '{print $1}'); do
@@ -400,7 +400,7 @@ fzf_list_simple() {
 # Usage: fzf_list_json
 fzf_list_json() {
     registry_gc >/dev/null 2>&1
-    auto_title_scan >/dev/null 2>&1
+    auto_title_scan >/dev/null 2>&1 &
 
     local sessions=()
     local session
