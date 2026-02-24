@@ -1,11 +1,20 @@
 # Agent Manager
 
-Bash CLI tool managing multiple AI coding sessions (Claude, Gemini) via tmux + fzf.
+Architecture and key functions: @AGENTS.md
 
-See AGENTS.md for architecture, key functions, and extension points.
-
-## Dev
+## Commands
 
 - Run tests: `./tests/test_all.sh`
-- Shell style: bash, no shebang in libs (sourced), functions prefixed by module name
-- Dependencies: tmux, fzf, jq
+- Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
+
+## Code style
+
+- Libs in `lib/` are sourced, not executed — no shebang, no `set -euo pipefail` (the entry point `am` sets it)
+- Functions prefixed by module name: `registry_add`, `tmux_create_session`, `agent_launch`
+- Return values via stdout; all logging/UI output to stderr (`>&2`)
+- Use `sed -E` (not `sed -r`) for portable regex (macOS + Linux)
+
+## Gotchas
+
+- `SCRIPT_DIR` is overwritten when sourcing `lib/agents.sh` — if you need a stable reference, save it before sourcing
+- Tests source libs directly — test helpers like `registry_exists` live in `test_all.sh`, not in production code
