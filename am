@@ -53,7 +53,7 @@ OPTIONS FOR 'new':
 
 KEYBINDINGS (interactive browser):
     Enter           Attach to selected session
-    Ctrl-N          Create new session (interactive: directory > mode > agent)
+    Ctrl-N          Create new session (interactive: directory > agent > mode)
     Ctrl-X          Kill selected session
     Ctrl-R          Refresh session list
     Ctrl-P          Toggle preview panel
@@ -165,7 +165,8 @@ cmd_new_internal() {
 # Command: new
 cmd_new() {
     local directory="."
-    local agent_type="claude"
+    local dir_given=false
+    local agent_type=""
     local task=""
     local worktree_name=""
     local agent_args=()
@@ -182,6 +183,7 @@ cmd_new() {
                 ;;
             -d|--dir)
                 directory="$2"
+                dir_given=true
                 shift 2
                 ;;
             -w|--worktree)
@@ -230,13 +232,14 @@ cmd_new() {
                 ;;
             *)
                 directory="$1"
+                dir_given=true
                 shift
                 ;;
         esac
     done
 
     # If no directory specified and running interactively, offer picker
-    if [[ "$directory" == "." && -t 0 ]]; then
+    if [[ "$dir_given" == false && -t 0 ]]; then
         local picked
         picked=$(fzf_pick_directory)
         if [[ -n "$picked" ]]; then
@@ -246,6 +249,15 @@ cmd_new() {
             return 0
         fi
     fi
+
+    # If no agent type specified and running interactively, offer picker
+    if [[ -z "$agent_type" && -t 0 ]]; then
+        if ! agent_type=$(fzf_pick_agent); then
+            log_info "Cancelled"
+            return 0
+        fi
+    fi
+    agent_type="${agent_type:-claude}"
 
     # If running interactively and no agent args provided via CLI, show mode picker
     if [[ ${#agent_args[@]} -eq 0 && -t 0 ]]; then
