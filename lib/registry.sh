@@ -203,9 +203,13 @@ _title_valid() {
 # Scan untitled active sessions and generate titles.
 # Writes fallback immediately, spawns fire-and-forget Haiku upgrade.
 # Throttled to once per 60s unless force=1.
+# Logs to $AM_DIR/titler.log (tail -f ~/.agent-manager/titler.log)
 # Usage: auto_title_scan [force]
 auto_title_scan() {
     local force="${1:-0}"
+    local _log="$AM_DIR/titler.log"
+
+    _titler_log() { echo "$(date '+%H:%M:%S') $*" >> "$_log" 2>/dev/null; }
 
     # Throttle
     local marker="$AM_DIR/.title_scan_last"
@@ -215,32 +219,48 @@ auto_title_scan() {
         local last
         last=$(cat "$marker" 2>/dev/null || echo 0)
         if (( now - last < 60 )); then
+            _titler_log "throttled ($(( now - last ))s since last scan)"
             return 0
         fi
     fi
     echo "$now" > "$marker"
 
+    _titler_log "scan start (force=$force)"
+
     local name dir task first_msg fallback
+    local scanned=0 titled=0
     for name in $(registry_list); do
         task=$(registry_get_field "$name" "task")
         [[ -n "$task" ]] && continue  # already titled
 
+        scanned=$((scanned + 1))
         dir=$(registry_get_field "$name" "directory")
-        [[ -z "$dir" ]] && continue
+        if [[ -z "$dir" ]]; then
+            _titler_log "  $name: skip (no directory)"
+            continue
+        fi
 
         first_msg=$(claude_first_user_message "$dir" 2>/dev/null)
         first_msg="${first_msg:0:200}"
-        [[ -z "$first_msg" ]] && continue
+        if [[ -z "$first_msg" ]]; then
+            _titler_log "  $name: skip (no user message yet)"
+            continue
+        fi
 
         # Write fallback title immediately
         fallback=$(_title_fallback "$first_msg")
-        [[ -z "$fallback" ]] && continue
+        if [[ -z "$fallback" ]]; then
+            _titler_log "  $name: skip (fallback empty for: ${first_msg:0:60}...)"
+            continue
+        fi
 
         registry_update "$name" "task" "$fallback"
         local branch agent
         branch=$(registry_get_field "$name" "branch")
         agent=$(registry_get_field "$name" "agent_type")
         history_append "$dir" "$fallback" "$agent" "$branch"
+        titled=$((titled + 1))
+        _titler_log "  $name: fallback=\"$fallback\""
 
         # Fire-and-forget Haiku upgrade
         if command -v claude &>/dev/null; then
@@ -256,8 +276,13 @@ auto_title_scan() {
                 if _title_valid "$haiku_title"; then
                     source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
                     registry_update "$name" "task" "$haiku_title"
+                    _titler_log "  $name: haiku=\"$haiku_title\""
+                else
+                    _titler_log "  $name: haiku failed (raw: ${haiku_title:0:80})"
                 fi
-            ) >/dev/null 2>&1 &
+            ) &
         fi
     done
+
+    _titler_log "scan done: $scanned untitled, $titled titled"
 }
