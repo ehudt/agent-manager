@@ -8,9 +8,9 @@ Architecture reference for AI agents working with this codebase.
 |------|---------|
 | `am` | Main entry point. Handles CLI args, routes to commands. |
 | `lib/utils.sh` | Shared: colors, logging, time formatting, paths, Claude JSONL extraction |
-| `lib/registry.sh` | JSON storage for session metadata + persistent session history |
+| `lib/registry.sh` | JSON storage for session metadata, persistent session history, auto-titling |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
-| `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill, auto-titling |
+| `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
 | `lib/fzf.sh` | fzf UI: list generation, directory picker with history annotations, main loop |
 | `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
@@ -38,7 +38,7 @@ Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)
 
 **Registry (JSON metadata):**
-- `registry_add/get/update/remove/list` - CRUD for sessions.json
+- `registry_add/get_field/update/remove/list` - CRUD for sessions.json
 - `registry_gc()` - Remove entries for dead tmux sessions
 
 **Session history (JSONL):**
@@ -65,7 +65,7 @@ Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for
 
 Format: `am-XXXXXX` where XXXXXX = md5(directory + timestamp)[:6]
 
-Display: `dirname/branch [agent] (Xm ago) "task"`
+Display: `dirname/branch [agent] task (Xm ago)`
 
 ## Extension Points
 

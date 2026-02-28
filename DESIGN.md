@@ -68,9 +68,9 @@ Where `<short-hash>` is derived from `directory + timestamp` for uniqueness.
 
 The **display name** shown in fzf is composed from metadata:
 ```
-myapp/feature/auth [claude] (2h ago) "implement user auth flow"
-│       │             │        │        └── task (auto-titled or manual)
-│       │             │        └── activity indicator
+myapp/feature/auth [claude] implement user auth flow (2h ago)
+│       │             │        │                        └── activity indicator
+│       │             │        └── task (auto-titled or manual)
 │       │             └── agent type
 │       └── git branch
 └── directory basename
@@ -147,7 +147,6 @@ am status               # Summary of all sessions
 | `Ctrl-N` | Create new session (prompts for directory) |
 | `Ctrl-X` | Kill selected session |
 | `Ctrl-R` | Refresh session list |
-| `Ctrl-D` | Detach from current (when inside tmux) |
 | `Ctrl-P` | Toggle preview panel |
 | `Ctrl-J/K` | Scroll preview down/up |
 | `Ctrl-D/U` | Scroll preview half-page down/up |
@@ -210,10 +209,10 @@ am status               # Summary of all sessions
 agent-manager/
 ├── am                      # Main executable (bash)
 ├── lib/
-│   ├── agents.sh           # Agent lifecycle, launch, kill, auto-titling
+│   ├── agents.sh           # Agent lifecycle, launch, display formatting, kill
 │   ├── fzf.sh              # fzf UI, directory picker with history annotations
 │   ├── preview             # Standalone preview script for fzf panel
-│   ├── registry.sh         # Session registry + persistent history (JSONL)
+│   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
 │   ├── tmux.sh             # tmux wrapper functions
 │   └── utils.sh            # Common utilities
 ├── bin/
@@ -223,7 +222,6 @@ agent-manager/
 │   └── install.sh          # Installer (symlinks, shell rc, tmux config)
 ├── tests/
 │   └── test_all.sh         # Test suite
-└── docs/                   # Design plans and notes
 ```
 
 ## Technical Details
@@ -272,18 +270,20 @@ tmux send-keys -t "$name" "claude" Enter
 
 ### Auto-Titling (Claude Sessions)
 
-Claude sessions are automatically titled via a background process:
+Sessions are titled via `auto_title_scan()`, a piggyback scanner that runs during fzf touchpoints (list generation, reload):
 
-1. Background subshell spawned after session creation
-2. Polls Claude's session JSONL (up to 30 retries, 2s apart) for first user message
-3. Sends truncated message (~200 chars) to Claude Haiku for a 2-5 word title
-4. Falls back to first sentence extraction if Haiku unavailable
-5. Updates registry `task` field and appends to session history
+1. Throttled to once per 60s (unless `force=1`) via timestamp marker
+2. Iterates registry entries that have no `task` field yet
+3. Extracts first user message from Claude's session JSONL (truncated to 200 chars)
+4. Writes a fallback title immediately (`_title_fallback`: first sentence extraction)
+5. Spawns a fire-and-forget background subshell to upgrade via Claude Haiku (2-5 word title)
+6. Updates registry `task` field and appends to session history
 
 Key implementation details:
-- Unsets `CLAUDECODE` env var to avoid "nested session" rejection
-- Disables `errexit`/`pipefail` inherited from parent shell
-- Rejects titles over 60 chars or multiline (Haiku went off-script)
+- Haiku subshell unsets `CLAUDECODE` env var to avoid "nested session" rejection
+- Haiku subshell disables `errexit`/`pipefail` inherited from parent shell
+- Rejects titles over 60 chars or multiline (`_title_valid`)
+- Logs to `~/.agent-manager/titler.log` for debugging
 
 ### Session History
 

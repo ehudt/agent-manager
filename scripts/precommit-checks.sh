@@ -6,6 +6,9 @@ set -euo pipefail
 printf 'Running bash syntax checks...\n'
 bash -n am lib/*.sh bin/* scripts/*.sh tests/test_all.sh
 
+printf 'Running doc sync check...\n'
+./scripts/check-docs.sh
+
 printf 'Running secret scan (tracked files)...\n'
 ./scripts/scan-secrets.sh
 
