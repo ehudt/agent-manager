@@ -459,11 +459,11 @@ fzf_list_json() {
         # Get all registry fields in one jq call
         local fields
         fields=$(jq -r --arg name "$session" \
-            '.sessions[$name] | "\(.directory // "")\t\(.branch // "")\t\(.agent_type // "")\t\(.task // "")"' \
+            '.sessions[$name] | "\(.directory // "")|\(.branch // "")|\(.agent_type // "")|\(.task // "")"' \
             "$AM_REGISTRY" 2>/dev/null)
 
         local directory branch agent_type task
-        IFS=$'\t' read -r directory branch agent_type task <<< "$fields"
+        IFS='|' read -r directory branch agent_type task <<< "$fields"
 
         local activity
         activity=$(tmux_get_activity "$session")

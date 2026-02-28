@@ -742,6 +742,10 @@ test_cli_extended() {
         echo -e "${RED}FAIL${RESET}: am list --json: invalid JSON"
     fi
     assert_contains "$json_output" "$session_name" "am list --json: contains session"
+    assert_eq "claude" "$(echo "$json_output" | jq -r '.[0].agent_type')" \
+        "am list --json: preserves agent_type when branch is empty"
+    assert_eq "" "$(echo "$json_output" | jq -r '.[0].branch')" \
+        "am list --json: preserves empty branch field"
 
     # --- Test: am info <session> ---
     local info_output
