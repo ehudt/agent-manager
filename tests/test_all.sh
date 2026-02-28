@@ -1454,6 +1454,31 @@ test_auto_title_scan() {
     assert_not_empty "$hist_count" \
         "scan: history entries created"
 
+    # --- Test 7: Background haiku upgrade exits quietly if AM_DIR is removed ---
+    local fake_bin
+    fake_bin=$(mktemp -d)
+    cat > "$fake_bin/claude" <<'EOF'
+#!/usr/bin/env bash
+sleep 0.2
+echo "Quiet Title"
+EOF
+    chmod +x "$fake_bin/claude"
+
+    local old_path="$PATH"
+    export PATH="$fake_bin:$PATH"
+
+    local scan_err
+    scan_err=$(mktemp)
+    registry_add "test-scan-5" "/tmp/has-msg" "main" "claude" ""
+    auto_title_scan 1 >/dev/null 2>"$scan_err"
+    rm -rf "$AM_DIR"
+    sleep 0.4
+    assert_eq "" "$(cat "$scan_err")" \
+        "scan: background upgrade is quiet after AM_DIR removal"
+
+    export PATH="$old_path"
+    rm -rf "$fake_bin" "$scan_err"
+
     # --- Cleanup ---
     unset -f claude_first_user_message
     rm -rf "$AM_DIR"

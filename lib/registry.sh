@@ -268,12 +268,17 @@ auto_title_scan() {
                 set +e +o pipefail
                 unset CLAUDECODE
 
+                # The scan may outlive a temporary AM_DIR used by tests.
+                # Exit quietly if the registry/log directory has already been removed.
+                [[ -d "$AM_DIR" && -f "$AM_REGISTRY" ]] || exit 0
+
                 local haiku_title
                 haiku_title=$(printf '%s' "$first_msg" | claude -p --model haiku \
                     "Reply with a short 2-5 word title summarizing this task. Plain text only, no markdown, no quotes, no punctuation. Examples: Fix auth login bug, Add user settings page, Refactor database layer" 2>/dev/null) || true
 
                 haiku_title=$(_title_strip_haiku "$haiku_title")
                 if _title_valid "$haiku_title"; then
+                    [[ -d "$AM_DIR" && -f "$AM_REGISTRY" ]] || exit 0
                     source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
                     registry_update "$name" "task" "$haiku_title"
                     _titler_log "  $name: haiku=\"$haiku_title\""
