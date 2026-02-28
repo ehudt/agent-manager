@@ -4,6 +4,7 @@
 # Source dependencies if not already loaded
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 [[ -z "$AM_DIR" ]] && source "$SCRIPT_DIR/utils.sh"
+[[ "$(type -t am_default_agent)" != "function" ]] && source "$SCRIPT_DIR/config.sh"
 [[ "$(type -t tmux_list_am_sessions)" != "function" ]] && source "$SCRIPT_DIR/tmux.sh"
 [[ "$(type -t registry_get_field)" != "function" ]] && source "$SCRIPT_DIR/registry.sh"
 [[ "$(type -t agent_display_name)" != "function" ]] && source "$SCRIPT_DIR/agents.sh"
@@ -183,13 +184,33 @@ fzf_pick_directory() {
 # Pick session mode (new/resume/continue)
 # Usage: fzf_pick_mode
 # Returns: flags string, or empty if cancelled
-fzf_pick_mode() {
-    local options="New session
+fzf_mode_options() {
+    local default_yolo="${1:-false}"
+    if [[ "$default_yolo" == "true" ]]; then
+        cat <<'EOF'
+New session (--yolo)
+Resume (--resume --yolo)
+Continue (--continue --yolo)
+New session
+Resume (--resume)
+Continue (--continue)
+EOF
+    else
+        cat <<'EOF'
+New session
 Resume (--resume)
 Continue (--continue)
 New session (--yolo)
 Resume (--resume --yolo)
-Continue (--continue --yolo)"
+Continue (--continue --yolo)
+EOF
+    fi
+}
+
+fzf_pick_mode() {
+    local default_yolo="${1:-false}"
+    local options
+    options=$(fzf_mode_options "$default_yolo")
 
     local selected
     selected=$(echo "$options" | fzf \
@@ -223,9 +244,27 @@ Continue (--continue --yolo)"
 # Pick agent type for a new session
 # Usage: fzf_pick_agent
 # Returns: selected agent type, or empty if cancelled
+fzf_agent_options() {
+    local default_agent="${1:-}"
+    local options=()
+    local agent
+
+    if [[ -n "$default_agent" && -n "${AGENT_COMMANDS[$default_agent]:-}" ]]; then
+        options+=("$default_agent")
+    fi
+
+    while IFS= read -r agent; do
+        [[ "$agent" == "$default_agent" ]] && continue
+        options+=("$agent")
+    done < <(printf '%s\n' "${!AGENT_COMMANDS[@]}" | sort)
+
+    printf '%s\n' "${options[@]}"
+}
+
 fzf_pick_agent() {
+    local default_agent="${1:-}"
     local options
-    options=$(printf '%s\n' "${!AGENT_COMMANDS[@]}" | sort)
+    options=$(fzf_agent_options "$default_agent")
 
     local selected
     selected=$(echo "$options" | fzf \
@@ -264,11 +303,12 @@ fzf_list_sessions() {
 
 # Export functions for fzf subshells (reload uses fzf_list_sessions -> agent_display_name)
 _fzf_export_functions() {
-    export AM_DIR AM_REGISTRY AM_SESSION_PREFIX AM_HISTORY
+    export AM_DIR AM_REGISTRY AM_SESSION_PREFIX AM_HISTORY AM_CONFIG
     export -f fzf_list_sessions agent_display_name
     export -f registry_gc registry_list registry_remove am_init
     export -f registry_get_field registry_update history_append history_prune
     export -f auto_title_scan _title_fallback _title_strip_haiku _title_valid
+    export -f am_config_init am_config_get am_default_agent am_default_yolo_enabled
     export -f claude_first_user_message
     export -f tmux_list_am_sessions_with_activity tmux_get_activity
     export -f dir_basename format_time_ago epoch_now
@@ -321,7 +361,9 @@ fzf_main() {
 
   In tmux session
     Ctrl-Z a    Open am menu (popup)
+    Ctrl-Z n    Open new-session popup
     Ctrl-Z d    Detach (return to shell)
+    Ctrl-Z x    Kill current am session
     Ctrl-Z [    Scroll mode (q to exit)
 "
 
@@ -361,17 +403,25 @@ fzf_main() {
 
         # Pick agent type
         local agent_type
-        if ! agent_type=$(fzf_pick_agent); then
+        if ! agent_type=$(fzf_pick_agent "$(am_default_agent)"); then
             fzf_main
             return $?
         fi
 
         # Pick mode (new/resume/continue)
         local flags
-        if ! flags=$(fzf_pick_mode); then
-            # Cancelled - return to main menu
-            fzf_main
-            return $?
+        if am_default_yolo_enabled; then
+            if ! flags=$(fzf_pick_mode "true"); then
+                # Cancelled - return to main menu
+                fzf_main
+                return $?
+            fi
+        else
+            if ! flags=$(fzf_pick_mode "false"); then
+                # Cancelled - return to main menu
+                fzf_main
+                return $?
+            fi
         fi
 
         # Return new session command

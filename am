@@ -35,6 +35,7 @@ COMMANDS:
     attach, a           Attach to a session by name (exact, prefix, or fuzzy)
     kill, rm, k         Kill a session
     kill --all, -a      Kill all agent-manager sessions
+    config              Show or change saved defaults
     info, i             Show detailed session info
     status, s           Show summary of all sessions
     help                Show this help message
@@ -43,12 +44,13 @@ SHORTCUT:
     am <path>           Same as 'am new <path>'
 
 OPTIONS FOR 'new':
-    -t, --type      Agent type: claude (default), codex, gemini
+    -t, --type      Agent type: claude, codex, gemini (saved default applies)
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
     -w, --worktree  Enable git worktree isolation (Claude only)
                     Optional: -w <name> to set worktree name (default: am-XXXXXX)
     --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
+    --no-yolo       Disable permissive mode even if enabled by default
     --              Pass remaining args to agent (e.g., -- --resume)
 
 KEYBINDINGS (interactive browser):
@@ -63,14 +65,16 @@ KEYBINDINGS (interactive browser):
 
 KEYBINDINGS (inside tmux session):
     Prefix + a      Switch to last am session
+    Prefix + n      Open a popup to create a new session
     Prefix + s      Open am browser popup
+    Prefix + x      Kill the current am session
     Prefix + d      Detach from session
     Prefix Up/Down  Switch panes (agent/shell)
     :am             Open am browser (tmux command)
 
 EXAMPLES:
     am                              # Open interactive browser
-    am new                          # New claude session in current dir
+    am new                          # New session in current dir (uses defaults)
     am new ~/code/myproject         # New session in specific directory
     am new -t codex ~/code/proj     # New codex session
     am new -n "fix auth" .          # Session with task description
@@ -100,6 +104,7 @@ esac
 
 # Now source all library files (they check dependencies)
 source "$AM_LIB_DIR/utils.sh"
+source "$AM_LIB_DIR/config.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
 source "$AM_LIB_DIR/agents.sh"
@@ -150,7 +155,7 @@ cmd_list() {
 # Usage: cmd_new_internal <directory> [agent_type] [flags...]
 cmd_new_internal() {
     local directory="$1"
-    local agent_type="${2:-claude}"
+    local agent_type="${2:-$(am_default_agent)}"
     shift 2 2>/dev/null || shift $#
     local agent_args=("$@")
 
@@ -170,6 +175,7 @@ cmd_new() {
     local task=""
     local worktree_name=""
     local agent_args=()
+    local yolo_override=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -198,6 +204,11 @@ cmd_new() {
                 ;;
             --yolo|--dangerously-skip-permissions)
                 agent_args+=("--yolo")
+                yolo_override="true"
+                shift
+                ;;
+            --no-yolo)
+                yolo_override="false"
                 shift
                 ;;
             --)
@@ -217,6 +228,7 @@ cmd_new() {
                 echo "  -w, --worktree  Enable git worktree isolation (Claude only)"
                 echo "                  Optional: -w <name> for custom worktree name"
                 echo "  --yolo        Enable permissive mode (mapped per agent, uses sb sandbox)"
+                echo "  --no-yolo     Disable permissive mode even if enabled by default"
                 echo "  --            Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
@@ -252,23 +264,35 @@ cmd_new() {
 
     # If no agent type specified and running interactively, offer picker
     if [[ -z "$agent_type" && -t 0 ]]; then
-        if ! agent_type=$(fzf_pick_agent); then
+        if ! agent_type=$(fzf_pick_agent "$(am_default_agent)"); then
             log_info "Cancelled"
             return 0
         fi
     fi
-    agent_type="${agent_type:-claude}"
+    agent_type="${agent_type:-$(am_default_agent)}"
 
     # If running interactively and no agent args provided via CLI, show mode picker
     if [[ ${#agent_args[@]} -eq 0 && -t 0 ]]; then
         local mode_flags
-        if mode_flags=$(fzf_pick_mode); then
-            # shellcheck disable=SC2086
-            agent_args=($mode_flags)
+        if am_default_yolo_enabled; then
+            if mode_flags=$(fzf_pick_mode "true"); then
+                # shellcheck disable=SC2086
+                agent_args=($mode_flags)
+            else
+                log_info "Cancelled"
+                return 0
+            fi
         else
-            log_info "Cancelled"
-            return 0
+            if mode_flags=$(fzf_pick_mode "false"); then
+                # shellcheck disable=SC2086
+                agent_args=($mode_flags)
+            else
+                log_info "Cancelled"
+                return 0
+            fi
         fi
+    elif [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
+        agent_args+=("--yolo")
     fi
 
     # Launch agent
@@ -373,6 +397,100 @@ cmd_kill() {
     esac
 }
 
+# Command: config
+cmd_config() {
+    local subcmd="${1:-list}"
+    [[ $# -gt 0 ]] && shift
+
+    case "$subcmd" in
+        list|show)
+            [[ $# -eq 0 ]] || {
+                log_error "Usage: am config [list|show]"
+                return 1
+            }
+            am_config_print
+            ;;
+        get)
+            local raw_key="${1:-}"
+            if [[ -z "$raw_key" ]]; then
+                log_error "Usage: am config get <agent|yolo|logs>"
+                return 1
+            fi
+            local key
+            if ! key=$(am_config_key_alias "$raw_key"); then
+                log_error "Unknown config key: $raw_key"
+                return 1
+            fi
+            case "$key" in
+                default_agent)
+                    am_default_agent
+                    ;;
+                default_yolo)
+                    am_default_yolo_enabled && echo true || echo false
+                    ;;
+                stream_logs)
+                    am_stream_logs_enabled && echo true || echo false
+                    ;;
+            esac
+            ;;
+        set)
+            local raw_key="${1:-}"
+            local value="${2:-}"
+            if [[ -z "$raw_key" || -z "$value" ]]; then
+                log_error "Usage: am config set <agent|yolo|logs> <value>"
+                return 1
+            fi
+            local key key_type
+            if ! key=$(am_config_key_alias "$raw_key"); then
+                log_error "Unknown config key: $raw_key"
+                return 1
+            fi
+            key_type=$(am_config_key_type "$key")
+            if ! am_config_value_is_valid "$key" "${value,,}"; then
+                log_error "Invalid value for $raw_key: $value"
+                return 1
+            fi
+            am_config_set "$key" "${value,,}" "$key_type"
+            am_config_print
+            ;;
+        unset|rm)
+            local raw_key="${1:-}"
+            if [[ -z "$raw_key" ]]; then
+                log_error "Usage: am config unset <agent|yolo|logs>"
+                return 1
+            fi
+            local key
+            if ! key=$(am_config_key_alias "$raw_key"); then
+                log_error "Unknown config key: $raw_key"
+                return 1
+            fi
+            am_config_unset "$key"
+            am_config_print
+            ;;
+        help|-h|--help)
+            cat <<'EOF'
+Usage:
+  am config                 Show effective defaults
+  am config get <key>       Get one value
+  am config set <key> <v>   Save a default
+  am config unset <key>     Remove a saved value
+
+Keys:
+  agent   Default agent type
+  yolo    Default permissive mode (true/false)
+  logs    Default pane log streaming (true/false)
+
+Precedence:
+  CLI flag > environment variable > saved config > built-in default
+EOF
+            ;;
+        *)
+            log_error "Unknown config subcommand: $subcmd"
+            return 1
+            ;;
+    esac
+}
+
 # Command: info
 cmd_info() {
     local name="${1:-}"
@@ -419,6 +537,7 @@ cmd_status() {
 main() {
     # Initialize
     am_init
+    am_config_init
 
     # Check dependencies
     require_cmd tmux
@@ -441,6 +560,9 @@ main() {
             ;;
         kill|rm|k)
             cmd_kill "$@"
+            ;;
+        config)
+            cmd_config "$@"
             ;;
         info|i)
             cmd_info "$@"

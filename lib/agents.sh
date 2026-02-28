@@ -4,6 +4,7 @@
 # Source dependencies if not already loaded
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 [[ -z "$AM_DIR" ]] && source "$SCRIPT_DIR/utils.sh"
+[[ "$(type -t am_stream_logs_enabled)" != "function" ]] && source "$SCRIPT_DIR/config.sh"
 [[ "$(type -t tmux_create_session)" != "function" ]] && source "$SCRIPT_DIR/tmux.sh"
 [[ "$(type -t registry_add)" != "function" ]] && source "$SCRIPT_DIR/registry.sh"
 
@@ -161,7 +162,7 @@ agent_launch() {
     tmux select-pane -t "$session_name:.{top}"
 
     # Set up log streaming if enabled
-    if [[ "${AM_STREAM_LOGS:-}" == "1" ]]; then
+    if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
         mkdir -p "$log_dir"
         tmux_enable_pipe_pane "$session_name" ".{top}" "$log_dir/agent.log"

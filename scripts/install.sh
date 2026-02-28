@@ -144,7 +144,6 @@ mkdir -p "$PREFIX"
 install_link_or_copy "$REPO_DIR/am" "$PREFIX/am"
 install_link_or_copy "$REPO_DIR/bin/switch-last" "$PREFIX/switch-last"
 install_link_or_copy "$REPO_DIR/bin/kill-and-switch" "$PREFIX/kill-and-switch"
-
 log "Installed commands into $PREFIX"
 
 if $UPDATE_SHELL; then
@@ -168,8 +167,14 @@ if $UPDATE_TMUX; then
 # Prefix + a: switch to last used am session
 bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$PREFIX/switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
 
+# Prefix + n: open new-session popup
+bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am new"' 'display-message "am shortcuts are active only in am-* sessions"'
+
 # Prefix + s: open agent manager popup
 bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Prefix + x: kill the current am session and switch to the next most recent one
+bind x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$PREFIX/kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Optional alias: :am
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$PREFIX/am"'

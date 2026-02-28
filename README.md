@@ -91,20 +91,24 @@ Run `am` to open the interactive browser:
 
 ### Interactive Flow
 
-Pressing `Ctrl-N` in the browser (or running `am new` with no directory) launches a 3-step interactive flow:
+Pressing `Ctrl-N` in the browser (or running `am new` with no directory) launches an interactive flow:
 
 1. **Directory picker** — type to filter, `Tab` to complete, `Ctrl-U` to go up. Uses [zoxide](https://github.com/ajeetdsouza/zoxide) frecent directories if installed.
-2. **Mode picker** — choose from: New session, Resume (`--resume`), Continue (`--continue`), or any of those with `--yolo` (permissive mode).
-3. **Agent picker** — select the agent type (claude, codex, gemini).
+2. **Agent picker** — select the agent type (claude, codex, gemini). Your configured default is listed first.
+3. **Mode picker** — choose from: New session, Resume (`--resume`), Continue (`--continue`), or any of those with `--yolo` (permissive mode). Your configured yolo default is listed first.
 
 ### CLI Usage
 
 ```bash
-am new [dir]                    # New session (default: current dir, claude)
+am new [dir]                    # New session (default: current dir + saved defaults)
 am new -t codex ~/project       # Specify agent type
 am new -n "task description" .  # Add task description
 am new --yolo ~/project         # Permissive mode (flag mapped per agent)
+am new --no-yolo ~/project      # Force safe mode even if yolo is default
 am new ~/project -- --resume    # Pass extra args to the agent
+am config set agent codex       # Save codex as the default agent
+am config set yolo true         # Save permissive mode as the default
+am config set logs true         # Save pane log streaming as the default
 ```
 
 ## Inside a Session
@@ -127,7 +131,9 @@ These work inside `am-*` sessions (requires [tmux configuration](#tmux-keybindin
 | Key | Action |
 |-----|--------|
 | `Prefix + a` | Switch to last used am session |
+| `Prefix + n` | Open the new-session popup flow |
 | `Prefix + s` | Open am browser popup |
+| `Prefix + x` | Kill the current am session and switch away |
 | `Prefix + d` | Detach from session |
 | `Prefix ↑/↓` | Switch between agent and shell panes |
 | `:am` | Open am browser (tmux command) |
@@ -175,9 +181,21 @@ The directory picker (`Ctrl-N`) annotates directories with their recent session 
 
 History is auto-pruned to keep only the last 7 days.
 
-### Shell Output Streaming
+### Defaults And Shell Output Streaming
 
-Set `AM_STREAM_LOGS=1` to stream all pane output to log files. Each session gets a log directory at `/tmp/am-logs/<session-name>/` with `agent.log` and `shell.log`. The `$AM_LOG_DIR` environment variable is available in both panes.
+Use `am config` to save defaults for agent type, yolo mode, and pane log streaming. Effective precedence is: CLI flag > environment variable > saved config > built-in default.
+
+```bash
+am config
+am config set agent codex
+am config set yolo true
+am config set logs true
+am config get agent
+```
+
+Saved config lives at `~/.agent-manager/config.json`.
+
+You can still override saved defaults with environment variables. `AM_STREAM_LOGS=1` streams all pane output to log files. Each session gets a log directory at `/tmp/am-logs/<session-name>/` with `agent.log` and `shell.log`. The `$AM_LOG_DIR` environment variable is available in both panes.
 
 ```bash
 export AM_STREAM_LOGS=1
@@ -205,6 +223,7 @@ am new ~/project -- --continue    # Continue from where you left off
 | `am attach <name>` | `a` | Attach to session (exact, prefix, or fuzzy match) |
 | `am kill <name>` | `rm`, `k` | Kill a session |
 | `am kill --all` | `-a` | Kill all sessions |
+| `am config` | | Show or change saved defaults |
 | `am info <name>` | `i` | Show session details |
 | `am status` | `s` | Summary of all sessions |
 | `am <path>` | | Shortcut for `am new <path>` |
@@ -223,8 +242,14 @@ The installer can append tmux bindings automatically (`./scripts/install.sh`). F
 # Prefix + a: switch to last used am session
 bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
 
+# Prefix + n: open new-session popup
+bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "am new"' 'display-message "am shortcuts are active only in am-* sessions"'
+
 # Prefix + s: open agent manager popup
 bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "am"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Prefix + x: kill the current am session and switch to the next most recent one
+bind x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Command alias: ":am" opens agent manager
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
@@ -244,6 +269,7 @@ set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
 
 ```
 ~/.agent-manager/
+├── config.json         # Saved defaults (agent, yolo, log streaming)
 ├── sessions.json       # Live session metadata registry
 └── history.jsonl       # Persistent session history (survives GC)
 ```

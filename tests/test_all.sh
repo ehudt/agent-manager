@@ -241,6 +241,62 @@ test_utils_extended() {
 }
 
 # ============================================
+# Test: config.sh
+# ============================================
+test_config() {
+    echo "=== Testing config.sh ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+
+    local original_am_dir="${AM_DIR:-}"
+    local original_am_config="${AM_CONFIG:-}"
+    local original_default_agent="${AM_DEFAULT_AGENT:-}"
+    local original_default_yolo="${AM_DEFAULT_YOLO:-}"
+    local original_stream_logs="${AM_STREAM_LOGS:-}"
+
+    export AM_DIR
+    AM_DIR=$(mktemp -d)
+    export AM_CONFIG="$AM_DIR/config.json"
+
+    am_config_init
+    assert_eq "true" "$(test -f "$AM_CONFIG" && echo true || echo false)" "config: creates config file"
+    assert_eq "claude" "$(am_default_agent)" "config: default agent fallback"
+    assert_eq "false" "$(am_default_yolo_enabled && echo true || echo false)" "config: default yolo fallback"
+    assert_eq "false" "$(am_stream_logs_enabled && echo true || echo false)" "config: default logs fallback"
+
+    am_config_set "default_agent" "codex" "string"
+    am_config_set "default_yolo" "true" "boolean"
+    am_config_set "stream_logs" "yes" "boolean"
+
+    assert_eq "codex" "$(am_default_agent)" "config: saved default agent"
+    assert_eq "true" "$(am_default_yolo_enabled && echo true || echo false)" "config: saved default yolo"
+    assert_eq "true" "$(am_stream_logs_enabled && echo true || echo false)" "config: saved stream logs"
+    assert_eq "true" "$(am_maybe_apply_default_yolo --resume && echo true || echo false)" "config: applies default yolo when missing"
+    assert_eq "false" "$(am_maybe_apply_default_yolo --yolo && echo true || echo false)" "config: does not duplicate yolo flag"
+
+    export AM_DEFAULT_AGENT="gemini"
+    export AM_DEFAULT_YOLO="false"
+    export AM_STREAM_LOGS="0"
+    assert_eq "gemini" "$(am_default_agent)" "config: env overrides saved agent"
+    assert_eq "false" "$(am_default_yolo_enabled && echo true || echo false)" "config: env overrides saved yolo"
+    assert_eq "false" "$(am_stream_logs_enabled && echo true || echo false)" "config: env overrides saved logs"
+
+    am_config_unset "default_agent"
+    unset AM_DEFAULT_AGENT AM_DEFAULT_YOLO AM_STREAM_LOGS
+    assert_eq "claude" "$(am_default_agent)" "config: unset falls back to built-in default"
+
+    rm -rf "$AM_DIR"
+    export AM_DIR="${original_am_dir:-$HOME/.agent-manager}"
+    export AM_CONFIG="$original_am_config"
+    export AM_DEFAULT_AGENT="$original_default_agent"
+    export AM_DEFAULT_YOLO="$original_default_yolo"
+    export AM_STREAM_LOGS="$original_stream_logs"
+
+    echo ""
+}
+
+# ============================================
 # Test: registry.sh
 # ============================================
 test_registry() {
@@ -488,6 +544,58 @@ test_agents_extended() {
 }
 
 # ============================================
+# Test: fzf option ordering helpers
+# ============================================
+test_fzf_helpers() {
+    echo "=== Testing fzf helpers ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/fzf.sh"
+    set -u
+
+    local first_agent
+    first_agent=$(fzf_agent_options "codex" | head -n1)
+    assert_eq "codex" "$first_agent" "fzf helpers: default agent listed first"
+
+    local first_mode
+    first_mode=$(fzf_mode_options "true" | head -n1)
+    assert_contains "$first_mode" "--yolo" "fzf helpers: yolo default listed first"
+
+    first_mode=$(fzf_mode_options "false" | head -n1)
+    assert_eq "New session" "$first_mode" "fzf helpers: safe default listed first"
+
+    echo ""
+}
+
+# ============================================
+# Test: tmux binding snippets
+# ============================================
+test_tmux_binding_snippets() {
+    echo "=== Testing tmux binding snippets ==="
+
+    local example_conf
+    example_conf=$(cat "$PROJECT_DIR/config/tmux.conf.example")
+    assert_contains "$example_conf" 'bind n if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''display-popup -E -w 90% -h 80% "am new"'\''' \
+        "tmux snippet: prefix+n opens new-session popup"
+    assert_contains "$example_conf" 'bind x if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''run-shell "kill-and-switch #{session_name}"'\''' \
+        "tmux snippet: prefix+x kills current session"
+
+    local install_script
+    install_script=$(cat "$PROJECT_DIR/scripts/install.sh")
+    assert_contains "$install_script" 'display-popup -E -w 90% -h 80% "$PREFIX/am new"' \
+        "install script: prefix+n installs popup binding"
+    assert_contains "$install_script" 'run-shell "$PREFIX/kill-and-switch #{session_name}"' \
+        "install script: prefix+x installs kill binding"
+
+    echo ""
+}
+
+# ============================================
 # Test: am CLI
 # ============================================
 test_cli() {
@@ -663,6 +771,18 @@ test_cli_extended() {
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" status >/dev/null 2>&1 || status_rc=$?
     assert_eq "true" "$(test $status_rc -eq 0 && echo true || echo false)" \
         "am status: exits 0"
+
+    # --- Test: am config commands ---
+    local config_output
+    config_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set agent codex 2>/dev/null)
+    assert_contains "$config_output" "default_agent=codex" "am config set agent: persists default"
+
+    local config_get
+    config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get agent 2>/dev/null)
+    assert_eq "codex" "$config_get" "am config get agent: returns saved default"
+
+    config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DEFAULT_AGENT="gemini" "$PROJECT_DIR/am" config get agent 2>/dev/null)
+    assert_eq "gemini" "$config_get" "am config get agent: env override wins"
 
     # Cleanup
     rm -rf "$test_dir"
@@ -1532,11 +1652,14 @@ main() {
 
     test_utils
     test_utils_extended
+    test_config
     test_registry
     test_registry_extended
     test_tmux
     test_agents
     test_agents_extended
+    test_fzf_helpers
+    test_tmux_binding_snippets
     test_cli
     test_integration_lifecycle
     test_cli_extended
