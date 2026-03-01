@@ -417,6 +417,69 @@ test_registry_extended() {
 }
 
 # ============================================
+# Test: registry_get_fields helper
+# ============================================
+test_registry_get_fields() {
+    echo "=== Testing registry_get_fields ==="
+
+    if ! command -v jq &>/dev/null; then
+        skip_test "registry_get_fields tests (jq not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    local old_am_dir="$AM_DIR"
+    local old_am_registry="$AM_REGISTRY"
+    export AM_DIR=$(mktemp -d)
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    am_init
+
+    # Seed test data
+    registry_add "test-sess" "/home/user/project" "main" "claude" "fix auth bug"
+    registry_update "test-sess" "worktree_path" "/home/user/project/.claude/worktrees/wt1"
+
+    # Test: 4-field extraction (standard agent_display_name fields)
+    local fields
+    fields=$(registry_get_fields "test-sess" directory branch agent_type task)
+    local directory branch agent_type task
+    IFS='|' read -r directory branch agent_type task <<< "$fields"
+    assert_eq "/home/user/project" "$directory" "registry_get_fields: directory"
+    assert_eq "main" "$branch" "registry_get_fields: branch"
+    assert_eq "claude" "$agent_type" "registry_get_fields: agent_type"
+    assert_eq "fix auth bug" "$task" "registry_get_fields: task"
+
+    # Test: 5-field extraction (agent_info with worktree_path)
+    fields=$(registry_get_fields "test-sess" directory branch agent_type task worktree_path)
+    local worktree_path
+    IFS='|' read -r directory branch agent_type task worktree_path <<< "$fields"
+    assert_eq "/home/user/project/.claude/worktrees/wt1" "$worktree_path" \
+        "registry_get_fields: worktree_path (5th field)"
+
+    # Test: missing fields return empty
+    registry_add "minimal-sess" "/tmp/dir" "" "codex" ""
+    fields=$(registry_get_fields "minimal-sess" directory branch agent_type task)
+    IFS='|' read -r directory branch agent_type task <<< "$fields"
+    assert_eq "/tmp/dir" "$directory" "registry_get_fields: directory for minimal session"
+    assert_eq "" "$branch" "registry_get_fields: empty branch"
+    assert_eq "" "$task" "registry_get_fields: empty task"
+
+    # Test: nonexistent session returns all empty
+    fields=$(registry_get_fields "nonexistent" directory branch agent_type task)
+    IFS='|' read -r directory branch agent_type task <<< "$fields"
+    assert_eq "" "$directory" "registry_get_fields: empty for nonexistent session"
+
+    # Cleanup
+    rm -rf "$AM_DIR"
+    export AM_DIR="$old_am_dir"
+    export AM_REGISTRY="$old_am_registry"
+
+    echo ""
+}
+
+# ============================================
 # Test: tmux.sh (requires tmux)
 # ============================================
 test_tmux() {
@@ -749,6 +812,12 @@ test_cli_extended() {
         "am list --json: preserves agent_type when branch is empty"
     assert_eq "" "$(echo "$json_output" | jq -r '.[0].branch')" \
         "am list --json: preserves empty branch field"
+
+    # --- Test: am list-internal returns session list for fzf ---
+    local internal_output
+    internal_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" list-internal 2>/dev/null)
+    assert_contains "$internal_output" "$session_name" "am list-internal: contains session"
+    assert_contains "$internal_output" "[claude]" "am list-internal: contains agent type"
 
     # --- Test: am info <session> ---
     local info_output
@@ -1167,6 +1236,15 @@ test_worktree() {
         display=$(agent_display_name "$session_name")
         # Should have [claude] but no extra task text between type and time
         assert_contains "$display" "[claude]" "display_name no task: shows agent type"
+
+        # --- Test: agent_display_name accepts pre-fetched activity ---
+        local activity
+        activity=$(tmux_get_activity "$session_name")
+        local display_with_activity
+        display_with_activity=$(agent_display_name "$session_name" "$activity")
+        assert_contains "$display_with_activity" "[claude]" "display_name with activity: shows agent type"
+        assert_contains "$display_with_activity" "ago)" "display_name with activity: shows time"
+
         agent_kill "$session_name" 2>/dev/null
     else
         skip_test "display_name no task: agent_launch failed"
@@ -1688,6 +1766,7 @@ main() {
     test_config
     test_registry
     test_registry_extended
+    test_registry_get_fields
     test_tmux
     test_agents
     test_agents_extended

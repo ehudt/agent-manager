@@ -540,6 +540,9 @@ main() {
     [[ $# -gt 0 ]] && shift
 
     case "$cmd" in
+        list-internal)
+            fzf_list_sessions
+            ;;
         list|ls)
             cmd_list "$@"
             ;;

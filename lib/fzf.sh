@@ -284,42 +284,31 @@ fzf_pick_agent() {
 # Format: "session_name|display_name"
 # Usage: fzf_list_sessions
 fzf_list_sessions() {
-    local session
+    local session activity
 
     # Clean up stale registry entries first
     registry_gc >/dev/null 2>&1
     auto_title_scan >/dev/null 2>&1 &
 
-    # Get sessions sorted by activity
-    for session in $(tmux_list_am_sessions_with_activity | awk '{print $1}'); do
+    # Get sessions sorted by activity — pass pre-fetched activity to avoid N+1 tmux calls
+    while IFS=' ' read -r session activity; do
+        [[ -z "$session" ]] && continue
         local display
-        display=$(agent_display_name "$session")
+        display=$(agent_display_name "$session" "$activity")
         echo "${session}|${display}"
-    done
-}
-
-# Export functions for fzf subshells (reload uses fzf_list_sessions -> agent_display_name)
-_fzf_export_functions() {
-    export AM_DIR AM_REGISTRY AM_SESSION_PREFIX AM_HISTORY AM_CONFIG
-    export -f fzf_list_sessions agent_display_name
-    export -f registry_gc registry_list registry_remove am_init
-    export -f registry_get_field registry_update history_append history_prune
-    export -f auto_title_scan _title_fallback _title_strip_haiku _title_valid
-    export -f am_config_init am_config_get am_default_agent am_default_yolo_enabled
-    export -f claude_first_user_message
-    export -f tmux_list_am_sessions_with_activity tmux_get_activity
-    export -f dir_basename format_time_ago epoch_now
-    export -f require_cmd log_info log_error log_warn am_init
+    done < <(tmux_list_am_sessions_with_activity)
 }
 
 # Main fzf interface
 # Usage: fzf_main
 fzf_main() {
-    _fzf_export_functions
-
     # Get the path to this script's directory for the preview command
     local lib_dir
     lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # Path to the am entry point for fzf reload subshells.
+    # Using the entry point avoids exporting 22+ functions for subshell access.
+    local am_cmd="$lib_dir/../am"
 
     # Check if any sessions exist
     local sessions
@@ -332,9 +321,6 @@ fzf_main() {
 
     # Build preview command - use standalone script for speed
     local preview_cmd="$lib_dir/preview"
-
-    # Fallback for reload commands that need full library access
-    local src_libs="source '$lib_dir/utils.sh' && source '$lib_dir/tmux.sh' && source '$lib_dir/registry.sh' && source '$lib_dir/agents.sh' && source '$lib_dir/fzf.sh'"
 
     # Help text for ? key
     local help_text="
@@ -377,9 +363,9 @@ fzf_main() {
         --preview-window="bottom:75%" \
         --bind="ctrl-j:preview-down,ctrl-k:preview-up" \
         --bind="ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up" \
-        --bind="ctrl-r:reload(bash -c '$src_libs && fzf_list_sessions')" \
+        --bind="ctrl-r:reload($am_cmd list-internal)" \
         --bind="ctrl-p:toggle-preview" \
-        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch {1})+reload(bash -c '$src_libs && fzf_list_sessions')" \
+        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch {1})+reload($am_cmd list-internal)" \
         --bind="?:preview(echo '$help_text')" \
         --expect="ctrl-n" \
     )
@@ -428,12 +414,13 @@ fzf_main() {
 # Simplified list output (no fzf, just print)
 # Usage: fzf_list_simple
 fzf_list_simple() {
-    local session
-    for session in $(tmux_list_am_sessions_with_activity | awk '{print $1}'); do
+    local session activity
+    while IFS=' ' read -r session activity; do
+        [[ -z "$session" ]] && continue
         local display
-        display=$(agent_display_name "$session")
+        display=$(agent_display_name "$session" "$activity")
         echo "$display"
-    done
+    done < <(tmux_list_am_sessions_with_activity)
 }
 
 # JSON output for scripting
@@ -442,23 +429,26 @@ fzf_list_json() {
     registry_gc >/dev/null 2>&1
     auto_title_scan >/dev/null 2>&1 &
 
-    local sessions=()
-    local session
+    # Bulk-read tmux data: session_name activity created (one tmux call total)
+    local -A tmux_activity tmux_created
+    local _name _activity _created
+    while IFS=' ' read -r _name _activity _created; do
+        tmux_activity[$_name]=$_activity
+        tmux_created[$_name]=$_created
+    done < <(tmux list-sessions -F '#{session_name} #{session_activity} #{session_created}' 2>/dev/null \
+        | grep "^${AM_SESSION_PREFIX}" || true)
 
-    for session in $(tmux_list_am_sessions_with_activity | awk '{print $1}'); do
-        # Get all registry fields in one jq call
+    # Build JSON for each session sorted by activity (most recent first)
+    local sessions=()
+    local session activity
+    while IFS=' ' read -r session activity; do
+        [[ -z "$session" ]] && continue
+
         local fields
-        fields=$(jq -r --arg name "$session" \
-            '.sessions[$name] | "\(.directory // "")|\(.branch // "")|\(.agent_type // "")|\(.task // "")"' \
-            "$AM_REGISTRY" 2>/dev/null)
+        fields=$(registry_get_fields "$session" directory branch agent_type task)
 
         local directory branch agent_type task
         IFS='|' read -r directory branch agent_type task <<< "$fields"
-
-        local activity
-        activity=$(tmux_get_activity "$session")
-        local created
-        created=$(tmux_get_created "$session")
 
         sessions+=("$(jq -n \
             --arg name "$session" \
@@ -466,11 +456,11 @@ fzf_list_json() {
             --arg branch "$branch" \
             --arg agent "$agent_type" \
             --arg task "$task" \
-            --arg activity "$activity" \
-            --arg created "$created" \
+            --arg activity "${tmux_activity[$session]:-0}" \
+            --arg created "${tmux_created[$session]:-0}" \
             '{name: $name, directory: $dir, branch: $branch, agent_type: $agent, task: $task, activity: ($activity | tonumber), created: ($created | tonumber)}'
         )")
-    done
+    done < <(tmux_list_am_sessions_with_activity)
 
     # Combine into array
     if [[ ${#sessions[@]} -eq 0 ]]; then

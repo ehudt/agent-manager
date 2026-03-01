@@ -207,25 +207,23 @@ agent_launch() {
 }
 
 # Get display name for a session (for fzf listing)
-# Usage: agent_display_name <session_name>
+# Usage: agent_display_name <session_name> [activity_ts]
 # Returns: "dirname/branch [type] (Xm ago)"
-# Note: Title extraction moved to preview for faster startup
+# Pass activity_ts to avoid an extra tmux subprocess per session.
 agent_display_name() {
     local session_name="$1"
+    local activity="${2:-}"
 
-    # Get all metadata fields in ONE jq call (critical for performance)
-    # Use pipe delimiter (not tab) because bash read collapses consecutive tab delimiters
     local fields
-    fields=$(jq -r --arg name "$session_name" \
-        '.sessions[$name] | "\(.directory // "")|\(.branch // "")|\(.agent_type // "")|\(.task // "")"' \
-        "$AM_REGISTRY" 2>/dev/null)
+    fields=$(registry_get_fields "$session_name" directory branch agent_type task)
 
     local directory branch agent_type task
     IFS='|' read -r directory branch agent_type task <<< "$fields"
 
-    # Get activity from tmux
-    local activity
-    activity=$(tmux_get_activity "$session_name")
+    # Use pre-fetched activity or fetch from tmux
+    if [[ -z "$activity" ]]; then
+        activity=$(tmux_get_activity "$session_name")
+    fi
     local now
     now=$(epoch_now)
     local idle=0
@@ -267,12 +265,8 @@ agent_display_name() {
 agent_info() {
     local session_name="$1"
 
-    # Get all metadata fields in one jq call
-    # Use pipe delimiter (not tab) because bash read collapses consecutive tab delimiters
     local fields
-    fields=$(jq -r --arg name "$session_name" \
-        '.sessions[$name] | "\(.directory // "")|\(.branch // "")|\(.agent_type // "")|\(.task // "")|\(.worktree_path // "")"' \
-        "$AM_REGISTRY" 2>/dev/null)
+    fields=$(registry_get_fields "$session_name" directory branch agent_type task worktree_path)
 
     local directory branch agent_type task worktree_path
     IFS='|' read -r directory branch agent_type task worktree_path <<< "$fields"

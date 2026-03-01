@@ -45,6 +45,25 @@ registry_get_field() {
     jq -r --arg name "$name" --arg field "$field" '.sessions[$name][$field] // empty' "$AM_REGISTRY"
 }
 
+# Get multiple fields from a session in one jq call
+# Usage: registry_get_fields <name> <field1> [field2] ...
+# Returns: pipe-delimited values, empty strings for missing fields
+registry_get_fields() {
+    local name="$1"; shift
+    local fields=("$@")
+
+    # Build jq template: "\(.field1 // "")|\(.field2 // "")|..."
+    local parts=()
+    local f
+    for f in "${fields[@]}"; do
+        parts+=("\\(.${f} // \"\")")
+    done
+    local template
+    template=$(IFS='|'; echo "${parts[*]}")
+
+    jq -r --arg name "$name" ".sessions[\$name] | \"${template}\"" "$AM_REGISTRY" 2>/dev/null
+}
+
 # Update a session field
 # Usage: registry_update <name> <field> <value>
 registry_update() {
