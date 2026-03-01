@@ -1350,43 +1350,21 @@ test_auto_title_session() {
     export AM_HISTORY="$AM_DIR/history.jsonl"
     am_init
 
-    # --- Test Helper: Extract title logic from agents.sh ---
-    # This tests the PURE LOGIC (sed/echo) without the background subshell
-    _generate_fallback_title() {
-        local msg="$1"
-        echo "$msg" | sed -E 's/https?:\/\/[^ ]*//g; s/  +/ /g; s/[.?!].*//' | head -c 60
-    }
-
-    _strip_haiku_output() {
-        local title="$1"
-        # Strip markdown/quotes (from line 274 of agents.sh)
-        title=$(echo "$title" | sed 's/^[#*\"`'\'''\''/]*//; s/[#*\"`'\'''\''/]*$//' | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        echo "$title"
-    }
-
-    _is_valid_title() {
-        local title="$1"
-        # Valid if <= 60 chars and no newlines (from line 276 of agents.sh)
-        if [[ ${#title} -le 60 && "$title" != *$'\n'* ]]; then
-            echo "true"
-        else
-            echo "false"
-        fi
-    }
+    # Use production title functions directly (sourced from lib/registry.sh)
 
     # --- Test 1: Fallback title from first sentence ---
     local fallback
-    fallback=$(_generate_fallback_title "Fix the login bug in auth module. Also refactor utils.")
+    fallback=$(_title_fallback "Fix the login bug in auth module. Also refactor utils.")
     assert_contains "$fallback" "Fix the login bug" \
         "title_gen: fallback extracts first sentence"
 
     # --- Test 2: Fallback stops at punctuation ---
-    fallback=$(_generate_fallback_title "Add user settings page? Not sure about design.")
+    fallback=$(_title_fallback "Add user settings page? Not sure about design.")
     assert_contains "$fallback" "Add user settings page" \
         "title_gen: fallback stops at ?"
 
     # --- Test 3: Fallback removes URLs ---
-    fallback=$(_generate_fallback_title "See https://example.com/docs for details. Fix auth bug.")
+    fallback=$(_title_fallback "See https://example.com/docs for details. Fix auth bug.")
     assert_not_empty "$fallback" "title_gen: fallback handles URLs"
     if [[ "$fallback" != *"https"* ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
@@ -1398,35 +1376,46 @@ test_auto_title_session() {
 
     # --- Test 4: Haiku output markdown stripping ---
     local stripped
-    stripped=$(_strip_haiku_output "# Fix Login Bug")
+    stripped=$(_title_strip_haiku "# Fix Login Bug")
     assert_eq "Fix Login Bug" "$stripped" \
         "title_gen: strips leading markdown"
 
-    stripped=$(_strip_haiku_output "\`Refactor Database\`")
+    stripped=$(_title_strip_haiku "\`Refactor Database\`")
     assert_eq "Refactor Database" "$stripped" \
         "title_gen: strips backticks"
 
-    stripped=$(_strip_haiku_output "*Add Dark Mode*")
+    stripped=$(_title_strip_haiku "*Add Dark Mode*")
     assert_eq "Add Dark Mode" "$stripped" \
         "title_gen: strips asterisks"
 
     # --- Test 5: Title validation - length check ---
-    local is_valid
-    is_valid=$(_is_valid_title "Short title")
-    assert_eq "true" "$is_valid" \
-        "title_gen: accepts valid short title"
+    if _title_valid "Short title"; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: title_gen: accepts valid short title"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: title_gen: accepts valid short title"
+    fi
 
-    is_valid=$(_is_valid_title "This is a really really really really really really really long title over 60 chars")
-    assert_eq "false" "$is_valid" \
-        "title_gen: rejects title >60 chars"
+    if _title_valid "This is a really really really really really really really long title over 60 chars"; then
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: title_gen: rejects title >60 chars"
+    else
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: title_gen: rejects title >60 chars"
+    fi
 
     # --- Test 6: Title validation - newline check ---
-    is_valid=$(_is_valid_title $'Multi\nline')
-    assert_eq "false" "$is_valid" \
-        "title_gen: rejects multiline titles"
+    if _title_valid $'Multi\nline'; then
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: title_gen: rejects multiline titles"
+    else
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: title_gen: rejects multiline titles"
+    fi
 
     # --- Test 7: Edge case - empty message produces empty fallback ---
-    fallback=$(_generate_fallback_title "")
+    fallback=$(_title_fallback "")
     assert_eq "" "$fallback" \
         "title_gen: empty message produces empty fallback"
 
@@ -1453,7 +1442,6 @@ test_auto_title_session() {
         "title_gen: history_append skips empty task"
 
     # --- Cleanup ---
-    unset -f _generate_fallback_title _strip_haiku_output _is_valid_title
     rm -rf "$AM_DIR"
     export AM_DIR="$old_am_dir"
     export AM_REGISTRY="$old_am_registry"

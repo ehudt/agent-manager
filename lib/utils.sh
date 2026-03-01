@@ -56,48 +56,56 @@ am_init() {
     fi
 }
 
-# Format seconds as human-readable time ago
-format_time_ago() {
+# Format seconds as human-readable duration
+# Usage: _format_seconds <seconds> [ago]
+# If ago="ago", appends " ago" suffix and uses terse format (omits zero sub-units).
+# Without ago, uses verbose format (always shows sub-units for hours+).
+_format_seconds() {
     local seconds="$1"
+    local ago="${2:-}"
+    local terse=false
+    [[ "$ago" == "ago" ]] && terse=true
 
-    if (( seconds < 0 )); then
+    if $terse && (( seconds < 0 )); then
         echo "just now"
-    elif (( seconds < 60 )); then
-        echo "${seconds}s ago"
+        return
+    fi
+
+    local result
+    if (( seconds < 60 )); then
+        result="${seconds}s"
     elif (( seconds < 3600 )); then
-        echo "$(( seconds / 60 ))m ago"
+        result="$(( seconds / 60 ))m"
     elif (( seconds < 86400 )); then
         local hours=$(( seconds / 3600 ))
         local mins=$(( (seconds % 3600) / 60 ))
-        if (( mins > 0 )); then
-            echo "${hours}h ${mins}m ago"
+        if $terse && (( mins == 0 )); then
+            result="${hours}h"
         else
-            echo "${hours}h ago"
+            result="${hours}h ${mins}m"
         fi
     else
         local days=$(( seconds / 86400 ))
-        echo "${days}d ago"
+        if $terse; then
+            result="${days}d"
+        else
+            local hours=$(( (seconds % 86400) / 3600 ))
+            result="${days}d ${hours}h"
+        fi
     fi
-}
 
-# Format seconds as duration (for "running time")
-format_duration() {
-    local seconds="$1"
-
-    if (( seconds < 60 )); then
-        echo "${seconds}s"
-    elif (( seconds < 3600 )); then
-        echo "$(( seconds / 60 ))m"
-    elif (( seconds < 86400 )); then
-        local hours=$(( seconds / 3600 ))
-        local mins=$(( (seconds % 3600) / 60 ))
-        echo "${hours}h ${mins}m"
+    if $terse; then
+        echo "${result} ago"
     else
-        local days=$(( seconds / 86400 ))
-        local hours=$(( (seconds % 86400) / 3600 ))
-        echo "${days}d ${hours}h"
+        echo "$result"
     fi
 }
+
+# Format seconds as human-readable time ago (terse: "2h ago", "3d ago")
+format_time_ago() { _format_seconds "$1" ago; }
+
+# Format seconds as duration (verbose: "2h 0m", "1d 0h")
+format_duration() { _format_seconds "$1"; }
 
 # Get absolute path
 abspath() {

@@ -139,11 +139,13 @@ fzf_pick_directory() {
     initial_list=$(_list_directories | grep -v '^$')
 
     # Run fzf with dynamic completion
+    local dir_preview_cmd="$SCRIPT_DIR/dir-preview"
+
     local selected
     selected=$(echo "$initial_list" | fzf \
         --ansi \
         --header="Directory: type path or select  |  Tab: complete  |  Ctrl-U: parent dir" \
-        --preview='d="{}"; d=$(echo "$d" | cut -f1); d="${d/#\~/$HOME}"; if [[ -d "$d" ]]; then echo "── Recent Sessions ──"; if [[ -f "'"$AM_HISTORY"'" ]]; then jq -r --arg dir "$d" "select(.directory == \$dir) | \"\(.agent_type): \(.task) [\(.branch)]\"" "'"$AM_HISTORY"'" 2>/dev/null | tail -r 2>/dev/null || tac 2>/dev/null || cat | head -5; else echo "(no history)"; fi; echo ""; echo "── Files ──"; command ls -la "$d" 2>/dev/null | head -15; else echo "Type a path or select from list"; fi' \
+        --preview="$dir_preview_cmd {}" \
         --preview-window="right:40%:wrap" \
         --print-query \
         --bind="tab:reload(bash -c '_list_directories {q}' | grep -v '^$')+clear-query" \

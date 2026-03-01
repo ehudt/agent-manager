@@ -126,8 +126,7 @@ registry_gc() {
     local name
 
     for name in $(registry_list); do
-        # Check if tmux session exists (using tmux_session_exists from tmux.sh if loaded)
-        if ! tmux has-session -t "$name" 2>/dev/null; then
+        if ! tmux_session_exists "$name"; then
             registry_remove "$name"
             ((removed++))
         fi
@@ -168,7 +167,18 @@ history_append() {
         '{directory: $dir, task: $task, agent_type: $agent, branch: $branch, created_at: $created}')" \
         >> "$AM_HISTORY"
 
-    history_prune
+    # Throttled prune: avoid full file rewrite on every append
+    local _prune_marker="$AM_DIR/.prune_last"
+    local _prune_now
+    _prune_now=$(date +%s)
+    if [[ -f "$_prune_marker" ]]; then
+        local _prune_last
+        _prune_last=$(cat "$_prune_marker" 2>/dev/null || echo 0)
+        (( _prune_now - _prune_last < 3600 )) || { echo "$_prune_now" > "$_prune_marker"; history_prune; }
+    else
+        echo "$_prune_now" > "$_prune_marker"
+        history_prune
+    fi
 }
 
 # Remove history entries older than 7 days
@@ -280,30 +290,9 @@ auto_title_scan() {
         titled=$((titled + 1))
         _titler_log "  $name: fallback=\"$fallback\""
 
-        # Fire-and-forget Haiku upgrade
+        # Fire-and-forget Haiku upgrade via standalone script
         if command -v claude &>/dev/null; then
-            (
-                set +e +o pipefail
-                unset CLAUDECODE
-
-                # The scan may outlive a temporary AM_DIR used by tests.
-                # Exit quietly if the registry/log directory has already been removed.
-                [[ -d "$AM_DIR" && -f "$AM_REGISTRY" ]] || exit 0
-
-                local haiku_title
-                haiku_title=$(printf '%s' "$first_msg" | claude -p --model haiku \
-                    "Reply with a short 2-5 word title summarizing this task. Plain text only, no markdown, no quotes, no punctuation. Examples: Fix auth login bug, Add user settings page, Refactor database layer" 2>/dev/null) || true
-
-                haiku_title=$(_title_strip_haiku "$haiku_title")
-                if _title_valid "$haiku_title"; then
-                    [[ -d "$AM_DIR" && -f "$AM_REGISTRY" ]] || exit 0
-                    source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
-                    registry_update "$name" "task" "$haiku_title"
-                    _titler_log "  $name: haiku=\"$haiku_title\""
-                else
-                    _titler_log "  $name: haiku failed (raw: ${haiku_title:0:80})"
-                fi
-            ) &
+            "$(dirname "${BASH_SOURCE[0]}")/title-upgrade" "$name" "$first_msg" &
         fi
     done
 

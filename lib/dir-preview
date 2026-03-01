@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# dir-preview - Standalone preview for directory picker fzf panel
+# Usage: dir-preview <line>
+# Where <line> may be "path<TAB>annotation"
+
+set -euo pipefail
+
+line="${1:-}"
+[[ -z "$line" ]] && exit 0
+
+# Strip annotation (tab-separated)
+d=$(echo "$line" | cut -f1)
+d="${d/#\~/$HOME}"
+
+if [[ ! -d "$d" ]]; then
+    echo "Type a path or select from list"
+    exit 0
+fi
+
+AM_HISTORY="${AM_HISTORY:-$HOME/.agent-manager/history.jsonl}"
+
+echo "── Recent Sessions ──"
+if [[ -f "$AM_HISTORY" ]]; then
+    jq -r --arg dir "$d" \
+        'select(.directory == $dir) | "\(.agent_type): \(.task) [\(.branch)]"' \
+        "$AM_HISTORY" 2>/dev/null \
+        | tail -r 2>/dev/null || tac 2>/dev/null || cat \
+        | head -5
+else
+    echo "(no history)"
+fi
+
+echo ""
+echo "── Files ──"
+command ls -la "$d" 2>/dev/null | head -15

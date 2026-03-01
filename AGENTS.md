@@ -13,6 +13,8 @@ Architecture reference for AI agents working with this codebase.
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
 | `lib/fzf.sh` | fzf UI: list generation, directory picker with history annotations, main loop |
 | `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
+| `lib/title-upgrade` | Standalone script: fire-and-forget Haiku title upgrade for a session |
+| `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
 
@@ -30,7 +32,7 @@ Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for
 **Session lifecycle:**
 - `agent_launch(dir, type, task, worktree_name, agent_args...)` - Creates session, registers, starts agent
 - `agent_kill(name)` - Kills tmux + removes from registry
-- `auto_title_scan([force])` - Piggyback scanner: titles untitled sessions during fzf touchpoints (throttled 60s), writes fallback immediately, spawns fire-and-forget Haiku upgrade
+- `auto_title_scan([force])` - Piggyback scanner: titles untitled sessions during fzf touchpoints (throttled 60s), writes fallback immediately, spawns `lib/title-upgrade` for Haiku upgrade
 
 **Title helpers:**
 - `_title_fallback(message)` - Generate fallback title from first sentence of user message
@@ -38,15 +40,16 @@ Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)
 
 **Registry (JSON metadata):**
-- `registry_add/get_field/update/remove/list` - CRUD for sessions.json
-- `registry_gc()` - Remove entries for dead tmux sessions
+- `registry_add/get_field/get_fields/update/remove/list` - CRUD for sessions.json
+- `registry_gc()` - Remove entries for dead tmux sessions (uses `tmux_session_exists`)
 
 **Session history (JSONL):**
-- `history_append(dir, task, agent_type, branch)` - Append entry to `~/.agent-manager/history.jsonl`
+- `history_append(dir, task, agent_type, branch)` - Append entry to `~/.agent-manager/history.jsonl` (prune throttled to once/hour)
 - `history_prune()` - Remove entries older than 7 days
 - `history_for_directory(path)` - Get recent sessions for a directory, newest first
 
 **Utils:**
+- `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
 - `claude_first_user_message(dir)` - Extract first user message from Claude session JSONL
 
 **tmux:**
@@ -76,6 +79,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Change fzf keybindings | `lib/fzf.sh` → `fzf_main()` |
 | Modify session display | `lib/agents.sh` → `agent_display_name()` |
 | Add metadata field | `lib/registry.sh` → `registry_add()` |
-| Change preview content | `lib/preview` (standalone script) |
+| Change preview content | `lib/preview` (session), `lib/dir-preview` (directory picker) |
+| Change title upgrade | `lib/title-upgrade` (standalone script) |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Add history integration | `lib/registry.sh` → `history_append()` |

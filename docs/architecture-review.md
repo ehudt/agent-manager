@@ -315,22 +315,22 @@ Priority: **Medium** — easy fix, removes unnecessary I/O on every session crea
 
 ## Prioritized Summary
 
-| # | Change | Priority | Risk | Effort |
-|---|--------|----------|------|--------|
-| 1 | Eliminate `_fzf_export_functions` via `am list-internal` subcommand | High | Low | Small |
-| 2 | Fix N+1 tmux calls — pass activity through `agent_display_name` | High | Low | Small |
-| 3 | Extract `registry_get_fields` helper to DRY up jq pattern | High | Low | Small |
-| 4 | Throttle `history_prune` (not on every append) | Medium | Low | Trivial |
-| 5 | Extract Haiku background call to standalone `lib/title-upgrade` | Medium | Low | Small |
-| 6 | Fix test duplication — call production title functions directly | Medium | Low | Trivial |
-| 7 | Bulk-read optimization for `fzf_list_json` | Medium | Medium | Medium |
-| 8 | Extract yolo normalization from `agent_launch` | Low | Low | Small |
-| 9 | Unify `format_time_ago`/`format_duration` | Low | Low | Trivial |
-| 10 | Unify `tmux_get_activity`/`tmux_get_created` | Low | Low | Trivial |
-| 11 | Fix `registry_gc` to use `tmux_session_exists` | Low | Low | Trivial |
-| 12 | Extract directory preview to standalone script | Low | Low | Small |
+| # | Change | Priority | Status |
+|---|--------|----------|--------|
+| 1 | Eliminate `_fzf_export_functions` via `am list-internal` subcommand | High | **Done** |
+| 2 | Fix N+1 tmux calls — pass activity through `agent_display_name` | High | **Done** |
+| 3 | Extract `registry_get_fields` helper to DRY up jq pattern | High | **Done** |
+| 4 | Throttle `history_prune` (not on every append) | Medium | **Done** — throttle in `history_append` call site |
+| 5 | Extract Haiku background call to standalone `lib/title-upgrade` | Medium | **Done** |
+| 6 | Fix test duplication — call production title functions directly | Medium | **Done** |
+| 7 | Bulk-read optimization for `fzf_list_json` | Medium | **Done** |
+| 8 | Extract yolo normalization from `agent_launch` | Low | **Skipped** — `agent_get_yolo_flag` already extracted; further extraction not worthwhile |
+| 9 | Unify `format_time_ago`/`format_duration` | Low | **Done** — shared `_format_seconds` helper |
+| 10 | Unify `tmux_get_activity`/`tmux_get_created` | Low | **Done** — shared `_tmux_get_session_field` helper |
+| 11 | Fix `registry_gc` to use `tmux_session_exists` | Low | **Done** |
+| 12 | Extract directory preview to standalone script | Low | **Done** — `lib/dir-preview` |
 
-Items 1-3 are the clear wins: high impact, low risk, small effort. Item 4-6 are easy improvements. Items 7+ are polish.
+**All items complete.** 210/210 tests pass.
 
 **Do not unify sessions.json and history.jsonl.** The separation is correct.
 

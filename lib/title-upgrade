@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# title-upgrade - Standalone Haiku title upgrade for a session
+# Usage: title-upgrade <session_name> <first_message>
+# Calls Haiku to generate a 2-5 word title, writes to registry if valid.
+
+set -euo pipefail
+
+session_name="${1:-}"
+first_msg="${2:-}"
+
+[[ -z "$session_name" || -z "$first_msg" ]] && exit 0
+
+# Source libs normally (same pattern as lib/preview)
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
+
+AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
+_log="$AM_DIR/titler.log"
+_titler_log() { echo "$(date '+%H:%M:%S') $*" >> "$_log" 2>/dev/null; }
+
+# Exit quietly if the registry has been removed (e.g. test cleanup)
+[[ -d "$AM_DIR" && -f "$AM_REGISTRY" ]] || exit 0
+
+unset CLAUDECODE
+
+haiku_title=$(printf '%s' "$first_msg" | claude -p --model haiku \
+    "Reply with a short 2-5 word title summarizing this task. Plain text only, no markdown, no quotes, no punctuation. Examples: Fix auth login bug, Add user settings page, Refactor database layer" 2>/dev/null) || true
+
+haiku_title=$(_title_strip_haiku "$haiku_title")
+if _title_valid "$haiku_title"; then
+    [[ -d "$AM_DIR" && -f "$AM_REGISTRY" ]] || exit 0
+    registry_update "$session_name" "task" "$haiku_title"
+    _titler_log "  $session_name: haiku=\"$haiku_title\""
+else
+    _titler_log "  $session_name: haiku failed (raw: ${haiku_title:0:80})"
+fi

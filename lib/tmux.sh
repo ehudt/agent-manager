@@ -81,23 +81,19 @@ tmux_attach() {
     fi
 }
 
-# Get session activity timestamp (seconds since epoch)
-# Usage: tmux_get_activity <name>
-tmux_get_activity() {
-    local name="$1"
-    tmux list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null \
-        | grep "^$name " \
-        | cut -d' ' -f2
+# Get a tmux session field value
+# Usage: _tmux_get_session_field <name> <format_token>
+_tmux_get_session_field() {
+    local name="$1" format="$2"
+    tmux list-sessions -F "#{session_name} #{$format}" 2>/dev/null \
+        | grep "^${name} " | cut -d' ' -f2
 }
 
+# Get session activity timestamp (seconds since epoch)
+tmux_get_activity() { _tmux_get_session_field "$1" session_activity; }
+
 # Get session creation time (seconds since epoch)
-# Usage: tmux_get_created <name>
-tmux_get_created() {
-    local name="$1"
-    tmux list-sessions -F '#{session_name} #{session_created}' 2>/dev/null \
-        | grep "^$name " \
-        | cut -d' ' -f2
-}
+tmux_get_created() { _tmux_get_session_field "$1" session_created; }
 
 # List all agent-manager sessions (those with AM_SESSION_PREFIX)
 # Usage: tmux_list_am_sessions
