@@ -666,6 +666,53 @@ test_tmux_binding_snippets() {
 }
 
 # ============================================
+# Test: symlinked kill-and-switch helper
+# ============================================
+test_symlinked_kill_and_switch() {
+    echo "=== Testing symlinked kill-and-switch ==="
+
+    local temp_root bin_dir linked_bin tmux_stub am_dir
+    temp_root=$(mktemp -d)
+    bin_dir="$temp_root/bin"
+    linked_bin="$temp_root/.local/bin"
+    am_dir="$temp_root/am-data"
+    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
+
+    cat > "$bin_dir/tmux" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+    display-message)
+        printf '%s\n' "am-16fdf3"
+        ;;
+    has-session)
+        exit 0
+        ;;
+    kill-session)
+        exit 0
+        ;;
+    list-sessions)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "$bin_dir/tmux"
+
+    ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
+    printf '{"sessions":{"am-16fdf3":{"name":"am-16fdf3"}}}\n' > "$am_dir/sessions.json"
+
+    assert_cmd_succeeds "symlinked helper: resolves repo libs and exits cleanly" \
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "am-16fdf3"
+
+    rm -rf "$temp_root"
+    echo ""
+}
+
+# ============================================
 # Test: installer block replacement
 # ============================================
 test_installer_replaces_managed_blocks() {
@@ -1810,6 +1857,7 @@ main() {
     test_agents_extended
     test_fzf_helpers
     test_tmux_binding_snippets
+    test_symlinked_kill_and_switch
     test_installer_replaces_managed_blocks
     test_cli
     test_integration_lifecycle
