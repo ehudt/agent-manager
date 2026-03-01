@@ -648,16 +648,66 @@ test_tmux_binding_snippets() {
     example_conf=$(cat "$PROJECT_DIR/config/tmux.conf.example")
     assert_contains "$example_conf" 'bind n if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''display-popup -E -w 90% -h 80% "am new"'\''' \
         "tmux snippet: prefix+n opens new-session popup"
-    assert_contains "$example_conf" 'bind x if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''run-shell "kill-and-switch #{session_name}"'\''' \
+    assert_contains "$example_conf" 'unbind-key -T prefix x' \
+        "tmux snippet: prefix+x clears default pane-kill binding"
+    assert_contains "$example_conf" 'bind-key -T prefix x if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''run-shell "kill-and-switch #{session_name}"'\''' \
         "tmux snippet: prefix+x kills current session"
 
     local install_script
     install_script=$(cat "$PROJECT_DIR/scripts/install.sh")
     assert_contains "$install_script" 'display-popup -E -w 90% -h 80% "$PREFIX/am new"' \
         "install script: prefix+n installs popup binding"
+    assert_contains "$install_script" 'unbind-key -T prefix x' \
+        "install script: prefix+x clears default pane-kill binding"
     assert_contains "$install_script" 'run-shell "$PREFIX/kill-and-switch #{session_name}"' \
         "install script: prefix+x installs kill binding"
 
+    echo ""
+}
+
+# ============================================
+# Test: installer block replacement
+# ============================================
+test_installer_replaces_managed_blocks() {
+    echo "=== Testing installer block replacement ==="
+
+    local temp_root prefix shell_rc tmux_conf shell_contents tmux_contents
+    temp_root=$(mktemp -d)
+    prefix="$temp_root/bin"
+    shell_rc="$temp_root/.zshrc"
+    tmux_conf="$temp_root/.tmux.conf"
+
+    cat > "$shell_rc" <<'EOF'
+export PATH="/usr/bin:$PATH"
+# >>> agent-manager >>>
+export PATH="/old/prefix:$PATH"
+# <<< agent-manager <<<
+EOF
+
+    cat > "$tmux_conf" <<'EOF'
+set -g mouse on
+# >>> agent-manager >>>
+bind x kill-pane
+# <<< agent-manager <<<
+EOF
+
+    "$PROJECT_DIR/scripts/install.sh" --prefix "$prefix" --shell-rc "$shell_rc" --tmux-conf "$tmux_conf" -y >/dev/null
+
+    shell_contents=$(cat "$shell_rc")
+    tmux_contents=$(cat "$tmux_conf")
+
+    assert_contains "$shell_contents" "export PATH=\"$prefix:\$PATH\"" \
+        "installer: shell block updated to current prefix"
+    assert_contains "$tmux_contents" "unbind-key -T prefix x" \
+        "installer: tmux block updated to current binding"
+    assert_eq "1" "$(grep -Fc '# >>> agent-manager >>>' "$shell_rc")" \
+        "installer: shell managed block not duplicated"
+    assert_eq "1" "$(grep -Fc '# >>> agent-manager >>>' "$tmux_conf")" \
+        "installer: tmux managed block not duplicated"
+    assert_cmd_fails "installer: old shell block removed" grep -Fq '/old/prefix' "$shell_rc"
+    assert_cmd_fails "installer: old tmux block removed" grep -Fq 'bind x kill-pane' "$tmux_conf"
+
+    rm -rf "$temp_root"
     echo ""
 }
 
@@ -1760,6 +1810,7 @@ main() {
     test_agents_extended
     test_fzf_helpers
     test_tmux_binding_snippets
+    test_installer_replaces_managed_blocks
     test_cli
     test_integration_lifecycle
     test_cli_extended

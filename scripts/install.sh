@@ -70,19 +70,24 @@ install_link_or_copy() {
     fi
 }
 
-append_block_once() {
+replace_managed_block() {
     local file="$1"
     local begin_marker="$2"
     local end_marker="$3"
     local content="$4"
+    local tmp_file
 
     mkdir -p "$(dirname "$file")"
     touch "$file"
 
-    if grep -Fq "$begin_marker" "$file"; then
-        log "Already configured in $file"
-        return
-    fi
+    tmp_file=$(mktemp)
+
+    awk -v begin="$begin_marker" -v end="$end_marker" '
+        $0 == begin { in_block=1; next }
+        $0 == end { in_block=0; next }
+        !in_block { print }
+    ' "$file" > "$tmp_file"
+    mv "$tmp_file" "$file"
 
     {
         printf '\n%s\n' "$begin_marker"
@@ -149,7 +154,7 @@ log "Installed commands into $PREFIX"
 if $UPDATE_SHELL; then
     if confirm "Update $SHELL_RC to ensure $PREFIX is on PATH?"; then
         shell_block='export PATH="'"$PREFIX"':$PATH"'
-        append_block_once "$SHELL_RC" \
+        replace_managed_block "$SHELL_RC" \
             '# >>> agent-manager >>>' \
             '# <<< agent-manager <<<' \
             "$shell_block"
@@ -174,13 +179,14 @@ bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "
 bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Prefix + x: kill the current am session and switch to the next most recent one
-bind x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$PREFIX/kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
+unbind-key -T prefix x
+bind-key -T prefix x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$PREFIX/kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Optional alias: :am
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$PREFIX/am"'
 EOF
 )
-        append_block_once "$TMUX_CONF" \
+        replace_managed_block "$TMUX_CONF" \
             '# >>> agent-manager >>>' \
             '# <<< agent-manager <<<' \
             "$tmux_block"

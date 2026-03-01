@@ -249,7 +249,8 @@ bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "
 bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "am"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Prefix + x: kill the current am session and switch to the next most recent one
-bind x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
+unbind-key -T prefix x
+bind-key -T prefix x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Command alias: ":am" opens agent manager
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
