@@ -7,7 +7,7 @@
 AM_CONFIG="${AM_CONFIG:-$AM_DIR/config.json}"
 
 am_config_init() {
-    mkdir -p "$AM_DIR"
+    mkdir -p "$(dirname "$AM_CONFIG")"
     if [[ ! -f "$AM_CONFIG" ]]; then
         cat > "$AM_CONFIG" <<'EOF'
 {

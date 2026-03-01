@@ -136,6 +136,7 @@ setup_integration_env() {
 
     export AM_DIR="$TEST_AM_DIR"
     export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_CONFIG="$AM_DIR/config.json"
     export AM_SESSION_PREFIX="test-am-"
     am_init
 
@@ -160,6 +161,7 @@ teardown_integration_env() {
     TEST_AM_DIR=""
     export AM_DIR="${HOME}/.agent-manager"
     export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_CONFIG="$AM_DIR/config.json"
     export AM_SESSION_PREFIX="am-"
 }
 
