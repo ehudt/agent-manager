@@ -943,7 +943,8 @@ test_history() {
     # --- Test: history_prune removes entries older than 7 days ---
     # Inject an old entry manually (8 days ago)
     local old_date
-    old_date=$(date -u -v-8d +"%Y-%m-%dT%H:%M:%SZ")
+    old_date=$(date -u -v-8d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+        date -u -d "8 days ago" +"%Y-%m-%dT%H:%M:%SZ")
     printf '%s\n' "$(jq -cn \
         --arg dir "/tmp/project-a" \
         --arg task "ancient task" \
