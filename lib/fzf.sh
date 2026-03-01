@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # fzf.sh - fzf interface functions
 
 # Source dependencies if not already loaded
@@ -91,9 +90,7 @@ _annotate_directory() {
 
     while IFS= read -r line; do
         local task agent created_at
-        task=$(echo "$line" | jq -r '.task')
-        agent=$(echo "$line" | jq -r '.agent_type')
-        created_at=$(echo "$line" | jq -r '.created_at')
+        IFS=$'\t' read -r task agent created_at <<< "$(echo "$line" | jq -r '[.task, .agent_type, .created_at] | @tsv')"
 
         # Calculate relative time
         local ts
@@ -110,7 +107,7 @@ _annotate_directory() {
         fi
 
         # Truncate task to 30 chars
-        [[ ${#task} -gt 30 ]] && task="${task:0:27}..."
+        task=$(truncate "$task" 30)
 
         parts+=("${agent}: ${task} (${age_str})")
     done <<< "$entries"
@@ -409,19 +406,12 @@ fzf_main() {
         fi
 
         # Pick mode (new/resume/continue)
-        local flags
-        if am_default_yolo_enabled; then
-            if ! flags=$(fzf_pick_mode "true"); then
-                # Cancelled - return to main menu
-                fzf_main
-                return $?
-            fi
-        else
-            if ! flags=$(fzf_pick_mode "false"); then
-                # Cancelled - return to main menu
-                fzf_main
-                return $?
-            fi
+        local flags yolo_default
+        yolo_default=$(am_default_yolo_enabled && echo true || echo false)
+        if ! flags=$(fzf_pick_mode "$yolo_default"); then
+            # Cancelled - return to main menu
+            fzf_main
+            return $?
         fi
 
         # Return new session command

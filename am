@@ -273,23 +273,14 @@ cmd_new() {
 
     # If running interactively and no agent args provided via CLI, show mode picker
     if [[ ${#agent_args[@]} -eq 0 && -t 0 ]]; then
-        local mode_flags
-        if am_default_yolo_enabled; then
-            if mode_flags=$(fzf_pick_mode "true"); then
-                # shellcheck disable=SC2086
-                agent_args=($mode_flags)
-            else
-                log_info "Cancelled"
-                return 0
-            fi
+        local mode_flags yolo_default
+        yolo_default=$(am_default_yolo_enabled && echo true || echo false)
+        if mode_flags=$(fzf_pick_mode "$yolo_default"); then
+            # shellcheck disable=SC2086
+            agent_args=($mode_flags)
         else
-            if mode_flags=$(fzf_pick_mode "false"); then
-                # shellcheck disable=SC2086
-                agent_args=($mode_flags)
-            else
-                log_info "Cancelled"
-                return 0
-            fi
+            log_info "Cancelled"
+            return 0
         fi
     elif [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
         agent_args+=("--yolo")

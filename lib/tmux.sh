@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # tmux.sh - tmux wrapper functions
 
 # Source utils if not already loaded

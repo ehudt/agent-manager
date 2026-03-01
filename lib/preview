@@ -17,8 +17,9 @@ if ! tmux has-session -t "$session_name" 2>/dev/null; then
     exit 0
 fi
 
-# Source utils for claude_first_user_message helper
+# Source utils and registry for helpers
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
 
 # Get session title from Claude JSONL
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
@@ -28,8 +29,7 @@ if [[ -f "$AM_REGISTRY" ]]; then
     if [[ -n "$directory" ]]; then
         title=$(claude_first_user_message "$directory" || true)
         if [[ -n "$title" ]]; then
-            # Clean up for display: remove URLs, extract first sentence
-            title=$(echo "$title" | sed 's/https\?:\/\/[^ ]*//g; s/  */ /g; s/[.?!].*//' | head -c 60)
+            title=$(_title_fallback "$title")
             echo -e "\033[1;36m📝 $title\033[0m"
             echo ""
         fi

@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # utils.sh - Common utilities for agent-manager
 
 # Configuration

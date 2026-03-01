@@ -139,6 +139,7 @@ setup_integration_env() {
     export AM_CONFIG="$AM_DIR/config.json"
     export AM_SESSION_PREFIX="test-am-"
     am_init
+    am_config_init
 
     # Point agent commands to stub
     AGENT_COMMANDS[claude]="$TEST_STUB_DIR/stub_agent"

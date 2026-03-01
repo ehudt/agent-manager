@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # agents.sh - Agent launcher functions
 
 # Source dependencies if not already loaded
@@ -180,16 +179,8 @@ agent_launch() {
         full_cmd="$full_cmd ${agent_args[*]}"
     fi
 
-    # Check if sandbox mode is needed (--yolo/permissive mode implies sandbox)
-    local use_sandbox=false
-    for arg in "${agent_args[@]}"; do
-        if [[ "$arg" == "--dangerously-skip-permissions" || "$arg" == "--yolo" ]]; then
-            use_sandbox=true
-            break
-        fi
-    done
-
-    if $use_sandbox && command -v sb &>/dev/null; then
+    # Sandbox mode when permissive flags are active
+    if $wants_yolo && command -v sb &>/dev/null; then
         # Start sandbox once, then attach both panes to it
         sb "$directory" --start >&2
         tmux_send_keys "$session_name:.{bottom}" "sb . --attach && clear" Enter

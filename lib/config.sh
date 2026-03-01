@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # config.sh - Persistent user defaults and effective config resolution
 
 # Source utils if not already loaded
@@ -21,7 +20,6 @@ EOF
 
 am_config_get() {
     local key="$1"
-    am_config_init
     jq -r --arg key "$key" '.[$key] // empty' "$AM_CONFIG" 2>/dev/null
 }
 
@@ -29,7 +27,6 @@ am_config_set() {
     local key="$1"
     local value="$2"
     local type="${3:-string}"
-    am_config_init
 
     local jq_value='
         if $type == "boolean" then
@@ -48,7 +45,6 @@ am_config_set() {
 
 am_config_unset() {
     local key="$1"
-    am_config_init
 
     local tmp
     tmp=$(mktemp)
@@ -153,8 +149,6 @@ am_config_value_is_valid() {
 }
 
 am_config_print() {
-    am_config_init
-
     local default_agent_value default_yolo_value stream_logs_value
     default_agent_value=$(am_default_agent)
     if am_default_yolo_enabled; then
