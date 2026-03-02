@@ -39,6 +39,19 @@ agent_type_supported() {
     [[ -n "${AGENT_COMMANDS[$agent_type]}" ]]
 }
 
+# Refresh the tmux status bar from registry metadata.
+# Usage: agent_refresh_tmux_status <session_name>
+agent_refresh_tmux_status() {
+    local session_name="$1"
+    local fields
+    fields=$(registry_get_fields "$session_name" directory branch worktree_path yolo_mode container_name)
+
+    local directory branch worktree_path yolo_mode container_name
+    IFS='|' read -r directory branch worktree_path yolo_mode container_name <<< "$fields"
+
+    tmux_set_session_status "$session_name" "$directory" "$branch" "${worktree_path:+true}" "$yolo_mode" "${container_name:+true}"
+}
+
 # Detect git branch for a directory
 # Usage: detect_git_branch <directory>
 detect_git_branch() {
@@ -146,6 +159,8 @@ agent_launch() {
 
     # Register session metadata
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
+    registry_update "$session_name" "yolo_mode" "$wants_yolo"
+    agent_refresh_tmux_status "$session_name"
 
     # Log to persistent history if task is known at launch
     if [[ -n "$task" ]]; then
@@ -183,6 +198,7 @@ agent_launch() {
     if $wants_yolo && command -v docker &>/dev/null; then
         sandbox_start "$session_name" "$directory"
         registry_update "$session_name" "container_name" "$session_name"
+        agent_refresh_tmux_status "$session_name"
         local attach_cmd
         attach_cmd=$(sandbox_attach_cmd "$session_name" "$directory")
         tmux_send_keys "$session_name:.{bottom}" "$attach_cmd && clear" Enter
@@ -202,6 +218,7 @@ agent_launch() {
             sleep 0.5
         done) >/dev/null 2>&1 &
         registry_update "$session_name" "worktree_path" "$worktree_path"
+        agent_refresh_tmux_status "$session_name"
     fi
 
     log_success "Created session: $session_name"
@@ -268,10 +285,10 @@ agent_info() {
     local session_name="$1"
 
     local fields
-    fields=$(registry_get_fields "$session_name" directory branch agent_type task worktree_path)
+    fields=$(registry_get_fields "$session_name" directory branch agent_type task worktree_path yolo_mode container_name)
 
-    local directory branch agent_type task worktree_path
-    IFS='|' read -r directory branch agent_type task worktree_path <<< "$fields"
+    local directory branch agent_type task worktree_path yolo_mode container_name
+    IFS='|' read -r directory branch agent_type task worktree_path yolo_mode container_name <<< "$fields"
 
     # Get tmux info
     local activity created_ts
@@ -294,6 +311,8 @@ agent_info() {
     echo "Directory: ${directory:-unknown}"
     echo "Branch: ${branch:--}"
     echo "Agent: ${agent_type:-unknown}"
+    echo "Yolo: $([[ "$yolo_mode" == "true" ]] && echo yes || echo no)"
+    echo "Sandbox: $([[ -n "$container_name" ]] && echo yes || echo no)"
     echo "Running: $(format_duration "$running_time")"
     echo "Last active: $(format_time_ago "$idle_time")"
     if [[ -n "$task" ]]; then

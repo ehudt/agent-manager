@@ -29,6 +29,43 @@ tmux_create_session() {
     tmux new-session -d -s "$name" -c "$directory" -x 200 -y 60
 }
 
+_tmux_bool_label() {
+    case "${1:-}" in
+        1|true|yes|on) echo "yes" ;;
+        *) echo "no" ;;
+    esac
+}
+
+_tmux_status_value() {
+    local value="${1:-}"
+    value=${value//$'\n'/ }
+    echo "${value:-"-"}"
+}
+
+# Set a per-session status-left string with session metadata.
+# Usage: tmux_set_session_status <name> <directory> <branch> <worktree_mode> <yolo_mode> <sandbox_mode>
+tmux_set_session_status() {
+    local name="$1"
+    local directory="$2"
+    local branch="$3"
+    local worktree_mode="$4"
+    local yolo_mode="$5"
+    local sandbox_mode="$6"
+
+    local dir_label branch_label status_left
+    dir_label=$(_tmux_status_value "$(dir_basename "${directory:-$name}")")
+    branch_label=$(_tmux_status_value "$branch")
+
+    status_left="#[bold]#{session_name}#[default] ${dir_label}:${branch_label}"
+    [[ "$worktree_mode" == "true" ]] && status_left="${status_left} (GIT WORKTREE)"
+    [[ "$yolo_mode" == "true" ]] && status_left="${status_left} yolo"
+    [[ "$sandbox_mode" == "true" ]] && status_left="${status_left} sandbox"
+    status_left="${status_left} "
+
+    tmux set-option -t "$name" status-left-length 160 >/dev/null
+    tmux set-option -t "$name" status-left "$status_left" >/dev/null
+}
+
 # Kill a tmux session
 # Usage: tmux_kill_session <name>
 tmux_kill_session() {

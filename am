@@ -145,6 +145,7 @@ cmd_list() {
             cmd_new_internal "$directory" "$agent_type" "$task" "$worktree_name" $flags
         elif [[ -n "$result" ]]; then
             # Attach to selected session
+            agent_refresh_tmux_status "$result"
             tmux_attach "$result"
         fi
     fi
@@ -336,6 +337,7 @@ cmd_attach() {
     # Try exact or prefixed match
     local resolved
     if resolved=$(resolve_session "$name"); then
+        agent_refresh_tmux_status "$resolved"
         tmux_attach "$resolved"
         return 0
     fi
@@ -350,6 +352,7 @@ cmd_attach() {
         log_error "No session found matching: $name"
         return 1
     elif [[ $count -eq 1 ]]; then
+        agent_refresh_tmux_status "$matches"
         tmux_attach "$matches"
     else
         log_info "Multiple matches found:"
@@ -358,6 +361,7 @@ cmd_attach() {
         echo -n "Enter session name: "
         read -r selected
         if [[ -n "$selected" ]]; then
+            agent_refresh_tmux_status "$selected"
             tmux_attach "$selected"
         fi
     fi
