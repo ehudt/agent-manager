@@ -610,6 +610,74 @@ test_agents_extended() {
 }
 
 # ============================================
+# Test: sandbox.sh (pure functions, no Docker)
+# ============================================
+test_sandbox() {
+    echo "=== Testing sandbox.sh ==="
+
+    source "$LIB_DIR/utils.sh"
+
+    # Set AM_SCRIPT_DIR so sandbox.sh can compute SANDBOX_DIR
+    export AM_SCRIPT_DIR="$PROJECT_DIR"
+    source "$LIB_DIR/sandbox.sh"
+
+    # --- Test 1: sandbox_attach_cmd output format ---
+    local cmd
+    cmd=$(sandbox_attach_cmd "am-abc123" "/home/user/project")
+    assert_contains "$cmd" "docker exec" "sandbox_attach_cmd: contains docker exec"
+    assert_contains "$cmd" "am-abc123" "sandbox_attach_cmd: contains session name"
+    assert_contains "$cmd" "/home/user/project" "sandbox_attach_cmd: contains directory"
+
+    # --- Test 2: _sandbox_copy_if_missing skips existing ---
+    local tmp
+    tmp=$(mktemp -d)
+    echo "source" > "$tmp/src"
+    echo "original" > "$tmp/dst"
+    _sandbox_copy_if_missing "$tmp/src" "$tmp/dst"
+    assert_eq "original" "$(cat "$tmp/dst")" "_sandbox_copy_if_missing: skips existing dest"
+    rm -rf "$tmp"
+
+    # --- Test 3: _sandbox_copy_if_missing copies when missing ---
+    tmp=$(mktemp -d)
+    echo "source-data" > "$tmp/src"
+    _sandbox_copy_if_missing "$tmp/src" "$tmp/subdir/dst"
+    assert_eq "source-data" "$(cat "$tmp/subdir/dst")" "_sandbox_copy_if_missing: copies when dest missing"
+    rm -rf "$tmp"
+
+    # --- Test 4: _sandbox_copy_if_missing noop when src missing ---
+    tmp=$(mktemp -d)
+    _sandbox_copy_if_missing "$tmp/nonexistent" "$tmp/dst"
+    local rc=0
+    [[ -e "$tmp/dst" ]] && rc=1
+    assert_eq "0" "$rc" "_sandbox_copy_if_missing: noop when src missing"
+    rm -rf "$tmp"
+
+    # --- Test 5: _sandbox_claude_install_method extracts method ---
+    tmp=$(mktemp -d)
+    cat > "$tmp/claude.json" <<'CJSON'
+{
+  "installMethod": "native",
+  "version": "1.0"
+}
+CJSON
+    local method
+    method=$(_sandbox_claude_install_method "$tmp/claude.json")
+    assert_eq "native" "$method" "_sandbox_claude_install_method: extracts installMethod"
+    rm -rf "$tmp"
+
+    # --- Test 6: _sandbox_claude_install_method fails for missing file ---
+    local fail_rc=0
+    _sandbox_claude_install_method "/nonexistent/path/claude.json" >/dev/null 2>&1 || fail_rc=$?
+    assert_eq "1" "$fail_rc" "_sandbox_claude_install_method: fails for missing file"
+
+    # --- Test 7: SANDBOX_DIR is set correctly ---
+    assert_contains "$SANDBOX_DIR" "sandbox" "SANDBOX_DIR: contains 'sandbox'"
+    assert_cmd_succeeds "SANDBOX_DIR: directory exists" test -d "$SANDBOX_DIR"
+
+    echo ""
+}
+
+# ============================================
 # Test: fzf option ordering helpers
 # ============================================
 test_fzf_helpers() {
@@ -1855,6 +1923,7 @@ main() {
     test_tmux
     test_agents
     test_agents_extended
+    test_sandbox
     test_fzf_helpers
     test_tmux_binding_snippets
     test_symlinked_kill_and_switch
