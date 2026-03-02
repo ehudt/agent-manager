@@ -296,10 +296,7 @@ _new_session_form_rows() {
         worktree_supported="true"
     fi
 
-    if [[ "$worktree_supported" != "true" ]]; then
-        worktree_toggle="<unsupported>"
-        worktree_name_display="<unsupported>"
-    elif [[ "$worktree_enabled" == "true" ]]; then
+    if [[ "$worktree_supported" == "true" && "$worktree_enabled" == "true" ]]; then
         worktree_toggle="[x]"
         worktree_name_display="${worktree_name:-<auto>}"
     fi
@@ -309,9 +306,11 @@ _new_session_form_rows() {
     printf 'agent\tAgent\t%s\n' "$agent"
     printf 'task\tTask\t%s\n' "$task_display"
     printf 'mode\tMode\t%s\n' "$mode"
-    printf 'yolo\tYOLO\t%s\n' "$yolo_toggle"
-    printf 'worktree_enabled\tWorktree\t%s\n' "$worktree_toggle"
-    printf 'worktree_name\tWorktree Name\t%s\n' "$worktree_name_display"
+    printf 'yolo\tPermissive\t%s\n' "$yolo_toggle"
+    if [[ "$worktree_supported" == "true" ]]; then
+        printf 'worktree_enabled\tWorktree\t%s\n' "$worktree_toggle"
+        printf 'worktree_name\tWorktree Name\t%s\n' "$worktree_name_display"
+    fi
 }
 
 _new_session_form_preview() {
@@ -325,10 +324,10 @@ _new_session_form_preview() {
     local message="$8"
     local worktree_display="off"
 
-    if ! agent_supports_worktree "$agent"; then
-        worktree_display="unavailable for $agent"
-    elif [[ "$worktree_enabled" == "true" ]]; then
-        worktree_display="${worktree_name:-auto}"
+    if agent_supports_worktree "$agent"; then
+        if [[ "$worktree_enabled" == "true" ]]; then
+            worktree_display="${worktree_name:-auto}"
+        fi
     fi
 
     cat <<EOF
@@ -339,15 +338,17 @@ Space toggles checkboxes.
 Esc goes back without creating a session.
 
 Current values
-  Directory: $directory
-  Agent:     $agent
-  Task:      ${task:-<empty>}
-  Mode:      $mode
-  YOLO:      $yolo
-  Worktree:  $worktree_display
-
-${message:+Note: $message}
+  Directory:  $directory
+  Agent:      $agent
+  Task:       ${task:-<empty>}
+  Mode:       $mode
+  Permissive: $yolo
 EOF
+    if agent_supports_worktree "$agent"; then
+        echo "  Worktree:   $worktree_display"
+    fi
+    echo ""
+    [[ -n "$message" ]] && echo "Note: $message"
 }
 
 _new_session_form_row_position() {
@@ -442,7 +443,7 @@ fzf_new_session_form() {
     local message=""
     local selection key selected_row selected_field
     local preview_file
-    local current_field="submit"
+    local current_field="directory"
 
     if [[ "$prefill_mode_flags" == *"--resume"* ]]; then
         mode="resume"
@@ -549,14 +550,10 @@ fzf_new_session_form() {
                 fi
                 ;;
             yolo)
-                [[ "$yolo" == "true" ]] && yolo="false" || yolo="true"
+                message="Press Space to toggle."
                 ;;
             worktree_enabled)
-                if agent_supports_worktree "$agent"; then
-                    [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
-                else
-                    message="Worktree isolation is not available for $agent sessions."
-                fi
+                message="Press Space to toggle."
                 ;;
             worktree_name)
                 if ! agent_supports_worktree "$agent"; then

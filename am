@@ -275,27 +275,9 @@ cmd_new() {
             fi
         fi
 
-        # If no agent type specified and running interactively, offer picker
-        if [[ -z "$agent_type" && -t 0 ]]; then
-            if ! agent_type=$(fzf_pick_agent "$(am_default_agent)"); then
-                log_info "Cancelled"
-                return 0
-            fi
-        fi
         agent_type="${agent_type:-$(am_default_agent)}"
 
-        # If running interactively and no agent args provided via CLI, show mode picker
-        if [[ ${#agent_args[@]} -eq 0 && -t 0 ]]; then
-            local mode_flags yolo_default
-            yolo_default=$(am_default_yolo_enabled && echo true || echo false)
-            if mode_flags=$(fzf_pick_mode "$yolo_default"); then
-                # shellcheck disable=SC2086
-                agent_args=($mode_flags)
-            else
-                log_info "Cancelled"
-                return 0
-            fi
-        elif [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
+        if [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
             agent_args+=("--yolo")
         fi
     fi

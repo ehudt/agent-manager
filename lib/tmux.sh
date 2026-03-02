@@ -43,12 +43,12 @@ _tmux_status_value() {
 }
 
 # Set a per-session status-left string with session metadata.
-# Usage: tmux_set_session_status <name> <directory> <branch> <worktree_mode> <yolo_mode> <sandbox_mode>
+# Usage: tmux_set_session_status <name> <directory> <branch> <worktree_name> <yolo_mode> <sandbox_mode>
 tmux_set_session_status() {
     local name="$1"
     local directory="$2"
     local branch="$3"
-    local worktree_mode="$4"
+    local worktree_name="$4"
     local yolo_mode="$5"
     local sandbox_mode="$6"
 
@@ -57,7 +57,7 @@ tmux_set_session_status() {
     branch_label=$(_tmux_status_value "$branch")
 
     status_left="#[bold]#{session_name}#[default] ${dir_label}:${branch_label}"
-    [[ "$worktree_mode" == "true" ]] && status_left="${status_left} (GIT WORKTREE)"
+    [[ -n "$worktree_name" ]] && status_left="${status_left} (${worktree_name})"
     [[ "$yolo_mode" == "true" ]] && status_left="${status_left} yolo"
     [[ "$sandbox_mode" == "true" ]] && status_left="${status_left} sandbox"
     status_left="${status_left} "

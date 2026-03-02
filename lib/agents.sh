@@ -109,7 +109,10 @@ agent_refresh_tmux_status() {
     local directory branch worktree_path yolo_mode container_name
     IFS='|' read -r directory branch worktree_path yolo_mode container_name <<< "$fields"
 
-    tmux_set_session_status "$session_name" "$directory" "$branch" "${worktree_path:+true}" "$yolo_mode" "${container_name:+true}"
+    local worktree_label=""
+    [[ -n "$worktree_path" ]] && worktree_label="$(basename "$worktree_path")"
+
+    tmux_set_session_status "$session_name" "$directory" "$branch" "$worktree_label" "$yolo_mode" "${container_name:+true}"
 }
 
 # Detect git branch for a directory
