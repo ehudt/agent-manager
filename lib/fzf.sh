@@ -240,6 +240,34 @@ fzf_pick_mode() {
     echo "$flags"
 }
 
+fzf_pick_session_mode() {
+    local default_mode="${1:-new}"
+    local options selected
+
+    options=$(cat <<EOF
+${default_mode}
+new
+resume
+continue
+EOF
+)
+
+    selected=$(echo "$options" | awk '!seen[$0]++' | fzf \
+        --ansi \
+        --no-multi \
+        --header="Select session mode (Enter to confirm, Esc to cancel)" \
+        --height=8 \
+        --layout=reverse \
+    )
+
+    if [[ -z "$selected" ]]; then
+        echo ""
+        return 1
+    fi
+
+    echo "$selected"
+}
+
 # Pick agent type for a new session
 # Usage: fzf_pick_agent
 # Returns: selected agent type, or empty if cancelled
@@ -282,6 +310,143 @@ fzf_pick_agent() {
     echo "$selected"
 }
 
+_new_session_form_rows() {
+    local directory="$1"
+    local agent="$2"
+    local task="$3"
+    local mode="$4"
+    local yolo="$5"
+    local worktree_enabled="$6"
+    local worktree_name="$7"
+
+    local task_display worktree_toggle worktree_name_display yolo_toggle
+    task_display="${task:-<empty>}"
+    worktree_name_display="<disabled>"
+    yolo_toggle="[ ]"
+    worktree_toggle="[ ]"
+
+    [[ "$yolo" == "true" ]] && yolo_toggle="[x]"
+    if [[ "$worktree_enabled" == "true" ]]; then
+        worktree_toggle="[x]"
+        worktree_name_display="${worktree_name:-<auto>}"
+    fi
+
+    printf 'submit\tCreate Session\tLaunch with current values\n'
+    printf 'directory\tDirectory\t%s\n' "$directory"
+    printf 'agent\tAgent\t%s\n' "$agent"
+    printf 'task\tTask\t%s\n' "$task_display"
+    printf 'mode\tMode\t%s\n' "$mode"
+    printf 'yolo\tYOLO\t%s\n' "$yolo_toggle"
+    printf 'worktree_enabled\tWorktree\t%s\n' "$worktree_toggle"
+    printf 'worktree_name\tWorktree Name\t%s\n' "$worktree_name_display"
+}
+
+_new_session_form_preview() {
+    local directory="$1"
+    local agent="$2"
+    local task="$3"
+    local mode="$4"
+    local yolo="$5"
+    local worktree_enabled="$6"
+    local worktree_name="$7"
+    local message="$8"
+    local worktree_display="off"
+
+    if [[ "$worktree_enabled" == "true" ]]; then
+        worktree_display="${worktree_name:-auto}"
+    fi
+
+    cat <<EOF
+New Session
+
+Enter edits the current field.
+Space toggles checkboxes.
+Esc goes back without creating a session.
+
+Current values
+  Directory: $directory
+  Agent:     $agent
+  Task:      ${task:-<empty>}
+  Mode:      $mode
+  YOLO:      $yolo
+  Worktree:  $worktree_display
+
+${message:+Note: $message}
+EOF
+}
+
+_new_session_form_row_position() {
+    case "$1" in
+        submit) echo 1 ;;
+        directory) echo 2 ;;
+        agent) echo 3 ;;
+        task) echo 4 ;;
+        mode) echo 5 ;;
+        yolo) echo 6 ;;
+        worktree_enabled) echo 7 ;;
+        worktree_name) echo 8 ;;
+        *) echo 1 ;;
+    esac
+}
+
+_new_session_validate_worktree_name() {
+    local value="$1"
+
+    [[ -z "$value" ]] && return 0
+    [[ "$value" == "." || "$value" == ".." ]] && return 1
+    [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+_new_session_form_edit_text() {
+    local prompt="$1"
+    local current_value="${2:-}"
+    local query selection value selected_row
+
+    selection=$(printf 'apply\t%s\n' "$prompt" | fzf \
+        --sync \
+        --ansi \
+        --height=100% \
+        --delimiter=$'\t' \
+        --with-nth=2 \
+        --print-query \
+        --query="$current_value" \
+        --header="Edit value  Enter:apply  Esc:back" \
+        --preview="printf '%s\n\n%s\n%s\n' 'Current value:' '{}' 'Tip: type - to clear'" \
+        --preview-window="bottom:75%")
+
+    [[ -z "$selection" ]] && return 1
+
+    query=$(echo "$selection" | head -n1)
+    selected_row=$(echo "$selection" | tail -n1)
+    value="${query}"
+
+    if [[ -z "$selected_row" ]]; then
+        return 1
+    fi
+
+    if [[ "$value" == "-" ]]; then
+        echo ""
+    else
+        echo "$value"
+    fi
+}
+
+_new_session_form_prompt() {
+    local prompt="$1"
+    local current_value="${2:-}"
+    local edited
+
+    if edited=$(_new_session_form_edit_text "$prompt" "$current_value"); then
+        if [[ -n "$edited" || "$current_value" == "-" || "$current_value" == "" ]]; then
+            echo "$edited"
+        else
+            echo "$current_value"
+        fi
+    else
+        return 1
+    fi
+}
+
 # One-page form for new session creation.
 # Usage: fzf_new_session_form [prefill_directory] [prefill_agent] [prefill_task] [prefill_worktree] [prefill_mode_flags]
 # Returns: directory<TAB>agent<TAB>task<TAB>worktree_name<TAB>flags
@@ -291,50 +456,138 @@ fzf_new_session_form() {
     local prefill_task="${3:-}"
     local prefill_worktree="${4:-}"
     local prefill_mode_flags="${5:-}"
-
-    local default_mode="new"
-    local default_yolo="false"
+    local tty_path="/dev/tty"
+    local mode="new"
+    local yolo="false"
+    local directory="${prefill_directory/#\~/$HOME}"
+    local agent="$prefill_agent"
+    local task="$prefill_task"
+    local worktree_enabled="false"
+    local worktree_name=""
+    local message=""
+    local selection key selected_row selected_field
+    local preview_file
+    local current_field="submit"
 
     if [[ "$prefill_mode_flags" == *"--resume"* ]]; then
-        default_mode="resume"
+        mode="resume"
     elif [[ "$prefill_mode_flags" == *"--continue"* ]]; then
-        default_mode="continue"
+        mode="continue"
     fi
 
     if [[ "$prefill_mode_flags" == *"--yolo"* ]]; then
-        default_yolo="true"
+        yolo="true"
     elif am_default_yolo_enabled; then
-        default_yolo="true"
+        yolo="true"
     fi
 
-    local form_file
-    form_file=$(mktemp)
-    cat > "$form_file" <<EOF
-# New Session Form
-# Update values then save and exit.
-# Supported values:
-#   MODE: new | resume | continue
-#   YOLO: true | false
-#   WORKTREE: empty | true | false | <custom-name>
+    case "$prefill_worktree" in
+        ""|false)
+            worktree_enabled="false"
+            worktree_name=""
+            ;;
+        true|__auto__)
+            worktree_enabled="true"
+            worktree_name=""
+            ;;
+        *)
+            worktree_enabled="true"
+            worktree_name="$prefill_worktree"
+            ;;
+    esac
 
-DIRECTORY=${prefill_directory}
-AGENT=${prefill_agent}
-TASK=${prefill_task}
-MODE=${default_mode}
-YOLO=${default_yolo}
-WORKTREE=${prefill_worktree}
-EOF
+    if [[ ! -e "$tty_path" ]]; then
+        log_error "No terminal available for form editor"
+        return 1
+    fi
 
-    "${EDITOR:-vi}" "$form_file"
+    preview_file=$(mktemp)
+    trap 'rm -f "$preview_file"' RETURN
 
-    local directory agent task mode yolo worktree
-    directory=$(awk -F= '/^DIRECTORY=/{sub(/^DIRECTORY=/, ""); print; exit}' "$form_file")
-    agent=$(awk -F= '/^AGENT=/{sub(/^AGENT=/, ""); print; exit}' "$form_file")
-    task=$(awk -F= '/^TASK=/{sub(/^TASK=/, ""); print; exit}' "$form_file")
-    mode=$(awk -F= '/^MODE=/{sub(/^MODE=/, ""); print; exit}' "$form_file" | tr '[:upper:]' '[:lower:]')
-    yolo=$(awk -F= '/^YOLO=/{sub(/^YOLO=/, ""); print; exit}' "$form_file" | tr '[:upper:]' '[:lower:]')
-    worktree=$(awk -F= '/^WORKTREE=/{sub(/^WORKTREE=/, ""); print; exit}' "$form_file")
-    rm -f "$form_file"
+    while true; do
+        _new_session_form_preview \
+            "$directory" "$agent" "$task" "$mode" "$yolo" "$worktree_enabled" "$worktree_name" "$message" \
+            > "$preview_file"
+        message=""
+
+        selection=$(_new_session_form_rows "$directory" "$agent" "$task" "$mode" "$yolo" "$worktree_enabled" "$worktree_name" | fzf \
+            --sync \
+            --ansi \
+            --height=100% \
+            --delimiter=$'\t' \
+            --with-nth=2,3 \
+            --header="New Session  Enter:edit  Space:toggle  Esc:back" \
+            --preview="cat '$preview_file'" \
+            --preview-window="bottom:75%" \
+            --bind="ctrl-p:toggle-preview" \
+            --bind="start:pos($(_new_session_form_row_position "$current_field"))" \
+            --expect="space")
+
+        key=$(echo "$selection" | head -n1)
+        selected_row=$(echo "$selection" | tail -n1)
+        selected_field=$(echo "$selected_row" | cut -f1)
+
+        if [[ -z "$selected_row" ]]; then
+            return 1
+        fi
+
+        current_field="$selected_field"
+
+        if [[ "$key" == "space" ]]; then
+            case "$selected_field" in
+                yolo)
+                    [[ "$yolo" == "true" ]] && yolo="false" || yolo="true"
+                    ;;
+                worktree_enabled)
+                    [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
+                    ;;
+            esac
+            continue
+        fi
+
+        case "$selected_field" in
+            submit)
+                break
+                ;;
+            directory)
+                if selection=$(fzf_pick_directory); then
+                    directory="$selection"
+                fi
+                ;;
+            agent)
+                if selection=$(fzf_pick_agent "$agent"); then
+                    agent="$selection"
+                fi
+                ;;
+            task)
+                if selection=$(_new_session_form_prompt "What are you working on this session?" "$task"); then
+                    task="$selection"
+                fi
+                ;;
+            mode)
+                if selection=$(fzf_pick_session_mode "$mode"); then
+                    mode="$selection"
+                fi
+                ;;
+            yolo)
+                [[ "$yolo" == "true" ]] && yolo="false" || yolo="true"
+                ;;
+            worktree_enabled)
+                [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
+                ;;
+            worktree_name)
+                if [[ "$worktree_enabled" != "true" ]]; then
+                    message="Enable Worktree first to edit its name."
+                elif selection=$(_new_session_form_prompt "Enter a custom name for your worktree" "$worktree_name"); then
+                    if _new_session_validate_worktree_name "$selection"; then
+                        worktree_name="$selection"
+                    else
+                        message="Invalid worktree name. Use only letters, numbers, dots, underscores, and dashes."
+                    fi
+                fi
+                ;;
+        esac
+    done
 
     if [[ -z "$directory" ]]; then
         log_info "Cancelled"
@@ -372,10 +625,13 @@ EOF
     [[ "$mode" == "continue" ]] && flags+=" --continue"
     [[ "$yolo" == "true" ]] && flags+=" --yolo"
 
-    if [[ "$worktree" == "true" ]]; then
-        worktree="__auto__"
-    elif [[ "$worktree" == "false" ]]; then
-        worktree=""
+    local worktree=""
+    if [[ "$worktree_enabled" == "true" ]]; then
+        if [[ -n "$worktree_name" ]]; then
+            worktree="$worktree_name"
+        else
+            worktree="__auto__"
+        fi
     fi
 
     printf '%s\t%s\t%s\t%s\t%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
