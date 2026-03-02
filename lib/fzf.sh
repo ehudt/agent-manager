@@ -282,6 +282,105 @@ fzf_pick_agent() {
     echo "$selected"
 }
 
+# One-page form for new session creation.
+# Usage: fzf_new_session_form [prefill_directory] [prefill_agent] [prefill_task] [prefill_worktree] [prefill_mode_flags]
+# Returns: directory<TAB>agent<TAB>task<TAB>worktree_name<TAB>flags
+fzf_new_session_form() {
+    local prefill_directory="${1:-.}"
+    local prefill_agent="${2:-$(am_default_agent)}"
+    local prefill_task="${3:-}"
+    local prefill_worktree="${4:-}"
+    local prefill_mode_flags="${5:-}"
+
+    local default_mode="new"
+    local default_yolo="false"
+
+    if [[ "$prefill_mode_flags" == *"--resume"* ]]; then
+        default_mode="resume"
+    elif [[ "$prefill_mode_flags" == *"--continue"* ]]; then
+        default_mode="continue"
+    fi
+
+    if [[ "$prefill_mode_flags" == *"--yolo"* ]]; then
+        default_yolo="true"
+    elif am_default_yolo_enabled; then
+        default_yolo="true"
+    fi
+
+    local form_file
+    form_file=$(mktemp)
+    cat > "$form_file" <<EOF
+# New Session Form
+# Update values then save and exit.
+# Supported values:
+#   MODE: new | resume | continue
+#   YOLO: true | false
+#   WORKTREE: empty | true | false | <custom-name>
+
+DIRECTORY=${prefill_directory}
+AGENT=${prefill_agent}
+TASK=${prefill_task}
+MODE=${default_mode}
+YOLO=${default_yolo}
+WORKTREE=${prefill_worktree}
+EOF
+
+    "${EDITOR:-vi}" "$form_file"
+
+    local directory agent task mode yolo worktree
+    directory=$(awk -F= '/^DIRECTORY=/{sub(/^DIRECTORY=/, ""); print; exit}' "$form_file")
+    agent=$(awk -F= '/^AGENT=/{sub(/^AGENT=/, ""); print; exit}' "$form_file")
+    task=$(awk -F= '/^TASK=/{sub(/^TASK=/, ""); print; exit}' "$form_file")
+    mode=$(awk -F= '/^MODE=/{sub(/^MODE=/, ""); print; exit}' "$form_file" | tr '[:upper:]' '[:lower:]')
+    yolo=$(awk -F= '/^YOLO=/{sub(/^YOLO=/, ""); print; exit}' "$form_file" | tr '[:upper:]' '[:lower:]')
+    worktree=$(awk -F= '/^WORKTREE=/{sub(/^WORKTREE=/, ""); print; exit}' "$form_file")
+    rm -f "$form_file"
+
+    if [[ -z "$directory" ]]; then
+        log_info "Cancelled"
+        return 1
+    fi
+    directory="${directory/#\~/$HOME}"
+    if [[ ! -d "$directory" ]]; then
+        log_error "Directory does not exist: $directory"
+        return 1
+    fi
+
+    if [[ -z "$agent" || -z "${AGENT_COMMANDS[$agent]:-}" ]]; then
+        log_error "Invalid agent type: ${agent:-<empty>}"
+        return 1
+    fi
+
+    case "$mode" in
+        new|resume|continue) ;;
+        *)
+            log_error "Invalid mode: $mode"
+            return 1
+            ;;
+    esac
+
+    case "$yolo" in
+        true|false) ;;
+        *)
+            log_error "Invalid YOLO value: $yolo"
+            return 1
+            ;;
+    esac
+
+    local flags=""
+    [[ "$mode" == "resume" ]] && flags+=" --resume"
+    [[ "$mode" == "continue" ]] && flags+=" --continue"
+    [[ "$yolo" == "true" ]] && flags+=" --yolo"
+
+    if [[ "$worktree" == "true" ]]; then
+        worktree="__auto__"
+    elif [[ "$worktree" == "false" ]]; then
+        worktree=""
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
+}
+
 # Generate session list for fzf
 # Format: "session_name|display_name"
 # Usage: fzf_list_sessions
@@ -379,31 +478,16 @@ fzf_main() {
 
     # Handle new session request (either Ctrl-N or selecting the "new" option)
     if [[ "$key" == "ctrl-n" || "$session_name" == "__new__" ]]; then
-        # Pick directory
-        local directory
-        directory=$(fzf_pick_directory)
-        if [[ -z "$directory" ]]; then
-            return 0  # Cancelled
-        fi
-
-        # Pick agent type
-        local agent_type
-        if ! agent_type=$(fzf_pick_agent "$(am_default_agent)"); then
+        local form_values directory agent_type task worktree_name flags
+        if ! form_values=$(fzf_new_session_form); then
             fzf_main
             return $?
         fi
 
-        # Pick mode (new/resume/continue)
-        local flags yolo_default
-        yolo_default=$(am_default_yolo_enabled && echo true || echo false)
-        if ! flags=$(fzf_pick_mode "$yolo_default"); then
-            # Cancelled - return to main menu
-            fzf_main
-            return $?
-        fi
+        IFS=$'\t' read -r directory agent_type task worktree_name flags <<< "$form_values"
 
         # Return new session command
-        echo "__NEW_SESSION__|${directory}|${agent_type}|${flags}"
+        printf "__NEW_SESSION__\t%s\t%s\t%s\t%s\t%s\n" "$directory" "$agent_type" "$flags" "$task" "$worktree_name"
         return 0
     fi
 

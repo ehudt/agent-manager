@@ -55,7 +55,7 @@ OPTIONS FOR 'new':
 
 KEYBINDINGS (interactive browser):
     Enter           Attach to selected session
-    Ctrl-N          Create new session (interactive: directory > agent > mode)
+    Ctrl-N          Create new session (one-page form)
     Ctrl-X          Kill selected session
     Ctrl-R          Refresh session list
     Ctrl-P          Toggle preview panel
@@ -135,16 +135,14 @@ cmd_list() {
         local result
         result=$(fzf_main)
 
-        if [[ "$result" == __NEW_SESSION__* ]]; then
-            # Parse: __NEW_SESSION__|directory|agent_type|flags
-            local directory agent_type flags
-            directory=$(echo "$result" | cut -d'|' -f2)
-            agent_type=$(echo "$result" | cut -d'|' -f3)
-            flags=$(echo "$result" | cut -d'|' -f4-)
+        if [[ "$result" == $'__NEW_SESSION__\t'* ]]; then
+            # Parse: __NEW_SESSION__<TAB>directory<TAB>agent_type<TAB>flags<TAB>task<TAB>worktree_name
+            local directory agent_type flags task worktree_name
+            IFS=$'\t' read -r _tag directory agent_type flags task worktree_name <<< "$result"
 
-            # Create new session with selected directory, type, and flags
+            # Create new session from form values
             # shellcheck disable=SC2086
-            cmd_new_internal "$directory" "$agent_type" $flags
+            cmd_new_internal "$directory" "$agent_type" "$task" "$worktree_name" $flags
         elif [[ -n "$result" ]]; then
             # Attach to selected session
             tmux_attach "$result"
@@ -152,16 +150,18 @@ cmd_list() {
     fi
 }
 
-# Internal: create session with directory, type, and flags (called from fzf_main)
-# Usage: cmd_new_internal <directory> [agent_type] [flags...]
+# Internal: create session from form data (called from fzf_main)
+# Usage: cmd_new_internal <directory> [agent_type] [task] [worktree_name] [flags...]
 cmd_new_internal() {
     local directory="$1"
     local agent_type="${2:-$(am_default_agent)}"
-    shift 2 2>/dev/null || shift $#
+    local task="${3:-}"
+    local worktree_name="${4:-}"
+    shift 4 2>/dev/null || shift $#
     local agent_args=("$@")
 
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "" "" "${agent_args[@]}")
+    session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         tmux_attach "$session_name"
@@ -233,7 +233,7 @@ cmd_new() {
                 echo "  --            Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
-                echo "  am new                          # Interactive directory picker"
+                echo "  am new                          # Interactive one-page form"
                 echo "  am new ~/project                # Specific directory"
                 echo "  am new --yolo ~/project         # Permissive mode"
                 echo "  am new ~/project -- --resume    # With agent args"
@@ -251,40 +251,52 @@ cmd_new() {
         esac
     done
 
-    # If no directory specified and running interactively, offer picker
-    if [[ "$dir_given" == false && -t 0 ]]; then
-        local picked
-        picked=$(fzf_pick_directory)
-        if [[ -n "$picked" ]]; then
-            directory="$picked"
-        else
+    # One-page form for fully interactive new-session creation
+    if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && -z "$worktree_name" && ${#agent_args[@]} -eq 0 ]]; then
+        local form_values flags
+        if ! form_values=$(fzf_new_session_form "$directory" "$(am_default_agent)" "$task" "$worktree_name"); then
             log_info "Cancelled"
             return 0
         fi
-    fi
 
-    # If no agent type specified and running interactively, offer picker
-    if [[ -z "$agent_type" && -t 0 ]]; then
-        if ! agent_type=$(fzf_pick_agent "$(am_default_agent)"); then
-            log_info "Cancelled"
-            return 0
+        IFS=$'\t' read -r directory agent_type task worktree_name flags <<< "$form_values"
+        # shellcheck disable=SC2206
+        agent_args=($flags)
+    else
+        if [[ "$dir_given" == false && -t 0 ]]; then
+            local picked
+            picked=$(fzf_pick_directory)
+            if [[ -n "$picked" ]]; then
+                directory="$picked"
+            else
+                log_info "Cancelled"
+                return 0
+            fi
         fi
-    fi
-    agent_type="${agent_type:-$(am_default_agent)}"
 
-    # If running interactively and no agent args provided via CLI, show mode picker
-    if [[ ${#agent_args[@]} -eq 0 && -t 0 ]]; then
-        local mode_flags yolo_default
-        yolo_default=$(am_default_yolo_enabled && echo true || echo false)
-        if mode_flags=$(fzf_pick_mode "$yolo_default"); then
-            # shellcheck disable=SC2086
-            agent_args=($mode_flags)
-        else
-            log_info "Cancelled"
-            return 0
+        # If no agent type specified and running interactively, offer picker
+        if [[ -z "$agent_type" && -t 0 ]]; then
+            if ! agent_type=$(fzf_pick_agent "$(am_default_agent)"); then
+                log_info "Cancelled"
+                return 0
+            fi
         fi
-    elif [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
-        agent_args+=("--yolo")
+        agent_type="${agent_type:-$(am_default_agent)}"
+
+        # If running interactively and no agent args provided via CLI, show mode picker
+        if [[ ${#agent_args[@]} -eq 0 && -t 0 ]]; then
+            local mode_flags yolo_default
+            yolo_default=$(am_default_yolo_enabled && echo true || echo false)
+            if mode_flags=$(fzf_pick_mode "$yolo_default"); then
+                # shellcheck disable=SC2086
+                agent_args=($mode_flags)
+            else
+                log_info "Cancelled"
+                return 0
+            fi
+        elif [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
+            agent_args+=("--yolo")
+        fi
     fi
 
     # Launch agent
