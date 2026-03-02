@@ -156,7 +156,14 @@ If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, the directory p
 
 ### Sandbox Integration
 
-When `--yolo` is used and the `sb` command is on PATH, agent-manager automatically starts a sandbox (`sb <dir> --start`) and attaches both panes to it before launching the agent.
+When `--yolo` is used, agent-manager automatically starts a Docker sandbox container and attaches both panes to it before launching the agent. Sandbox support is built-in -- no separate tool needed.
+
+```bash
+am sandbox ls                  # List sandbox containers
+am sandbox prune               # Remove stopped containers
+am sandbox rebuild             # Rebuild the sandbox Docker image
+am sandbox identity init       # Initialize ~/.sb/ with sandbox credentials
+```
 
 ### Auto-Titling (Claude)
 

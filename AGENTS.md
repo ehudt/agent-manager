@@ -15,6 +15,9 @@ Architecture reference for AI agents working with this codebase.
 | `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
 | `lib/title-upgrade` | Standalone script: fire-and-forget Haiku title upgrade for a session |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
+| `lib/sandbox.sh` | Docker sandbox lifecycle: start, attach, stop, remove, fleet ops |
+| `sandbox/Dockerfile` | Docker image definition for sandbox containers |
+| `sandbox/entrypoint.sh` | Container init: user alignment, Tailscale, SSH |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
 
@@ -25,6 +28,8 @@ am → fzf_main() → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
 fzf_list_sessions() / fzf_list_json() → auto_title_scan() → _title_fallback() → registry_update() + history_append()
 Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for_directory()
+am new --yolo ~/project → agent_launch() → sandbox_start() → tmux panes attach → agent runs in container
+agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
 ```
 
 ## Key Functions
@@ -58,6 +63,16 @@ Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for
 - `tmux_enable_pipe_pane(session, pane, file)` - Stream pane output to log file
 - `tmux_cleanup_logs(name)` - Remove log directory for a session
 
+**Sandbox:**
+- `sandbox_start(session_name, dir)` - Create and start per-session Docker container
+- `sandbox_attach_cmd(session_name, dir)` - Return docker exec command string for tmux
+- `sandbox_remove(session_name)` - Force-remove container
+- `sandbox_list()` - List all agent-sandbox containers
+- `sandbox_prune()` - Remove stopped containers
+- `sandbox_build_image([no_cache])` - Build Docker image from sandbox directory
+- `sandbox_rebuild_and_restart([no_cache])` - Rebuild image, recreate running containers
+- `sandbox_identity_init()` - Initialize `~/.sb/` with dedicated sandbox credentials
+
 **fzf:**
 - `fzf_list_sessions()` - Format: `session|display_name`
 - `fzf_pick_directory()` - Directory picker with history annotations and path completion
@@ -83,3 +98,4 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Change title upgrade | `lib/title-upgrade` (standalone script) |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Add history integration | `lib/registry.sh` → `history_append()` |
+| Change sandbox config | `lib/sandbox.sh` → globals, `sandbox/Dockerfile` |
