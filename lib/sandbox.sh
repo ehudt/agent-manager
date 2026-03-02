@@ -160,7 +160,6 @@ sandbox_start() {
     fi
 
     log_info "Starting persistent sandbox '$session_name'..."
-    docker rm -f "$session_name" 2>/dev/null || true
 
     local host_user host_uid host_gid
     host_user=$(id -un)
@@ -318,12 +317,12 @@ sandbox_start() {
         "${RUN_OPTS[@]}" \
         "${MOUNTS[@]}" \
         "${ENV_VARS[@]}" \
-        "$SANDBOX_IMAGE"
+        "$SANDBOX_IMAGE" >/dev/null
 
     log_success "Sandbox started in background."
-    sleep 3
 
     if [[ "$sb_enable_tailscale" == "1" && -n "${TS_AUTHKEY:-}" ]]; then
+        sleep 3
         local ts_ip
         ts_ip=$(docker exec "$session_name" tailscale ip -4 2>/dev/null || echo "connecting...")
         log_info "Tailscale: $ts_ip"
@@ -343,14 +342,18 @@ sandbox_attach_cmd() {
 
 sandbox_remove() {
     local session_name="$1"
-    docker rm -f "$session_name" >/dev/null 2>&1
-    log_info "Removed sandbox '$session_name'."
+    if docker inspect "$session_name" &>/dev/null; then
+        docker rm -f "$session_name" >/dev/null
+        log_info "Removed sandbox '$session_name'."
+    fi
 }
 
 sandbox_stop() {
     local session_name="$1"
-    docker stop "$session_name" >/dev/null 2>&1
-    log_info "Stopped sandbox '$session_name'."
+    if docker inspect "$session_name" &>/dev/null; then
+        docker stop "$session_name" >/dev/null 2>&1 || true
+        log_info "Stopped sandbox '$session_name'."
+    fi
 }
 
 sandbox_status() {
@@ -362,6 +365,9 @@ sandbox_status() {
     echo "Container: $session_name" >&2
     echo "Status:    $state" >&2
     if [[ "$state" == "running" ]]; then
+        local dir
+        dir=$(docker inspect -f '{{index .Config.Labels "agent-sandbox.dir"}}' "$session_name" 2>/dev/null || echo "n/a")
+        echo "Directory: $dir" >&2
         ts_ip=$(docker exec "$session_name" tailscale ip -4 2>/dev/null || echo "n/a")
         host_user=$(id -un)
         echo "Tailscale: $ts_ip" >&2
@@ -395,7 +401,7 @@ sandbox_rebuild_and_restart() {
         while IFS=$'\t' read -r container_name _dir; do
             [[ -z "$container_name" ]] && continue
             log_info "Removing '$container_name'..."
-            docker rm -f "$container_name"
+            docker rm -f "$container_name" >/dev/null
         done <<< "$running_info"
     fi
 
@@ -443,5 +449,5 @@ EOF
     log_info "Public key: $_SB_SSH_DIR/id_ed25519.pub"
     log_info "Next steps:"
     log_info "  1) Add this key where needed (GitHub/GitLab as deploy or user key)."
-    log_info "  2) Run sb as usual; ~/.sb identity will be preferred over host-global secrets."
+    log_info "  2) Run am as usual; ~/.sb identity will be preferred over host-global secrets."
 }
