@@ -271,6 +271,9 @@ sandbox_start() {
     fi
 
     local RUN_OPTS=(
+        # Ensure orphaned docker exec descendants are reaped instead of
+        # accumulating as zombies under the container's long-lived PID 1.
+        --init
         --pids-limit "$sb_pids_limit"
         --memory "$sb_memory_limit"
         --cpus "$sb_cpus_limit"

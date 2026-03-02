@@ -38,6 +38,7 @@ COMMANDS:
     config              Show or change saved defaults
     info, i             Show detailed session info
     status, s           Show summary of all sessions
+    sandbox, sb         Manage sandbox containers and image
     help                Show this help message
 
 SHORTCUT:
@@ -80,6 +81,10 @@ EXAMPLES:
     am new -n "fix auth" .          # Session with task description
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
+    am sandbox ls                   # List sandbox containers
+    am sandbox status am-abc123     # Show sandbox details for a session
+    am sandbox rebuild --restart    # Rebuild image and restart sandboxes
+    am sandbox identity init        # Initialize ~/.sb sandbox identity
 
 DEPENDENCIES:
     tmux >= 3.0, fzf >= 0.40, jq, git
