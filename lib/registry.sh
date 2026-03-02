@@ -123,12 +123,11 @@ registry_gc() {
     echo "$now" > "$gc_marker"
 
     local removed=0
-    local name
+    local name container
 
     for name in $(registry_list); do
         if ! tmux_session_exists "$name"; then
             # Clean up sandbox container if one exists
-            local container
             container=$(registry_get_field "$name" "container_name")
             if [[ -n "$container" ]]; then
                 sandbox_remove "$name"
