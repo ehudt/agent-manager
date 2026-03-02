@@ -23,7 +23,7 @@ _titler_log() { echo "$(date '+%H:%M:%S') $*" >> "$_log" 2>/dev/null; }
 
 unset CLAUDECODE
 
-haiku_title=$(printf '%s' "$first_msg" | claude -p --model haiku \
+haiku_title=$(printf '%s' "$first_msg" | claude -p --no-session-persistence --model haiku \
     "Reply with a short 2-5 word title summarizing this task. Plain text only, no markdown, no quotes, no punctuation. Examples: Fix auth login bug, Add user settings page, Refactor database layer" 2>/dev/null) || true
 
 haiku_title=$(_title_strip_haiku "$haiku_title")

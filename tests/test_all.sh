@@ -1731,8 +1731,28 @@ test_auto_title_scan() {
     assert_not_empty "$hist_count" \
         "scan: history entries created"
 
-    # --- Test 7: Background haiku upgrade exits quietly if AM_DIR is removed ---
-    local fake_bin
+    # --- Test 7: title-upgrade uses non-persistent Claude print mode ---
+    local fake_bin args_log
+    fake_bin=$(mktemp -d)
+    args_log=$(mktemp)
+    cat > "$fake_bin/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$args_log"
+echo "Quiet Title"
+EOF
+    chmod +x "$fake_bin/claude"
+
+    local old_path="$PATH"
+    export PATH="$fake_bin:$PATH"
+    registry_add "test-scan-persist" "/tmp/has-msg" "main" "claude" ""
+    "$LIB_DIR/title-upgrade" "test-scan-persist" "Fix the login bug in auth"
+    assert_contains "$(cat "$args_log")" "--no-session-persistence" \
+        "scan: title-upgrade disables Claude session persistence"
+
+    export PATH="$old_path"
+    rm -rf "$fake_bin" "$args_log"
+
+    # --- Test 8: Background haiku upgrade exits quietly if AM_DIR is removed ---
     fake_bin=$(mktemp -d)
     cat > "$fake_bin/claude" <<'EOF'
 #!/usr/bin/env bash
