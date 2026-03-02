@@ -9,3 +9,6 @@
 # Test/debug artifacts
 *.log
 .claude/worktrees
+
+# Sandbox secrets
+sandbox/.env
