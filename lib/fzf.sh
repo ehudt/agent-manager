@@ -73,47 +73,15 @@ _list_directories() {
     done
 }
 
-# Annotate a directory path with recent session history
+# Annotate a directory path with its current git branch.
 # Usage: _annotate_directory <path>
-# Returns: annotation string like 'claude: "Task" (2h) | gemini: "Task2" (1d)' or empty
+# Returns: annotation string like ' main' or empty
 _annotate_directory() {
     local dir_path="$1"
-    [[ -f "$AM_HISTORY" ]] || return 0
-
-    local entries
-    entries=$(history_for_directory "$dir_path" | head -3)
-    [[ -z "$entries" ]] && return 0
-
-    local parts=()
-    local now
-    now=$(date +%s)
-
-    while IFS= read -r line; do
-        local task agent created_at
-        IFS=$'\t' read -r task agent created_at <<< "$(echo "$line" | jq -r '[.task, .agent_type, .created_at] | @tsv')"
-
-        # Calculate relative time
-        local ts
-        ts=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null || \
-             date -d "$created_at" +%s 2>/dev/null || echo "$now")
-        local age=$(( now - ts ))
-        local age_str
-        if (( age < 3600 )); then
-            age_str="$(( age / 60 ))m"
-        elif (( age < 86400 )); then
-            age_str="$(( age / 3600 ))h"
-        else
-            age_str="$(( age / 86400 ))d"
-        fi
-
-        # Truncate task to 30 chars
-        task=$(truncate "$task" 30)
-
-        parts+=("${agent}: ${task} (${age_str})")
-    done <<< "$entries"
-
-    local IFS='|'
-    echo " ${parts[*]}"
+    local branch=""
+    branch=$(detect_git_branch "$dir_path")
+    [[ -n "$branch" ]] || return 0
+    echo " $branch"
 }
 
 # Strip annotation from a picker line, returning just the path
@@ -132,9 +100,6 @@ fzf_pick_directory() {
     export -f _list_directories
     export -f _annotate_directory
     export -f _strip_annotation
-    export -f history_for_directory
-    export AM_HISTORY
-
     local initial_list
     initial_list=$(_list_directories | grep -v '^$')
 

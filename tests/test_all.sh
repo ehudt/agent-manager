@@ -1495,34 +1495,33 @@ test_annotated_directories() {
 
     export AM_DIR=$(mktemp -d)
     export AM_REGISTRY="$AM_DIR/sessions.json"
-    export AM_HISTORY="$AM_DIR/history.jsonl"
     am_init
 
-    # Seed history
-    history_append "/tmp/project-alpha" "Fix auth bug" "claude" "main"
-    history_append "/tmp/project-alpha" "Add tests" "claude" "dev"
-    history_append "/tmp/project-beta" "Dark mode" "gemini" "feature/ui"
+    local git_dir non_git_dir
+    git_dir=$(mktemp -d)
+    non_git_dir=$(mktemp -d)
+    git -C "$git_dir" init -q -b picker-branch
+    git -C "$git_dir" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
 
-    # Test _annotate_directory with history
+    # Test _annotate_directory with current git branch
     local annotation
-    annotation=$(_annotate_directory "/tmp/project-alpha")
-    assert_contains "$annotation" "Add tests" "annotate: shows most recent task"
-    assert_contains "$annotation" "Fix auth" "annotate: shows older task"
-    assert_contains "$annotation" "claude" "annotate: shows agent type"
+    annotation=$(_annotate_directory "$git_dir")
+    assert_eq " picker-branch" "$annotation" "annotate: shows current git branch"
 
-    # Test _annotate_directory with no history
-    annotation=$(_annotate_directory "/tmp/no-history")
-    assert_eq "" "$annotation" "annotate: empty for unknown path"
+    # Test _annotate_directory with non-git directory
+    annotation=$(_annotate_directory "$non_git_dir")
+    assert_eq "" "$annotation" "annotate: empty for non-git directory"
 
     # Test _strip_annotation with tab-separated line
     local stripped
-    stripped=$(_strip_annotation "/tmp/project-alpha	claude: Add tests (0m) | claude: Fix auth (0m)")
-    assert_eq "/tmp/project-alpha" "$stripped" "strip: extracts path from annotated line"
+    stripped=$(_strip_annotation "$git_dir	picker-branch")
+    assert_eq "$git_dir" "$stripped" "strip: extracts path from annotated line"
 
     # Test _strip_annotation with plain path
     stripped=$(_strip_annotation "/tmp/plain-path")
     assert_eq "/tmp/plain-path" "$stripped" "strip: handles plain path"
 
+    rm -rf "$git_dir" "$non_git_dir"
     rm -rf "$AM_DIR"
 
     echo ""

@@ -17,17 +17,16 @@ if [[ ! -d "$d" ]]; then
     exit 0
 fi
 
-AM_HISTORY="${AM_HISTORY:-$HOME/.agent-manager/history.jsonl}"
-
-echo "── Recent Sessions ──"
-if [[ -f "$AM_HISTORY" ]]; then
-    jq -r --arg dir "$d" \
-        'select(.directory == $dir) | "\(.agent_type): \(.task) [\(.branch)]"' \
-        "$AM_HISTORY" 2>/dev/null \
-        | tail -r 2>/dev/null || tac 2>/dev/null || cat \
-        | head -5
+echo "── Git ──"
+if git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+    branch=$(git -C "$d" branch --show-current 2>/dev/null || true)
+    if [[ -n "$branch" ]]; then
+        echo "Branch: $branch"
+    else
+        echo "Detached HEAD"
+    fi
 else
-    echo "(no history)"
+    echo "(not a git repo)"
 fi
 
 echo ""
