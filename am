@@ -108,6 +108,7 @@ source "$AM_LIB_DIR/config.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
 source "$AM_LIB_DIR/agents.sh"
+source "$AM_LIB_DIR/sandbox.sh"
 source "$AM_LIB_DIR/fzf.sh"
 
 # Command: list
@@ -524,6 +525,69 @@ cmd_status() {
     fi
 }
 
+# Command: sandbox
+cmd_sandbox() {
+    local action="${1:-}"
+    shift 2>/dev/null || true
+
+    case "$action" in
+        ls|list|ps)
+            sandbox_list
+            ;;
+        prune)
+            sandbox_prune
+            ;;
+        rebuild)
+            local no_cache=0
+            local restart=0
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --no-cache) no_cache=1 ;;
+                    --restart|--restart-running) restart=1 ;;
+                    *) log_error "Unknown option: $1"; return 1 ;;
+                esac
+                shift
+            done
+            if [[ "$restart" == "1" ]]; then
+                sandbox_rebuild_and_restart "$no_cache"
+            else
+                sandbox_build_image "$no_cache"
+            fi
+            ;;
+        identity)
+            local sub="${1:-}"
+            case "$sub" in
+                init|init-home) sandbox_identity_init ;;
+                *) log_error "Usage: am sandbox identity init"; return 1 ;;
+            esac
+            ;;
+        status)
+            local session="${1:-}"
+            if [[ -z "$session" ]]; then
+                log_error "Usage: am sandbox status <session>"
+                return 1
+            fi
+            sandbox_status "$session"
+            ;;
+        ""|help|--help|-h)
+            cat <<'EOF'
+Usage: am sandbox <subcommand>
+
+Subcommands:
+  ls                              List all sandbox containers
+  prune                           Remove stopped sandbox containers
+  rebuild [--no-cache] [--restart] Rebuild sandbox Docker image
+  identity init                   Initialize ~/.sb/ sandbox identity
+  status <session>                Show sandbox status for a session
+EOF
+            ;;
+        *)
+            log_error "Unknown sandbox subcommand: $action"
+            return 1
+            ;;
+    esac
+}
+
 # Main entry point
 main() {
     # Initialize
@@ -563,6 +627,9 @@ main() {
             ;;
         status|s)
             cmd_status
+            ;;
+        sandbox|sb)
+            cmd_sandbox "$@"
             ;;
         *)
             # If it looks like a path, treat as "new <path>"
