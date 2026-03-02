@@ -47,7 +47,7 @@ OPTIONS FOR 'new':
     -t, --type      Agent type: claude, codex, gemini (saved default applies)
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
-    -w, --worktree  Enable git worktree isolation (Claude only)
+    -w, --worktree  Enable git worktree isolation (Claude, Codex)
                     Optional: -w <name> to set worktree name (default: am-XXXXXX)
     --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
     --no-yolo       Disable permissive mode even if enabled by default
@@ -227,7 +227,7 @@ cmd_new() {
                 echo "  -t, --type    Agent type (claude, codex, gemini)"
                 echo "  -n, --name    Task description"
                 echo "  -d, --dir     Working directory"
-                echo "  -w, --worktree  Enable git worktree isolation (Claude only)"
+                echo "  -w, --worktree  Enable git worktree isolation (Claude, Codex)"
                 echo "                  Optional: -w <name> for custom worktree name"
                 echo "  --yolo        Enable permissive mode (mapped per agent, uses sb sandbox)"
                 echo "  --no-yolo     Disable permissive mode even if enabled by default"

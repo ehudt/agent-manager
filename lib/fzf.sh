@@ -320,13 +320,21 @@ _new_session_form_rows() {
     local worktree_name="$7"
 
     local task_display worktree_toggle worktree_name_display yolo_toggle
+    local worktree_supported="false"
     task_display="${task:-<empty>}"
     worktree_name_display="<disabled>"
     yolo_toggle="[ ]"
     worktree_toggle="[ ]"
 
     [[ "$yolo" == "true" ]] && yolo_toggle="[x]"
-    if [[ "$worktree_enabled" == "true" ]]; then
+    if agent_supports_worktree "$agent"; then
+        worktree_supported="true"
+    fi
+
+    if [[ "$worktree_supported" != "true" ]]; then
+        worktree_toggle="<unsupported>"
+        worktree_name_display="<unsupported>"
+    elif [[ "$worktree_enabled" == "true" ]]; then
         worktree_toggle="[x]"
         worktree_name_display="${worktree_name:-<auto>}"
     fi
@@ -352,7 +360,9 @@ _new_session_form_preview() {
     local message="$8"
     local worktree_display="off"
 
-    if [[ "$worktree_enabled" == "true" ]]; then
+    if ! agent_supports_worktree "$agent"; then
+        worktree_display="unavailable for $agent"
+    elif [[ "$worktree_enabled" == "true" ]]; then
         worktree_display="${worktree_name:-auto}"
     fi
 
@@ -539,7 +549,11 @@ fzf_new_session_form() {
                     [[ "$yolo" == "true" ]] && yolo="false" || yolo="true"
                     ;;
                 worktree_enabled)
-                    [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
+                    if agent_supports_worktree "$agent"; then
+                        [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
+                    else
+                        message="Worktree isolation is not available for $agent sessions."
+                    fi
                     ;;
             esac
             continue
@@ -573,10 +587,16 @@ fzf_new_session_form() {
                 [[ "$yolo" == "true" ]] && yolo="false" || yolo="true"
                 ;;
             worktree_enabled)
-                [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
+                if agent_supports_worktree "$agent"; then
+                    [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
+                else
+                    message="Worktree isolation is not available for $agent sessions."
+                fi
                 ;;
             worktree_name)
-                if [[ "$worktree_enabled" != "true" ]]; then
+                if ! agent_supports_worktree "$agent"; then
+                    message="Worktree isolation is not available for $agent sessions."
+                elif [[ "$worktree_enabled" != "true" ]]; then
                     message="Enable Worktree first to edit its name."
                 elif selection=$(_new_session_form_prompt "Enter a custom name for your worktree" "$worktree_name"); then
                     if _new_session_validate_worktree_name "$selection"; then
@@ -626,7 +646,7 @@ fzf_new_session_form() {
     [[ "$yolo" == "true" ]] && flags+=" --yolo"
 
     local worktree=""
-    if [[ "$worktree_enabled" == "true" ]]; then
+    if [[ "$worktree_enabled" == "true" ]] && agent_supports_worktree "$agent"; then
         if [[ -n "$worktree_name" ]]; then
             worktree="$worktree_name"
         else

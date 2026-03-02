@@ -703,6 +703,16 @@ test_fzf_helpers() {
     first_mode=$(fzf_mode_options "false" | head -n1)
     assert_eq "New session" "$first_mode" "fzf helpers: safe default listed first"
 
+    local worktree_rows
+    worktree_rows=$(_new_session_form_rows "/tmp/project" "gemini" "" "new" "false" "true" "my-wt")
+    assert_contains "$worktree_rows" $'worktree_enabled\tWorktree\t<unsupported>' \
+        "fzf helpers: unsupported popup marks worktree as unavailable"
+
+    local worktree_preview
+    worktree_preview=$(_new_session_form_preview "/tmp/project" "gemini" "" "new" "false" "true" "my-wt" "")
+    assert_contains "$worktree_preview" "Worktree:  unavailable for gemini" \
+        "fzf helpers: preview explains unsupported worktree agent"
+
     echo ""
 }
 
@@ -1360,17 +1370,50 @@ test_worktree() {
 
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
-    # --- Test: non-claude agent type ignores worktree ---
-    local warn_output
-    warn_output=$(set +u; agent_launch "$git_dir" "codex" "" "my-wt" 2>&1 >/dev/null)
-    # The launch itself may return a session (worktree is just ignored)
+    # --- Test: codex uses a manager-created git worktree ---
     session_name=$(set +u; agent_launch "$git_dir" "codex" "" "my-wt" 2>/dev/null)
     if [[ -n "$session_name" ]]; then
         wt_path=$(registry_get_field "$session_name" worktree_path)
-        assert_eq "" "$wt_path" "non-claude worktree: worktree_path not set"
+        assert_eq "$git_dir/.codex/worktrees/my-wt" "$wt_path" \
+            "codex worktree: registry has correct worktree_path"
+        assert_cmd_succeeds "codex worktree: directory exists" test -d "$wt_path"
+        assert_cmd_succeeds "codex worktree: is a git worktree" git -C "$wt_path" rev-parse --git-dir
         agent_kill "$session_name" 2>/dev/null
     else
-        skip_test "non-claude worktree: agent_launch failed"
+        skip_test "codex worktree: agent_launch failed"
+    fi
+
+    # --- Test: sandboxed codex worktree keeps repo mount and worktree cwd ---
+    if command -v docker &>/dev/null && docker info >/dev/null 2>&1; then
+        session_name=$(set +u; agent_launch "$git_dir" "codex" "" "my-sb-wt" "--yolo" 2>/dev/null)
+        if [[ -n "$session_name" ]]; then
+            wt_path=$(registry_get_field "$session_name" worktree_path)
+            local attach_cmd
+            attach_cmd=$(sandbox_attach_cmd "$session_name" "$wt_path")
+            assert_contains "$attach_cmd" "-w '$wt_path'" \
+                "codex sandbox worktree: attach command enters worktree cwd"
+            local container_name
+            container_name=$(registry_get_field "$session_name" container_name)
+            assert_eq "$session_name" "$container_name" \
+                "codex sandbox worktree: container registered"
+            agent_kill "$session_name" 2>/dev/null
+        else
+            skip_test "codex sandbox worktree: agent_launch failed"
+        fi
+    else
+        skip_test "codex sandbox worktree: docker unavailable"
+    fi
+
+    # --- Test: unsupported agent type ignores worktree ---
+    local warn_output
+    warn_output=$(set +u; agent_launch "$git_dir" "gemini" "" "my-wt" 2>&1 >/dev/null)
+    session_name=$(set +u; agent_launch "$git_dir" "gemini" "" "my-wt" 2>/dev/null)
+    if [[ -n "$session_name" ]]; then
+        wt_path=$(registry_get_field "$session_name" worktree_path)
+        assert_eq "" "$wt_path" "unsupported worktree: worktree_path not set"
+        agent_kill "$session_name" 2>/dev/null
+    else
+        skip_test "unsupported worktree: agent_launch failed"
     fi
 
     # --- Test: non-git directory ignores worktree ---

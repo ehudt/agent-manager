@@ -39,6 +39,66 @@ agent_type_supported() {
     [[ -n "${AGENT_COMMANDS[$agent_type]}" ]]
 }
 
+# Check whether an agent supports git worktree isolation.
+# Usage: agent_supports_worktree <type>
+agent_supports_worktree() {
+    local agent_type="$1"
+    case "$agent_type" in
+        claude|codex) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Check whether an agent natively manages worktrees via its own CLI flag.
+# Usage: agent_cli_manages_worktree <type>
+agent_cli_manages_worktree() {
+    local agent_type="$1"
+    [[ "$agent_type" == "claude" ]]
+}
+
+# Return the repo-local directory used to store managed worktrees.
+# Usage: agent_worktree_root <directory> <agent_type>
+agent_worktree_root() {
+    local directory="$1"
+    local agent_type="$2"
+
+    case "$agent_type" in
+        claude) echo "$directory/.claude/worktrees" ;;
+        codex) echo "$directory/.codex/worktrees" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Create or reuse a repo-local git worktree for agents that rely on cwd isolation.
+# Usage: agent_prepare_managed_worktree <directory> <agent_type> <worktree_name>
+agent_prepare_managed_worktree() {
+    local directory="$1"
+    local agent_type="$2"
+    local worktree_name="$3"
+    local worktree_root worktree_path
+
+    worktree_root=$(agent_worktree_root "$directory" "$agent_type") || return 1
+    worktree_path="$worktree_root/$worktree_name"
+
+    if git -C "$worktree_path" rev-parse --git-dir &>/dev/null; then
+        echo "$worktree_path"
+        return 0
+    fi
+
+    if [[ -e "$worktree_path" ]]; then
+        log_error "Worktree path already exists and is not a git worktree: $worktree_path"
+        return 1
+    fi
+
+    mkdir -p "$worktree_root"
+    if ! git -C "$directory" worktree add --detach "$worktree_path" HEAD >/dev/null; then
+        log_error "Failed to create git worktree: $worktree_path"
+        return 1
+    fi
+
+    echo "$worktree_path"
+}
+
 # Refresh the tmux status bar from registry metadata.
 # Usage: agent_refresh_tmux_status <session_name>
 agent_refresh_tmux_status() {
@@ -133,11 +193,14 @@ agent_launch() {
     local session_name
     session_name=$(generate_session_name "$directory")
 
+    local session_directory="$directory"
+    local sandbox_directory="$directory"
+
     # Resolve worktree name
     local worktree_path=""
     if [[ -n "$worktree_name" ]]; then
-        if [[ "$agent_type" != "claude" ]]; then
-            log_warn "Worktree isolation only supported for Claude, ignoring -w"
+        if ! agent_supports_worktree "$agent_type"; then
+            log_warn "Worktree isolation is not supported for $agent_type, ignoring -w"
             worktree_name=""
         elif ! git -C "$directory" rev-parse --git-dir &>/dev/null; then
             log_warn "Not a git repo, ignoring -w"
@@ -147,12 +210,18 @@ agent_launch() {
             if [[ "$worktree_name" == "__auto__" ]]; then
                 worktree_name="am-${session_name#am-}"
             fi
-            worktree_path="$directory/.claude/worktrees/$worktree_name"
+
+            if agent_cli_manages_worktree "$agent_type"; then
+                worktree_path="$(agent_worktree_root "$directory" "$agent_type")/$worktree_name"
+            else
+                worktree_path=$(agent_prepare_managed_worktree "$directory" "$agent_type" "$worktree_name") || return 1
+                session_directory="$worktree_path"
+            fi
         fi
     fi
 
     # Create tmux session (with explicit dimensions for sizing workaround)
-    if ! tmux_create_session "$session_name" "$directory"; then
+    if ! tmux_create_session "$session_name" "$session_directory"; then
         log_error "Failed to create tmux session"
         return 1
     fi
@@ -169,7 +238,7 @@ agent_launch() {
 
     # Create horizontal split: top pane for agent, bottom pane (15 lines) for shell
     # Split without size, then resize (workaround for detached session sizing issues)
-    tmux split-window -t "$session_name" -v -c "$directory"
+    tmux split-window -t "$session_name" -v -c "$session_directory"
     tmux resize-pane -t "$session_name:.{bottom}" -y 15
 
     # Select top pane for the agent
@@ -187,7 +256,7 @@ agent_launch() {
 
     # Build the full agent command
     local full_cmd="$agent_cmd"
-    if [[ -n "$worktree_name" ]]; then
+    if [[ -n "$worktree_name" ]] && agent_cli_manages_worktree "$agent_type"; then
         full_cmd="$full_cmd -w '$worktree_name'"
     fi
     if [[ ${#agent_args[@]} -gt 0 ]]; then
@@ -196,11 +265,11 @@ agent_launch() {
 
     # Sandbox mode when permissive flags are active
     if $wants_yolo && command -v docker &>/dev/null; then
-        sandbox_start "$session_name" "$directory"
+        sandbox_start "$session_name" "$sandbox_directory"
         registry_update "$session_name" "container_name" "$session_name"
         agent_refresh_tmux_status "$session_name"
         local attach_cmd
-        attach_cmd=$(sandbox_attach_cmd "$session_name" "$directory")
+        attach_cmd=$(sandbox_attach_cmd "$session_name" "$session_directory")
         tmux_send_keys "$session_name:.{bottom}" "$attach_cmd && clear" Enter
         tmux_send_keys "$session_name:.{top}" "$attach_cmd && clear" Enter
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
@@ -208,17 +277,19 @@ agent_launch() {
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     fi
 
-    # Background: wait for worktree directory to appear, then cd shell pane into it
+    # Background: wait for CLI-managed worktrees to appear, then cd shell pane into them.
     if [[ -n "$worktree_path" ]]; then
-        (for _i in $(seq 1 20); do
-            if [ -d "$worktree_path" ]; then
-                tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
-                break
-            fi
-            sleep 0.5
-        done) >/dev/null 2>&1 &
         registry_update "$session_name" "worktree_path" "$worktree_path"
         agent_refresh_tmux_status "$session_name"
+        if [[ "$session_directory" != "$worktree_path" ]]; then
+            (for _i in $(seq 1 20); do
+                if [ -d "$worktree_path" ]; then
+                    tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
+                    break
+                fi
+                sleep 0.5
+            done) >/dev/null 2>&1 &
+        fi
     fi
 
     log_success "Created session: $session_name"
