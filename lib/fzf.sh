@@ -700,11 +700,14 @@ fzf_main() {
     ?           Show this help
 
   In tmux session
-    Ctrl-Z a    Open am menu (popup)
-    Ctrl-Z n    Open new-session popup
-    Ctrl-Z d    Detach (return to shell)
-    Ctrl-Z x    Kill current am session
-    Ctrl-Z [    Scroll mode (q to exit)
+    Prefix + a  Switch to last am session
+    Prefix + n  Open new-session popup
+    Prefix + s  Open am browser popup
+    Prefix + x  Kill current am session
+    Prefix + d  Detach from session
+    Prefix Up/Down
+                Switch panes (agent/shell)
+    :am         Open am browser (tmux command)
 "
 
     # Run fzf
