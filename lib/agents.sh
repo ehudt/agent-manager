@@ -180,11 +180,13 @@ agent_launch() {
     fi
 
     # Sandbox mode when permissive flags are active
-    if $wants_yolo && command -v sb &>/dev/null; then
-        # Start sandbox once, then attach both panes to it
-        sb "$directory" --start >&2
-        tmux_send_keys "$session_name:.{bottom}" "sb . --attach && clear" Enter
-        tmux_send_keys "$session_name:.{top}" "sb . --attach && clear" Enter
+    if $wants_yolo && command -v docker &>/dev/null; then
+        sandbox_start "$session_name" "$directory"
+        registry_update "$session_name" "container_name" "$session_name"
+        local attach_cmd
+        attach_cmd=$(sandbox_attach_cmd "$session_name" "$directory")
+        tmux_send_keys "$session_name:.{bottom}" "$attach_cmd && clear" Enter
+        tmux_send_keys "$session_name:.{top}" "$attach_cmd && clear" Enter
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
@@ -307,6 +309,13 @@ agent_info() {
 agent_kill() {
     local session_name="$1"
     local rc=0
+
+    # Remove sandbox container if session had one
+    local container_name
+    container_name=$(registry_get_field "$session_name" "container_name")
+    if [[ -n "$container_name" ]]; then
+        sandbox_remove "$session_name"
+    fi
 
     tmux_kill_session "$session_name" || rc=$?
 
