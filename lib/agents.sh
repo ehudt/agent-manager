@@ -301,7 +301,7 @@ agent_launch() {
 
 # Get display name for a session (for fzf listing)
 # Usage: agent_display_name <session_name> [activity_ts]
-# Returns: "dirname/branch [type] (Xm ago)"
+# Returns: "am-xxxxxx dirname/branch [type] (Xm ago)"
 # Pass activity_ts to avoid an extra tmux subprocess per session.
 agent_display_name() {
     local session_name="$1"
@@ -327,11 +327,11 @@ agent_display_name() {
     # Build display name
     local display=""
 
+    display="$session_name"
+
     # Directory basename
     if [[ -n "$directory" ]]; then
-        display=$(dir_basename "$directory")
-    else
-        display="$session_name"
+        display="${display} $(dir_basename "$directory")"
     fi
 
     # Add branch if available
@@ -382,6 +382,7 @@ agent_info() {
     fi
 
     # Output info
+    echo "Session: $session_name"
     echo "Directory: ${directory:-unknown}"
     echo "Branch: ${branch:--}"
     echo "Agent: ${agent_type:-unknown}"

@@ -99,6 +99,10 @@ fi
 if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
     mkdir -p "$USER_HOME/.codex/tmp"
 else
+    # File mounts like $HOME/.local/bin/claude can leave parent directories
+    # root-owned, which breaks tools that write XDG state during shell startup.
+    ensure_dir "$USER_HOME/.local" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
+    ensure_dir "$USER_HOME/.local/share" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
     ensure_dir "$USER_HOME/.codex" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
     ensure_dir "$USER_HOME/.codex/tmp" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
 fi

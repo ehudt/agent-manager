@@ -123,7 +123,13 @@ registry_gc() {
     echo "$now" > "$gc_marker"
 
     local removed=0
+    local orphaned_containers=0
     local name container
+
+    if [[ "$(type -t sandbox_gc_orphans)" == "function" ]]; then
+        orphaned_containers=$(sandbox_gc_orphans)
+        removed=$((removed + orphaned_containers))
+    fi
 
     for name in $(registry_list); do
         if ! tmux_session_exists "$name"; then

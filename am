@@ -502,8 +502,6 @@ cmd_info() {
         return 1
     fi
 
-    echo "${BOLD}Session: $resolved${RESET}"
-    echo ""
     agent_info "$resolved"
 }
 
@@ -514,14 +512,14 @@ cmd_status() {
     local count
     count=$(tmux_count_am_sessions)
 
-    echo "${BOLD}Agent Manager Status${RESET}"
+    printf '%b\n' "${BOLD}Agent Manager Status${RESET}"
     echo "===================="
-    echo ""
+    echo
     echo "Active sessions: $count"
-    echo ""
+    echo
 
     if [[ $count -gt 0 ]]; then
-        echo "${BOLD}Sessions:${RESET}"
+        printf '%b\n' "${BOLD}Sessions:${RESET}"
         fzf_list_simple
     else
         echo "Run 'am new' to create your first session."

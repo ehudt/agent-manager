@@ -48,6 +48,10 @@ _sandbox_container_has_mount() {
     [[ "$mount_present" == "present" ]]
 }
 
+_sandbox_list_containers() {
+    docker ps -a --filter "label=agent-sandbox" --format '{{.Names}}'
+}
+
 _sandbox_claude_install_method() {
     local config_path="$1"
     local line
@@ -351,6 +355,21 @@ sandbox_remove() {
     fi
 }
 
+sandbox_gc_orphans() {
+    local container_name
+    local removed=0
+
+    while IFS= read -r container_name; do
+        [[ -z "$container_name" ]] && continue
+        if ! tmux_session_exists "$container_name"; then
+            sandbox_remove "$container_name"
+            ((removed++))
+        fi
+    done < <(_sandbox_list_containers)
+
+    echo "$removed"
+}
+
 sandbox_stop() {
     local session_name="$1"
     if docker inspect "$session_name" &>/dev/null; then
@@ -388,6 +407,11 @@ sandbox_list() {
 }
 
 sandbox_prune() {
+    local removed_orphans
+    removed_orphans=$(sandbox_gc_orphans)
+    if (( removed_orphans > 0 )); then
+        log_info "Removed $removed_orphans orphaned sandbox container(s)."
+    fi
     log_info "Removing all stopped agent-sandbox containers..."
     docker container prune -f --filter "label=agent-sandbox"
 }

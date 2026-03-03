@@ -26,13 +26,19 @@ AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
 if [[ -f "$AM_REGISTRY" ]]; then
     directory=$(jq -r --arg name "$session_name" '.sessions[$name].directory // empty' "$AM_REGISTRY" 2>/dev/null)
 
+    echo -e "\033[1mSession:\033[0m $session_name"
+
     if [[ -n "$directory" ]]; then
+        echo -e "\033[1mDirectory:\033[0m $directory"
+        echo ""
         title=$(claude_first_user_message "$directory" || true)
         if [[ -n "$title" ]]; then
             title=$(_title_fallback "$title")
             echo -e "\033[1;36m📝 $title\033[0m"
             echo ""
         fi
+    else
+        echo ""
     fi
 fi
 
