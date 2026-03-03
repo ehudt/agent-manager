@@ -1,67 +1,178 @@
-# SB Test Plan (Functional, Security, UX)
+# Sandbox Test Plan (Functional, Security, UX)
 
-Date: 2026-02-17  
-System under test: `sb` CLI, `entrypoint.sh`, `Dockerfile` runtime behavior
+Date: 2026-02-17 (original), 2026-03-03 (revised for am integration)
+System under test: `am` CLI sandbox subsystem (`lib/sandbox.sh`), `sandbox/entrypoint.sh`, `sandbox/Dockerfile` runtime behavior
 
 ## 0. Current Status
 
-Implemented and validated in this session:
-1. Added `pytest` integration coverage for:
-- `S-001` hardened defaults present
-- `S-002` Tailscale privilege gating
-- `S-003` unsafe-mode downgrade behavior
-- `S-004` sensitive mount mode enforcement
-- `S-005` read-only rootfs mode enforcement
-- `S-006` SSH agent forwarding gating
-- `U-002` invalid directory error clarity
-- `U-003` warning usefulness for conflicting envs / missing Tailscale auth
-- `F-005` attach failure semantics
-- `F-006` status output for running / not found states
-2. Validation result as of 2026-02-28:
-- `uv run --with pytest pytest -q tests/test_sb_security_integration.py`
-- `9 passed, 1 skipped`
-3. Runtime fixes shipped to support `S-005`:
-- read-only-rootfs mode now preserves the stable in-image home path
-- writable Codex state is mounted at `/home/dev/.codex`
-- read-only startup avoids rootfs-mutating home remap operations
-4. Additional runtime fixes shipped in this session:
-- host identity/home alignment in `entrypoint.sh` now degrades safely instead of crash-looping under hardened defaults
-- `sb --status` now reports `not found` cleanly on a missing sandbox instead of emitting a malformed multi-line state
+Last audited: 2026-03-03
 
-How to run the current integration coverage:
-- `uv run --with pytest pytest -q tests/test_sb_security_integration.py`
-- The suite uses the real `sb` CLI plus `docker inspect` / `docker exec` assertions and auto-skips when Docker or required host capabilities are unavailable.
+### How to run
+
+```
+uv run --with pytest pytest -q tests/test_sandbox_security_integration.py
+```
+
+The suite calls real `sandbox_*` shell functions (sourced from `lib/sandbox.sh`) plus `docker inspect`/`docker exec` assertions. Auto-skips when Docker or required host capabilities are unavailable.
+
+### Test file
+
+`tests/test_sandbox_security_integration.py` — 11 tests total (renamed from former `test_sb_security_integration.py`).
+
+### Architecture context
+
+The standalone `sb` CLI no longer exists. Sandbox functionality is integrated into `am` (agent-manager):
+
+| Old `sb` command | Current equivalent | Layer |
+|------------------|--------------------|-------|
+| `sb <dir>` | `am new --yolo <dir>` | CLI → `agent_launch()` → `sandbox_start()` |
+| `sb <dir> --start` | `sandbox_start(session, dir)` | Function (no direct CLI, called by launch) |
+| `sb <dir> --attach` | `sandbox_attach_cmd(session, dir)` | Function (attach via tmux pane) |
+| `sb <dir> --status` | `am sandbox status <session>` | CLI → `sandbox_status()` |
+| `sb <dir> --stop` | `sandbox_stop(session)` | Function (called by `agent_kill`) |
+| `sb <dir> --clean` | `sandbox_remove(session)` | Function (called by `agent_kill`) |
+| `sb --list` | `am sandbox ls` | CLI → `sandbox_list()` |
+| `sb --prune` | `am sandbox prune` | CLI → `sandbox_prune()` |
+| `sb --rebuild` | `am sandbox rebuild` | CLI → `sandbox_build_image()` |
+| `sb --rebuild-running` | `am sandbox rebuild --restart` | CLI → `sandbox_rebuild_and_restart()` |
+| `sb --init-sb-home` | `am sandbox identity init` | CLI → `sandbox_identity_init()` |
+
+Integration flow: `am new --yolo <dir>` → `agent_launch()` checks `wants_yolo + docker available` → calls `sandbox_start(session_name, dir)` → gets `sandbox_attach_cmd()` → both tmux panes exec into the container → agent runs inside Docker.
+
+Cleanup flow: `agent_kill(session)` → `sandbox_remove(session)` → `tmux_kill_session()` → `registry_remove()`.
+
+Test approach: tests call `sandbox_*` functions directly via `bash -lc` (sourcing `lib/utils.sh` + `lib/sandbox.sh`), not through the `am` CLI entry point. This tests the sandbox layer in isolation. CLI-level integration (e.g., `am new --yolo`) is covered by `tests/test_all.sh`.
+
+### Per-case implementation map
+
+Legend: DONE = pytest test exists and passes, SHELL = covered by shell sub-script called from pytest, MISSING = no automated coverage, STALE = listed as covered in prior status but test no longer present in file.
+
+#### Functional (F-*)
+
+| ID | P | Description | Status | Test function / notes |
+|----|---|-------------|--------|-----------------------|
+| F-001 | P0 | First-run create + start | MISSING | Partially exercised by other tests that call `sandbox_start`, but no dedicated create+start assertion |
+| F-002 | P0 | Reuse existing running sandbox | MISSING | |
+| F-003 | P0 | Label-based session mapping | MISSING | Labels are checked indirectly by `_find_container` helper but not asserted explicitly |
+| F-004 | P1 | `sandbox_start` idempotency | MISSING | |
+| F-005 | P1 | Attach failure when container not running | STALE | Was listed as automated; no matching test in current file |
+| F-006 | P1 | `sandbox_status` running / not found | DONE | `test_f001_status_output_for_running_and_not_found_states` |
+| F-007 | P1 | `sandbox_stop` + resume via `sandbox_start` | MISSING | |
+| F-008 | P1 | `sandbox_remove` cleans up containers | MISSING | |
+| F-009 | P1 | `sandbox_list` and `sandbox_prune` | MISSING | |
+| F-010 | P1 | `sandbox_rebuild_and_restart` restore behavior | MISSING | |
+| F-011 | P2 | `sandbox_identity_init` setup quality | MISSING | Called in test_u002 but output not validated |
+| F-012 | P2 | Mount precedence (`~/.sb/` over host-global) | MISSING | |
+| F-013 | P1 | Stale container recreate on config drift | DONE | `test_s006_stale_runtime_settings_trigger_recreate` |
+| F-014 | P1 | `sandbox_gc_orphans` removes orphaned containers | MISSING | |
+
+#### Security (S-*)
+
+| ID | P | Description | Status | Test function / notes |
+|----|---|-------------|--------|-----------------------|
+| S-001 | P0 | Hardened defaults present | DONE | `test_s001_hardened_defaults_present` — asserts no-new-privileges, cap-drop ALL, cap-add CHOWN/DAC_OVERRIDE/FOWNER, pids/memory/cpu limits |
+| S-002 | P0 | Tailscale privilege gating | DONE | `test_s002_tailscale_privilege_gating` — asserts NET_ADMIN + /dev/net/tun only when SB_ENABLE_TAILSCALE=1 |
+| S-003 | P0 | Unsafe mode downgrade explicit | DONE | `test_s003_unsafe_mode_downgrade_is_explicit` — asserts warning text + no-new-privileges absent |
+| S-004 | P0 | Sensitive mount modes | DONE | `test_s004_sensitive_mount_modes_enforced` — asserts :ro on auth.json, .ssh, .gitconfig, .zshrc, .vimrc, .tmux.conf, native claude binary/versions; asserts :rw on .claude.json, .claude/, codex/config.toml; write verification via docker exec |
+| S-005 | P1 | Read-only rootfs | DONE | `test_s005_read_only_rootfs_mode_enforced` — asserts ReadonlyRootfs=true, write to / rejected, write to /tmp allowed |
+| S-006 | P1 | SSH agent forwarding gating | DONE | `test_s007_ssh_agent_forwarding_gated_by_socket_presence` — asserts warning when socket missing, mount present when socket exists |
+| S-007 | P1 | Env secret leakage minimization | MISSING | |
+| S-008 | P2 | Multi-tenant separation by session | MISSING | |
+
+#### UX (U-*)
+
+| ID | P | Description | Status | Test function / notes |
+|----|---|-------------|--------|-----------------------|
+| U-001 | P1 | Identity source reporting on start | DONE | `test_u001_start_output_shows_host_global_identity_sources` + `test_u002_start_output_shows_sandbox_identity_sources` |
+| U-002 | P1 | Invalid directory error clarity | STALE | Was listed as automated; no matching test in current file |
+| U-003 | P1 | Warning usefulness for conflicting envs | STALE | Was listed as automated; no matching test in current file |
+| U-004 | P1 | `am sandbox status` message quality | MISSING | Partially covered by test_f001 (checks Container/Directory/Status/Tailscale fields) |
+| U-005 | P2 | Performance envelope | MISSING | |
+| U-006 | P2 | `am sandbox` help discoverability | MISSING | |
+
+#### Additional tests (not in original plan)
+
+| Test function | Category | What it covers |
+|---------------|----------|----------------|
+| `test_f002_shell_runtime_checks_from_sb_suite` | Functional | Runs 3 shell scripts inside a live container: `test_claude_mount.sh` (claude dir writable), `test_codex_permissions.sh` (codex dirs writable), `test_cap_chown.sh` (CHOWN/DAC_OVERRIDE/FOWNER caps in /proc/1/status) |
+
+### Summary counts
+
+- **Plan cases**: 28 total (14 functional, 8 security, 6 UX)
+- **DONE in pytest**: 9 (S-001 through S-006, F-006, F-013, U-001)
+- **STALE** (claimed covered but test missing): 3 (F-005, U-002, U-003)
+- **MISSING**: 16
+- **Additional tests beyond plan**: 1 (shell runtime checks)
+
+### Priority for next implementation round
+
+P0 gaps (critical, no coverage):
+1. **F-001** — first-run create + start
+2. **F-002** — reuse existing running sandbox
+3. **F-003** — label-based session mapping
+
+P1 gaps (high, no coverage):
+4. **F-005** — restore attach failure semantics test (was lost)
+5. **U-002** — restore invalid directory error test (was lost)
+6. **U-003** — restore warning usefulness test (was lost)
+7. **F-004** — `sandbox_start` idempotency
+8. **F-007** — `sandbox_stop` + resume
+9. **F-008** — `sandbox_remove` cleanup
+10. **F-009** — `sandbox_list` and `sandbox_prune`
+11. **F-010** — `sandbox_rebuild_and_restart` restore
+12. **F-014** — `sandbox_gc_orphans` cleanup
+13. **S-007** — environment secret leakage minimization
+14. **U-004** — status message quality (partially covered)
+
+### Related security plans (docs/)
+
+| Plan | Focus | Test coverage |
+|------|-------|---------------|
+| `security_plan_02_runtime_hardening.md` | no-new-privileges, cap-drop, resource limits, read-only rootfs, unsafe mode | Covered by S-001 through S-005 |
+| `security_plan_03_supply_chain.md` | Pin dependencies, remove curl-pipe-sh, checksum verification | No test coverage (build-time, not runtime) |
+| `security_plan_04_ssh_tailscale_controls.md` | SB_ENABLE_TAILSCALE, ENABLE_SSH, TS_ENABLE_SSH flag matrix | Partially covered by S-002, S-006 |
+| `security_plan_05_codex_config_sync.md` | Mount codex config :ro, import/export commands | Partially covered by S-004 (mount mode), commands not tested |
+| `security_best_practices_report.md` | Audit findings C-01 through M-02 | C-01 done (S-004), C-02 partial (S-001/S-003), C-03/H-01/H-02/M-01/M-02 open |
+
+### Runtime fixes shipped (historical)
+
+1. Read-only-rootfs mode preserves stable in-image home path; writable Codex state at `/home/dev/.codex`; read-only startup avoids rootfs-mutating home remap.
+2. Host identity/home alignment in `entrypoint.sh` degrades safely instead of crash-looping under hardened defaults.
+3. `sandbox_status` reports `not found` cleanly on a missing sandbox.
 
 ## 1. Objectives
 
-1. Verify `sb` reliably manages sandbox lifecycle and per-directory container mapping.
+1. Verify `am` sandbox subsystem reliably manages sandbox lifecycle and per-session container mapping.
 2. Verify runtime hardening and secret-handling controls work as intended.
 3. Verify operator experience is clear, fast, and recoverable for common workflows.
 
 ## 2. Scope
 
 In scope:
-- CLI commands: `--start`, `--attach`, `--status`, `--stop`, `--clean`, `--list`, `--prune`, `--rebuild`, `--rebuild-running`, `--init-sb-home`.
-- Container naming/labeling and persistence behavior.
+- `am` CLI surface: `am new --yolo`, `am sandbox {ls,prune,rebuild,status,identity init}`.
+- `lib/sandbox.sh` functions: `sandbox_start`, `sandbox_attach_cmd`, `sandbox_stop`, `sandbox_remove`, `sandbox_status`, `sandbox_list`, `sandbox_prune`, `sandbox_build_image`, `sandbox_rebuild_and_restart`, `sandbox_gc_orphans`, `sandbox_identity_init`.
+- Container naming/labeling (`agent-sandbox=true`, `agent-sandbox.session=<name>`, `agent-sandbox.dir=<path>`) and persistence behavior.
 - Host mount precedence (`~/.sb/*` over host-global files).
-- Security defaults and mode toggles (`SB_ENABLE_TAILSCALE`, `TS_ENABLE_SSH`, `ENABLE_SSH`, `SB_UNSAFE_ROOT`, `SB_READ_ONLY_ROOTFS`).
+- Security defaults and mode toggles (`SB_ENABLE_TAILSCALE`, `TS_ENABLE_SSH`, `ENABLE_SSH`, `SB_UNSAFE_ROOT`, `SB_READ_ONLY_ROOTFS`, `SB_FORWARD_SSH_AGENT`).
 - UX of output messages, warnings, and recovery actions.
+- Integration with `agent_launch()` / `agent_kill()` lifecycle.
 
 Out of scope:
 - Tailscale control-plane reliability beyond local command outcomes.
-- Docker engine bugs unrelated to `sb` logic.
+- Docker engine bugs unrelated to sandbox logic.
+- tmux session management (covered by `test_all.sh`).
 
 ## 3. Test Environment Matrix
 
 1. Host OS: Ubuntu 24.04 (primary), macOS/Linux secondary if supported by team.
-2. Docker: current stable daemon with permission to run privileged flags used by `sb`.
+2. Docker: current stable daemon with permission to run privileged flags used by sandbox.
 3. Network profiles:
 - A: online with valid `TS_AUTHKEY`.
 - B: online without `TS_AUTHKEY`.
 - C: offline/degraded DNS.
 4. Identity layouts:
 - A: only host-global creds (`~/.ssh`, `~/.codex`, `~/.claude*`).
-- B: dedicated sandbox identity (`~/.sb/...`) initialized.
+- B: dedicated sandbox identity (`~/.sb/...`) initialized via `am sandbox identity init`.
 5. Runtime modes:
 - Hardened default (`SB_UNSAFE_ROOT=0`, `SB_READ_ONLY_ROOTFS=0`).
 - Read-only rootfs (`SB_READ_ONLY_ROOTFS=1`).
@@ -70,8 +181,8 @@ Out of scope:
 ## 4. Entry / Exit Criteria
 
 Entry:
-1. `sb` script executable, Docker daemon healthy.
-2. Clean baseline: no stale test containers for the chosen test directories.
+1. `am` script executable, Docker daemon healthy, `agent-sandbox:persistent` image built.
+2. Clean baseline: no stale test containers for the chosen test sessions.
 
 Exit:
 1. All P0/P1 tests pass.
@@ -81,11 +192,12 @@ Exit:
 ## 5. Requirement Coverage
 
 Functional requirements:
-1. Directory-based container reuse via `agent-sandbox.dir` label.
-2. Correct lifecycle semantics for create/start/attach/stop/clean/prune/list.
-3. Rebuild behavior (`--rebuild`, `--rebuild-running`) preserves intended running set.
-4. Mount rules and fallback precedence (`~/.sb` preferred).
-5. Correct attach fallback when host user/path is unavailable in container.
+1. Session-based container reuse via `agent-sandbox.session` label.
+2. Correct lifecycle semantics for `sandbox_start`/`sandbox_stop`/`sandbox_remove`/`sandbox_list`/`sandbox_prune`.
+3. Rebuild behavior (`sandbox_rebuild_and_restart`) preserves intended running set.
+4. Mount rules and fallback precedence (`~/.sb` preferred over host-global).
+5. Stale container detection and automatic recreate when config drifts.
+6. Orphan cleanup via `sandbox_gc_orphans`.
 
 Security requirements:
 1. Default hardening: `no-new-privileges`, `cap-drop=ALL`, bounded resources.
@@ -93,12 +205,13 @@ Security requirements:
 3. Read-only mount expectations for sensitive files.
 4. Optional read-only rootfs mode with required writable paths only.
 5. Unsafe mode clearly gated and warned.
+6. SSH agent forwarding gated by socket presence.
 
 UX requirements:
-1. Command outputs are clear, actionable, and consistent.
+1. Start output reports identity sources being used.
 2. Error cases provide remediation (invalid dir, missing running container, unset auth key).
-3. Startup/attach path is fast and predictable.
-4. Status output is trustworthy and includes key connection info.
+3. Startup path is fast and predictable.
+4. `am sandbox status` output is trustworthy and includes key connection info.
 
 ## 6. Test Cases
 
@@ -106,134 +219,147 @@ Priority legend: P0 critical, P1 high, P2 medium.
 
 ### 6.1 Functional Test Cases
 
-1. `F-001` (P0): First-run create + attach
-- Steps: `sb <new_dir>`
-- Expected: image auto-build if missing, container created with label, shell attaches.
+1. `F-001` (P0): First-run create + start
+- Steps: call `sandbox_start(session, new_dir)` with no pre-existing container.
+- Expected: image auto-build if missing, container created with correct labels (`agent-sandbox=true`, `agent-sandbox.session=<session>`, `agent-sandbox.dir=<dir>`), container reaches running state.
 
 2. `F-002` (P0): Reuse existing running sandbox
-- Steps: run `sb <same_dir>` twice.
-- Expected: second run reports already running and attaches to same container name.
+- Steps: call `sandbox_start(session, dir)` twice with same session name.
+- Expected: second call detects running container, does not create a duplicate, returns success.
 
-3. `F-003` (P0): Label-based mapping correctness
-- Steps: inspect labels for container.
-- Expected: `agent-sandbox=true` and exact absolute path in `agent-sandbox.dir`.
+3. `F-003` (P0): Label-based session mapping correctness
+- Steps: start a sandbox, then `docker inspect` the container.
+- Expected: `agent-sandbox=true`, `agent-sandbox.session` matches session name, `agent-sandbox.dir` matches exact absolute path.
 
-4. `F-004` (P1): `--start` idempotency
-- Steps: `sb <dir> --start` twice.
-- Expected: no duplicate container creation; success both times.
+4. `F-004` (P1): `sandbox_start` idempotency
+- Steps: call `sandbox_start(session, dir)` on an already-running sandbox.
+- Expected: no duplicate container creation; success on both calls; same container ID.
 
-5. `F-005` (P1): `--attach` failure semantics
-- Steps: stop container, run `sb <dir> --attach`.
+5. `F-005` (P1): Attach command failure when container not running
+- Steps: stop container via `sandbox_stop(session)`, then call `sandbox_attach_cmd(session, dir)` or attempt docker exec.
 - Expected: non-zero exit and clear error text.
-- Status: Automated and passing.
+- Status: STALE — was listed as automated; needs reimplementation.
 
-6. `F-006` (P1): `--status` for running and not found states
-- Steps: run against existing and fresh directory.
-- Expected: accurate status and directory/container display.
-- Status: Automated and passing.
+6. `F-006` (P1): `sandbox_status` for running and not found states
+- Steps: call `sandbox_status(session)` for a running sandbox and a nonexistent session name.
+- Expected: running → shows Container, Directory, Status=running, Tailscale field. Not found → shows Container, Status=not found.
+- Status: DONE — `test_f001_status_output_for_running_and_not_found_states`.
 
-7. `F-007` (P1): `--stop` + resume
-- Steps: `sb <dir> --stop`, then `sb <dir>`.
-- Expected: stopped then resumed/reattached with same container.
+7. `F-007` (P1): `sandbox_stop` + resume via `sandbox_start`
+- Steps: start sandbox, call `sandbox_stop(session)`, then `sandbox_start(session, dir)`.
+- Expected: container stops then restarts with same name and state.
 
-8. `F-008` (P1): `--clean` removes all mapped containers for directory
-- Steps: create duplicates intentionally, run clean.
-- Expected: no remaining containers with matching label/path.
+8. `F-008` (P1): `sandbox_remove` cleans up container
+- Steps: start sandbox, call `sandbox_remove(session)`.
+- Expected: container fully removed, `docker ps -a` shows no match.
 
-9. `F-009` (P1): Global `--list` and `--prune`
-- Steps: create running + stopped sb containers, run commands.
-- Expected: list only sb-labeled containers; prune removes stopped sb containers only.
+9. `F-009` (P1): `sandbox_list` and `sandbox_prune`
+- Steps: create running + stopped sandbox containers, call `sandbox_list()` then `sandbox_prune()`.
+- Expected: list shows only `agent-sandbox`-labeled containers; prune removes stopped ones only; running containers survive.
 
-10. `F-010` (P1): `--rebuild-running` restore behavior
-- Steps: keep two sandboxes running, run `--rebuild-running`.
-- Expected: both restored and running after rebuild.
+10. `F-010` (P1): `sandbox_rebuild_and_restart` restore behavior
+- Steps: start two sandboxes, call `sandbox_rebuild_and_restart()`.
+- Expected: image rebuilt, both containers recreated and running after rebuild.
 
-11. `F-011` (P2): `--init-sb-home` setup quality
-- Steps: run init in clean home.
-- Expected: creates expected files/permissions and SSH key/config.
+11. `F-011` (P2): `sandbox_identity_init` setup quality
+- Steps: run `sandbox_identity_init()` in a clean `$SB_HOME`.
+- Expected: creates `~/.sb/ssh/` with key + config, `~/.sb/claude/`, `~/.sb/claude.json`, `~/.sb/codex/` with config.toml + auth.json; correct permissions (0700 for ssh dir, 0600 for private key).
 
-12. `F-012` (P2): Mount precedence
-- Steps: provide both `~/.sb/*` and fallback files.
-- Expected: container mounts `~/.sb` variants when present.
+12. `F-012` (P2): Mount precedence (`~/.sb/` over host-global)
+- Steps: initialize `~/.sb/` identity, then start sandbox. Inspect mounts.
+- Expected: container mounts `~/.sb/ssh` instead of `~/.ssh`, `~/.sb/claude.json` instead of `~/.claude.json`, etc.
+
+13. `F-013` (P1): Stale container recreate on config drift
+- Steps: create a container with intentionally wrong settings (missing caps, wrong mount modes), then call `sandbox_start(session, dir)`.
+- Expected: detects config mismatch, removes old container, recreates with correct settings.
+- Status: DONE — `test_s006_stale_runtime_settings_trigger_recreate`.
+
+14. `F-014` (P1): `sandbox_gc_orphans` removes orphaned containers
+- Steps: create an `agent-sandbox`-labeled container whose session has no matching tmux session, then call `sandbox_gc_orphans()`.
+- Expected: orphaned container removed; returns count of removed orphans.
 
 ### 6.2 Security Test Cases
 
 1. `S-001` (P0): Hardened defaults present
-- Steps: start default sandbox, run `docker inspect`.
-- Expected: `SecurityOpt` contains `no-new-privileges:true`; `CapDrop` includes `ALL`; resource limits match defaults.
+- Steps: call `sandbox_start(session, dir)` with default env, `docker inspect` the container.
+- Expected: `SecurityOpt` contains `no-new-privileges:true`; `CapDrop` includes `ALL`; `CapAdd` includes CHOWN, DAC_OVERRIDE, FOWNER; `PidsLimit`=512; `Memory`=4g; `NanoCpus`=2.0.
+- Status: DONE — `test_s001_hardened_defaults_present`.
 
 2. `S-002` (P0): Tailscale privilege gating
-- Steps: run with `SB_ENABLE_TAILSCALE=0` then `1`.
+- Steps: start sandbox with `SB_ENABLE_TAILSCALE=0`, inspect. Remove, start with `SB_ENABLE_TAILSCALE=1`, inspect.
 - Expected: `NET_ADMIN` and `/dev/net/tun` appear only when enabled.
-- Status: Automated and passing.
+- Status: DONE — `test_s002_tailscale_privilege_gating`.
 
 3. `S-003` (P0): Unsafe mode downgrade is explicit
-- Steps: run with `SB_UNSAFE_ROOT=1`.
-- Expected: warning printed; inspect confirms no-new-privileges disabled.
-- Status: Automated and passing.
+- Steps: start sandbox with `SB_UNSAFE_ROOT=1`.
+- Expected: warning text in output; inspect confirms `no-new-privileges:true` absent from SecurityOpt.
+- Status: DONE — `test_s003_unsafe_mode_downgrade_is_explicit`.
 
-4. `S-004` (P0): Sensitive mount modes
-- Steps: inspect mounts and attempt writes from container.
-- Expected: configured `:ro` mounts reject writes (`~/.ssh`, auth files, dotfiles that are ro by design).
-- Status: Automated and passing.
+4. `S-004` (P0): Sensitive mount modes enforced
+- Steps: start sandbox with fake home containing claude/codex/ssh files, inspect mounts, attempt writes via docker exec.
+- Expected: `:ro` mounts on auth.json, .ssh, .gitconfig, .zshrc, .vimrc, .tmux.conf, native claude binary/versions; `:rw` on .claude.json, .claude/, codex/config.toml; docker exec writes to ro mounts fail.
+- Status: DONE — `test_s004_sensitive_mount_modes_enforced`.
 
 5. `S-005` (P1): Read-only rootfs mode enforcement
-- Steps: run with `SB_READ_ONLY_ROOTFS=1`, attempt write to `/etc` and `/`.
-- Expected: writes denied except allowed tmpfs/volumes.
-- Status: Automated and passing.
+- Steps: start sandbox with `SB_READ_ONLY_ROOTFS=1`, attempt writes.
+- Expected: `ReadonlyRootfs=true` in inspect; write to `/` rejected; write to `/tmp` allowed.
+- Status: DONE — `test_s005_read_only_rootfs_mode_enforced`.
 
 6. `S-006` (P1): SSH agent forwarding gating
-- Steps: set `SB_FORWARD_SSH_AGENT=1` with and without valid `SSH_AUTH_SOCK`.
-- Expected: mount only when socket exists; warning when missing.
-- Status: Automated and passing.
+- Steps: start with `SB_FORWARD_SSH_AGENT=1` and missing socket path, then with valid socket.
+- Expected: warning when socket missing, no `/ssh-agent` mount. With valid socket: mount present and writable at `/ssh-agent`.
+- Status: DONE — `test_s007_ssh_agent_forwarding_gated_by_socket_presence`.
 
 7. `S-007` (P1): Environment secret leakage minimization
-- Steps: inspect container env and process list.
-- Expected: only intended vars present; no accidental host env spillover.
+- Steps: start sandbox, `docker exec env` to list container environment.
+- Expected: only intended vars present (HOST_USER, HOST_UID, HOST_GID, HOST_HOME, TARGET_DIR, SB_*, TS_*, ENABLE_SSH, ANTHROPIC_API_KEY if set). No accidental host env spillover (HOME, PATH, etc. should be container-native).
 
-8. `S-008` (P2): Multi-tenant separation by directory
-- Steps: launch two directories, compare mounts and labels.
-- Expected: no cross-directory project mount leakage.
+8. `S-008` (P2): Multi-tenant separation by session
+- Steps: start two sandboxes for different directories, inspect mounts and labels.
+- Expected: no cross-directory project mount leakage; each container only mounts its own target dir.
 
 ### 6.3 UX Test Cases
 
-1. `U-001` (P0): Help discoverability
-- Steps: run `sb`, `sb --help`, invalid flags.
-- Expected: concise usage lines and clear command options.
+1. `U-001` (P1): Identity source reporting on start
+- Steps: start sandbox with host-global identity, check output. Init `~/.sb/`, start again, check output.
+- Expected: output clearly lists each identity source path and whether it is host-global or sandbox-specific.
+- Status: DONE — `test_u001_start_output_shows_host_global_identity_sources` + `test_u002_start_output_shows_sandbox_identity_sources`.
 
 2. `U-002` (P1): Error clarity for invalid directory
-- Steps: `sb /path/does-not-exist`.
-- Expected: explicit “not a valid directory” and non-zero exit.
-- Status: Automated and passing.
+- Steps: call `sandbox_start(session, '/path/does-not-exist')`.
+- Expected: explicit error message mentioning invalid/nonexistent directory, non-zero exit.
+- Status: STALE — needs reimplementation.
 
-3. `U-003` (P1): Warning usefulness
-- Steps: run with conflicting envs (`SB_ENABLE_TAILSCALE=0`, `TS_ENABLE_SSH=1`; missing `TS_AUTHKEY`).
-- Expected: warnings explain impact and next action.
-- Status: Automated and passing.
+3. `U-003` (P1): Warning usefulness for conflicting envs
+- Steps: start sandbox with `SB_ENABLE_TAILSCALE=0` + `TS_ENABLE_SSH=1`; start with `SB_ENABLE_TAILSCALE=1` but no `TS_AUTHKEY`.
+- Expected: warnings explain impact and suggested next action.
+- Status: STALE — needs reimplementation.
 
-4. `U-004` (P1): Status message quality
-- Steps: `sb <dir> --status`.
-- Expected: includes container name, directory, status, and SSH hint when applicable.
+4. `U-004` (P1): `am sandbox status` message quality
+- Steps: call `sandbox_status(session)` for a running sandbox.
+- Expected: includes container name, directory, status, and Tailscale/SSH info when applicable.
 
 5. `U-005` (P2): Performance envelope
-- Steps: measure attach path on running container.
+- Steps: measure `sandbox_attach_cmd` + docker exec on a running container.
 - Expected target: median attach < 2s on test host.
 
-6. `U-006` (P2): Recovery workflow
-- Steps: force broken state then run documented recovery commands.
-- Expected: user can recover with documented commands and minimal ambiguity.
+6. `U-006` (P2): `am sandbox` help discoverability
+- Steps: run `am sandbox`, `am sandbox --help`, `am sb`, invalid subcommands.
+- Expected: concise usage lines listing available subcommands; clear error on invalid subcommand.
 
-## 7. Suggested Automation Strategy
+## 7. Automation Strategy
 
-1. Build a shell-based integration suite (Bats or `pytest` + subprocess) that creates temporary directories and runs real `sb` commands.
-   Status: Started with `pytest` integration coverage in `tests/test_sb_security_integration.py`.
-2. Add helpers to parse `docker inspect` JSON and assert security/mount invariants.
-   Status: Implemented for the current `S-001`, `S-002`, and `S-005` checks.
-3. Mark tests:
-- `smoke`: `F-001`, `F-002`, `F-006`, `S-001`.
-- `security`: all `S-*`.
-- `ux`: `U-*` (string assertions + timing).
-4. Run in CI on self-hosted runner with Docker privileges; gate merges on smoke + security.
+1. Primary suite: `pytest` + subprocess calling `sandbox_*` functions via `bash -lc` (sourcing `lib/utils.sh` + `lib/sandbox.sh`).
+   Status: Implemented in `tests/test_sandbox_security_integration.py` (11 tests).
+2. Docker inspect helpers: `_inspect`, `_container_mount`, `_normalize_caps`, `_wait_for_running`, `_find_container` cover inspect JSON, mount mode, cap normalization, and lifecycle assertions.
+3. Shell sub-scripts (`tests/test_claude_mount.sh`, `tests/test_codex_permissions.sh`, `tests/test_cap_chown.sh`) run inside live containers via `test_f002`.
+4. CLI-level tests (e.g., `am new --yolo`, `am sandbox ls`) covered by `tests/test_all.sh`.
+5. Test markers:
+- `@pytest.mark.integration` + `@pytest.mark.docker` — all sandbox tests.
+- `@pytest.mark.security` — `S-*` tests.
+- `@pytest.mark.functional` — `F-*` tests.
+- `@pytest.mark.ux` — `U-*` tests.
+6. Run in CI on self-hosted runner with Docker privileges; gate merges on security + functional.
 
 ## 8. Defect Severity Model
 

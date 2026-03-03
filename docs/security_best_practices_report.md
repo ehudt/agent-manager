@@ -1,52 +1,50 @@
 # Security Best Practices Review: agent-sandbox
 
-Date: 2026-02-16  
-Scope: `sb`, `entrypoint.sh`, `Dockerfile`, `README.md`, `config_context/*`
+Date: 2026-02-16 (updated 2026-03-03)
+Scope: `lib/sandbox.sh`, `sandbox/entrypoint.sh`, `sandbox/Dockerfile`
 
 ## Executive Summary
 
-The sandbox is functional but not yet strongly aligned with the stated goal of running an untrusted coding agent "with more confidence." The current design exposes high-value host credentials directly inside the container, grants elevated container privileges (including `NET_ADMIN` and root escalation), and builds the image using multiple unverified remote install scripts.  
+The sandbox is functional but not yet strongly aligned with the stated goal of running an untrusted coding agent "with more confidence." The current design exposes host credentials inside the container (mitigated by dedicated sandbox identities), and builds the image using multiple unverified remote install scripts.
 
-Top priority should be to reduce host-secret exposure and container privileges by default, and make risky features opt-in.
+Top priority should be to harden the build supply chain and complete codex config sync.
 
 ## Critical Findings
 
 ### [C-01] Host secrets are directly mounted into the sandbox
+Status: **Mitigated** (sandbox identity system)
+
 Impact: A malicious or compromised agent can exfiltrate host credentials and account tokens, bypassing sandbox trust assumptions.
 
 Evidence:
-- `sb:126` mounts `~/.claude.json` read-only.
-- `sb:127` mounts `~/.claude/` read-only.
-- `sb:131` mounts `~/.codex/auth.json` read-only.
-- `sb:132` mounts `~/.ssh/` read-only.
+- `lib/sandbox.sh:185` mounts `~/.claude.json` (prefers `~/.sb/claude.json` if present).
+- `lib/sandbox.sh:187` mounts `~/.claude/` (prefers `~/.sb/claude` if present).
+- `lib/sandbox.sh:199` mounts `~/.codex/auth.json` read-only (prefers `~/.sb/codex/auth.json` if present).
+- `lib/sandbox.sh:204` mounts `~/.ssh/` read-only (prefers `~/.sb/ssh` if present).
 
-Why this matters:
-- Read-only prevents modification, not theft.  
-- `~/.ssh` may include private keys; `~/.claude*` and `~/.codex/auth.json` may contain long-lived auth material.
+Mitigations applied:
+- `am sandbox identity init` (`lib/sandbox.sh:447`) creates a dedicated per-sandbox identity in `~/.sb/` with its own SSH keypair, Claude auth, and Codex credentials.
+- When `~/.sb/` files exist, they are mounted instead of host-global secrets.
 
-Recommendations:
-1. Remove direct mounts of high-value auth material by default.
-2. Use short-lived credentials or brokered auth (e.g., host-side command proxy, scoped tokens, dedicated per-sandbox identities).
-3. Offer explicit opt-in flags for sensitive mounts (for example: `--mount-ssh`, `--mount-claude-auth`), with warnings.
+Residual risk:
+- Users who skip `identity init` still fall back to host-global mounts.
 
 ### [C-02] Container privileges are too high for untrusted-agent execution
-Impact: Increased chance of container breakout or host-impacting behavior if agent executes hostile payloads.
+Status: **Mitigated** (runtime hardening)
 
 Evidence:
-- `sb:153` adds `CAP_NET_ADMIN`.
-- `sb:154` exposes `/dev/net/tun`.
-- `Dockerfile:46` grants `dev` passwordless sudo (`NOPASSWD:ALL`).
+- `lib/sandbox.sh:295` adds `CAP_NET_ADMIN` and `/dev/net/tun` only when `SB_ENABLE_TAILSCALE=1`.
+- `entrypoint.sh:134-146` grants passwordless sudo only when `SB_UNSAFE_ROOT=1`.
 
-Why this matters:
-- `NET_ADMIN` + `tun` materially increases kernel attack surface.
-- Passwordless root inside container is convenient but unsafe for hostile workloads.
-
-Recommendations:
-1. Make Tailscale-related privileges conditional; only add `NET_ADMIN` and `--device /dev/net/tun` when explicitly requested.
-2. Drop all other capabilities by default (`--cap-drop=ALL` then add minimum required).
-3. Remove `NOPASSWD:ALL` in hardened mode (or gate behind explicit `--unsafe-root`).
+Mitigations applied:
+- `lib/sandbox.sh:284` drops all capabilities by default (`--cap-drop=ALL`), adding back only `CHOWN`, `DAC_OVERRIDE`, `FOWNER` (lines 285-287).
+- `lib/sandbox.sh:290` adds `--security-opt no-new-privileges:true` by default (disabled only when `SB_UNSAFE_ROOT=1`).
+- `lib/sandbox.sh:281-283` enforces `--pids-limit`, `--memory`, and `--cpus` limits.
+- Tailscale privileges (`NET_ADMIN`, `/dev/net/tun`) are conditional on `SB_ENABLE_TAILSCALE=1` (line 294-296).
 
 ### [C-03] Build pipeline trusts unverified remote scripts/binaries
+Status: **Open**
+
 Impact: Supply-chain compromise of an upstream installer can silently compromise every sandbox build.
 
 Evidence:
@@ -66,7 +64,7 @@ Recommendations:
 
 ### [H-01] Host config is writable from the sandbox (`~/.codex/config.toml`)
 Evidence:
-- `sb:130` mounts `~/.codex/config.toml` without `:ro`.
+- `lib/sandbox.sh:194` mounts `~/.codex/config.toml` without `:ro` (prefers `~/.sb/codex/config.toml` if present).
 
 Risk:
 - Agent can persist hostile settings or alter host-side behavior beyond sandbox lifetime.
@@ -76,34 +74,34 @@ Recommendations:
 2. If writes are required, use a narrow synchronization flow (explicit import/export command) instead of live RW mount.
 
 ### [H-02] SSH daemon is always started inside container
+Status: **Mitigated**
+
 Evidence:
-- `entrypoint.sh:43` always executes `service ssh start`.
+- `entrypoint.sh:148-162` starts SSH only when `ENABLE_SSH=1` (default: `0`).
+- `lib/sandbox.sh:175` passes `ENABLE_SSH` from env (default `0`).
 
-Risk:
-- Extra network-reachable service increases attack surface even when remote SSH is not needed.
-
-Recommendations:
-1. Start SSH only when explicitly enabled (`ENABLE_SSH=1`).
-2. Pair with restrictive network policy and key restrictions.
+Mitigations applied:
+- SSH is off by default; must be explicitly enabled.
+- Tailscale SSH (`TS_ENABLE_SSH`) is a separate control (entrypoint.sh:172-173).
 
 ## Medium Findings
 
 ### [M-01] Missing runtime hardening flags on `docker run`
+Status: **Mitigated**
+
 Evidence:
-- `sb:147`-`sb:157` starts container without `no-new-privileges`, resource limits, or read-only rootfs.
+- `lib/sandbox.sh:277-308` now starts containers with `--cap-drop=ALL`, `no-new-privileges`, resource limits, and optional `--read-only` rootfs.
 
-Risk:
-- Greater blast radius for malicious processes and easier privilege abuse post-compromise.
-
-Recommendations:
-1. Add `--security-opt no-new-privileges:true`.
-2. Consider `--pids-limit`, memory/CPU limits, and seccomp/apparmor hardening.
-3. Consider `--read-only` plus dedicated writable tmpfs/volumes where needed.
+Mitigations applied:
+- `--cap-drop=ALL` with minimal add-back (lines 284-287).
+- `--security-opt no-new-privileges:true` by default (line 290).
+- `--pids-limit`, `--memory`, `--cpus` resource limits (lines 281-283).
+- `--read-only` rootfs with dedicated tmpfs mounts when `SB_READ_ONLY_ROOTFS=1` (lines 297-308).
 
 ### [M-02] `HOST_HOME` symlink logic trusts environment path in root context
 Evidence:
-- `sb:142` passes `HOST_HOME=$HOME`.
-- `entrypoint.sh:38`-`entrypoint.sh:40` creates directories/symlink from that value as root.
+- `lib/sandbox.sh:217` passes `HOST_HOME=$HOME`.
+- `entrypoint.sh:57-61` moves user home directory based on that value as root.
 
 Risk:
 - If `HOST_HOME` is manipulated, entrypoint may create unexpected filesystem paths/symlinks in container rootfs.
@@ -114,19 +112,20 @@ Recommendations:
 
 ## Positive Controls Already Present
 
-1. Host project mount is scoped to selected directory (`sb:125`).
-2. Several host files are mounted read-only (`sb:126`, `sb:127`, `sb:131`, `sb:132`-`sb:137`).
-3. No host Docker socket mount was found.
-4. Default Docker bridge networking avoids direct LAN exposure without explicit port publishing.
+1. Host project mount is scoped to selected directory (`lib/sandbox.sh:183`).
+2. Host files use read-only mounts where possible (`lib/sandbox.sh:199`, `lib/sandbox.sh:204-209`).
+3. Dedicated sandbox identity (`~/.sb/`) preferred over host-global secrets when available.
+4. No host Docker socket mount.
+5. Default Docker bridge networking avoids direct LAN exposure without explicit port publishing.
+6. `--init` flag ensures zombie process reaping (`lib/sandbox.sh:279`).
 
 ## Prioritized Remediation Plan
 
-Status update:
-1. Done: Remove or gate sensitive host credential mounts ([C-01]).
-2. Open: Introduce hardened default mode with reduced privileges ([C-02], [M-01]).
-3. Open: Harden build supply chain with pinned/verified dependencies ([C-03]).
-4. Open: Make SSH/Tailscale explicit controls while keeping Tailscale default-on ([C-02], [H-02]).
-5. Open: Replace live RW host config mount with explicit sync flow ([H-01]).
+1. **Done**: Remove or gate sensitive host credential mounts ([C-01]). Sandbox identity system via `am sandbox identity init`.
+2. **Done** (2026-03-03): Introduce hardened default mode with reduced privileges ([C-02], [M-01]). Cap-drop-all, no-new-privileges, resource limits, optional read-only rootfs.
+3. **Open**: Harden build supply chain with pinned/verified dependencies ([C-03]).
+4. **Done** (2026-03-03): Make SSH/Tailscale explicit controls while keeping Tailscale default-on ([C-02], [H-02]). SSH off by default, Tailscale capabilities conditional.
+5. **Open** (partially implemented): Replace live RW host config mount with explicit sync flow ([H-01]). Sandbox identity covers auth files; `~/.codex/config.toml` still mounted RW.
 
 Plan files:
 2. `security_plan_02_runtime_hardening.md`
@@ -136,4 +135,4 @@ Plan files:
 
 ## Residual Risk Statement
 
-If the product goal includes running potentially adversarial code, current defaults are too permissive. After implementing the remediations above, the sandbox will better match the intended trust boundary ("internet + project access, no blanket host access"), but full isolation still depends on Docker/kernel security posture and operational controls (host patching, image provenance, and credential lifecycle).
+After implementing plans 1, 2, and 4 the sandbox significantly better matches the intended trust boundary. The primary remaining risks are supply-chain integrity (plan 3) and the RW codex config mount (plan 5). Full isolation still depends on Docker/kernel security posture and operational controls (host patching, image provenance, and credential lifecycle).
