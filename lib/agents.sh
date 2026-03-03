@@ -273,8 +273,8 @@ agent_launch() {
         agent_refresh_tmux_status "$session_name"
         local attach_cmd
         attach_cmd=$(sandbox_attach_cmd "$session_name" "$session_directory")
-        tmux_send_keys "$session_name:.{bottom}" "$attach_cmd && clear" Enter
-        tmux_send_keys "$session_name:.{top}" "$attach_cmd && clear" Enter
+        tmux_send_keys "$session_name:.{bottom}" "$attach_cmd" Enter
+        tmux_send_keys "$session_name:.{top}" "$attach_cmd" Enter
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
@@ -388,6 +388,9 @@ agent_info() {
     echo "Agent: ${agent_type:-unknown}"
     echo "Yolo: $([[ "$yolo_mode" == "true" ]] && echo yes || echo no)"
     echo "Sandbox: $([[ -n "$container_name" ]] && echo yes || echo no)"
+    if [[ -n "$container_name" ]]; then
+        echo "Sandbox log: $AM_DIR/logs/$session_name/sandbox.log"
+    fi
     echo "Running: $(format_duration "$running_time")"
     echo "Last active: $(format_time_ago "$idle_time")"
     if [[ -n "$task" ]]; then

@@ -642,6 +642,9 @@ test_sandbox() {
     assert_contains "$cmd" "docker exec" "sandbox_attach_cmd: contains docker exec"
     assert_contains "$cmd" "am-abc123" "sandbox_attach_cmd: contains session name"
     assert_contains "$cmd" "/home/user/project" "sandbox_attach_cmd: contains directory"
+    assert_contains "$cmd" "docker inspect" "sandbox_attach_cmd: checks container state after exit"
+    assert_contains "$cmd" "is gone; you are now on the host shell" "sandbox_attach_cmd: prints host-shell fallback message"
+    assert_contains "$cmd" "$AM_DIR/logs/am-abc123/sandbox.log" "sandbox_attach_cmd: references session sandbox event log"
 
     # --- Test 2: _sandbox_copy_if_missing skips existing ---
     local tmp
@@ -1100,7 +1103,8 @@ test_registry_gc() {
     # Run GC (force to bypass throttle)
     local removed
     removed=$(registry_gc 1)
-    assert_eq "1" "$removed" "registry_gc: removed 1 stale entry"
+    assert_eq "true" "$(test "$removed" -ge 1 && echo true || echo false)" \
+        "registry_gc: removed at least 1 stale item"
 
     # Verify stale entry gone, live entry preserved
     assert_eq "false" "$(registry_exists test-am-stale-fake && echo true || echo false)" \

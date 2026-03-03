@@ -870,6 +870,9 @@ def test_f005_attach_failure_when_not_running(sandbox_context):
         check=True,
     )
     exec_cmd = attach_cmd.stdout.strip()
+    assert "docker inspect" in exec_cmd
+    assert "is gone; you are now on the host shell" in exec_cmd
+    assert f"{env['AM_DIR']}/logs/{session_name}/sandbox.log" in exec_cmd
     # Run the generated exec command (without -it since we're non-interactive)
     exec_result = _run(
         ["docker", "exec", session_name, "echo", "hello"],
@@ -953,6 +956,35 @@ def test_f008_sandbox_remove_cleanup(sandbox_context):
     )
     names = [n.strip() for n in ps_result.stdout.splitlines() if n.strip()]
     assert len(names) == 0, f"Container still exists after remove: {names}"
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f008b_sandbox_event_log_records_lifecycle(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+    event_log = pathlib.Path(env["AM_DIR"]) / "logs" / session_name / "sandbox.log"
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+
+    _run_sandbox_function(
+        f"sandbox_stop '{session_name}'",
+        env=env,
+        check=True,
+    )
+
+    assert event_log.is_file()
+    contents = event_log.read_text()
+    assert "start_requested" in contents
+    assert "started" in contents
+    assert "stop" in contents
 
 
 # ---------------------------------------------------------------------------
@@ -1080,10 +1112,11 @@ def test_s007_environment_secret_leakage(sandbox_context):
 def test_u002_invalid_directory_error(sandbox_context):
     env = sandbox_context["env"]
     session_name = sandbox_context["session_name"]
+    missing_dir = sandbox_context["target_dir"] / "missing-subdir"
 
-    # Docker run with a nonexistent bind-mount source will fail
+    # Use a unique missing path rather than a hard-coded path that may exist on some hosts.
     result = _run_sandbox_function(
-        f"sandbox_start '{session_name}' '/nonexistent/path/does/not/exist'",
+        f"sandbox_start '{session_name}' '{missing_dir}'",
         env=env,
         check=False,
         timeout=120,

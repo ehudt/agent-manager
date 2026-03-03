@@ -37,7 +37,8 @@ _sandbox_container_mount_mode() {
 _sandbox_container_has_cap() {
     local container_name="$1"
     local capability="$2"
-    docker inspect -f '{{range .HostConfig.CapAdd}}{{println .}}{{end}}' "$container_name" 2>/dev/null | grep -Fxq "$capability"
+    docker inspect -f '{{range .HostConfig.CapAdd}}{{println .}}{{end}}' "$container_name" 2>/dev/null | \
+        sed 's/^CAP_//' | grep -Fxq "$capability"
 }
 
 _sandbox_container_has_mount() {
@@ -50,6 +51,35 @@ _sandbox_container_has_mount() {
 
 _sandbox_list_containers() {
     docker ps -a --filter "label=agent-sandbox" --format '{{.Names}}'
+}
+
+_sandbox_log_dir() {
+    local session_name="$1"
+    echo "$AM_DIR/logs/$session_name"
+}
+
+_sandbox_event_log_path() {
+    local session_name="$1"
+    echo "$(_sandbox_log_dir "$session_name")/sandbox.log"
+}
+
+_sandbox_log_event() {
+    local session_name="$1"
+    local event="$2"
+    shift 2
+
+    local log_dir log_path timestamp details
+    log_dir="$(_sandbox_log_dir "$session_name")"
+    log_path="$(_sandbox_event_log_path "$session_name")"
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    mkdir -p "$log_dir"
+
+    details="$*"
+    if [[ -n "$details" ]]; then
+        printf '%s\t%s\t%s\n' "$timestamp" "$event" "$details" >> "$log_path"
+    else
+        printf '%s\t%s\n' "$timestamp" "$event" >> "$log_path"
+    fi
 }
 
 _sandbox_claude_install_method() {
@@ -119,9 +149,17 @@ sandbox_build_image() {
 sandbox_start() {
     local session_name="$1"
     local directory="$2"
+    _sandbox_log_event "$session_name" "start_requested" "directory=$directory"
+
+    if [[ ! -d "$directory" ]]; then
+        log_error "Sandbox directory does not exist: $directory"
+        _sandbox_log_event "$session_name" "start_failed" "reason=missing_directory directory=$directory"
+        return 1
+    fi
 
     if ! docker image inspect "$SANDBOX_IMAGE" &>/dev/null; then
         log_info "Building sandbox image..."
+        _sandbox_log_event "$session_name" "image_build" "image=$SANDBOX_IMAGE"
         docker build -t "$SANDBOX_IMAGE" "$SANDBOX_DIR"
     fi
 
@@ -152,14 +190,17 @@ sandbox_start() {
     if [[ "$state" == "true" ]]; then
         if _sandbox_needs_refresh "$session_name" "$claude_native_bin_src" "$claude_native_versions_src"; then
             log_info "Recreating sandbox '$session_name' to apply updated runtime settings..."
+            _sandbox_log_event "$session_name" "recreate_running" "reason=runtime_settings_changed"
             docker rm -f "$session_name" >/dev/null
         else
             log_info "Sandbox '$session_name' already running."
+            _sandbox_log_event "$session_name" "start_skipped" "reason=already_running"
             return 0
         fi
     elif [[ -n "$state" ]]; then
         # Container exists but is stopped — remove it (per-session = fresh each time)
         log_info "Removing stopped sandbox '$session_name'..."
+        _sandbox_log_event "$session_name" "remove_stopped" "reason=restart_after_stop"
         docker rm -f "$session_name" >/dev/null 2>&1 || true
     fi
 
@@ -314,7 +355,7 @@ sandbox_start() {
     fi
     log_info "Runtime modes: tailscale=$sb_enable_tailscale tailscale_ssh=$ts_enable_ssh sshd=$enable_ssh unsafe_root=$sb_unsafe_root read_only_rootfs=$sb_read_only_rootfs"
 
-    docker run -d \
+    if docker run -d \
         --name "$session_name" \
         --hostname "$session_name" \
         --label "agent-sandbox=true" \
@@ -324,7 +365,12 @@ sandbox_start() {
         "${RUN_OPTS[@]}" \
         "${MOUNTS[@]}" \
         "${ENV_VARS[@]}" \
-        "$SANDBOX_IMAGE" >/dev/null
+        "$SANDBOX_IMAGE" >/dev/null; then
+        _sandbox_log_event "$session_name" "started" "image=$SANDBOX_IMAGE directory=$directory"
+    else
+        _sandbox_log_event "$session_name" "start_failed" "image=$SANDBOX_IMAGE directory=$directory"
+        return 1
+    fi
 
     log_success "Sandbox started in background."
 
@@ -344,12 +390,15 @@ sandbox_attach_cmd() {
     host_user=$(id -un)
     host_uid=$(id -u)
     host_gid=$(id -g)
-    echo "docker exec -it -u '$host_user' -w '$directory' -e 'HOST_UID=$host_uid' -e 'HOST_GID=$host_gid' -e 'TERM=${TERM:-xterm-256color}' '$session_name' zsh"
+    local event_log
+    event_log="$(_sandbox_event_log_path "$session_name")"
+    printf "%s" "docker exec -it -u '$host_user' -w '$directory' -e 'HOST_UID=$host_uid' -e 'HOST_GID=$host_gid' -e 'TERM=${TERM:-xterm-256color}' '$session_name' zsh; _am_rc=\$?; if docker inspect '$session_name' >/dev/null 2>&1; then if [[ \$_am_rc -eq 0 ]]; then clear; else printf '\\n[am] sandbox shell exited (status %s) for %s. Container is still present.\\n' \"\$_am_rc\" '$session_name'; fi; else printf '\\n[am] sandbox %s is gone; you are now on the host shell.\\n[am] inspect: ./am sandbox status %s\\n[am] events: %s\\n' '$session_name' '$session_name' '$event_log'; fi"
 }
 
 sandbox_remove() {
     local session_name="$1"
     if docker inspect "$session_name" &>/dev/null; then
+        _sandbox_log_event "$session_name" "remove" "reason=explicit_remove"
         docker rm -f "$session_name" >/dev/null
         log_info "Removed sandbox '$session_name'."
     fi
@@ -362,6 +411,7 @@ sandbox_gc_orphans() {
     while IFS= read -r container_name; do
         [[ -z "$container_name" ]] && continue
         if ! tmux_session_exists "$container_name"; then
+            _sandbox_log_event "$container_name" "remove_orphan" "reason=missing_tmux_session"
             sandbox_remove "$container_name"
             ((removed++))
         fi
@@ -373,6 +423,7 @@ sandbox_gc_orphans() {
 sandbox_stop() {
     local session_name="$1"
     if docker inspect "$session_name" &>/dev/null; then
+        _sandbox_log_event "$session_name" "stop" "reason=explicit_stop"
         docker stop "$session_name" >/dev/null 2>&1 || true
         log_info "Stopped sandbox '$session_name'."
     fi
@@ -381,11 +432,14 @@ sandbox_stop() {
 sandbox_status() {
     local session_name="$1"
     local state ts_ip host_user
+    local event_log
+    event_log="$(_sandbox_event_log_path "$session_name")"
     if ! state=$(docker inspect -f '{{.State.Status}}' "$session_name" 2>/dev/null); then
         state="not found"
     fi
     echo "Container: $session_name" >&2
     echo "Status:    $state" >&2
+    echo "Events:    $event_log" >&2
     if [[ "$state" == "running" ]]; then
         local dir
         dir=$(docker inspect -f '{{index .Config.Labels "agent-sandbox.dir"}}' "$session_name" 2>/dev/null || echo "n/a")
@@ -407,12 +461,11 @@ sandbox_list() {
 }
 
 sandbox_prune() {
-    local removed_orphans
-    removed_orphans=$(sandbox_gc_orphans)
-    if (( removed_orphans > 0 )); then
-        log_info "Removed $removed_orphans orphaned sandbox container(s)."
-    fi
     log_info "Removing all stopped agent-sandbox containers..."
+    while IFS= read -r container_name; do
+        [[ -z "$container_name" ]] && continue
+        _sandbox_log_event "$container_name" "prune_stopped" "reason=sandbox_prune"
+    done < <(docker ps -a --filter "label=agent-sandbox" --filter "status=exited" --format '{{.Names}}')
     docker container prune -f --filter "label=agent-sandbox"
 }
 
@@ -428,6 +481,7 @@ sandbox_rebuild_and_restart() {
         while IFS=$'\t' read -r container_name _dir; do
             [[ -z "$container_name" ]] && continue
             log_info "Removing '$container_name'..."
+            _sandbox_log_event "$container_name" "remove_rebuild" "reason=rebuild_and_restart"
             docker rm -f "$container_name" >/dev/null
         done <<< "$running_info"
     fi
