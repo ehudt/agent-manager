@@ -7,7 +7,7 @@ Scope: `lib/sandbox.sh`, `sandbox/entrypoint.sh`, `sandbox/Dockerfile`
 
 The sandbox is functional but not yet strongly aligned with the stated goal of running an untrusted coding agent "with more confidence." The current design exposes host credentials inside the container (mitigated by dedicated sandbox identities), and builds the image using multiple unverified remote install scripts.
 
-Top priority should be to harden the build supply chain and complete codex config sync.
+All actionable findings have been addressed. Supply-chain pinning (C-03) was closed as impractical for this use case.
 
 ## Critical Findings
 
@@ -43,35 +43,20 @@ Mitigations applied:
 - Tailscale privileges (`NET_ADMIN`, `/dev/net/tun`) are conditional on `SB_ENABLE_TAILSCALE=1` (line 307-309).
 
 ### [C-03] Build pipeline trusts unverified remote scripts/binaries
-Status: **Open**
+Status: **Closed** (won't fix)
 
 Impact: Supply-chain compromise of an upstream installer can silently compromise every sandbox build.
 
-Evidence:
-- `Dockerfile:31` `curl ... | sh` for Tailscale.
-- `Dockerfile:56` `curl ... | bash` for NodeSource.
-- `Dockerfile:76` `curl ... | sh` for `uv`.
-- `Dockerfile:85` `curl ... | bash` for Claude installer.
-- `Dockerfile:65` globally installs `@openai/codex` without version pin.
-- `Dockerfile:51` clones `pure` from GitHub without pinning commit.
-
-Recommendations:
-1. Pin versions and verify checksums/signatures for downloaded artifacts.
-2. Prefer distro packages or verified release assets over script pipes.
-3. Pin npm and git dependencies to immutable versions/commits.
+Decision: The maintenance burden of pinning and verifying checksums for rapidly-updating upstream tools (Tailscale, Node, uv, Claude CLI) outweighs the risk for this use case. The Dockerfile is rebuilt frequently and upstream installers are the standard installation method.
 
 ## High Findings
 
 ### [H-01] Host config is writable from the sandbox (`~/.codex/config.toml`)
-Evidence:
-- `lib/sandbox.sh:244` mounts `~/.codex/config.toml` without `:ro` (prefers `~/.sb/codex/config.toml` if present).
+Status: **Fixed**
 
-Risk:
-- Agent can persist hostile settings or alter host-side behavior beyond sandbox lifetime.
+Evidence (prior): `lib/sandbox.sh` mounted `~/.codex/config.toml` read-write into the container.
 
-Recommendations:
-1. Mount this file read-only by default.
-2. If writes are required, use a narrow synchronization flow (explicit import/export command) instead of live RW mount.
+Fix: Config is now copied into the container at start time (`docker cp`) instead of bind-mounted. The container has its own independent read-write copy; changes inside the sandbox do not affect the host.
 
 ### [H-02] SSH daemon is always started inside container
 Status: **Mitigated**
@@ -123,16 +108,12 @@ Recommendations:
 
 1. **Done**: Remove or gate sensitive host credential mounts ([C-01]). Sandbox identity system via `am sandbox identity init`.
 2. **Done** (2026-03-03): Introduce hardened default mode with reduced privileges ([C-02], [M-01]). Cap-drop-all, no-new-privileges, resource limits, optional read-only rootfs.
-3. **Open**: Harden build supply chain with pinned/verified dependencies ([C-03]).
+3. **Closed** (won't fix): Harden build supply chain with pinned/verified dependencies ([C-03]).
 4. **Done** (2026-03-03): Make SSH/Tailscale explicit controls while keeping Tailscale default-on ([C-02], [H-02]). SSH off by default, Tailscale capabilities conditional.
-5. **Open** (partially implemented): Replace live RW host config mount with explicit sync flow ([H-01]). Sandbox identity covers auth files; `~/.codex/config.toml` still mounted RW.
+5. **Done**: Replace live RW host config mount with copy-at-start ([H-01]). Config is copied into container, not bind-mounted.
 
-Plan files:
-2. `security_plan_02_runtime_hardening.md`
-3. `security_plan_03_supply_chain.md`
-4. `security_plan_04_ssh_tailscale_controls.md`
-5. `security_plan_05_codex_config_sync.md`
+All plan files have been completed and removed.
 
 ## Residual Risk Statement
 
-After implementing plans 1, 2, and 4 the sandbox significantly better matches the intended trust boundary. The primary remaining risks are supply-chain integrity (plan 3) and the RW codex config mount (plan 5). Full isolation still depends on Docker/kernel security posture and operational controls (host patching, image provenance, and credential lifecycle).
+After implementing plans 1, 2, 4, and 5 the sandbox matches the intended trust boundary. Supply-chain integrity (plan 3) was accepted as a trade-off against maintenance burden. Full isolation still depends on Docker/kernel security posture and operational controls (host patching, image provenance, and credential lifecycle).

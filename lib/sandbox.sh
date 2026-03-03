@@ -241,7 +241,6 @@ sandbox_start() {
     [[ -n "$claude_native_versions_src" ]] && MOUNTS+=(-v "$claude_native_versions_src:$HOME/.local/share/claude/versions:ro")
 
     codex_config_src=$(_sandbox_resolve_source -f "$_SB_CODEX_DIR/config.toml" "$HOME/.codex/config.toml")
-    [[ -n "$codex_config_src" ]] && MOUNTS+=(-v "$codex_config_src:$HOME/.codex/config.toml")
 
     codex_auth_src=$(_sandbox_resolve_source -f "$_SB_CODEX_DIR/auth.json" "$HOME/.codex/auth.json")
     [[ -n "$codex_auth_src" ]] && MOUNTS+=(-v "$codex_auth_src:$HOME/.codex/auth.json:ro")
@@ -283,7 +282,7 @@ sandbox_start() {
     _sandbox_log_source "Claude directory" "$claude_dir_src" "$_SB_CLAUDE_DIR"
     [[ -n "$claude_native_bin_src" ]] && log_info "Mounting native Claude binary: $claude_native_bin_src"
     [[ -n "$claude_native_versions_src" ]] && log_info "Mounting native Claude versions directory: $claude_native_versions_src"
-    _sandbox_log_source "Codex config" "$codex_config_src" "$_SB_CODEX_DIR/config.toml"
+    [[ -n "$codex_config_src" ]] && log_info "Codex config (copied at start): $codex_config_src"
     _sandbox_log_source "Codex auth" "$codex_auth_src" "$_SB_CODEX_DIR/auth.json"
     _sandbox_log_source "SSH identity" "$ssh_dir_src" "$_SB_SSH_DIR"
 
@@ -342,6 +341,12 @@ sandbox_start() {
     else
         _sandbox_log_event "$session_name" "start_failed" "image=$SANDBOX_IMAGE directory=$directory"
         return 1
+    fi
+
+    # Copy codex config into container (isolated copy, not a host mount)
+    if [[ -n "$codex_config_src" ]]; then
+        docker exec "$session_name" mkdir -p "$HOME/.codex" 2>/dev/null
+        docker cp "$codex_config_src" "$session_name:$HOME/.codex/config.toml"
     fi
 
     log_success "Sandbox started in background."
