@@ -17,13 +17,13 @@ Status: **Mitigated** (sandbox identity system)
 Impact: A malicious or compromised agent can exfiltrate host credentials and account tokens, bypassing sandbox trust assumptions.
 
 Evidence:
-- `lib/sandbox.sh:185` mounts `~/.claude.json` (prefers `~/.sb/claude.json` if present).
-- `lib/sandbox.sh:187` mounts `~/.claude/` (prefers `~/.sb/claude` if present).
-- `lib/sandbox.sh:199` mounts `~/.codex/auth.json` read-only (prefers `~/.sb/codex/auth.json` if present).
-- `lib/sandbox.sh:204` mounts `~/.ssh/` read-only (prefers `~/.sb/ssh` if present).
+- `lib/sandbox.sh:237` mounts `~/.claude.json` (prefers `~/.sb/claude.json` if present).
+- `lib/sandbox.sh:239` mounts `~/.claude/` (prefers `~/.sb/claude` if present).
+- `lib/sandbox.sh:247` mounts `~/.codex/auth.json` read-only (prefers `~/.sb/codex/auth.json` if present).
+- `lib/sandbox.sh:250` mounts `~/.ssh/` read-only (prefers `~/.sb/ssh` if present).
 
 Mitigations applied:
-- `am sandbox identity init` (`lib/sandbox.sh:447`) creates a dedicated per-sandbox identity in `~/.sb/` with its own SSH keypair, Claude auth, and Codex credentials.
+- `am sandbox identity init` (`lib/sandbox.sh:466`) creates a dedicated per-sandbox identity in `~/.sb/` with its own SSH keypair, Claude auth, and Codex credentials.
 - When `~/.sb/` files exist, they are mounted instead of host-global secrets.
 
 Residual risk:
@@ -33,14 +33,14 @@ Residual risk:
 Status: **Mitigated** (runtime hardening)
 
 Evidence:
-- `lib/sandbox.sh:295` adds `CAP_NET_ADMIN` and `/dev/net/tun` only when `SB_ENABLE_TAILSCALE=1`.
+- `lib/sandbox.sh:308` adds `CAP_NET_ADMIN` and `/dev/net/tun` only when `SB_ENABLE_TAILSCALE=1`.
 - `entrypoint.sh:134-146` grants passwordless sudo only when `SB_UNSAFE_ROOT=1`.
 
 Mitigations applied:
-- `lib/sandbox.sh:284` drops all capabilities by default (`--cap-drop=ALL`), adding back only `CHOWN`, `DAC_OVERRIDE`, `FOWNER` (lines 285-287).
-- `lib/sandbox.sh:290` adds `--security-opt no-new-privileges:true` by default (disabled only when `SB_UNSAFE_ROOT=1`).
-- `lib/sandbox.sh:281-283` enforces `--pids-limit`, `--memory`, and `--cpus` limits.
-- Tailscale privileges (`NET_ADMIN`, `/dev/net/tun`) are conditional on `SB_ENABLE_TAILSCALE=1` (line 294-296).
+- `lib/sandbox.sh:297` drops all capabilities by default (`--cap-drop=ALL`), adding back only `CHOWN`, `DAC_OVERRIDE`, `FOWNER` (lines 298-300).
+- `lib/sandbox.sh:303` adds `--security-opt no-new-privileges:true` by default (disabled only when `SB_UNSAFE_ROOT=1`).
+- `lib/sandbox.sh:294-296` enforces `--pids-limit`, `--memory`, and `--cpus` limits.
+- Tailscale privileges (`NET_ADMIN`, `/dev/net/tun`) are conditional on `SB_ENABLE_TAILSCALE=1` (line 307-309).
 
 ### [C-03] Build pipeline trusts unverified remote scripts/binaries
 Status: **Open**
@@ -64,7 +64,7 @@ Recommendations:
 
 ### [H-01] Host config is writable from the sandbox (`~/.codex/config.toml`)
 Evidence:
-- `lib/sandbox.sh:194` mounts `~/.codex/config.toml` without `:ro` (prefers `~/.sb/codex/config.toml` if present).
+- `lib/sandbox.sh:244` mounts `~/.codex/config.toml` without `:ro` (prefers `~/.sb/codex/config.toml` if present).
 
 Risk:
 - Agent can persist hostile settings or alter host-side behavior beyond sandbox lifetime.
@@ -78,7 +78,7 @@ Status: **Mitigated**
 
 Evidence:
 - `entrypoint.sh:148-162` starts SSH only when `ENABLE_SSH=1` (default: `0`).
-- `lib/sandbox.sh:175` passes `ENABLE_SSH` from env (default `0`).
+- `lib/sandbox.sh:227` passes `ENABLE_SSH` from env (default `0`).
 
 Mitigations applied:
 - SSH is off by default; must be explicitly enabled.
@@ -90,17 +90,17 @@ Mitigations applied:
 Status: **Mitigated**
 
 Evidence:
-- `lib/sandbox.sh:277-308` now starts containers with `--cap-drop=ALL`, `no-new-privileges`, resource limits, and optional `--read-only` rootfs.
+- `lib/sandbox.sh:290-321` now starts containers with `--cap-drop=ALL`, `no-new-privileges`, resource limits, and optional `--read-only` rootfs.
 
 Mitigations applied:
-- `--cap-drop=ALL` with minimal add-back (lines 284-287).
-- `--security-opt no-new-privileges:true` by default (line 290).
-- `--pids-limit`, `--memory`, `--cpus` resource limits (lines 281-283).
-- `--read-only` rootfs with dedicated tmpfs mounts when `SB_READ_ONLY_ROOTFS=1` (lines 297-308).
+- `--cap-drop=ALL` with minimal add-back (lines 297-300).
+- `--security-opt no-new-privileges:true` by default (line 303).
+- `--pids-limit`, `--memory`, `--cpus` resource limits (lines 294-296).
+- `--read-only` rootfs with dedicated tmpfs mounts when `SB_READ_ONLY_ROOTFS=1` (lines 310-321).
 
 ### [M-02] `HOST_HOME` symlink logic trusts environment path in root context
 Evidence:
-- `lib/sandbox.sh:217` passes `HOST_HOME=$HOME`.
+- `lib/sandbox.sh:263` passes `HOST_HOME=$HOME`.
 - `entrypoint.sh:57-61` moves user home directory based on that value as root.
 
 Risk:
@@ -112,12 +112,12 @@ Recommendations:
 
 ## Positive Controls Already Present
 
-1. Host project mount is scoped to selected directory (`lib/sandbox.sh:183`).
-2. Host files use read-only mounts where possible (`lib/sandbox.sh:199`, `lib/sandbox.sh:204-209`).
+1. Host project mount is scoped to selected directory (`lib/sandbox.sh:235`).
+2. Host files use read-only mounts where possible (`lib/sandbox.sh:247`, `lib/sandbox.sh:250-255`).
 3. Dedicated sandbox identity (`~/.sb/`) preferred over host-global secrets when available.
 4. No host Docker socket mount.
 5. Default Docker bridge networking avoids direct LAN exposure without explicit port publishing.
-6. `--init` flag ensures zombie process reaping (`lib/sandbox.sh:279`).
+6. `--init` flag ensures zombie process reaping (`lib/sandbox.sh:293`).
 
 ## Prioritized Remediation Plan
 
