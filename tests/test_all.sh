@@ -83,6 +83,21 @@ skip_test() {
     echo -e "${YELLOW}SKIP${RESET}: $msg"
 }
 
+run_external_test() {
+    local msg="$1"
+    shift
+    ((TESTS_RUN++))
+    if "$@"; then
+        echo -e "${GREEN}PASS${RESET}: $msg"
+        ((TESTS_PASSED++))
+    else
+        local rc=$?
+        echo -e "${RED}FAIL${RESET}: $msg"
+        echo "  Exit code: $rc"
+        ((TESTS_FAILED++))
+    fi
+}
+
 # Test-only helpers (these functions were removed from production code)
 registry_exists() {
     [[ -n "$(registry_get_field "$1" "name")" ]]
@@ -1968,6 +1983,37 @@ test_claude_first_user_message() {
 }
 
 # ============================================
+# Test: sandbox pytest integration suite
+# ============================================
+test_sandbox_pytest_integration() {
+    echo "=== Testing sandbox pytest integration suite ==="
+
+    if ! command -v docker &>/dev/null || ! docker info >/dev/null 2>&1; then
+        skip_test "sandbox pytest integration (docker unavailable)"
+        echo ""
+        return
+    fi
+
+    if command -v uv &>/dev/null; then
+        run_external_test \
+            "sandbox pytest integration: tests/test_sandbox_security_integration.py" \
+            uv run --with pytest pytest -q "$TEST_DIR/test_sandbox_security_integration.py"
+        echo ""
+        return
+    fi
+
+    if python3 -c 'import pytest' &>/dev/null; then
+        run_external_test \
+            "sandbox pytest integration: tests/test_sandbox_security_integration.py" \
+            python3 -m pytest -q "$TEST_DIR/test_sandbox_security_integration.py"
+    else
+        skip_test "sandbox pytest integration (requires uv or python3 with pytest)"
+    fi
+
+    echo ""
+}
+
+# ============================================
 # Main
 # ============================================
 main() {
@@ -2005,6 +2051,7 @@ main() {
     test_resolve_session
     test_tmux_listing
     test_claude_first_user_message
+    test_sandbox_pytest_integration
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

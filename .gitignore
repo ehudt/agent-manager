@@ -9,6 +9,9 @@
 # Test/debug artifacts
 *.log
 .claude/worktrees
+.codex/worktrees
+__pycache__/
+*.pyc
 
 # Sandbox secrets
 sandbox/.env

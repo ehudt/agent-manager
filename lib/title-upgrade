@@ -16,7 +16,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
 
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
 _log="$AM_DIR/titler.log"
-_titler_log() { echo "$(date '+%H:%M:%S') $*" >> "$_log" 2>/dev/null; }
+_titler_log() {
+    [[ -d "$AM_DIR" ]] || return 0
+    echo "$(date '+%H:%M:%S') $*" >> "$_log" 2>/dev/null || true
+}
 
 # Exit quietly if the registry has been removed (e.g. test cleanup)
 [[ -d "$AM_DIR" && -f "$AM_REGISTRY" ]] || exit 0
