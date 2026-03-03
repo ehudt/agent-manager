@@ -54,12 +54,14 @@ RUN mkdir -p /usr/local/share/zsh/site-functions && \
     rm -rf /tmp/pure
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
 # Preinstall Playwright runtime dependencies and Chromium for UI tests.
+ARG PLAYWRIGHT_VERSION=1.51.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx -y playwright@1.51.1 install-deps chromium && \
-    npx -y playwright@1.51.1 install chromium && \
+RUN npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium && \
+    npx -y playwright@${PLAYWRIGHT_VERSION} install chromium && \
     chmod -R 755 /ms-playwright
 
 RUN npm install -g @openai/codex
