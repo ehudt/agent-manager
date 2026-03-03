@@ -698,3 +698,600 @@ def test_f002_shell_runtime_checks_from_sb_suite(sandbox_context):
         script_path = REPO_ROOT / "tests" / script_name
         result = _run([str(script_path), session_name], check=True, timeout=60)
         assert "FAIL:" not in f"{result.stdout}\n{result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# F-001: First-run create + start
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f001_first_run_create_and_start(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+
+    container_name = _find_container(session_name)
+    _wait_for_running(container_name, timeout=45)
+
+    inspect = _inspect(container_name)
+    labels = inspect["Config"]["Labels"]
+    assert labels.get("agent-sandbox") == "true"
+    assert labels.get("agent-sandbox.session") == session_name
+    assert labels.get("agent-sandbox.dir") == str(target_dir)
+
+
+# ---------------------------------------------------------------------------
+# F-002: Reuse existing running sandbox
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f002_reuse_existing_running_sandbox(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+
+    first_id = _inspect(session_name)["Id"]
+
+    result = _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    output = f"{result.stdout}\n{result.stderr}"
+    assert "already running" in output
+
+    second_id = _inspect(session_name)["Id"]
+    assert first_id == second_id
+
+    # Verify no duplicate containers
+    ps_result = _run(
+        ["docker", "ps", "-a", "--filter", f"name={session_name}", "--format", "{{.Names}}"],
+        check=True,
+    )
+    names = [n.strip() for n in ps_result.stdout.splitlines() if n.strip()]
+    assert len(names) == 1
+
+
+# ---------------------------------------------------------------------------
+# F-003: Label-based session mapping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f003_label_based_session_mapping(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+
+    inspect = _inspect(session_name)
+    labels = inspect["Config"]["Labels"]
+    assert labels["agent-sandbox"] == "true"
+    assert labels["agent-sandbox.session"] == session_name
+    assert labels["agent-sandbox.dir"] == str(target_dir)
+    assert str(target_dir) == os.path.abspath(str(target_dir))
+
+
+# ---------------------------------------------------------------------------
+# F-004: sandbox_start idempotency
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f004_sandbox_start_idempotency(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+    first_id = _inspect(session_name)["Id"]
+
+    result = _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    assert result.returncode == 0
+
+    second_id = _inspect(session_name)["Id"]
+    assert first_id == second_id
+
+
+# ---------------------------------------------------------------------------
+# F-005: Attach failure when not running (restore lost test)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f005_attach_failure_when_not_running(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+
+    _run_sandbox_function(
+        f"sandbox_stop '{session_name}'",
+        env=env,
+        check=True,
+    )
+    # Wait for container to stop
+    for _ in range(15):
+        state = _container_state(session_name)
+        if state != "running":
+            break
+        time.sleep(1)
+
+    # Attempt docker exec on the stopped container — should fail
+    attach_cmd = _run_sandbox_function(
+        f"sandbox_attach_cmd '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    exec_cmd = attach_cmd.stdout.strip()
+    # Run the generated exec command (without -it since we're non-interactive)
+    exec_result = _run(
+        ["docker", "exec", session_name, "echo", "hello"],
+        check=False,
+        timeout=30,
+    )
+    assert exec_result.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# F-007: sandbox_stop + resume
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f007_stop_and_resume(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+
+    _run_sandbox_function(
+        f"sandbox_stop '{session_name}'",
+        env=env,
+        check=True,
+    )
+    for _ in range(15):
+        state = _container_state(session_name)
+        if state != "running":
+            break
+        time.sleep(1)
+    assert _container_state(session_name) != "running"
+
+    # Resume via sandbox_start
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+    assert _container_state(session_name) == "running"
+
+
+# ---------------------------------------------------------------------------
+# F-008: sandbox_remove cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f008_sandbox_remove_cleanup(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+
+    _run_sandbox_function(
+        f"sandbox_remove '{session_name}'",
+        env=env,
+        check=True,
+    )
+
+    ps_result = _run(
+        ["docker", "ps", "-a", "--filter", f"name=^{session_name}$", "--format", "{{.Names}}"],
+        check=True,
+    )
+    names = [n.strip() for n in ps_result.stdout.splitlines() if n.strip()]
+    assert len(names) == 0, f"Container still exists after remove: {names}"
+
+
+# ---------------------------------------------------------------------------
+# F-009: sandbox_list and sandbox_prune
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f009_sandbox_list_and_prune(tmp_path, isolated_am_dir):
+    env = _base_env()
+    env["AM_DIR"] = str(isolated_am_dir)
+
+    running_session = f"am-test-run-{uuid.uuid4().hex[:8]}"
+    stopped_session = f"am-test-stp-{uuid.uuid4().hex[:8]}"
+    running_dir = tmp_path / "running-dir"
+    stopped_dir = tmp_path / "stopped-dir"
+    running_dir.mkdir()
+    stopped_dir.mkdir()
+
+    try:
+        # Create running sandbox
+        _run_sandbox_function(
+            f"sandbox_start '{running_session}' '{running_dir}'",
+            env=env,
+            check=True,
+        )
+        _wait_for_running(running_session, timeout=45)
+
+        # Create stopped sandbox
+        _run_sandbox_function(
+            f"sandbox_start '{stopped_session}' '{stopped_dir}'",
+            env=env,
+            check=True,
+        )
+        _wait_for_running(stopped_session, timeout=45)
+        _run_sandbox_function(
+            f"sandbox_stop '{stopped_session}'",
+            env=env,
+            check=True,
+        )
+        for _ in range(15):
+            if _container_state(stopped_session) != "running":
+                break
+            time.sleep(1)
+
+        # sandbox_list should show both
+        list_result = _run_sandbox_function("sandbox_list", env=env, check=True)
+        list_output = f"{list_result.stdout}\n{list_result.stderr}"
+        assert running_session in list_output
+        assert stopped_session in list_output
+
+        # sandbox_prune should remove stopped, keep running
+        _run_sandbox_function("sandbox_prune", env=env, check=True)
+
+        # Running should survive
+        assert _container_state(running_session) == "running"
+
+        # Stopped should be gone
+        ps_result = _run(
+            ["docker", "ps", "-a", "--filter", f"name=^{stopped_session}$", "--format", "{{.Names}}"],
+            check=True,
+        )
+        assert stopped_session not in ps_result.stdout
+
+    finally:
+        for s in (running_session, stopped_session):
+            _run(["docker", "rm", "-f", s], check=False, timeout=30)
+
+
+# ---------------------------------------------------------------------------
+# S-007: Environment secret leakage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.security
+def test_s007_environment_secret_leakage(sandbox_context):
+    env = sandbox_context["env"].copy()
+    # Inject a host-only secret that should NOT appear in the container
+    env["MY_SECRET_TOKEN"] = "super-secret-value-12345"
+    env["AWS_SECRET_ACCESS_KEY"] = "fake-aws-key-67890"
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env,
+        check=True,
+    )
+    _wait_for_running(session_name, timeout=45)
+
+    result = _run(
+        ["docker", "exec", session_name, "env"],
+        check=True,
+        timeout=30,
+    )
+    container_env = result.stdout
+
+    # Intended vars should be present
+    intended_prefixes = ("HOST_USER=", "HOST_UID=", "HOST_GID=", "HOST_HOME=", "TARGET_DIR=",
+                         "SB_ENABLE_TAILSCALE=", "ENABLE_SSH=", "TS_ENABLE_SSH=",
+                         "SB_UNSAFE_ROOT=", "SB_READ_ONLY_ROOTFS=", "SANDBOX_NAME=", "TERM=")
+    for prefix in intended_prefixes:
+        assert any(line.startswith(prefix) for line in container_env.splitlines()), \
+            f"Expected env var starting with {prefix!r} not found"
+
+    # Host-only secrets must NOT leak
+    assert "MY_SECRET_TOKEN" not in container_env
+    assert "super-secret-value-12345" not in container_env
+    assert "AWS_SECRET_ACCESS_KEY" not in container_env
+    assert "fake-aws-key-67890" not in container_env
+
+
+# ---------------------------------------------------------------------------
+# U-002: Invalid directory error (restore lost test)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.ux
+def test_u002_invalid_directory_error(sandbox_context):
+    env = sandbox_context["env"]
+    session_name = sandbox_context["session_name"]
+
+    # Docker run with a nonexistent bind-mount source will fail
+    result = _run_sandbox_function(
+        f"sandbox_start '{session_name}' '/nonexistent/path/does/not/exist'",
+        env=env,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode != 0, "sandbox_start should fail for nonexistent directory"
+
+
+# ---------------------------------------------------------------------------
+# U-003: Warning usefulness (restore lost test)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.ux
+def test_u003_warning_usefulness_conflicting_envs(sandbox_context):
+    session_name = sandbox_context["session_name"]
+    target_dir = sandbox_context["target_dir"]
+
+    # Case 1: SB_ENABLE_TAILSCALE=0 + TS_ENABLE_SSH=1 → warning about conflict
+    env_conflict = sandbox_context["env"].copy()
+    env_conflict["SB_ENABLE_TAILSCALE"] = "0"
+    env_conflict["TS_ENABLE_SSH"] = "1"
+    result1 = _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env_conflict,
+        check=True,
+    )
+    output1 = f"{result1.stdout}\n{result1.stderr}"
+    assert "TS_ENABLE_SSH=1 ignored because SB_ENABLE_TAILSCALE=0" in output1
+
+    _run_sandbox_function(
+        f"sandbox_remove '{session_name}'",
+        env=env_conflict,
+        check=False,
+        timeout=120,
+    )
+
+    # Case 2: SB_ENABLE_TAILSCALE=1 + no TS_AUTHKEY → warning about missing key
+    tun_path = pathlib.Path("/dev/net/tun")
+    if not tun_path.exists():
+        pytest.skip("/dev/net/tun not available for tailscale test")
+
+    env_no_key = sandbox_context["env"].copy()
+    env_no_key["SB_ENABLE_TAILSCALE"] = "1"
+    env_no_key.pop("TS_AUTHKEY", None)
+    result2 = _run_sandbox_function(
+        f"sandbox_start '{session_name}' '{target_dir}'",
+        env=env_no_key,
+        check=True,
+    )
+    output2 = f"{result2.stdout}\n{result2.stderr}"
+    assert "TS_AUTHKEY" in output2 and "unset" in output2
+
+
+# ---------------------------------------------------------------------------
+# F-011: sandbox_identity_init quality
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f011_sandbox_identity_init_quality(tmp_path, isolated_am_dir, fake_home):
+    env = _base_env()
+    env["AM_DIR"] = str(isolated_am_dir)
+    env["HOME"] = str(fake_home)
+    sb_home = tmp_path / "clean_sb"
+    env["SB_HOME"] = str(sb_home)
+
+    _run_sandbox_function("sandbox_identity_init", env=env, check=True)
+
+    # SSH directory and key
+    ssh_dir = sb_home / "ssh"
+    assert ssh_dir.is_dir()
+    assert oct(ssh_dir.stat().st_mode & 0o777) == oct(0o700)
+
+    private_key = ssh_dir / "id_ed25519"
+    assert private_key.is_file()
+    assert oct(private_key.stat().st_mode & 0o777) == oct(0o600)
+
+    public_key = ssh_dir / "id_ed25519.pub"
+    assert public_key.is_file()
+    assert oct(public_key.stat().st_mode & 0o777) == oct(0o644)
+
+    ssh_config = ssh_dir / "config"
+    assert ssh_config.is_file()
+
+    # Claude directory and JSON
+    assert (sb_home / "claude").is_dir()
+    assert (sb_home / "claude.json").is_file()
+
+    # Codex directory
+    codex_dir = sb_home / "codex"
+    assert codex_dir.is_dir()
+    assert (codex_dir / "config.toml").is_file()
+    assert (codex_dir / "auth.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# F-014: sandbox_gc_orphans
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.functional
+def test_f014_sandbox_gc_orphans(tmp_path, isolated_am_dir):
+    env = _base_env()
+    env["AM_DIR"] = str(isolated_am_dir)
+
+    # Create a container with agent-sandbox labels but no matching tmux session
+    orphan_name = f"am-test-orphan-{uuid.uuid4().hex[:8]}"
+    orphan_dir = tmp_path / "orphan-dir"
+    orphan_dir.mkdir()
+
+    try:
+        _run_sandbox_function(
+            f"sandbox_start '{orphan_name}' '{orphan_dir}'",
+            env=env,
+            check=True,
+        )
+        _wait_for_running(orphan_name, timeout=45)
+
+        # sandbox_gc_orphans needs tmux_session_exists — source tmux.sh too
+        am_dir = pathlib.Path(env["AM_DIR"])
+        gc_command = (
+            f"export AM_SCRIPT_DIR='{REPO_ROOT}'; "
+            f"export AM_DIR='{am_dir}'; "
+            f"source '{LIB_DIR / 'utils.sh'}'; "
+            f"source '{LIB_DIR / 'tmux.sh'}'; "
+            f"source '{LIB_DIR / 'sandbox.sh'}'; "
+            f"sandbox_gc_orphans"
+        )
+        result = _run(["bash", "-lc", gc_command], env=env, check=True, timeout=120)
+        removed_count = int(result.stdout.strip())
+        assert removed_count >= 1, f"Expected at least 1 orphan removed, got {removed_count}"
+
+        # Verify container is gone
+        ps_result = _run(
+            ["docker", "ps", "-a", "--filter", f"name=^{orphan_name}$", "--format", "{{.Names}}"],
+            check=True,
+        )
+        assert orphan_name not in ps_result.stdout
+
+    finally:
+        _run(["docker", "rm", "-f", orphan_name], check=False, timeout=30)
+
+
+# ---------------------------------------------------------------------------
+# S-008: Multi-tenant separation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.docker
+@pytest.mark.security
+def test_s008_multi_tenant_separation(tmp_path, isolated_am_dir):
+    env = _base_env()
+    env["AM_DIR"] = str(isolated_am_dir)
+
+    session_a = f"am-test-tena-{uuid.uuid4().hex[:8]}"
+    session_b = f"am-test-tenb-{uuid.uuid4().hex[:8]}"
+    dir_a = tmp_path / "project-a"
+    dir_b = tmp_path / "project-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    (dir_a / "secret_a.txt").write_text("secret-from-project-a\n")
+    (dir_b / "secret_b.txt").write_text("secret-from-project-b\n")
+
+    try:
+        _run_sandbox_function(
+            f"sandbox_start '{session_a}' '{dir_a}'",
+            env=env,
+            check=True,
+        )
+        _run_sandbox_function(
+            f"sandbox_start '{session_b}' '{dir_b}'",
+            env=env,
+            check=True,
+        )
+        _wait_for_running(session_a, timeout=45)
+        _wait_for_running(session_b, timeout=45)
+
+        # Container A should NOT see project B's directory
+        result_a = _run(
+            ["docker", "exec", session_a, "ls", str(dir_b)],
+            check=False,
+            timeout=30,
+        )
+        assert result_a.returncode != 0 or "secret_b.txt" not in result_a.stdout
+
+        # Container B should NOT see project A's directory
+        result_b = _run(
+            ["docker", "exec", session_b, "ls", str(dir_a)],
+            check=False,
+            timeout=30,
+        )
+        assert result_b.returncode != 0 or "secret_a.txt" not in result_b.stdout
+
+        # Each sees only its own directory
+        inspect_a = _inspect(session_a)
+        inspect_b = _inspect(session_b)
+        labels_a = inspect_a["Config"]["Labels"]
+        labels_b = inspect_b["Config"]["Labels"]
+        assert labels_a["agent-sandbox.dir"] == str(dir_a)
+        assert labels_b["agent-sandbox.dir"] == str(dir_b)
+
+    finally:
+        for s in (session_a, session_b):
+            _run(["docker", "rm", "-f", s], check=False, timeout=30)

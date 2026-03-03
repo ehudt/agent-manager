@@ -17,7 +17,7 @@ The suite calls real `sandbox_*` shell functions (sourced from `lib/sandbox.sh`)
 
 ### Test file
 
-`tests/test_sandbox_security_integration.py` — 11 tests total (renamed from former `test_sb_security_integration.py`).
+`tests/test_sandbox_security_integration.py` — 25 tests total (renamed from former `test_sb_security_integration.py`).
 
 ### Architecture context
 
@@ -51,20 +51,20 @@ Legend: DONE = pytest test exists and passes, SHELL = covered by shell sub-scrip
 
 | ID | P | Description | Status | Test function / notes |
 |----|---|-------------|--------|-----------------------|
-| F-001 | P0 | First-run create + start | MISSING | Partially exercised by other tests that call `sandbox_start`, but no dedicated create+start assertion |
-| F-002 | P0 | Reuse existing running sandbox | MISSING | |
-| F-003 | P0 | Label-based session mapping | MISSING | Labels are checked indirectly by `_find_container` helper but not asserted explicitly |
-| F-004 | P1 | `sandbox_start` idempotency | MISSING | |
-| F-005 | P1 | Attach failure when container not running | STALE | Was listed as automated; no matching test in current file |
+| F-001 | P0 | First-run create + start | DONE | `test_f001_first_run_create_and_start` |
+| F-002 | P0 | Reuse existing running sandbox | DONE | `test_f002_reuse_existing_running_sandbox` |
+| F-003 | P0 | Label-based session mapping | DONE | `test_f003_label_based_session_mapping` |
+| F-004 | P1 | `sandbox_start` idempotency | DONE | `test_f004_sandbox_start_idempotency` |
+| F-005 | P1 | Attach failure when container not running | DONE | `test_f005_attach_failure_when_not_running` |
 | F-006 | P1 | `sandbox_status` running / not found | DONE | `test_f001_status_output_for_running_and_not_found_states` |
-| F-007 | P1 | `sandbox_stop` + resume via `sandbox_start` | MISSING | |
-| F-008 | P1 | `sandbox_remove` cleans up containers | MISSING | |
-| F-009 | P1 | `sandbox_list` and `sandbox_prune` | MISSING | |
+| F-007 | P1 | `sandbox_stop` + resume via `sandbox_start` | DONE | `test_f007_stop_and_resume` |
+| F-008 | P1 | `sandbox_remove` cleans up containers | DONE | `test_f008_sandbox_remove_cleanup` |
+| F-009 | P1 | `sandbox_list` and `sandbox_prune` | DONE | `test_f009_sandbox_list_and_prune` |
 | F-010 | P1 | `sandbox_rebuild_and_restart` restore behavior | MISSING | |
-| F-011 | P2 | `sandbox_identity_init` setup quality | MISSING | Called in test_u002 but output not validated |
+| F-011 | P2 | `sandbox_identity_init` setup quality | DONE | `test_f011_sandbox_identity_init_quality` |
 | F-012 | P2 | Mount precedence (`~/.sb/` over host-global) | MISSING | |
 | F-013 | P1 | Stale container recreate on config drift | DONE | `test_s006_stale_runtime_settings_trigger_recreate` |
-| F-014 | P1 | `sandbox_gc_orphans` removes orphaned containers | MISSING | |
+| F-014 | P1 | `sandbox_gc_orphans` removes orphaned containers | DONE | `test_f014_sandbox_gc_orphans` |
 
 #### Security (S-*)
 
@@ -76,16 +76,16 @@ Legend: DONE = pytest test exists and passes, SHELL = covered by shell sub-scrip
 | S-004 | P0 | Sensitive mount modes | DONE | `test_s004_sensitive_mount_modes_enforced` — asserts :ro on auth.json, .ssh, .gitconfig, .zshrc, .vimrc, .tmux.conf, native claude binary/versions; asserts :rw on .claude.json, .claude/, codex/config.toml; write verification via docker exec |
 | S-005 | P1 | Read-only rootfs | DONE | `test_s005_read_only_rootfs_mode_enforced` — asserts ReadonlyRootfs=true, write to / rejected, write to /tmp allowed |
 | S-006 | P1 | SSH agent forwarding gating | DONE | `test_s007_ssh_agent_forwarding_gated_by_socket_presence` — asserts warning when socket missing, mount present when socket exists |
-| S-007 | P1 | Env secret leakage minimization | MISSING | |
-| S-008 | P2 | Multi-tenant separation by session | MISSING | |
+| S-007 | P1 | Env secret leakage minimization | DONE | `test_s007_environment_secret_leakage` |
+| S-008 | P2 | Multi-tenant separation by session | DONE | `test_s008_multi_tenant_separation` |
 
 #### UX (U-*)
 
 | ID | P | Description | Status | Test function / notes |
 |----|---|-------------|--------|-----------------------|
 | U-001 | P1 | Identity source reporting on start | DONE | `test_u001_start_output_shows_host_global_identity_sources` + `test_u002_start_output_shows_sandbox_identity_sources` |
-| U-002 | P1 | Invalid directory error clarity | STALE | Was listed as automated; no matching test in current file |
-| U-003 | P1 | Warning usefulness for conflicting envs | STALE | Was listed as automated; no matching test in current file |
+| U-002 | P1 | Invalid directory error clarity | DONE | `test_u002_invalid_directory_error` |
+| U-003 | P1 | Warning usefulness for conflicting envs | DONE | `test_u003_warning_usefulness_conflicting_envs` |
 | U-004 | P1 | `am sandbox status` message quality | MISSING | Partially covered by test_f001 (checks Container/Directory/Status/Tailscale fields) |
 | U-005 | P2 | Performance envelope | MISSING | |
 | U-006 | P2 | `am sandbox` help discoverability | MISSING | |
@@ -99,30 +99,21 @@ Legend: DONE = pytest test exists and passes, SHELL = covered by shell sub-scrip
 ### Summary counts
 
 - **Plan cases**: 28 total (14 functional, 8 security, 6 UX)
-- **DONE in pytest**: 9 (S-001 through S-006, F-006, F-013, U-001)
-- **STALE** (claimed covered but test missing): 3 (F-005, U-002, U-003)
-- **MISSING**: 16
+- **DONE in pytest**: 23 (S-001 through S-008, F-001 through F-009, F-011, F-013, F-014, U-001 through U-003)
+- **STALE** (claimed covered but test missing): 0
+- **MISSING**: 5 (F-010, F-012, U-004, U-005, U-006)
 - **Additional tests beyond plan**: 1 (shell runtime checks)
 
 ### Priority for next implementation round
 
-P0 gaps (critical, no coverage):
-1. **F-001** — first-run create + start
-2. **F-002** — reuse existing running sandbox
-3. **F-003** — label-based session mapping
+All P0 and P1 gaps addressed except:
 
-P1 gaps (high, no coverage):
-4. **F-005** — restore attach failure semantics test (was lost)
-5. **U-002** — restore invalid directory error test (was lost)
-6. **U-003** — restore warning usefulness test (was lost)
-7. **F-004** — `sandbox_start` idempotency
-8. **F-007** — `sandbox_stop` + resume
-9. **F-008** — `sandbox_remove` cleanup
-10. **F-009** — `sandbox_list` and `sandbox_prune`
-11. **F-010** — `sandbox_rebuild_and_restart` restore
-12. **F-014** — `sandbox_gc_orphans` cleanup
-13. **S-007** — environment secret leakage minimization
-14. **U-004** — status message quality (partially covered)
+Remaining gaps:
+1. **F-010** — `sandbox_rebuild_and_restart` restore behavior
+2. **F-012** — Mount precedence (`~/.sb/` over host-global)
+3. **U-004** — `am sandbox status` message quality (partially covered by test_f001)
+4. **U-005** — Performance envelope
+5. **U-006** — `am sandbox` help discoverability
 
 ### Related security plans (docs/)
 
@@ -350,7 +341,7 @@ Priority legend: P0 critical, P1 high, P2 medium.
 ## 7. Automation Strategy
 
 1. Primary suite: `pytest` + subprocess calling `sandbox_*` functions via `bash -lc` (sourcing `lib/utils.sh` + `lib/sandbox.sh`).
-   Status: Implemented in `tests/test_sandbox_security_integration.py` (11 tests).
+   Status: Implemented in `tests/test_sandbox_security_integration.py` (25 tests).
 2. Docker inspect helpers: `_inspect`, `_container_mount`, `_normalize_caps`, `_wait_for_running`, `_find_container` cover inspect JSON, mount mode, cap normalization, and lifecycle assertions.
 3. Shell sub-scripts (`tests/test_claude_mount.sh`, `tests/test_codex_permissions.sh`, `tests/test_cap_chown.sh`) run inside live containers via `test_f002`.
 4. CLI-level tests (e.g., `am new --yolo`, `am sandbox ls`) covered by `tests/test_all.sh`.
