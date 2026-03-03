@@ -115,6 +115,7 @@ _sandbox_needs_refresh() {
     local container_name="$1"
     local claude_native_bin_src="$2"
     local claude_native_versions_src="$3"
+    local codex_config_required="${4:-0}"
     local mount_mode
 
     mount_mode=$(_sandbox_container_mount_mode "$container_name" "$HOME/.claude.json")
@@ -144,6 +145,14 @@ _sandbox_needs_refresh() {
     if [[ -n "$claude_native_versions_src" ]] && ! _sandbox_container_has_mount "$container_name" "$HOME/.local/share/claude/versions"; then
         log_info "Refreshing sandbox '$container_name': missing native Claude versions mount at $HOME/.local/share/claude/versions."
         return 0
+    fi
+
+    if [[ "$codex_config_required" == "1" ]]; then
+        mount_mode=$(_sandbox_container_mount_mode "$container_name" "$HOME/.codex/config.toml")
+        if [[ "$mount_mode" != "rw" ]]; then
+            log_info "Refreshing sandbox '$container_name': ~/.codex/config.toml is mounted '$mount_mode' but Codex config requires a read-write bind mount."
+            return 0
+        fi
     fi
 
     return 1
@@ -203,7 +212,9 @@ sandbox_start() {
     state=$(docker inspect -f '{{.State.Running}}' "$session_name" 2>/dev/null) || state=""
 
     if [[ "$state" == "true" ]]; then
-        if _sandbox_needs_refresh "$session_name" "$claude_native_bin_src" "$claude_native_versions_src"; then
+        local codex_config_required=0
+        [[ -f "$_SB_CODEX_DIR/config.toml" || -f "$HOME/.codex/config.toml" ]] && codex_config_required=1
+        if _sandbox_needs_refresh "$session_name" "$claude_native_bin_src" "$claude_native_versions_src" "$codex_config_required"; then
             log_info "Recreating sandbox '$session_name' to apply updated runtime settings..."
             _sandbox_log_event "$session_name" "recreate_running" "reason=runtime_settings_changed"
             docker rm -f "$session_name" >/dev/null
@@ -241,6 +252,7 @@ sandbox_start() {
     [[ -n "$claude_native_versions_src" ]] && MOUNTS+=(-v "$claude_native_versions_src:$HOME/.local/share/claude/versions:ro")
 
     codex_config_src=$(_sandbox_resolve_source -f "$_SB_CODEX_DIR/config.toml" "$HOME/.codex/config.toml")
+    [[ -n "$codex_config_src" ]] && MOUNTS+=(-v "$codex_config_src:$HOME/.codex/config.toml")
 
     codex_auth_src=$(_sandbox_resolve_source -f "$_SB_CODEX_DIR/auth.json" "$HOME/.codex/auth.json")
     [[ -n "$codex_auth_src" ]] && MOUNTS+=(-v "$codex_auth_src:$HOME/.codex/auth.json:ro")
@@ -282,7 +294,7 @@ sandbox_start() {
     _sandbox_log_source "Claude directory" "$claude_dir_src" "$_SB_CLAUDE_DIR"
     [[ -n "$claude_native_bin_src" ]] && log_info "Mounting native Claude binary: $claude_native_bin_src"
     [[ -n "$claude_native_versions_src" ]] && log_info "Mounting native Claude versions directory: $claude_native_versions_src"
-    [[ -n "$codex_config_src" ]] && log_info "Codex config (copied at start): $codex_config_src"
+    _sandbox_log_source "Codex config" "$codex_config_src" "$_SB_CODEX_DIR/config.toml"
     _sandbox_log_source "Codex auth" "$codex_auth_src" "$_SB_CODEX_DIR/auth.json"
     _sandbox_log_source "SSH identity" "$ssh_dir_src" "$_SB_SSH_DIR"
 
@@ -341,12 +353,6 @@ sandbox_start() {
     else
         _sandbox_log_event "$session_name" "start_failed" "image=$SANDBOX_IMAGE directory=$directory"
         return 1
-    fi
-
-    # Copy codex config into container (isolated copy, not a host mount)
-    if [[ -n "$codex_config_src" ]]; then
-        docker exec "$session_name" mkdir -p "$HOME/.codex" 2>/dev/null
-        docker cp "$codex_config_src" "$session_name:$HOME/.codex/config.toml"
     fi
 
     log_success "Sandbox started in background."
