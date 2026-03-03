@@ -299,6 +299,8 @@ _new_session_form_rows() {
     if [[ "$worktree_supported" == "true" && "$worktree_enabled" == "true" ]]; then
         worktree_toggle="[x]"
         worktree_name_display="${worktree_name:-<auto>}"
+    elif [[ "$worktree_supported" != "true" && "$worktree_enabled" == "true" ]]; then
+        worktree_toggle="<unsupported>"
     fi
 
     printf 'submit\tCreate Session\tLaunch with current values\n'
@@ -307,9 +309,11 @@ _new_session_form_rows() {
     printf 'task\tTask\t%s\n' "$task_display"
     printf 'mode\tMode\t%s\n' "$mode"
     printf 'yolo\tPermissive\t%s\n' "$yolo_toggle"
-    if [[ "$worktree_supported" == "true" ]]; then
+    if [[ "$worktree_supported" == "true" || "$worktree_enabled" == "true" ]]; then
         printf 'worktree_enabled\tWorktree\t%s\n' "$worktree_toggle"
-        printf 'worktree_name\tWorktree Name\t%s\n' "$worktree_name_display"
+        if [[ "$worktree_supported" == "true" ]]; then
+            printf 'worktree_name\tWorktree Name\t%s\n' "$worktree_name_display"
+        fi
     fi
 }
 
@@ -328,6 +332,8 @@ _new_session_form_preview() {
         if [[ "$worktree_enabled" == "true" ]]; then
             worktree_display="${worktree_name:-auto}"
         fi
+    elif [[ "$worktree_enabled" == "true" ]]; then
+        worktree_display="unavailable for $agent"
     fi
 
     cat <<EOF
@@ -344,8 +350,8 @@ Current values
   Mode:       $mode
   Permissive: $yolo
 EOF
-    if agent_supports_worktree "$agent"; then
-        echo "  Worktree:   $worktree_display"
+    if agent_supports_worktree "$agent" || [[ "$worktree_enabled" == "true" ]]; then
+        echo "  Worktree:  $worktree_display"
     fi
     echo ""
     [[ -n "$message" ]] && echo "Note: $message"

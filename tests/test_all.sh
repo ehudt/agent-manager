@@ -710,7 +710,9 @@ test_fzf_helpers() {
 
     local worktree_preview
     worktree_preview=$(_new_session_form_preview "/tmp/project" "gemini" "" "new" "false" "true" "my-wt" "")
-    assert_contains "$worktree_preview" "Worktree:  unavailable for gemini" \
+    local worktree_preview_line
+    worktree_preview_line=$(printf '%s\n' "$worktree_preview" | grep "Worktree:" || true)
+    assert_eq "  Worktree:  unavailable for gemini" "$worktree_preview_line" \
         "fzf helpers: preview explains unsupported worktree agent"
 
     echo ""
