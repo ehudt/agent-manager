@@ -12,6 +12,29 @@
 
 ---
 
+## Progress
+
+| Task | Status | Commit |
+|------|--------|--------|
+| 1: Sandbox config plumbing | DONE | f6b3fc3 |
+| 2: Decouple sandbox from yolo | DONE | d5be472 |
+| 3: --sandbox CLI flag | DONE | f76f4ef |
+| 3.5: CLI integration tests | TODO | |
+| 4: Rename permissive→yolo | TODO | |
+| 5: Sandbox row in form | TODO | |
+| 6: Rewrite form (inline editing) | TODO | |
+| 7: Update form tests | TODO | |
+| 8: Wire sandbox through pipeline | TODO | |
+| 9: Final integration/syntax | TODO | |
+
+### Implementation notes from Tasks 1-3
+
+- The plan's `test_sandbox_yolo_independence` uses PATH manipulation to hide docker — this doesn't work because docker lives in `/usr/local/bin` or `/opt/homebrew/bin` which don't contain "docker" in the directory name. **Fix:** mock `am_docker_available()` directly instead: `am_docker_available() { return 1; }` then restore after.
+- The existing worktree test (`codex sandbox worktree` around line ~1795) passes `"--yolo"` expecting a container — changed to `"--sandbox"` since yolo no longer creates containers.
+- Pre-existing flaky tests: `am peek: captures agent pane`, `am new --detach: stdin prompt reaches agent pane` (timing), `sandbox pytest SSH test` (OSError). These are NOT caused by our changes.
+
+---
+
 ### Task 1: Add sandbox config plumbing
 
 **Files:**
