@@ -95,6 +95,10 @@ am_default_sandbox_enabled() {
 }
 
 am_docker_available() {
+    if [[ -n "${AM_DOCKER_AVAILABLE:-}" ]]; then
+        [[ "$AM_DOCKER_AVAILABLE" == "true" ]]
+        return $?
+    fi
     command -v docker &>/dev/null
 }
 
