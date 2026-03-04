@@ -1357,14 +1357,22 @@ test_cli_extended() {
     assert_contains "$info_output" "Agent:" "am info: shows agent type"
 
     # --- Test: am peek snapshots agent and shell panes ---
-    local peek_output
-    peek_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek "$session_name" 2>/dev/null)
+    local peek_output=""
+    for _i in $(seq 1 20); do
+        peek_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek "$session_name" 2>/dev/null)
+        [[ "$peek_output" == *"stub-agent-ready"* ]] && break
+        sleep 0.2
+    done
     assert_contains "$peek_output" "stub-agent-ready" "am peek: captures agent pane"
 
     tmux_send_keys "$session_name:.{bottom}" "echo shell-peek-ready" Enter
-    sleep 0.2
-    peek_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek --pane shell "$session_name" 2>/dev/null)
-    assert_contains "$peek_output" "shell-peek-ready" "am peek --pane shell: captures shell pane"
+    local shell_peek=""
+    for _i in $(seq 1 20); do
+        shell_peek=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek --pane shell "$session_name" 2>/dev/null)
+        [[ "$shell_peek" == *"shell-peek-ready"* ]] && break
+        sleep 0.2
+    done
+    assert_contains "$shell_peek" "shell-peek-ready" "am peek --pane shell: captures shell pane"
 
     # --- Test: am kill <session> ---
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" kill "$session_name" 2>/dev/null
@@ -1407,9 +1415,12 @@ test_cli_extended() {
     local send_rc=0
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$session_name" "run tests now" >/dev/null 2>/dev/null || send_rc=$?
     assert_eq "0" "$send_rc" "am send: exits 0"
-    sleep 0.2
-    local pane_output
-    pane_output=$(am_tmux capture-pane -pt "$session_name:.{top}" 2>/dev/null || true)
+    local pane_output=""
+    for _i in $(seq 1 20); do
+        pane_output=$(am_tmux capture-pane -pt "$session_name:.{top}" 2>/dev/null || true)
+        [[ "$pane_output" == *"stub-agent-input:run tests now"* ]] && break
+        sleep 0.2
+    done
     assert_contains "$pane_output" "stub-agent-input:run tests now" "am send: prompt reaches agent pane"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
@@ -1781,7 +1792,7 @@ test_worktree() {
 
     # --- Test: sandboxed codex worktree keeps repo mount and worktree cwd ---
     if command -v docker &>/dev/null && docker info >/dev/null 2>&1; then
-        session_name=$(set +u; agent_launch "$git_dir" "codex" "" "my-sb-wt" "--yolo" 2>/dev/null)
+        session_name=$(set +u; agent_launch "$git_dir" "codex" "" "my-sb-wt" "--sandbox" 2>/dev/null)
         if [[ -n "$session_name" ]]; then
             wt_path=$(registry_get_field "$session_name" worktree_path)
             local attach_cmd
@@ -1856,6 +1867,57 @@ test_worktree() {
 
     # Cleanup
     rm -rf "$git_dir" "$nongit_dir"
+    teardown_integration_env
+
+    echo ""
+}
+
+# ============================================
+# Test: Sandbox/Yolo Independence
+# ============================================
+test_sandbox_yolo_independence() {
+    echo "=== Testing sandbox/yolo independence ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "sandbox/yolo tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # Test: yolo without sandbox — no container_name in registry
+    local session_name
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "yolo-only" "" --yolo 2>/dev/null)
+    assert_not_empty "$session_name" "yolo-only: session created"
+    assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
+        "yolo-only: yolo_mode is true"
+    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
+        "yolo-only: no container_name"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # Test: sandbox without docker fails with descriptive error
+    # Override am_docker_available to simulate missing docker
+    am_docker_available() { return 1; }
+    local sandbox_rc=0
+    local sandbox_err
+    sandbox_err=$(set +u; agent_launch "$test_dir" "claude" "sandbox-no-docker" "" --sandbox 2>&1 >/dev/null) || sandbox_rc=$?
+    assert_eq "false" "$(test $sandbox_rc -eq 0 && echo true || echo false)" \
+        "sandbox-no-docker: fails when docker unavailable"
+    assert_contains "$sandbox_err" "docker" \
+        "sandbox-no-docker: error mentions docker"
+    # Restore original function
+    am_docker_available() { command -v docker &>/dev/null; }
+
+    rm -rf "$test_dir"
     teardown_integration_env
 
     echo ""
@@ -2428,6 +2490,7 @@ main() {
     test_history
     test_history_integration
     test_worktree
+    test_sandbox_yolo_independence
     test_annotated_directories
     test_auto_title_session
     test_auto_title_scan

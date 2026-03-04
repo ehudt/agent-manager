@@ -14,7 +14,7 @@ declare -A AGENT_COMMANDS=(
     [gemini]="gemini"
 )
 
-# Get the permissive/sandbox-bypass flag for an agent type.
+# Get the yolo mode flag for an agent type.
 # Usage: agent_get_yolo_flag <type>
 agent_get_yolo_flag() {
     local agent_type="$1"
@@ -187,14 +187,21 @@ agent_launch() {
     local agent_cmd
     agent_cmd=$(agent_get_command "$agent_type")
 
-    # Normalize permissive mode args to the target agent's expected flag.
+    # Normalize yolo mode and sandbox args to the target agent's expected flags.
     local normalized_args=()
     local wants_yolo=false
+    local wants_sandbox=false
     local arg
     for arg in "${agent_args[@]}"; do
         case "$arg" in
             --yolo|--dangerously-skip-permissions)
                 wants_yolo=true
+                ;;
+            --sandbox)
+                wants_sandbox=true
+                ;;
+            --no-sandbox)
+                wants_sandbox=false
                 ;;
             *)
                 normalized_args+=("$arg")
@@ -257,6 +264,7 @@ agent_launch() {
     # Register session metadata
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
     registry_update "$session_name" "yolo_mode" "$wants_yolo"
+    registry_update "$session_name" "sandbox_mode" "$wants_sandbox"
     agent_refresh_tmux_status "$session_name"
 
     # Log to persistent history if task is known at launch
@@ -291,8 +299,14 @@ agent_launch() {
         full_cmd="$full_cmd ${agent_args[*]}"
     fi
 
-    # Sandbox mode when permissive flags are active
-    if $wants_yolo && command -v docker &>/dev/null; then
+    # Sandbox mode (independent of yolo)
+    if $wants_sandbox; then
+        if ! am_docker_available; then
+            log_error "Sandbox requires Docker but docker is not available"
+            tmux_kill_session "$session_name" 2>/dev/null
+            registry_remove "$session_name"
+            return 1
+        fi
         sandbox_start "$session_name" "$sandbox_directory"
         registry_update "$session_name" "container_name" "$session_name"
         agent_refresh_tmux_status "$session_name"
