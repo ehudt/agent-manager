@@ -4,6 +4,7 @@ import pathlib
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import uuid
 
@@ -183,8 +184,10 @@ def fake_home(tmp_path):
 
 
 @pytest.fixture
-def fake_ssh_agent_socket(tmp_path):
-    sock_path = tmp_path / "ssh-agent.sock"
+def fake_ssh_agent_socket():
+    # Use a short temp dir to avoid AF_UNIX 104-byte path limit on macOS
+    short_dir = tempfile.mkdtemp(prefix="am-")
+    sock_path = pathlib.Path(short_dir) / "agent.sock"
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(sock_path))
     server.listen(1)
@@ -192,6 +195,7 @@ def fake_ssh_agent_socket(tmp_path):
         yield sock_path
     finally:
         server.close()
+        shutil.rmtree(short_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
