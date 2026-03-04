@@ -317,6 +317,8 @@ Run tests:
 ./tests/test_all.sh
 ```
 
+The shell test suite includes coverage for the dedicated tmux-server helpers, including `kill-and-switch` switching the invoking client before killing the active `am-*` session, the no-alternate-session no-op path, and the legacy one-argument helper form used by older bindings.
+
 Tests require all prerequisites (`tmux`, `fzf`, `jq`) and fail fast if any are missing.
 
 ## License

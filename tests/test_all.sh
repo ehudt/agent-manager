@@ -2353,6 +2353,10 @@ main() {
     test_fzf_helpers
     test_tmux_binding_snippets
     test_symlinked_kill_and_switch
+    test_kill_and_switch_switches_client_before_kill
+    test_kill_and_switch_no_alternate_session
+    test_kill_and_switch_legacy_single_arg
+    test_switch_last_no_alternate_session
     test_installer_replaces_managed_blocks
     test_cli
     test_integration_lifecycle

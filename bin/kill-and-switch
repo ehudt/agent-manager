@@ -26,6 +26,12 @@ done
 script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
 repo_dir="$(cd "$script_dir/.." && pwd -P)"
 
+# Source helpers before using am_tmux/agent_kill.
+source "$repo_dir/lib/utils.sh"
+source "$repo_dir/lib/tmux.sh"
+source "$repo_dir/lib/registry.sh"
+source "$repo_dir/lib/agents.sh"
+
 # Old bindings may still call this helper with only the target session. Fall back
 # to tmux's implicit current client in that case so running servers keep working
 # until they reload the updated binding.
@@ -39,12 +45,6 @@ if [[ -n "$client_name" ]]; then
 else
     current=$(am_tmux display-message -p '#{session_name}' 2>/dev/null || true)
 fi
-
-# Source agent_kill function
-source "$repo_dir/lib/utils.sh"
-source "$repo_dir/lib/tmux.sh"
-source "$repo_dir/lib/registry.sh"
-source "$repo_dir/lib/agents.sh"
 
 # If killing the current session, switch to another one first
 if [[ "$target" == "$current" ]]; then
