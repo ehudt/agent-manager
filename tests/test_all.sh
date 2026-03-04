@@ -311,6 +311,16 @@ test_config() {
     assert_eq "false" "$(am_default_yolo_enabled && echo true || echo false)" "config: env overrides saved yolo"
     assert_eq "false" "$(am_stream_logs_enabled && echo true || echo false)" "config: env overrides saved logs"
 
+    # Sandbox config
+    assert_eq "false" "$(am_default_sandbox_enabled && echo true || echo false)" "config: default sandbox fallback"
+
+    am_config_set "default_sandbox" "true" "boolean"
+    assert_eq "true" "$(am_default_sandbox_enabled && echo true || echo false)" "config: saved default sandbox"
+
+    export AM_DEFAULT_SANDBOX="false"
+    assert_eq "false" "$(am_default_sandbox_enabled && echo true || echo false)" "config: env overrides saved sandbox"
+    unset AM_DEFAULT_SANDBOX
+
     am_config_unset "default_agent"
     unset AM_DEFAULT_AGENT AM_DEFAULT_YOLO AM_STREAM_LOGS
     assert_eq "claude" "$(am_default_agent)" "config: unset falls back to built-in default"

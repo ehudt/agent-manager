@@ -12,6 +12,7 @@ am_config_init() {
 {
   "default_agent": "claude",
   "default_yolo": false,
+  "default_sandbox": false,
   "stream_logs": true
 }
 EOF
@@ -82,6 +83,21 @@ am_default_yolo_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
+am_default_sandbox_enabled() {
+    if [[ -n "${AM_DEFAULT_SANDBOX:-}" ]]; then
+        am_bool_is_true "${AM_DEFAULT_SANDBOX,,}"
+        return $?
+    fi
+
+    local configured
+    configured=$(am_config_get "default_sandbox")
+    am_bool_is_true "${configured,,}"
+}
+
+am_docker_available() {
+    command -v docker &>/dev/null
+}
+
 am_stream_logs_enabled() {
     if [[ -n "${AM_STREAM_LOGS:-}" ]]; then
         am_bool_is_true "${AM_STREAM_LOGS,,}"
@@ -119,6 +135,7 @@ am_config_key_alias() {
     case "$1" in
         agent|default-agent|default_agent) echo "default_agent" ;;
         yolo|default-yolo|default_yolo) echo "default_yolo" ;;
+        sandbox|default-sandbox|default_sandbox) echo "default_sandbox" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         *) return 1 ;;
     esac
@@ -127,7 +144,7 @@ am_config_key_alias() {
 am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
-        default_yolo|stream_logs) echo "boolean" ;;
+        default_yolo|default_sandbox|stream_logs) echo "boolean" ;;
         *) return 1 ;;
     esac
 }
@@ -139,7 +156,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        default_yolo|stream_logs)
+        default_yolo|default_sandbox|stream_logs)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         *)
@@ -149,12 +166,17 @@ am_config_value_is_valid() {
 }
 
 am_config_print() {
-    local default_agent_value default_yolo_value stream_logs_value
+    local default_agent_value default_yolo_value default_sandbox_value stream_logs_value
     default_agent_value=$(am_default_agent)
     if am_default_yolo_enabled; then
         default_yolo_value=true
     else
         default_yolo_value=false
+    fi
+    if am_default_sandbox_enabled; then
+        default_sandbox_value=true
+    else
+        default_sandbox_value=false
     fi
     if am_stream_logs_enabled; then
         stream_logs_value=true
@@ -165,6 +187,7 @@ am_config_print() {
     cat <<EOF
 default_agent=$default_agent_value
 default_yolo=$default_yolo_value
+default_sandbox=$default_sandbox_value
 stream_logs=$stream_logs_value
 config_file=$AM_CONFIG
 EOF
