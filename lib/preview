@@ -51,7 +51,7 @@ output=$(tmux_capture_pane "$session_name:.{top}" || tmux_capture_pane "$session
 
 if [[ -n "$output" ]]; then
     # Strip trailing blank lines (capture-pane pads with empties), then show last 50 lines
-    echo "$output" | sed -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }' | tail -n 50
+    echo "$output" | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}' | tail -n 50
 else
     echo "(Unable to capture)"
 fi

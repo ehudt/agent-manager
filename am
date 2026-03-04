@@ -461,7 +461,7 @@ peek_capture_output() {
     local output
     output=$(tmux_capture_pane "$pane_target" || true)
     if [[ -n "$output" ]]; then
-        echo "$output" | sed -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }'
+        echo "$output" | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}'
     fi
 }
 
