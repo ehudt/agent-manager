@@ -708,7 +708,7 @@ fzf_main() {
         --with-nth=2 \
         --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill" \
         --preview="$preview_cmd {1}" \
-        --preview-window="bottom:75%" \
+        --preview-window="bottom:75%:follow" \
         --bind="ctrl-j:preview-down,ctrl-k:preview-up" \
         --bind="ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up" \
         --bind="ctrl-r:reload($am_cmd list-internal)" \
