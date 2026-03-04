@@ -308,7 +308,7 @@ _new_session_form_rows() {
     printf 'agent\tAgent\t%s\n' "$agent"
     printf 'task\tTask\t%s\n' "$task_display"
     printf 'mode\tMode\t%s\n' "$mode"
-    printf 'yolo\tPermissive\t%s\n' "$yolo_toggle"
+    printf 'yolo\tYolo\t%s\n' "$yolo_toggle"
     if [[ "$worktree_supported" == "true" || "$worktree_enabled" == "true" ]]; then
         printf 'worktree_enabled\tWorktree\t%s\n' "$worktree_toggle"
         if [[ "$worktree_supported" == "true" ]]; then
@@ -348,7 +348,7 @@ Current values
   Agent:      $agent
   Task:       ${task:-<empty>}
   Mode:       $mode
-  Permissive: $yolo
+  Yolo:       $yolo
 EOF
     if agent_supports_worktree "$agent" || [[ "$worktree_enabled" == "true" ]]; then
         echo "  Worktree:  $worktree_display"

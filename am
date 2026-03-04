@@ -292,7 +292,7 @@ cmd_new() {
                 echo "Examples:"
                 echo "  am new                          # Interactive one-page form"
                 echo "  am new ~/project                # Specific directory"
-                echo "  am new --yolo ~/project         # Permissive mode"
+                echo "  am new --yolo ~/project         # Yolo mode"
                 echo "  printf 'Fix bug\n' | am new --detach ~/project"
                 echo "  am new ~/project -- --resume    # With agent args"
                 return 0
