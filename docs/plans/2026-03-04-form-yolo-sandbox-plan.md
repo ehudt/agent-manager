@@ -326,6 +326,134 @@ git commit -m "Add --sandbox/--no-sandbox CLI flag with configurable default"
 
 ---
 
+### Task 3.5: CLI-level integration tests for yolo/sandbox independence
+
+**Files:**
+- Modify: `tests/test_all.sh` (new test function + register in runner)
+
+**Step 1: Write the integration tests**
+
+Add a new `test_cli_yolo_sandbox_integration()` function:
+
+```bash
+test_cli_yolo_sandbox_integration() {
+    echo "=== Testing CLI yolo/sandbox integration ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "cli yolo/sandbox tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # --- Test: am new --yolo creates session with yolo but no container ---
+    local session_name
+    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+        "$PROJECT_DIR/am" new --yolo --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
+    assert_not_empty "$session_name" "cli yolo-only: session created"
+    assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
+        "cli yolo-only: yolo_mode is true"
+    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
+        "cli yolo-only: no container (sandbox not requested)"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: am new --sandbox without docker fails ---
+    local orig_path="$PATH"
+    PATH=$(echo "$PATH" | tr ':' '\n' | grep -v docker | tr '\n' ':')
+    local sandbox_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+        "$PROJECT_DIR/am" new --sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" \
+        >/dev/null 2>/dev/null || sandbox_rc=$?
+    assert_eq "false" "$(test $sandbox_rc -eq 0 && echo true || echo false)" \
+        "cli sandbox-no-docker: fails when docker unavailable"
+    PATH="$orig_path"
+
+    # --- Test: am new --yolo --sandbox enables both independently ---
+    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+        "$PROJECT_DIR/am" new --yolo --sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null) || true
+    if [[ -n "$session_name" ]]; then
+        assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
+            "cli yolo+sandbox: yolo_mode is true"
+        assert_eq "true" "$(registry_get_field "$session_name" sandbox_mode)" \
+            "cli yolo+sandbox: sandbox_mode is true"
+        agent_kill "$session_name" 2>/dev/null
+    else
+        # If docker unavailable, sandbox creation fails — that's expected
+        skip_test "cli yolo+sandbox: skipped (docker unavailable)"
+    fi
+
+    # --- Test: config default_sandbox applies ---
+    am_config_set "default_sandbox" "false" "boolean"
+    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+        "$PROJECT_DIR/am" new --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
+    assert_not_empty "$session_name" "cli sandbox-default-off: session created"
+    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
+        "cli sandbox-default-off: no container when default_sandbox=false"
+    assert_eq "false" "$(registry_get_field "$session_name" sandbox_mode)" \
+        "cli sandbox-default-off: sandbox_mode is false"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: --no-sandbox overrides config default ---
+    am_config_set "default_sandbox" "true" "boolean"
+    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+        "$PROJECT_DIR/am" new --no-sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
+    assert_not_empty "$session_name" "cli no-sandbox-override: session created"
+    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
+        "cli no-sandbox-override: no container with --no-sandbox"
+    assert_eq "false" "$(registry_get_field "$session_name" sandbox_mode)" \
+        "cli no-sandbox-override: sandbox_mode is false"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: --no-yolo overrides config default ---
+    am_config_set "default_yolo" "true" "boolean"
+    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+        "$PROJECT_DIR/am" new --no-yolo --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
+    assert_not_empty "$session_name" "cli no-yolo-override: session created"
+    assert_eq "false" "$(registry_get_field "$session_name" yolo_mode)" \
+        "cli no-yolo-override: yolo_mode is false with --no-yolo"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    echo ""
+}
+```
+
+Register it in the test runner (where all `test_*` functions are called at the bottom of the file).
+
+**Step 2: Run tests to verify they fail**
+
+Run: `./tests/test_all.sh 2>&1 | grep -E 'cli yolo|cli sandbox|cli no-|FAIL'`
+Expected: FAIL — `--sandbox` flag not yet wired, `sandbox_mode` field not in registry
+
+**Step 3: These tests should pass after Tasks 1-3 are implemented**
+
+No implementation in this task — this is test-only. The tests validate the CLI integration that Tasks 1-3 provide.
+
+**Step 4: Run tests after Tasks 1-3**
+
+Run: `./tests/test_all.sh 2>&1 | grep -E 'cli yolo|cli sandbox|cli no-|FAIL|Results'`
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add tests/test_all.sh
+git commit -m "Add CLI-level integration tests for yolo/sandbox independence"
+```
+
+---
+
 ### Task 4: Rename "permissive" to "yolo mode"
 
 **Files:**
