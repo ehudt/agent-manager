@@ -16,6 +16,7 @@
 - **MCP server for am** — expose launch/send/peek/list/kill as structured tools instead of CLI-over-bash; better for agents that don't have shell access
 - **Speed issues** - opening the popup on mac can be pretty slow. Fix it
 - **Detach mode doesn't trigger agent** - it pastes the prompt but doesn't send the Enter
+- **Remove colors from output log file**
 
 ## Ideas
 
