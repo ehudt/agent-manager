@@ -1203,6 +1203,7 @@ test_cli() {
     assert_contains "$help_output" "send" "am help: mentions send command"
     assert_contains "$help_output" "peek" "am help: mentions peek command"
     assert_contains "$help_output" "--detach" "am help: mentions detach flag"
+    assert_contains "$help_output" "--sandbox" "am help: mentions sandbox flag"
 
     # Test version
     local version_output=$("$PROJECT_DIR/am" version)
@@ -1408,6 +1409,12 @@ test_cli_extended() {
 
     config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DEFAULT_AGENT="gemini" "$PROJECT_DIR/am" config get agent 2>/dev/null)
     assert_eq "gemini" "$config_get" "am config get agent: env override wins"
+
+    # --- Test: am config sandbox ---
+    config_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set sandbox true 2>/dev/null)
+    assert_contains "$config_output" "default_sandbox=true" "am config set sandbox: persists default"
+    config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get sandbox 2>/dev/null)
+    assert_eq "true" "$config_get" "am config get sandbox: returns saved default"
 
     # --- Test: am send injects prompt text into running session ---
     session_name=$(set +u; agent_launch "$test_dir" "claude" "send test" 2>/dev/null)

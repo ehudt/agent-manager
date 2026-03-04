@@ -131,6 +131,19 @@ am_maybe_apply_default_yolo() {
     return 0
 }
 
+am_maybe_apply_default_sandbox() {
+    if ! am_default_sandbox_enabled; then
+        return 1
+    fi
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --sandbox) return 1 ;;
+        esac
+    done
+    return 0
+}
+
 am_config_key_alias() {
     case "$1" in
         agent|default-agent|default_agent) echo "default_agent" ;;

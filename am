@@ -52,8 +52,10 @@ OPTIONS FOR 'new':
     -d, --dir       Directory (can also be positional arg)
     -w, --worktree  Enable git worktree isolation (Claude, Codex)
                     Optional: -w <name> to set worktree name (default: am-XXXXXX)
-    --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
-    --no-yolo       Disable permissive mode even if enabled by default
+    --yolo          Enable yolo mode (agent permissive flags)
+    --no-yolo       Disable yolo mode even if enabled by default
+    --sandbox       Run session in Docker sandbox container
+    --no-sandbox    Disable sandbox even if enabled by default
     --detach        Create the session without attaching
     --print-session Print the created session name to stdout
     --              Pass remaining args to agent (e.g., -- --resume)
@@ -207,6 +209,7 @@ cmd_new() {
     local worktree_name=""
     local agent_args=()
     local yolo_override=""
+    local sandbox_override=""
     local attach_session=true
     local print_session=false
     local initial_prompt=""
@@ -245,6 +248,15 @@ cmd_new() {
                 yolo_override="false"
                 shift
                 ;;
+            --sandbox)
+                agent_args+=("--sandbox")
+                sandbox_override="true"
+                shift
+                ;;
+            --no-sandbox)
+                sandbox_override="false"
+                shift
+                ;;
             --detach|--no-attach)
                 attach_session=false
                 shift
@@ -269,8 +281,10 @@ cmd_new() {
                 echo "  -d, --dir     Working directory"
                 echo "  -w, --worktree  Enable git worktree isolation (Claude, Codex)"
                 echo "                  Optional: -w <name> for custom worktree name"
-                echo "  --yolo        Enable permissive mode (mapped per agent, uses sb sandbox)"
-                echo "  --no-yolo     Disable permissive mode even if enabled by default"
+                echo "  --yolo        Enable yolo mode (agent permissive flags)"
+                echo "  --no-yolo     Disable yolo mode even if enabled by default"
+                echo "  --sandbox     Run session in Docker sandbox container"
+                echo "  --no-sandbox  Disable sandbox even if enabled by default"
                 echo "  --detach      Create the session without attaching"
                 echo "  --print-session  Print the created session name"
                 echo "  --            Pass remaining args to agent command"
@@ -322,6 +336,10 @@ cmd_new() {
 
         if [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
             agent_args+=("--yolo")
+        fi
+
+        if [[ "$sandbox_override" != "false" ]] && am_maybe_apply_default_sandbox "${agent_args[@]}"; then
+            agent_args+=("--sandbox")
         fi
     fi
 
@@ -624,6 +642,9 @@ cmd_config() {
                 default_yolo)
                     am_default_yolo_enabled && echo true || echo false
                     ;;
+                default_sandbox)
+                    am_default_sandbox_enabled && echo true || echo false
+                    ;;
                 stream_logs)
                     am_stream_logs_enabled && echo true || echo false
                     ;;
@@ -673,7 +694,8 @@ Usage:
 
 Keys:
   agent   Default agent type
-  yolo    Default permissive mode (true/false)
+  yolo    Default yolo mode (true/false)
+  sandbox Default sandbox mode (true/false)
   logs    Default pane log streaming (true/false)
 
 Precedence:
