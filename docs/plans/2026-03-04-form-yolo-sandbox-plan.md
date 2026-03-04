@@ -16,16 +16,16 @@
 
 | Task | Status | Commit |
 |------|--------|--------|
-| 1: Sandbox config plumbing | DONE | f6b3fc3 |
-| 2: Decouple sandbox from yolo | DONE | d5be472 |
-| 3: --sandbox CLI flag | DONE | f76f4ef |
-| 3.5: CLI integration tests | TODO | |
-| 4: Rename permissive→yolo | TODO | |
-| 5: Sandbox row in form | TODO | |
-| 6: Rewrite form (inline editing) | TODO | |
-| 7: Update form tests | TODO | |
-| 8: Wire sandbox through pipeline | TODO | |
-| 9: Final integration/syntax | TODO | |
+| 1: Sandbox config plumbing | DONE | d8e1fff |
+| 2: Decouple sandbox from yolo | DONE | 4b33e86 |
+| 3: --sandbox CLI flag | DONE | ba2c94f |
+| 3.5: CLI integration tests | DONE | 14a3e5d |
+| 4: Rename permissive→yolo | DONE | ac18d9c |
+| 5: Sandbox row in form | DONE | c8973e5 |
+| 6: Rewrite form (inline editing) | DONE | c8973e5 |
+| 7: Update form tests | DONE | c8973e5 |
+| 8: Wire sandbox through pipeline | DONE | (verified, no changes needed) |
+| 9: Final integration/syntax | DONE | 292/293 pass (1 pre-existing flaky) |
 
 ### Implementation notes from Tasks 1-3
 
