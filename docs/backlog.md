@@ -1,0 +1,25 @@
+# Backlog
+
+## In Progress
+
+- **Yolo/sandbox split + form redesign** — plan at `docs/plans/2026-03-04-form-yolo-sandbox-plan.md`, worktree at `.worktrees/yolo-sandbox-form`
+- **Fix 3 failing tests** (macOS timing, sandbox pytest) — session `am-f8db29`
+
+## Up Next
+
+- **`am install` command** — automate first-time setup:
+  - Symlink `skills/am-orchestration/` into `~/.claude/skills/` for Claude Code discovery
+  - Verify dependencies (tmux, fzf, jq, git)
+  - Create `~/.agent-manager/` and default config
+  - Optionally set up tmux plugin (source am's tmux config)
+- **Completion detection** — structured way to know if an agent session's task is done (idle pane heuristic, exit code capture, or explicit signal file in `$AM_LOG_DIR`)
+- **MCP server for am** — expose launch/send/peek/list/kill as structured tools instead of CLI-over-bash; better for agents that don't have shell access
+
+## Ideas
+
+- **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model
+- **Session tagging** — add labels/tags to sessions for filtering (`am list --tag debug`)
+- **Cost tracking** — parse Claude API usage from session logs, show per-session cost
+- **Session templates** — predefined launch configs (agent type + flags + prompt skeleton) for common workflows
+- **Inter-session messaging** — structured message passing between sessions (beyond raw `am send`)
+- **Auto-cleanup** — kill sessions that have been idle beyond a configurable threshold

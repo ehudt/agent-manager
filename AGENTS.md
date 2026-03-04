@@ -16,6 +16,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/title-upgrade` | Standalone script: fire-and-forget Haiku title upgrade for a session |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
+| `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
 | `lib/sandbox.sh` | Docker sandbox lifecycle: start, attach, stop, remove, fleet ops |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
 | `sandbox/entrypoint.sh` | Container init: user alignment, Tailscale, SSH |
@@ -92,8 +93,9 @@ For agent orchestration, prefer this sequence:
 ### Operational caveats
 
 - `am peek --follow` is near-real-time, not a structured event stream.
-- If `stream_logs=true`, follow mode tails `/tmp/am-logs/<session>/{agent,shell}.log`.
-- If logs are disabled, follow mode polls tmux pane text once per second.
+- Log streaming is on by default (`stream_logs=true`). Follow mode tails `/tmp/am-logs/<session>/{agent,shell}.log`.
+- If logs are disabled (`am config set logs false`), follow mode polls tmux pane text once per second.
+- Every session exports `$AM_LOG_DIR` into both panes, pointing to `/tmp/am-logs/<session>/`.
 - `am send` and `am peek` are transport primitives. They do not confirm task completion or parse agent state.
 
 ## Key Functions
@@ -180,3 +182,4 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add history integration | `lib/registry.sh` → `history_append()` |
 | Change sandbox config | `lib/sandbox.sh` → globals, `sandbox/Dockerfile` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
+| Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
