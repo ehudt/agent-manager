@@ -12,7 +12,7 @@ am_config_init() {
 {
   "default_agent": "claude",
   "default_yolo": false,
-  "stream_logs": false
+  "stream_logs": true
 }
 EOF
     fi
