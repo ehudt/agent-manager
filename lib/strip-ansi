@@ -1,0 +1,17 @@
+#!/usr/bin/perl
+# Strip ANSI escape sequences and terminal control codes from stdin.
+# Used by tmux pipe-pane to produce clean log files.
+
+use strict;
+use warnings;
+$| = 1;  # autoflush
+
+while (<STDIN>) {
+    s/\e\[[0-9;]*[a-zA-Z]//g;     # CSI sequences (colors, cursor, etc.)
+    s/\e\[\?[0-9;]*[a-zA-Z]//g;   # CSI private sequences (?25h, ?2004l, etc.)
+    s/\e\][^\a]*\a//g;             # OSC sequences (title set, etc.)
+    s/\e\(B//g;                    # character set selection
+    s/\r//g;                       # carriage returns
+    s/\x08.//g;                    # backspace + overwritten char
+    print;
+}

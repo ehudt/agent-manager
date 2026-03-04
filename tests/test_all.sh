@@ -2570,6 +2570,60 @@ test_sandbox_pytest_integration() {
     echo ""
 }
 
+test_strip_ansi() {
+    echo "=== Testing strip-ansi filter ==="
+
+    local strip="$LIB_DIR/strip-ansi"
+
+    # Basic CSI color codes
+    local input=$'\e[32mhello\e[0m world'
+    local result
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello world" "$result" "strip-ansi: removes color codes"
+
+    # CSI cursor movement
+    input=$'\e[5Ahello\e[10C world'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello world" "$result" "strip-ansi: removes cursor movement"
+
+    # Private CSI sequences (?25h, ?2004l, etc.)
+    input=$'\e[?2004hhello\e[?25l'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello" "$result" "strip-ansi: removes private CSI sequences"
+
+    # OSC title-set sequences (ESC ] ... BEL)
+    input=$'\e]0;my title\ahello'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello" "$result" "strip-ansi: removes OSC title sequences"
+
+    # Carriage returns
+    input=$'hello\r\nworld\r'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq $'hello\nworld' "$result" "strip-ansi: strips carriage returns"
+
+    # Backspace + following char are removed
+    input=$(printf 'h\x08Xello')
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello" "$result" "strip-ansi: removes backspace sequences"
+
+    # Character set selection
+    input=$'\e(Bhello'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello" "$result" "strip-ansi: removes charset selection"
+
+    # Complex mixed input
+    input=$'\e[38;2;215;119;87m Claude Code \e[22m\e[38;2;153;153;153mv2.1.68\e[39m\r'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq " Claude Code v2.1.68" "$result" "strip-ansi: handles complex mixed escapes"
+
+    # Plain text passes through unchanged
+    input="just plain text"
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "just plain text" "$result" "strip-ansi: plain text unchanged"
+
+    echo ""
+}
+
 # ============================================
 # Main
 # ============================================
@@ -2615,6 +2669,7 @@ main() {
     test_tmux_listing
     test_claude_first_user_message
     test_sandbox_pytest_integration
+    test_strip_ansi
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

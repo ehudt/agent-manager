@@ -128,7 +128,7 @@ tmux_enable_pipe_pane() {
     local pane="$2"
     local log_file="$3"
 
-    am_tmux pipe-pane -t "${session}:${pane}" -o "cat >> '${log_file}'"
+    am_tmux pipe-pane -t "${session}:${pane}" -o "${AM_LIB_DIR}/strip-ansi >> ${log_file}"
 }
 
 # Remove log directory for a session
