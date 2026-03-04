@@ -2,4 +2,6 @@
 # stub_agent - Fake agent for integration tests
 # Stays alive until killed, prints a marker so tests can verify it started
 echo "stub-agent-ready"
-exec tail -f /dev/null
+while IFS= read -r line; do
+    echo "stub-agent-input:$line"
+done

@@ -148,6 +148,7 @@ assert_cmd_fails() {
 setup_integration_env() {
     TEST_AM_DIR=$(mktemp -d)
     TEST_STUB_DIR="$TEST_DIR"  # stub_agent lives in tests/
+    TEST_STUB_BIN=$(mktemp -d)
 
     export AM_DIR="$TEST_AM_DIR"
     export AM_REGISTRY="$AM_DIR/sessions.json"
@@ -155,6 +156,13 @@ setup_integration_env() {
     export AM_SESSION_PREFIX="test-am-"
     am_init
     am_config_init
+
+    ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/claude"
+    ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/codex"
+    ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/gemini"
+    TEST_OLD_PATH="${PATH:-}"
+    export PATH="$TEST_STUB_BIN:$PATH"
+    tmux -L "${AM_TMUX_SOCKET:-agent-manager}" set-environment -g PATH "$PATH" 2>/dev/null || true
 
     # Point agent commands to stub
     AGENT_COMMANDS[claude]="$TEST_STUB_DIR/stub_agent"
@@ -174,11 +182,14 @@ teardown_integration_env() {
 
     # Restore AM_DIR and session prefix
     rm -rf "${TEST_AM_DIR:-}"
+    rm -rf "${TEST_STUB_BIN:-}"
     TEST_AM_DIR=""
+    TEST_STUB_BIN=""
     export AM_DIR="${HOME}/.agent-manager"
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_CONFIG="$AM_DIR/config.json"
     export AM_SESSION_PREFIX="am-"
+    export PATH="${TEST_OLD_PATH:-$PATH}"
 }
 
 # ============================================
@@ -1179,6 +1190,8 @@ test_cli() {
     assert_contains "$help_output" "Agent Manager" "am help: shows title"
     assert_contains "$help_output" "USAGE" "am help: shows usage"
     assert_contains "$help_output" "COMMANDS" "am help: shows commands"
+    assert_contains "$help_output" "send" "am help: mentions send command"
+    assert_contains "$help_output" "--detach" "am help: mentions detach flag"
 
     # Test version
     local version_output=$("$PROJECT_DIR/am" version)
@@ -1366,6 +1379,35 @@ test_cli_extended() {
 
     config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DEFAULT_AGENT="gemini" "$PROJECT_DIR/am" config get agent 2>/dev/null)
     assert_eq "gemini" "$config_get" "am config get agent: env override wins"
+
+    # --- Test: am send injects prompt text into running session ---
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "send test" 2>/dev/null)
+    assert_not_empty "$session_name" "am send setup: session created"
+    local send_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$session_name" "run tests now" >/dev/null 2>/dev/null || send_rc=$?
+    assert_eq "0" "$send_rc" "am send: exits 0"
+    sleep 0.2
+    local pane_output
+    pane_output=$(am_tmux capture-pane -pt "$session_name:.{top}" 2>/dev/null || true)
+    assert_contains "$pane_output" "stub-agent-input:run tests now" "am send: prompt reaches agent pane"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: am new --detach can read initial prompt from stdin ---
+    local detached_session
+    detached_session=$(printf 'initial prompt from stdin\n' | AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" new --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
+    assert_not_empty "$detached_session" "am new --detach: returns session name"
+    assert_eq "true" "$(tmux_session_exists "$detached_session" && echo true || echo false)" \
+        "am new --detach: session created"
+
+    pane_output=""
+    for _i in $(seq 1 20); do
+        pane_output=$(am_tmux capture-pane -pt "$detached_session:.{top}" 2>/dev/null || true)
+        [[ "$pane_output" == *"stub-agent-input:initial prompt from stdin"* ]] && break
+        sleep 0.2
+    done
+    assert_contains "$pane_output" "stub-agent-input:initial prompt from stdin" \
+        "am new --detach: stdin prompt reaches agent pane"
+    [[ -n "$detached_session" ]] && agent_kill "$detached_session" 2>/dev/null
 
     # Cleanup
     rm -rf "$test_dir"

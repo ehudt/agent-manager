@@ -203,6 +203,23 @@ tmux_send_keys() {
     am_tmux send-keys -t "$name" "$@"
 }
 
+# Paste literal text into a tmux pane without shell escaping issues.
+# Usage: tmux_paste_text <target-pane> <text>
+tmux_paste_text() {
+    local target="$1"
+    local text="$2"
+
+    printf '%s' "$text" | am_tmux load-buffer -
+    am_tmux paste-buffer -d -t "$target"
+}
+
+# Return the current command running in a pane.
+# Usage: tmux_pane_current_command <target-pane>
+tmux_pane_current_command() {
+    local target="$1"
+    am_tmux display-message -p -t "$target" '#{pane_current_command}'
+}
+
 # Count agent-manager sessions
 # Usage: tmux_count_am_sessions
 tmux_count_am_sessions() {

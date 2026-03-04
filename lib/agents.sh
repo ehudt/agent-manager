@@ -29,14 +29,14 @@ agent_get_yolo_flag() {
 # Usage: agent_get_command <type>
 agent_get_command() {
     local agent_type="$1"
-    echo "${AGENT_COMMANDS[$agent_type]:-$agent_type}"
+    echo "${AGENT_COMMANDS[$agent_type]-$agent_type}"
 }
 
 # Check if an agent type is supported
 # Usage: agent_type_supported <type>
 agent_type_supported() {
     local agent_type="$1"
-    [[ -n "${AGENT_COMMANDS[$agent_type]}" ]]
+    [[ -n "${AGENT_COMMANDS[$agent_type]-}" ]]
 }
 
 # Check whether an agent supports git worktree isolation.
@@ -113,6 +113,31 @@ agent_refresh_tmux_status() {
     [[ -n "$worktree_path" ]] && worktree_label="$(basename "$worktree_path")"
 
     tmux_set_session_status "$session_name" "$directory" "$branch" "$worktree_label" "$yolo_mode" "${container_name:+true}"
+}
+
+# Return the pane target used for the agent process.
+# Usage: agent_target_pane <session_name>
+agent_target_pane() {
+    local session_name="$1"
+    echo "${session_name}:.{top}"
+}
+
+# Wait briefly for the agent pane to hand off from the shell to the launched process.
+# Usage: agent_wait_until_ready <session_name>
+agent_wait_until_ready() {
+    local session_name="$1"
+    local pane_target current_cmd
+    pane_target=$(agent_target_pane "$session_name")
+
+    for _i in $(seq 1 30); do
+        current_cmd=$(tmux_pane_current_command "$pane_target" 2>/dev/null || true)
+        case "$current_cmd" in
+            ""|bash|zsh|sh|fish) sleep 0.1 ;;
+            *) return 0 ;;
+        esac
+    done
+
+    return 0
 }
 
 # Detect git branch for a directory
@@ -297,6 +322,29 @@ agent_launch() {
 
     log_success "Created session: $session_name"
     echo "$session_name"
+}
+
+# Send a prompt to a running agent session.
+# Usage: agent_send_prompt <session_name> <prompt>
+agent_send_prompt() {
+    local session_name="$1"
+    local prompt="$2"
+
+    if [[ -z "$prompt" ]]; then
+        log_error "Prompt cannot be empty"
+        return 1
+    fi
+
+    if ! tmux_session_exists "$session_name"; then
+        log_error "Session not found: $session_name"
+        return 1
+    fi
+
+    local pane_target
+    pane_target=$(agent_target_pane "$session_name")
+
+    tmux_paste_text "$pane_target" "$prompt"
+    tmux_send_keys "$pane_target" Enter
 }
 
 # Get display name for a session (for fzf listing)

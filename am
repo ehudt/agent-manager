@@ -32,6 +32,7 @@ COMMANDS:
     list, ls            List all sessions
     list --json, -j     Output sessions as JSON
     new, create, n      Create a new agent session
+    send                Send a prompt to a running session
     attach, a           Attach to a session by name (exact, prefix, or fuzzy)
     kill, rm, k         Kill a session
     kill --all, -a      Kill all agent-manager sessions
@@ -52,7 +53,12 @@ OPTIONS FOR 'new':
                     Optional: -w <name> to set worktree name (default: am-XXXXXX)
     --yolo          Enable permissive mode (mapped per agent, uses sb sandbox)
     --no-yolo       Disable permissive mode even if enabled by default
+    --detach        Create the session without attaching
+    --print-session Print the created session name to stdout
     --              Pass remaining args to agent (e.g., -- --resume)
+
+OPTIONS FOR 'send':
+    Read prompt text from argv or stdin and inject it into the running agent pane.
 
 KEYBINDINGS (interactive browser):
     Enter           Attach to selected session
@@ -79,6 +85,8 @@ EXAMPLES:
     am new ~/code/myproject         # New session in specific directory
     am new -t codex ~/code/proj     # New codex session
     am new -n "fix auth" .          # Session with task description
+    printf 'Fix auth bug\n' | am new --detach ~/code/proj
+    printf 'Run the test suite\n' | am send am-abc123
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
     am sandbox ls                   # List sandbox containers
@@ -175,6 +183,14 @@ cmd_new_internal() {
     fi
 }
 
+read_prompt_input() {
+    if [[ $# -gt 0 ]]; then
+        printf '%s' "$1"
+    elif [[ ! -t 0 ]]; then
+        cat
+    fi
+}
+
 # Command: new
 cmd_new() {
     local directory="."
@@ -184,6 +200,9 @@ cmd_new() {
     local worktree_name=""
     local agent_args=()
     local yolo_override=""
+    local attach_session=true
+    local print_session=false
+    local initial_prompt=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -219,6 +238,14 @@ cmd_new() {
                 yolo_override="false"
                 shift
                 ;;
+            --detach|--no-attach)
+                attach_session=false
+                shift
+                ;;
+            --print-session)
+                print_session=true
+                shift
+                ;;
             --)
                 shift
                 agent_args=("$@")
@@ -237,12 +264,15 @@ cmd_new() {
                 echo "                  Optional: -w <name> for custom worktree name"
                 echo "  --yolo        Enable permissive mode (mapped per agent, uses sb sandbox)"
                 echo "  --no-yolo     Disable permissive mode even if enabled by default"
+                echo "  --detach      Create the session without attaching"
+                echo "  --print-session  Print the created session name"
                 echo "  --            Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
                 echo "  am new                          # Interactive one-page form"
                 echo "  am new ~/project                # Specific directory"
                 echo "  am new --yolo ~/project         # Permissive mode"
+                echo "  printf 'Fix bug\n' | am new --detach ~/project"
                 echo "  am new ~/project -- --resume    # With agent args"
                 return 0
                 ;;
@@ -288,13 +318,23 @@ cmd_new() {
         fi
     fi
 
+    initial_prompt=$(read_prompt_input)
+
     # Launch agent
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
 
-    # Auto-attach to new session
     if [[ -n "$session_name" ]]; then
-        tmux_attach "$session_name"
+        if [[ -n "$initial_prompt" ]]; then
+            agent_wait_until_ready "$session_name"
+            agent_send_prompt "$session_name" "$initial_prompt"
+        fi
+        if $print_session || ! $attach_session; then
+            echo "$session_name"
+        fi
+        if $attach_session; then
+            tmux_attach "$session_name"
+        fi
     fi
 }
 
@@ -310,6 +350,28 @@ resolve_session() {
     else
         return 1
     fi
+}
+
+resolve_session_fuzzy() {
+    local name="$1"
+
+    local resolved
+    if resolved=$(resolve_session "$name"); then
+        echo "$resolved"
+        return 0
+    fi
+
+    local matches
+    matches=$(tmux_list_am_sessions | grep -i "$name" || true)
+    local count
+    count=$(echo "$matches" | grep -c . || echo 0)
+
+    if [[ $count -eq 1 ]]; then
+        echo "$matches"
+        return 0
+    fi
+
+    return 1
 }
 
 # Command: attach
@@ -353,6 +415,34 @@ cmd_attach() {
             tmux_attach "$selected"
         fi
     fi
+}
+
+cmd_send() {
+    local name="${1:-}"
+    shift 2>/dev/null || true
+
+    if [[ -z "$name" ]]; then
+        log_error "Session name required"
+        echo "Usage: am send <session-name> [prompt]"
+        return 1
+    fi
+
+    local prompt
+    prompt=$(read_prompt_input "$*")
+
+    if [[ -z "$prompt" ]]; then
+        log_error "Prompt required via argv or stdin"
+        echo "Usage: am send <session-name> [prompt]"
+        return 1
+    fi
+
+    local resolved
+    if ! resolved=$(resolve_session_fuzzy "$name"); then
+        log_error "Session not found: $name"
+        return 1
+    fi
+
+    agent_send_prompt "$resolved" "$prompt"
 }
 
 # Command: kill
@@ -614,6 +704,9 @@ main() {
             ;;
         new|create|n)
             cmd_new "$@"
+            ;;
+        send)
+            cmd_send "$@"
             ;;
         attach|a)
             cmd_attach "$@"

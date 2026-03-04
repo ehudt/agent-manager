@@ -48,6 +48,8 @@ am new ~/code/myproject              # Create a Claude session
 am                                    # Browse all sessions
 am new -t gemini ~/code/other        # Use a different agent
 am new -n "fix auth bug" .           # Add a task description
+printf 'Investigate the failing CI job\n' | am new --detach ~/code/myproject
+printf 'Open the latest test failure and propose a fix\n' | am send am-abc123
 am attach am-abc123                  # Attach to a session by name
 ```
 
@@ -105,10 +107,30 @@ am new -t codex ~/project       # Specify agent type
 am new -n "task description" .  # Add task description
 am new --yolo ~/project         # Permissive mode (flag mapped per agent)
 am new --no-yolo ~/project      # Force safe mode even if yolo is default
+am new --detach ~/project       # Create the session without attaching
+am new --detach --print-session ~/project
+printf 'Fix the flaky test\n' | am new --detach ~/project
+am send am-abc123 "Review the latest diff and suggest cleanup"
+printf 'Run the test suite and summarize failures\n' | am send am-abc123
 am new ~/project -- --resume    # Pass extra args to the agent
 am config set agent codex       # Save codex as the default agent
 am config set yolo true         # Save permissive mode as the default
 am config set logs true         # Save pane log streaming as the default
+```
+
+### Sending Prompts From CLI
+
+Use `am send` to inject a prompt into the running agent pane of an existing session. The prompt can come from argv or stdin, which makes it easy to chain from scripts or other agents.
+
+```bash
+am send am-abc123 "Investigate the auth regression"
+printf 'Read the open PR and leave review notes\n' | am send am-abc123
+```
+
+For non-interactive session creation, combine `am new --detach` with stdin. This creates a monitorable tmux session, starts the agent, sends the initial prompt, and returns control to the caller immediately.
+
+```bash
+printf 'Implement the CLI parsing cleanup\n' | am new --detach --print-session ~/project
 ```
 
 ## Inside a Session
@@ -227,6 +249,7 @@ am new ~/project -- --continue    # Continue from where you left off
 | `am` | `am list`, `am ls` | Open interactive browser |
 | `am list --json` | `-j` | Output sessions as JSON |
 | `am new [dir]` | `create`, `n` | Create new agent session |
+| `am send <name> [prompt]` | | Send a prompt to a running session (argv or stdin) |
 | `am attach <name>` | `a` | Attach to session (exact, prefix, or fuzzy match) |
 | `am kill <name>` | `rm`, `k` | Kill a session |
 | `am kill --all` | `-a` | Kill all sessions |
