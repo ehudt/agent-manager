@@ -292,7 +292,7 @@ test_config() {
     assert_eq "true" "$(test -f "$AM_CONFIG" && echo true || echo false)" "config: creates config file"
     assert_eq "claude" "$(am_default_agent)" "config: default agent fallback"
     assert_eq "false" "$(am_default_yolo_enabled && echo true || echo false)" "config: default yolo fallback"
-    assert_eq "false" "$(am_stream_logs_enabled && echo true || echo false)" "config: default logs fallback"
+    assert_eq "true" "$(am_stream_logs_enabled && echo true || echo false)" "config: default logs fallback"
 
     am_config_set "default_agent" "codex" "string"
     am_config_set "default_yolo" "true" "boolean"
@@ -742,17 +742,34 @@ test_fzf_helpers() {
     first_mode=$(fzf_mode_options "false" | head -n1)
     assert_eq "New session" "$first_mode" "fzf helpers: safe default listed first"
 
+    # Updated form rows call with sandbox params
     local worktree_rows
-    worktree_rows=$(_new_session_form_rows "/tmp/project" "gemini" "" "new" "false" "true" "my-wt")
+    worktree_rows=$(_new_session_form_rows "/tmp/project" "gemini" "" "new" "false" "false" "true" "my-wt" "true")
     assert_contains "$worktree_rows" $'worktree_enabled\tWorktree\t<unsupported>' \
-        "fzf helpers: unsupported popup marks worktree as unavailable"
+        "fzf helpers: unsupported agent marks worktree as unavailable"
 
-    local worktree_preview
-    worktree_preview=$(_new_session_form_preview "/tmp/project" "gemini" "" "new" "false" "true" "my-wt" "")
-    local worktree_preview_line
-    worktree_preview_line=$(printf '%s\n' "$worktree_preview" | grep "Worktree:" || true)
-    assert_eq "  Worktree:  unavailable for gemini" "$worktree_preview_line" \
-        "fzf helpers: preview explains unsupported worktree agent"
+    # No submit row anymore
+    local submit_check
+    submit_check=$(echo "$worktree_rows" | grep "^submit" || true)
+    assert_eq "" "$submit_check" "fzf helpers: no submit row in form"
+
+    # Sandbox row appears in form
+    local sandbox_rows
+    sandbox_rows=$(_new_session_form_rows "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true")
+    assert_contains "$sandbox_rows" $'sandbox\tSandbox' \
+        "fzf helpers: sandbox row present"
+
+    # Sandbox disabled when docker unavailable
+    local sandbox_disabled_rows
+    sandbox_disabled_rows=$(_new_session_form_rows "/tmp/project" "claude" "" "new" "false" "false" "false" "" "false")
+    assert_contains "$sandbox_disabled_rows" "[disabled]" \
+        "fzf helpers: sandbox disabled without docker"
+
+    # Sandbox enabled toggle
+    local sandbox_enabled_rows
+    sandbox_enabled_rows=$(_new_session_form_rows "/tmp/project" "claude" "" "new" "false" "true" "false" "" "true")
+    assert_contains "$sandbox_enabled_rows" $'sandbox\tSandbox\t[x]' \
+        "fzf helpers: sandbox enabled shows [x]"
 
     echo ""
 }

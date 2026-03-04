@@ -281,10 +281,12 @@ _new_session_form_rows() {
     local task="$3"
     local mode="$4"
     local yolo="$5"
-    local worktree_enabled="$6"
-    local worktree_name="$7"
+    local sandbox="$6"
+    local worktree_enabled="$7"
+    local worktree_name="$8"
+    local docker_available="${9:-true}"
 
-    local task_display worktree_toggle worktree_name_display yolo_toggle
+    local task_display worktree_toggle worktree_name_display yolo_toggle sandbox_toggle
     local worktree_supported="false"
     task_display="${task:-<empty>}"
     worktree_name_display="<disabled>"
@@ -292,6 +294,15 @@ _new_session_form_rows() {
     worktree_toggle="[ ]"
 
     [[ "$yolo" == "true" ]] && yolo_toggle="[x]"
+
+    if [[ "$docker_available" != "true" ]]; then
+        sandbox_toggle="[disabled]"
+    elif [[ "$sandbox" == "true" ]]; then
+        sandbox_toggle="[x]"
+    else
+        sandbox_toggle="[ ]"
+    fi
+
     if agent_supports_worktree "$agent"; then
         worktree_supported="true"
     fi
@@ -303,12 +314,12 @@ _new_session_form_rows() {
         worktree_toggle="<unsupported>"
     fi
 
-    printf 'submit\tCreate Session\tLaunch with current values\n'
     printf 'directory\tDirectory\t%s\n' "$directory"
     printf 'agent\tAgent\t%s\n' "$agent"
     printf 'task\tTask\t%s\n' "$task_display"
     printf 'mode\tMode\t%s\n' "$mode"
     printf 'yolo\tYolo\t%s\n' "$yolo_toggle"
+    printf 'sandbox\tSandbox\t%s\n' "$sandbox_toggle"
     if [[ "$worktree_supported" == "true" || "$worktree_enabled" == "true" ]]; then
         printf 'worktree_enabled\tWorktree\t%s\n' "$worktree_toggle"
         if [[ "$worktree_supported" == "true" ]]; then
@@ -317,54 +328,14 @@ _new_session_form_rows() {
     fi
 }
 
-_new_session_form_preview() {
-    local directory="$1"
-    local agent="$2"
-    local task="$3"
-    local mode="$4"
-    local yolo="$5"
-    local worktree_enabled="$6"
-    local worktree_name="$7"
-    local message="$8"
-    local worktree_display="off"
-
-    if agent_supports_worktree "$agent"; then
-        if [[ "$worktree_enabled" == "true" ]]; then
-            worktree_display="${worktree_name:-auto}"
-        fi
-    elif [[ "$worktree_enabled" == "true" ]]; then
-        worktree_display="unavailable for $agent"
-    fi
-
-    cat <<EOF
-New Session
-
-Enter edits the current field.
-Space toggles checkboxes.
-Esc goes back without creating a session.
-
-Current values
-  Directory:  $directory
-  Agent:      $agent
-  Task:       ${task:-<empty>}
-  Mode:       $mode
-  Yolo:       $yolo
-EOF
-    if agent_supports_worktree "$agent" || [[ "$worktree_enabled" == "true" ]]; then
-        echo "  Worktree:  $worktree_display"
-    fi
-    echo ""
-    [[ -n "$message" ]] && echo "Note: $message"
-}
-
 _new_session_form_row_position() {
     case "$1" in
-        submit) echo 1 ;;
-        directory) echo 2 ;;
-        agent) echo 3 ;;
-        task) echo 4 ;;
-        mode) echo 5 ;;
-        yolo) echo 6 ;;
+        directory) echo 1 ;;
+        agent) echo 2 ;;
+        task) echo 3 ;;
+        mode) echo 4 ;;
+        yolo) echo 5 ;;
+        sandbox) echo 6 ;;
         worktree_enabled) echo 7 ;;
         worktree_name) echo 8 ;;
         *) echo 1 ;;
@@ -429,6 +400,54 @@ _new_session_form_prompt() {
     fi
 }
 
+# Directory picker for the new session form.
+# Usage: _new_session_form_directory <current>
+# Returns: selected directory path
+_new_session_form_directory() {
+    local current="$1"
+
+    # Export helpers for fzf reload
+    export -f _list_directories
+    export -f _annotate_directory
+    export -f _strip_annotation
+    export -f detect_git_branch
+
+    local initial_list
+    initial_list=$(_list_directories | grep -v '^$')
+
+    local selected
+    selected=$(echo "$initial_list" | fzf \
+        --sync \
+        --ansi \
+        --height=10 \
+        --layout=reverse \
+        --print-query \
+        --query="$current" \
+        --header="Directory  Tab:complete  Type to filter" \
+        --bind="tab:reload(bash -c '_list_directories {q}' | grep -v '^$')+clear-query" \
+        --bind="ctrl-u:reload(bash -c '_list_directories \$(dirname {q})' | grep -v '^$')+transform-query(dirname {q})" \
+    ) || true
+
+    local query selection
+    query=$(echo "$selected" | head -n1)
+    selection=$(echo "$selected" | tail -n1)
+
+    selection=$(_strip_annotation "$selection")
+    query=$(_strip_annotation "$query")
+
+    if [[ -z "$selection" && -n "$query" ]]; then
+        selection="$query"
+    fi
+
+    selection="${selection/#\~/$HOME}"
+
+    if [[ -n "$selection" ]]; then
+        echo "$selection"
+    else
+        echo "$current"
+    fi
+}
+
 # One-page form for new session creation.
 # Usage: fzf_new_session_form [prefill_directory] [prefill_agent] [prefill_task] [prefill_worktree] [prefill_mode_flags]
 # Returns: directory<TAB>agent<TAB>task<TAB>worktree_name<TAB>flags
@@ -438,9 +457,9 @@ fzf_new_session_form() {
     local prefill_task="${3:-}"
     local prefill_worktree="${4:-}"
     local prefill_mode_flags="${5:-}"
-    local tty_path="/dev/tty"
     local mode="new"
     local yolo="false"
+    local sandbox="false"
     local directory="${prefill_directory/#\~/$HOME}"
     local agent="$prefill_agent"
     local task="$prefill_task"
@@ -448,8 +467,9 @@ fzf_new_session_form() {
     local worktree_name=""
     local message=""
     local selection key selected_row selected_field
-    local preview_file
-    local current_field="directory"
+    local current_field="agent"
+    local docker_available="true"
+    am_docker_available || docker_available="false"
 
     if [[ "$prefill_mode_flags" == *"--resume"* ]]; then
         mode="resume"
@@ -461,6 +481,12 @@ fzf_new_session_form() {
         yolo="true"
     elif am_default_yolo_enabled; then
         yolo="true"
+    fi
+
+    if [[ "$prefill_mode_flags" == *"--sandbox"* ]]; then
+        sandbox="true"
+    elif am_default_sandbox_enabled && [[ "$docker_available" == "true" ]]; then
+        sandbox="true"
     fi
 
     case "$prefill_worktree" in
@@ -478,30 +504,25 @@ fzf_new_session_form() {
             ;;
     esac
 
-    if [[ ! -e "$tty_path" ]]; then
-        log_error "No terminal available for form editor"
-        return 1
+    # Directory picker first
+    if selection=$(_new_session_form_directory "$directory"); then
+        [[ -n "$selection" ]] && directory="$selection"
     fi
 
-    preview_file=$(mktemp)
-    trap 'rm -f "$preview_file"' RETURN
-
+    # Main field loop
     while true; do
-        _new_session_form_preview \
-            "$directory" "$agent" "$task" "$mode" "$yolo" "$worktree_enabled" "$worktree_name" "$message" \
-            > "$preview_file"
-        message=""
+        local rows
+        rows=$(_new_session_form_rows "$directory" "$agent" "$task" "$mode" \
+            "$yolo" "$sandbox" "$worktree_enabled" "$worktree_name" "$docker_available")
 
-        selection=$(_new_session_form_rows "$directory" "$agent" "$task" "$mode" "$yolo" "$worktree_enabled" "$worktree_name" | fzf \
+        selection=$(echo "$rows" | fzf \
             --sync \
             --ansi \
             --height=100% \
             --delimiter=$'\t' \
             --with-nth=2,3 \
-            --header="New Session  Enter:edit  Space:toggle  Esc:back" \
-            --preview="cat '$preview_file'" \
-            --preview-window="bottom:75%" \
-            --bind="ctrl-p:toggle-preview" \
+            --header="New Session  Enter:create  Space:toggle/cycle  Esc:cancel" \
+            --no-preview \
             --bind="start:pos($(_new_session_form_row_position "$current_field"))" \
             --expect="space")
 
@@ -517,32 +538,43 @@ fzf_new_session_form() {
 
         if [[ "$key" == "space" ]]; then
             case "$selected_field" in
+                agent)
+                    local options current_idx next_idx count
+                    options=$(fzf_agent_options "$agent")
+                    count=$(echo "$options" | wc -l | tr -d ' ')
+                    current_idx=$(echo "$options" | grep -n "^${agent}$" | head -1 | cut -d: -f1)
+                    next_idx=$(( (current_idx % count) + 1 ))
+                    agent=$(echo "$options" | sed -n "${next_idx}p")
+                    ;;
+                mode)
+                    case "$mode" in
+                        new) mode="resume" ;;
+                        resume) mode="continue" ;;
+                        continue) mode="new" ;;
+                    esac
+                    ;;
                 yolo)
                     [[ "$yolo" == "true" ]] && yolo="false" || yolo="true"
+                    ;;
+                sandbox)
+                    if [[ "$docker_available" == "true" ]]; then
+                        [[ "$sandbox" == "true" ]] && sandbox="false" || sandbox="true"
+                    fi
                     ;;
                 worktree_enabled)
                     if agent_supports_worktree "$agent"; then
                         [[ "$worktree_enabled" == "true" ]] && worktree_enabled="false" || worktree_enabled="true"
-                    else
-                        message="Worktree isolation is not available for $agent sessions."
                     fi
                     ;;
             esac
             continue
         fi
 
+        # Enter pressed — text fields open editor; other fields create session
         case "$selected_field" in
-            submit)
-                break
-                ;;
             directory)
-                if selection=$(fzf_pick_directory); then
-                    directory="$selection"
-                fi
-                ;;
-            agent)
-                if selection=$(fzf_pick_agent "$agent"); then
-                    agent="$selection"
+                if selection=$(_new_session_form_directory "$directory"); then
+                    [[ -n "$selection" ]] && directory="$selection"
                 fi
                 ;;
             task)
@@ -550,33 +582,23 @@ fzf_new_session_form() {
                     task="$selection"
                 fi
                 ;;
-            mode)
-                if selection=$(fzf_pick_session_mode "$mode"); then
-                    mode="$selection"
-                fi
-                ;;
-            yolo)
-                message="Press Space to toggle."
-                ;;
-            worktree_enabled)
-                message="Press Space to toggle."
-                ;;
             worktree_name)
-                if ! agent_supports_worktree "$agent"; then
-                    message="Worktree isolation is not available for $agent sessions."
-                elif [[ "$worktree_enabled" != "true" ]]; then
-                    message="Enable Worktree first to edit its name."
-                elif selection=$(_new_session_form_prompt "Enter a custom name for your worktree" "$worktree_name"); then
-                    if _new_session_validate_worktree_name "$selection"; then
-                        worktree_name="$selection"
-                    else
-                        message="Invalid worktree name. Use only letters, numbers, dots, underscores, and dashes."
+                if [[ "$worktree_enabled" == "true" ]] && agent_supports_worktree "$agent"; then
+                    if selection=$(_new_session_form_prompt "Enter a custom name for your worktree" "$worktree_name"); then
+                        if _new_session_validate_worktree_name "$selection"; then
+                            worktree_name="$selection"
+                        fi
                     fi
                 fi
+                ;;
+            *)
+                # Any other field on Enter → create session
+                break
                 ;;
         esac
     done
 
+    # Validation
     if [[ -z "$directory" ]]; then
         log_info "Cancelled"
         return 1
@@ -592,26 +614,11 @@ fzf_new_session_form() {
         return 1
     fi
 
-    case "$mode" in
-        new|resume|continue) ;;
-        *)
-            log_error "Invalid mode: $mode"
-            return 1
-            ;;
-    esac
-
-    case "$yolo" in
-        true|false) ;;
-        *)
-            log_error "Invalid YOLO value: $yolo"
-            return 1
-            ;;
-    esac
-
     local flags=""
     [[ "$mode" == "resume" ]] && flags+=" --resume"
     [[ "$mode" == "continue" ]] && flags+=" --continue"
     [[ "$yolo" == "true" ]] && flags+=" --yolo"
+    [[ "$sandbox" == "true" ]] && flags+=" --sandbox"
 
     local worktree=""
     if [[ "$worktree_enabled" == "true" ]] && agent_supports_worktree "$agent"; then
