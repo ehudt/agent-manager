@@ -5,6 +5,7 @@ Manage multiple AI coding agents from one terminal. Tmux + fzf powered.
 - **Interactive browser** — browse, switch, and manage agent sessions with fzf
 - **Multiple agents** — Claude Code, Codex CLI, Gemini CLI (extensible)
 - **Rich preview** — see terminal output, git branch, and activity at a glance
+- **CLI peeking** — inspect or follow another session's agent or shell pane
 - **Persistent sessions** — tmux-based, survive terminal close
 
 ## Installation
@@ -50,6 +51,8 @@ am new -t gemini ~/code/other        # Use a different agent
 am new -n "fix auth bug" .           # Add a task description
 printf 'Investigate the failing CI job\n' | am new --detach ~/code/myproject
 printf 'Open the latest test failure and propose a fix\n' | am send am-abc123
+am peek am-abc123
+am peek --pane shell --follow am-abc123
 am attach am-abc123                  # Attach to a session by name
 ```
 
@@ -112,6 +115,8 @@ am new --detach --print-session ~/project
 printf 'Fix the flaky test\n' | am new --detach ~/project
 am send am-abc123 "Review the latest diff and suggest cleanup"
 printf 'Run the test suite and summarize failures\n' | am send am-abc123
+am peek am-abc123
+am peek --pane shell --follow am-abc123
 am new ~/project -- --resume    # Pass extra args to the agent
 am config set agent codex       # Save codex as the default agent
 am config set yolo true         # Save permissive mode as the default
@@ -131,6 +136,22 @@ For non-interactive session creation, combine `am new --detach` with stdin. This
 
 ```bash
 printf 'Implement the CLI parsing cleanup\n' | am new --detach --print-session ~/project
+```
+
+### Peeking At Sessions
+
+Use `am peek` to inspect another session without attaching to it. By default it snapshots the agent pane. `--pane shell` targets the lower shell pane instead.
+
+```bash
+am peek am-abc123
+am peek --pane shell am-abc123
+```
+
+Use `--follow` for near-real-time monitoring. When pane log streaming is enabled, `peek` follows the log file directly. Otherwise it falls back to polling tmux pane output, which keeps it usable for future web-wrapper integrations too.
+
+```bash
+am peek --follow am-abc123
+am peek --pane shell --follow am-abc123
 ```
 
 ## Inside a Session
@@ -250,6 +271,7 @@ am new ~/project -- --continue    # Continue from where you left off
 | `am list --json` | `-j` | Output sessions as JSON |
 | `am new [dir]` | `create`, `n` | Create new agent session |
 | `am send <name> [prompt]` | | Send a prompt to a running session (argv or stdin) |
+| `am peek <name>` | | Snapshot or follow a session pane |
 | `am attach <name>` | `a` | Attach to session (exact, prefix, or fuzzy match) |
 | `am kill <name>` | `rm`, `k` | Kill a session |
 | `am kill --all` | `-a` | Kill all sessions |

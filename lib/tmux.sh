@@ -220,6 +220,39 @@ tmux_pane_current_command() {
     am_tmux display-message -p -t "$target" '#{pane_current_command}'
 }
 
+# Resolve a logical pane name to a tmux pane target.
+# Usage: tmux_session_pane_target <session_name> [agent|shell]
+tmux_session_pane_target() {
+    local session_name="$1"
+    local pane_name="${2:-agent}"
+
+    case "$pane_name" in
+        agent|top) echo "${session_name}:.{top}" ;;
+        shell|bottom) echo "${session_name}:.{bottom}" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Return the optional streamed log file path for a session pane.
+# Usage: tmux_session_pane_log_file <session_name> [agent|shell]
+tmux_session_pane_log_file() {
+    local session_name="$1"
+    local pane_name="${2:-agent}"
+
+    case "$pane_name" in
+        agent|top) echo "/tmp/am-logs/${session_name}/agent.log" ;;
+        shell|bottom) echo "/tmp/am-logs/${session_name}/shell.log" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Capture the visible history of a pane.
+# Usage: tmux_capture_pane <target-pane>
+tmux_capture_pane() {
+    local target="$1"
+    am_tmux capture-pane -t "$target" -p -e -S - -E - 2>/dev/null
+}
+
 # Count agent-manager sessions
 # Usage: tmux_count_am_sessions
 tmux_count_am_sessions() {

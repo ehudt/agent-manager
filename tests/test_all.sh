@@ -1191,6 +1191,7 @@ test_cli() {
     assert_contains "$help_output" "USAGE" "am help: shows usage"
     assert_contains "$help_output" "COMMANDS" "am help: shows commands"
     assert_contains "$help_output" "send" "am help: mentions send command"
+    assert_contains "$help_output" "peek" "am help: mentions peek command"
     assert_contains "$help_output" "--detach" "am help: mentions detach flag"
 
     # Test version
@@ -1344,6 +1345,16 @@ test_cli_extended() {
     info_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" info "$session_name" 2>/dev/null)
     assert_contains "$info_output" "Directory:" "am info: shows directory"
     assert_contains "$info_output" "Agent:" "am info: shows agent type"
+
+    # --- Test: am peek snapshots agent and shell panes ---
+    local peek_output
+    peek_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek "$session_name" 2>/dev/null)
+    assert_contains "$peek_output" "stub-agent-ready" "am peek: captures agent pane"
+
+    tmux_send_keys "$session_name:.{bottom}" "echo shell-peek-ready" Enter
+    sleep 0.2
+    peek_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek --pane shell "$session_name" 2>/dev/null)
+    assert_contains "$peek_output" "shell-peek-ready" "am peek --pane shell: captures shell pane"
 
     # --- Test: am kill <session> ---
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" kill "$session_name" 2>/dev/null

@@ -47,8 +47,7 @@ fi
 # -p: print to stdout, -e: include escape sequences (colors)
 # -S -: start from beginning of history, -E -: end at current cursor position
 # Then tail to get the most recent output (bottom of the pane)
-output=$(am_tmux capture-pane -t "$session_name:.{top}" -p -e -S - -E - 2>/dev/null || \
-         am_tmux capture-pane -t "$session_name" -p -e -S - -E - 2>/dev/null)
+output=$(tmux_capture_pane "$session_name:.{top}" || tmux_capture_pane "$session_name")
 
 if [[ -n "$output" ]]; then
     # Strip trailing blank lines (capture-pane pads with empties), then show last 50 lines

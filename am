@@ -33,6 +33,7 @@ COMMANDS:
     list --json, -j     Output sessions as JSON
     new, create, n      Create a new agent session
     send                Send a prompt to a running session
+    peek                Show or follow another session's pane output
     attach, a           Attach to a session by name (exact, prefix, or fuzzy)
     kill, rm, k         Kill a session
     kill --all, -a      Kill all agent-manager sessions
@@ -59,6 +60,10 @@ OPTIONS FOR 'new':
 
 OPTIONS FOR 'send':
     Read prompt text from argv or stdin and inject it into the running agent pane.
+
+OPTIONS FOR 'peek':
+    --pane <name>   Pane to inspect: agent|shell (default: agent)
+    --follow, -f    Stream output continuously
 
 KEYBINDINGS (interactive browser):
     Enter           Attach to selected session
@@ -87,6 +92,8 @@ EXAMPLES:
     am new -n "fix auth" .          # Session with task description
     printf 'Fix auth bug\n' | am new --detach ~/code/proj
     printf 'Run the test suite\n' | am send am-abc123
+    am peek am-abc123
+    am peek --pane shell --follow am-abc123
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
     am sandbox ls                   # List sandbox containers
@@ -445,6 +452,109 @@ cmd_send() {
     agent_send_prompt "$resolved" "$prompt"
 }
 
+peek_capture_output() {
+    local session_name="$1"
+    local pane_name="$2"
+    local pane_target
+    pane_target=$(tmux_session_pane_target "$session_name" "$pane_name") || return 1
+
+    local output
+    output=$(tmux_capture_pane "$pane_target" || true)
+    if [[ -n "$output" ]]; then
+        echo "$output" | sed -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }'
+    fi
+}
+
+peek_follow_logs() {
+    local session_name="$1"
+    local pane_name="$2"
+    local log_file
+    log_file=$(tmux_session_pane_log_file "$session_name" "$pane_name") || return 1
+
+    [[ -f "$log_file" ]] || return 1
+    tail -n 50 -f "$log_file"
+}
+
+peek_follow_poll() {
+    local session_name="$1"
+    local pane_name="$2"
+    local previous=""
+    local current=""
+
+    while tmux_session_exists "$session_name"; do
+        current=$(peek_capture_output "$session_name" "$pane_name" || true)
+        if [[ "$current" != "$previous" ]]; then
+            if [[ -n "$previous" && "$current" == "$previous"* ]]; then
+                printf '%s' "${current#$previous}"
+            else
+                [[ -n "$previous" ]] && printf '\n[peek refresh]\n'
+                printf '%s\n' "$current"
+            fi
+            previous="$current"
+        fi
+        sleep 1
+    done
+}
+
+cmd_peek() {
+    local follow=false
+    local pane_name="agent"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --pane)
+                pane_name="${2:-}"
+                shift 2
+                ;;
+            --follow|-f)
+                follow=true
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: am peek [--pane agent|shell] [--follow] <session-name>"
+                return 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then
+        log_error "Session name required"
+        echo "Usage: am peek [--pane agent|shell] [--follow] <session-name>"
+        return 1
+    fi
+
+    local resolved
+    if ! resolved=$(resolve_session_fuzzy "$name"); then
+        log_error "Session not found: $name"
+        return 1
+    fi
+
+    case "$pane_name" in
+        agent|top) pane_name="agent" ;;
+        shell|bottom) pane_name="shell" ;;
+        *)
+            log_error "Unknown pane: $pane_name"
+            return 1
+            ;;
+    esac
+
+    if $follow; then
+        if ! peek_follow_logs "$resolved" "$pane_name"; then
+            peek_follow_poll "$resolved" "$pane_name"
+        fi
+    else
+        peek_capture_output "$resolved" "$pane_name"
+    fi
+}
+
 # Command: kill
 cmd_kill() {
     if [[ $# -eq 0 ]]; then
@@ -707,6 +817,9 @@ main() {
             ;;
         send)
             cmd_send "$@"
+            ;;
+        peek)
+            cmd_peek "$@"
             ;;
         attach|a)
             cmd_attach "$@"

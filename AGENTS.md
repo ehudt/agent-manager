@@ -33,6 +33,69 @@ am new --yolo ~/project → agent_launch() → sandbox_start() → tmux panes at
 agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
 ```
 
+## Agent-to-Agent CLI Guide
+
+Use these commands when one CLI process or agent needs to launch, monitor, or message another `am` session without attaching to it.
+
+### Launch a background session
+
+Use `am new --detach` when the caller should keep control of its own terminal:
+
+```bash
+am new --detach ~/project
+am new --detach --print-session ~/project
+printf 'Investigate the test failure\n' | am new --detach --print-session ~/project
+```
+
+- `--detach` creates the tmux session and does not attach.
+- `--print-session` writes the new session id to stdout, which makes scripting easier.
+- Stdin becomes the initial prompt. `am` waits for the agent pane to be ready, then injects that prompt.
+
+### Send a follow-up prompt
+
+Use `am send` to talk to an already-running session:
+
+```bash
+am send am-abc123 "Review the latest diff"
+printf 'Run the test suite and summarize failures\n' | am send am-abc123
+```
+
+- Session resolution supports exact names, stripped prefixes, and single fuzzy matches.
+- Prompt text may come from argv or stdin.
+- The prompt is pasted literally into the top agent pane, then Enter is sent.
+
+### Peek at another session
+
+Use `am peek` when you need visibility without attaching:
+
+```bash
+am peek am-abc123
+am peek --pane shell am-abc123
+am peek --follow am-abc123
+am peek --pane shell --follow am-abc123
+```
+
+- Default pane is `agent` (top pane). `--pane shell` targets the lower shell pane.
+- Plain `am peek` returns a snapshot using tmux pane capture.
+- `am peek --follow` prefers streamed pane logs when available and falls back to polling tmux output.
+- This follow contract is the right primitive for a future web wrapper: CLI and web can share the same snapshot/stream model.
+
+### Recommended automation pattern
+
+For agent orchestration, prefer this sequence:
+
+1. Start worker: `session=$(am new --detach --print-session ~/repo)`
+2. Give task: `printf 'Implement X\n' | am send "$session"`
+3. Monitor progress: `am peek --follow "$session"`
+4. Hand control to a human later: `am attach "$session"`
+
+### Operational caveats
+
+- `am peek --follow` is near-real-time, not a structured event stream.
+- If `stream_logs=true`, follow mode tails `/tmp/am-logs/<session>/{agent,shell}.log`.
+- If logs are disabled, follow mode polls tmux pane text once per second.
+- `am send` and `am peek` are transport primitives. They do not confirm task completion or parse agent state.
+
 ## Key Functions
 
 **Session lifecycle:**
