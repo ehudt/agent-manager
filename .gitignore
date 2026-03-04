@@ -10,6 +10,7 @@
 *.log
 .claude/worktrees
 .codex/worktrees
+.worktrees/
 __pycache__/
 *.pyc
 
