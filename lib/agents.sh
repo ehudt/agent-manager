@@ -241,11 +241,11 @@ agent_launch() {
 
     # Create horizontal split: top pane for agent, bottom pane (15 lines) for shell
     # Split without size, then resize (workaround for detached session sizing issues)
-    tmux split-window -t "$session_name" -v -c "$session_directory"
-    tmux resize-pane -t "$session_name:.{bottom}" -y 15
+    am_tmux split-window -t "$session_name" -v -c "$session_directory"
+    am_tmux resize-pane -t "$session_name:.{bottom}" -y 15
 
     # Select top pane for the agent
-    tmux select-pane -t "$session_name:.{top}"
+    am_tmux select-pane -t "$session_name:.{top}"
 
     # Set up log streaming if enabled
     if am_stream_logs_enabled; then
@@ -287,7 +287,7 @@ agent_launch() {
         if [[ "$session_directory" != "$worktree_path" ]]; then
             (for _i in $(seq 1 20); do
                 if [ -d "$worktree_path" ]; then
-                    tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
+                    am_tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
                     break
                 fi
                 sleep 0.5

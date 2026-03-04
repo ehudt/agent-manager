@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# Kill a session and switch to the last used one if we killed the current session
+# Kill a session and switch the invoking client to the last used one if we killed
+# the current session.
 
-target="$1"
+client_name=""
+target=""
+
+if [[ $# -ge 2 ]]; then
+    client_name="${1:-}"
+    target="${2:-}"
+elif [[ $# -eq 1 ]]; then
+    target="${1:-}"
+fi
+
 if [[ -z "$target" ]]; then
     exit 1
 fi
@@ -16,8 +26,19 @@ done
 script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
 repo_dir="$(cd "$script_dir/.." && pwd -P)"
 
+# Old bindings may still call this helper with only the target session. Fall back
+# to tmux's implicit current client in that case so running servers keep working
+# until they reload the updated binding.
+if [[ -z "$client_name" ]]; then
+    client_name=$(am_tmux display-message -p '#{client_name}' 2>/dev/null || true)
+fi
+
 # Get current attached session
-current=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+if [[ -n "$client_name" ]]; then
+    current=$(am_tmux display-message -c "$client_name" -p '#{session_name}' 2>/dev/null || true)
+else
+    current=$(am_tmux display-message -p '#{session_name}' 2>/dev/null || true)
+fi
 
 # Source agent_kill function
 source "$repo_dir/lib/utils.sh"
@@ -28,15 +49,19 @@ source "$repo_dir/lib/agents.sh"
 # If killing the current session, switch to another one first
 if [[ "$target" == "$current" ]]; then
     # Find the next best session (most recent that isn't the target)
-    next=$(tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null \
+    next=$(am_tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null \
         | grep ' am-' \
         | grep -v " ${target}$" \
         | sort -rn \
         | head -1 \
-        | cut -d' ' -f2)
+        | cut -d' ' -f2 || true)
 
     if [[ -n "$next" ]]; then
-        tmux switch-client -t "$next"
+        if [[ -n "$client_name" ]]; then
+            am_tmux switch-client -c "$client_name" -t "$next"
+        else
+            am_tmux switch-client -t "$next"
+        fi
     fi
 fi
 

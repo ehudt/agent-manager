@@ -666,6 +666,8 @@ fzf_main() {
 
     # Build preview command - use standalone script for speed
     local preview_cmd="$lib_dir/preview"
+    local tmux_client_name
+    tmux_client_name=$(am_tmux display-message -p '#{client_name}' 2>/dev/null || true)
 
     # Help text for ? key
     local help_text="
@@ -713,7 +715,7 @@ fzf_main() {
         --bind="ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up" \
         --bind="ctrl-r:reload($am_cmd list-internal)" \
         --bind="ctrl-p:toggle-preview" \
-        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch {1})+reload($am_cmd list-internal)" \
+        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($am_cmd list-internal)" \
         --bind="?:preview(echo '$help_text')" \
         --expect="ctrl-n" \
     )
@@ -768,7 +770,7 @@ fzf_list_json() {
     while IFS=' ' read -r _name _activity _created; do
         tmux_activity[$_name]=$_activity
         tmux_created[$_name]=$_created
-    done < <(tmux list-sessions -F '#{session_name} #{session_activity} #{session_created}' 2>/dev/null \
+    done < <(am_tmux list-sessions -F '#{session_name} #{session_activity} #{session_created}' 2>/dev/null \
         | grep "^${AM_SESSION_PREFIX}" || true)
 
     # Build JSON for each session sorted by activity (most recent first)

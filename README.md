@@ -126,7 +126,7 @@ Each session has a split-pane layout:
 
 ### tmux Keybindings
 
-These work inside `am-*` sessions (requires [tmux configuration](#tmux-keybindings-1)):
+These work inside `am-*` sessions on the dedicated `agent-manager` tmux server/socket. Regular tmux sessions on your default server are unaffected.
 
 | Key | Action |
 |-----|--------|
@@ -241,10 +241,15 @@ am new ~/project -- --continue    # Continue from where you left off
 
 ### tmux Keybindings
 
-The installer can append tmux bindings automatically (`./scripts/install.sh`). For manual setup, add to `~/.tmux.conf`:
+Agent Manager now runs its sessions on a dedicated tmux server/socket named `agent-manager`. On first use it generates `~/.agent-manager/tmux.conf`, sources your normal `~/.tmux.conf` if present, and adds the `am`-specific bindings there only.
+
+You do not need to add bindings to `~/.tmux.conf`. If you previously installed the old shared-server bindings, run `./scripts/install.sh` once and let it remove the legacy `# >>> agent-manager >>>` block from your tmux config.
+
+The generated dedicated-server config is equivalent to:
 
 ```bash
-# These keybindings only activate inside am-* sessions.
+if-shell '[ -f "$HOME/.tmux.conf" ]' 'source-file "$HOME/.tmux.conf"'
+set -g detach-on-destroy off
 
 # Prefix + a: switch to last used am session
 bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
@@ -256,19 +261,21 @@ bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "
 bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "am"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Prefix + x: kill the current am session and switch to the next most recent one
-unbind-key -T prefix x
-bind-key -T prefix x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
+# Outside am-* sessions on the dedicated server, keep tmux's default kill-pane behavior.
+bind-key -T prefix x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "kill-and-switch #{client_name} #{session_name}"' 'confirm-before -p "kill-pane #P? (y/n)" kill-pane'
 
 # Command alias: ":am" opens agent manager
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "am"'
 ```
+
+The dedicated socket is `agent-manager`, so the equivalent raw tmux commands are `tmux -L agent-manager ...`.
 
 ### Install Options
 
 ```bash
 ./scripts/install.sh --yes             # Non-interactive (accept all)
 ./scripts/install.sh --no-shell        # Skip shell rc updates
-./scripts/install.sh --no-tmux         # Skip tmux config updates
+./scripts/install.sh --no-tmux         # Skip legacy tmux config cleanup
 ./scripts/install.sh --prefix /usr/local/bin  # Custom install path
 ./scripts/install.sh --copy            # Copy files instead of symlink
 ```

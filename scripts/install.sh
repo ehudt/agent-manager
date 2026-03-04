@@ -9,6 +9,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 SHELL_RC=""
 TMUX_CONF="${TMUX_CONF:-$HOME/.tmux.conf}"
+AM_TMUX_SOCKET="${AM_TMUX_SOCKET:-agent-manager}"
 USE_SYMLINK=true
 UPDATE_SHELL=true
 UPDATE_TMUX=true
@@ -18,15 +19,15 @@ usage() {
     cat <<USAGE
 Usage: $(basename "$0") [options]
 
-Install am into a local bin directory and optionally configure shell/tmux.
+Install am into a local bin directory and optionally clean up legacy tmux config.
 
 Options:
   --prefix <dir>      Install directory (default: ~/.local/bin)
   --shell-rc <file>   Shell rc file to update (default: auto-detect zshrc/bashrc)
-  --tmux-conf <file>  tmux config file to update (default: ~/.tmux.conf)
+  --tmux-conf <file>  tmux config file to clean up (default: ~/.tmux.conf)
   --copy              Copy files instead of creating symlinks
   --no-shell          Do not modify shell rc file
-  --no-tmux           Do not modify tmux config
+  --no-tmux           Do not touch tmux config cleanup
   -y, --yes           Non-interactive mode (accept prompts)
   -h, --help          Show this help
 USAGE
@@ -98,6 +99,27 @@ replace_managed_block() {
     log "Updated $file"
 }
 
+remove_managed_block() {
+    local file="$1"
+    local begin_marker="$2"
+    local end_marker="$3"
+    local tmp_file
+
+    mkdir -p "$(dirname "$file")"
+    touch "$file"
+
+    tmp_file=$(mktemp)
+
+    awk -v begin="$begin_marker" -v end="$end_marker" '
+        $0 == begin { in_block=1; next }
+        $0 == end { in_block=0; next }
+        !in_block { print }
+    ' "$file" > "$tmp_file"
+    mv "$tmp_file" "$file"
+
+    log "Updated $file"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
@@ -164,35 +186,14 @@ if $UPDATE_SHELL; then
 fi
 
 if $UPDATE_TMUX; then
-    if confirm "Update $TMUX_CONF with agent-manager keybindings?"; then
-        tmux_block=$(cat <<EOF
-# These keybindings only activate inside am-* sessions.
-# Use your existing tmux prefix key.
-
-# Prefix + a: switch to last used am session
-bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$PREFIX/switch-last"' 'display-message "am shortcuts are active only in am-* sessions"'
-
-# Prefix + n: open new-session popup
-bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am new"' 'display-message "am shortcuts are active only in am-* sessions"'
-
-# Prefix + s: open agent manager popup
-bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$PREFIX/am"' 'display-message "am shortcuts are active only in am-* sessions"'
-
-# Prefix + x: kill the current am session and switch to the next most recent one
-unbind-key -T prefix x
-bind-key -T prefix x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$PREFIX/kill-and-switch #{session_name}"' 'display-message "am shortcuts are active only in am-* sessions"'
-
-# Optional alias: :am
-set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$PREFIX/am"'
-EOF
-)
-        replace_managed_block "$TMUX_CONF" \
+    if confirm "Remove legacy agent-manager bindings from $TMUX_CONF?"; then
+        remove_managed_block "$TMUX_CONF" \
             '# >>> agent-manager >>>' \
-            '# <<< agent-manager <<<' \
-            "$tmux_block"
-        log "Reload tmux config with: tmux source-file $TMUX_CONF"
+            '# <<< agent-manager <<<'
+        log "agent-manager now uses its own tmux server/socket: $AM_TMUX_SOCKET"
+        log "No shared-server tmux bindings are required."
     else
-        log "Skipped tmux config update"
+        log "Skipped tmux config cleanup"
     fi
 fi
 

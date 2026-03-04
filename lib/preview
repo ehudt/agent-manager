@@ -11,15 +11,16 @@ if [[ -z "$session_name" ]]; then
     exit 0
 fi
 
+# Source utils and registry for helpers
+source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/tmux.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
+
 # Check session exists
-if ! tmux has-session -t "$session_name" 2>/dev/null; then
+if ! am_tmux has-session -t "$session_name" 2>/dev/null; then
     echo "Session not found: $session_name"
     exit 0
 fi
-
-# Source utils and registry for helpers
-source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
 
 # Get session title from Claude JSONL
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
@@ -46,8 +47,8 @@ fi
 # -p: print to stdout, -e: include escape sequences (colors)
 # -S -: start from beginning of history, -E -: end at current cursor position
 # Then tail to get the most recent output (bottom of the pane)
-output=$(tmux capture-pane -t "$session_name:.{top}" -p -e -S - -E - 2>/dev/null || \
-         tmux capture-pane -t "$session_name" -p -e -S - -E - 2>/dev/null)
+output=$(am_tmux capture-pane -t "$session_name:.{top}" -p -e -S - -E - 2>/dev/null || \
+         am_tmux capture-pane -t "$session_name" -p -e -S - -E - 2>/dev/null)
 
 if [[ -n "$output" ]]; then
     # Strip trailing blank lines (capture-pane pads with empties), then show last 50 lines

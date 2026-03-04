@@ -5,6 +5,9 @@ AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
 AM_REGISTRY="$AM_DIR/sessions.json"
 AM_HISTORY="$AM_DIR/history.jsonl"
 AM_SESSION_PREFIX="${AM_SESSION_PREFIX:-am-}"
+AM_TMUX_SOCKET="${AM_TMUX_SOCKET:-agent-manager}"
+AM_TMUX_CONF="${AM_TMUX_CONF:-$AM_DIR/tmux.conf}"
+AM_ROOT_DIR="${AM_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 
 # Colors (only if terminal supports it)
 if [[ -t 1 ]]; then
@@ -199,4 +202,3 @@ claude_first_user_message() {
         fi
     done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
 }
-

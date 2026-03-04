@@ -168,8 +168,8 @@ setup_integration_env() {
 teardown_integration_env() {
     # Kill only test sessions by their unique prefix (never touches real am-* sessions)
     local session
-    for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^test-am-' || true); do
-        tmux kill-session -t "$session" 2>/dev/null || true
+    for session in $(tmux -L "${AM_TMUX_SOCKET:-agent-manager}" list-sessions -F '#{session_name}' 2>/dev/null | grep '^test-am-' || true); do
+        tmux -L "${AM_TMUX_SOCKET:-agent-manager}" kill-session -t "$session" 2>/dev/null || true
     done
 
     # Restore AM_DIR and session prefix
@@ -744,21 +744,30 @@ test_tmux_binding_snippets() {
 
     local example_conf
     example_conf=$(cat "$PROJECT_DIR/config/tmux.conf.example")
+    assert_contains "$example_conf" "source-file \"\$HOME/.tmux.conf\"" \
+        "tmux snippet: sources base tmux config"
+    assert_contains "$example_conf" "set -g detach-on-destroy off" \
+        "tmux snippet: keeps clients inside agent-manager when sessions are killed"
     assert_contains "$example_conf" 'bind n if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''display-popup -E -w 90% -h 80% "am new"'\''' \
         "tmux snippet: prefix+n opens new-session popup"
-    assert_contains "$example_conf" 'unbind-key -T prefix x' \
-        "tmux snippet: prefix+x clears default pane-kill binding"
-    assert_contains "$example_conf" 'bind-key -T prefix x if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''run-shell "kill-and-switch #{session_name}"'\''' \
+    assert_contains "$example_conf" 'bind-key -T prefix x if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''run-shell "kill-and-switch #{client_name} #{session_name}"'\'' '\''confirm-before -p "kill-pane #P? (y/n)" kill-pane'\''' \
         "tmux snippet: prefix+x kills current session"
+    assert_contains "$example_conf" 'dedicated server' \
+        "tmux snippet: prefix+x documents default fallback"
 
     local install_script
     install_script=$(cat "$PROJECT_DIR/scripts/install.sh")
-    assert_contains "$install_script" 'display-popup -E -w 90% -h 80% "$PREFIX/am new"' \
-        "install script: prefix+n installs popup binding"
-    assert_contains "$install_script" 'unbind-key -T prefix x' \
-        "install script: prefix+x clears default pane-kill binding"
-    assert_contains "$install_script" 'run-shell "$PREFIX/kill-and-switch #{session_name}"' \
-        "install script: prefix+x installs kill binding"
+    assert_contains "$install_script" 'Remove legacy agent-manager bindings from $TMUX_CONF?' \
+        "install script: prompts to clean legacy tmux bindings"
+    assert_contains "$install_script" 'agent-manager now uses its own tmux server/socket' \
+        "install script: documents dedicated tmux server"
+
+    local fzf_script
+    fzf_script=$(cat "$PROJECT_DIR/lib/fzf.sh")
+    assert_contains "$fzf_script" "tmux_client_name=\$(am_tmux display-message -p '#{client_name}' 2>/dev/null || true)" \
+        "fzf: resolves tmux client name before binding ctrl-x"
+    assert_contains "$fzf_script" 'ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($am_cmd list-internal)' \
+        "fzf: ctrl-x passes resolved client name to kill-and-switch"
 
     echo ""
 }
@@ -776,11 +785,29 @@ test_symlinked_kill_and_switch() {
     am_dir="$temp_root/am-data"
     mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
 
-    cat > "$bin_dir/tmux" <<'EOF'
+cat > "$bin_dir/tmux" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-L" ]]; then
+    shift 2
+fi
+
 case "${1:-}" in
+    -c)
+        shift 2
+        case "${1:-}" in
+            display-message)
+                printf '%s\n' "am-16fdf3"
+                ;;
+            switch-client)
+                exit 0
+                ;;
+            *)
+                exit 0
+                ;;
+        esac
+        ;;
     display-message)
         printf '%s\n' "am-16fdf3"
         ;;
@@ -804,7 +831,295 @@ EOF
     printf '{"sessions":{"am-16fdf3":{"name":"am-16fdf3"}}}\n' > "$am_dir/sessions.json"
 
     assert_cmd_succeeds "symlinked helper: resolves repo libs and exits cleanly" \
-        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "am-16fdf3"
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "client-1" "am-16fdf3"
+
+    rm -rf "$temp_root"
+    echo ""
+}
+
+# ============================================
+# Test: kill-and-switch helper switches client before kill
+# ============================================
+test_kill_and_switch_switches_client_before_kill() {
+    echo "=== Testing kill-and-switch switch ordering ==="
+
+    local temp_root bin_dir linked_bin am_dir log_file
+    temp_root=$(mktemp -d)
+    bin_dir="$temp_root/bin"
+    linked_bin="$temp_root/.local/bin"
+    am_dir="$temp_root/am-data"
+    log_file="$temp_root/tmux.log"
+    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
+
+    cat > "$bin_dir/tmux" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="$log_file"
+printf '%s\n' "\$*" >> "\$log_file"
+
+if [[ "\${1:-}" == "-L" ]]; then
+    shift 2
+fi
+
+case "\${1:-}" in
+    -f)
+        shift 2
+        ;;
+esac
+
+case "\${1:-}" in
+    display-message)
+        shift
+        if [[ "\${1:-}" == "-c" ]]; then
+            shift 2
+        fi
+        printf '%s\n' "am-111111"
+        ;;
+    list-sessions)
+        printf '%s\n' "200 am-222222"
+        printf '%s\n' "100 am-111111"
+        ;;
+    has-session)
+        exit 0
+        ;;
+    switch-client)
+        exit 0
+        ;;
+    kill-session)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "$bin_dir/tmux"
+
+    ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
+    printf '{"sessions":{"am-111111":{"name":"am-111111"},"am-222222":{"name":"am-222222"}}}\n' > "$am_dir/sessions.json"
+
+    assert_cmd_succeeds "kill-and-switch: current client switches before kill" \
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "client-1" "am-111111"
+
+    local tmux_log switch_line kill_line
+    tmux_log=$(cat "$log_file")
+    assert_contains "$tmux_log" 'display-message -c client-1 -p #{session_name}' \
+        "kill-and-switch: resolves current session for invoking client"
+    assert_contains "$tmux_log" 'switch-client -c client-1 -t am-222222' \
+        "kill-and-switch: switches invoking client to fallback session"
+    assert_contains "$tmux_log" 'kill-session -t am-111111' \
+        "kill-and-switch: kills target session"
+
+    switch_line=$(grep -n 'switch-client -c client-1 -t am-222222' "$log_file" | head -1 | cut -d: -f1)
+    kill_line=$(grep -n 'kill-session -t am-111111' "$log_file" | head -1 | cut -d: -f1)
+    assert_eq "true" "$([[ -n "$switch_line" && -n "$kill_line" && "$switch_line" -lt "$kill_line" ]] && echo true || echo false)" \
+        "kill-and-switch: switch happens before kill"
+
+    rm -rf "$temp_root"
+    echo ""
+}
+
+# ============================================
+# Test: kill-and-switch helper with no alternate session
+# ============================================
+test_kill_and_switch_no_alternate_session() {
+    echo "=== Testing kill-and-switch with no alternate session ==="
+
+    local temp_root bin_dir linked_bin am_dir log_file
+    temp_root=$(mktemp -d)
+    bin_dir="$temp_root/bin"
+    linked_bin="$temp_root/.local/bin"
+    am_dir="$temp_root/am-data"
+    log_file="$temp_root/tmux.log"
+    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
+
+    cat > "$bin_dir/tmux" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="$log_file"
+printf '%s\n' "\$*" >> "\$log_file"
+
+if [[ "\${1:-}" == "-L" ]]; then
+    shift 2
+fi
+
+case "\${1:-}" in
+    -f)
+        shift 2
+        ;;
+esac
+
+case "\${1:-}" in
+    display-message)
+        shift
+        if [[ "\${1:-}" == "-c" ]]; then
+            shift 2
+        fi
+        printf '%s\n' "am-111111"
+        ;;
+    list-sessions)
+        printf '%s\n' "100 am-111111"
+        ;;
+    has-session)
+        exit 0
+        ;;
+    kill-session)
+        exit 0
+        ;;
+    switch-client)
+        printf '%s\n' "unexpected switch-client call" >&2
+        exit 1
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "$bin_dir/tmux"
+
+    ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
+    printf '{"sessions":{"am-111111":{"name":"am-111111"}}}\n' > "$am_dir/sessions.json"
+
+    assert_cmd_succeeds "kill-and-switch: no alternate session only kills target" \
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "client-1" "am-111111"
+
+    local tmux_log
+    tmux_log=$(cat "$log_file")
+    assert_contains "$tmux_log" 'kill-session -t am-111111' \
+        "kill-and-switch: still kills target when no alternate exists"
+    assert_eq "false" "$([[ "$tmux_log" == *'switch-client'* ]] && echo true || echo false)" \
+        "kill-and-switch: does not switch when no alternate exists"
+
+    rm -rf "$temp_root"
+    echo ""
+}
+
+# ============================================
+# Test: kill-and-switch helper supports legacy one-arg binding
+# ============================================
+test_kill_and_switch_legacy_single_arg() {
+    echo "=== Testing kill-and-switch legacy one-arg mode ==="
+
+    local temp_root bin_dir linked_bin am_dir log_file
+    temp_root=$(mktemp -d)
+    bin_dir="$temp_root/bin"
+    linked_bin="$temp_root/.local/bin"
+    am_dir="$temp_root/am-data"
+    log_file="$temp_root/tmux.log"
+    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
+
+    cat > "$bin_dir/tmux" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+log_file="$log_file"
+printf '%s\n' "\$*" >> "\$log_file"
+
+if [[ "\${1:-}" == "-L" ]]; then
+    shift 2
+fi
+
+case "\${1:-}" in
+    -f)
+        shift 2
+        ;;
+esac
+
+case "\${1:-}" in
+    display-message)
+        shift
+        if [[ "\${1:-}" == "-p" && "\${2:-}" == '#{client_name}' ]]; then
+            printf '%s\n' "client-legacy"
+            exit 0
+        fi
+        if [[ "\${1:-}" == "-c" ]]; then
+            shift 2
+        fi
+        printf '%s\n' "am-111111"
+        ;;
+    list-sessions)
+        printf '%s\n' "200 am-222222"
+        printf '%s\n' "100 am-111111"
+        ;;
+    has-session)
+        exit 0
+        ;;
+    switch-client)
+        exit 0
+        ;;
+    kill-session)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "$bin_dir/tmux"
+
+    ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
+    printf '{"sessions":{"am-111111":{"name":"am-111111"},"am-222222":{"name":"am-222222"}}}\n' > "$am_dir/sessions.json"
+
+    assert_cmd_succeeds "kill-and-switch: legacy one-arg form still works" \
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "am-111111"
+
+    local tmux_log
+    tmux_log=$(cat "$log_file")
+    assert_contains "$tmux_log" 'display-message -p #{client_name}' \
+        "kill-and-switch: legacy mode resolves current client implicitly"
+    assert_contains "$tmux_log" 'switch-client -c client-legacy -t am-222222' \
+        "kill-and-switch: legacy mode still switches the resolved client"
+    assert_contains "$tmux_log" 'kill-session -t am-111111' \
+        "kill-and-switch: legacy mode still kills target session"
+
+    rm -rf "$temp_root"
+    echo ""
+}
+
+# ============================================
+# Test: switch-last helper with no alternate session
+# ============================================
+test_switch_last_no_alternate_session() {
+    echo "=== Testing switch-last with no alternate session ==="
+
+    local temp_root bin_dir linked_bin
+    temp_root=$(mktemp -d)
+    bin_dir="$temp_root/bin"
+    linked_bin="$temp_root/.local/bin"
+    mkdir -p "$bin_dir" "$linked_bin"
+
+    cat > "$bin_dir/tmux" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-L" ]]; then
+    shift 2
+fi
+
+case "${1:-}" in
+    display-message)
+        printf '%s\n' "am-16fdf3"
+        ;;
+    list-sessions)
+        printf '%s\n' "123 am-16fdf3"
+        ;;
+    switch-client)
+        printf '%s\n' "unexpected switch-client call" >&2
+        exit 1
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "$bin_dir/tmux"
+
+    ln -s "$PROJECT_DIR/bin/switch-last" "$linked_bin/switch-last"
+
+    assert_cmd_succeeds "switch-last: no alternate session is a no-op" \
+        env PATH="$bin_dir:$PATH" "$linked_bin/switch-last"
 
     rm -rf "$temp_root"
     echo ""
@@ -843,14 +1158,11 @@ EOF
 
     assert_contains "$shell_contents" "export PATH=\"$prefix:\$PATH\"" \
         "installer: shell block updated to current prefix"
-    assert_contains "$tmux_contents" "unbind-key -T prefix x" \
-        "installer: tmux block updated to current binding"
     assert_eq "1" "$(grep -Fc '# >>> agent-manager >>>' "$shell_rc")" \
         "installer: shell managed block not duplicated"
-    assert_eq "1" "$(grep -Fc '# >>> agent-manager >>>' "$tmux_conf")" \
-        "installer: tmux managed block not duplicated"
     assert_cmd_fails "installer: old shell block removed" grep -Fq '/old/prefix' "$shell_rc"
     assert_cmd_fails "installer: old tmux block removed" grep -Fq 'bind x kill-pane' "$tmux_conf"
+    assert_cmd_fails "installer: tmux managed block removed" grep -Fq '# >>> agent-manager >>>' "$tmux_conf"
 
     rm -rf "$temp_root"
     echo ""
@@ -923,7 +1235,7 @@ test_integration_lifecycle() {
 
     # Verify two panes (agent top + shell bottom)
     local pane_count
-    pane_count=$(tmux list-panes -t "$session_name" 2>/dev/null | wc -l | tr -d ' ')
+    pane_count=$(am_tmux list-panes -t "$session_name" 2>/dev/null | wc -l | tr -d ' ')
     assert_eq "2" "$pane_count" "agent_launch: two panes created"
 
     # --- Test: agent_kill cleans up ---

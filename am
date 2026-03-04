@@ -91,7 +91,8 @@ DEPENDENCIES:
 
 CONFIGURATION:
     Sessions stored in: ~/.agent-manager/
-    See README for tmux keybinding setup.
+    Agent sessions run on the dedicated tmux server/socket: agent-manager
+    See README for tmux setup details.
 EOF
 }
 
