@@ -649,6 +649,9 @@ cmd_config() {
                 stream_logs)
                     am_stream_logs_enabled && echo true || echo false
                     ;;
+                new_form)
+                    am_new_form_enabled && echo true || echo false
+                    ;;
             esac
             ;;
         set)
@@ -694,10 +697,11 @@ Usage:
   am config unset <key>     Remove a saved value
 
 Keys:
-  agent   Default agent type
-  yolo    Default yolo mode (true/false)
-  sandbox Default sandbox mode (true/false)
-  logs    Default pane log streaming (true/false)
+  agent    Default agent type
+  yolo     Default yolo mode (true/false)
+  sandbox  Default sandbox mode (true/false)
+  logs     Default pane log streaming (true/false)
+  new-form Use new tput-based session form (true/false)
 
 Precedence:
   CLI flag > environment variable > saved config > built-in default

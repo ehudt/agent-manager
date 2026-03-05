@@ -375,12 +375,12 @@ _form_output() {
     directory="${directory/#\~/$HOME}"
 
     if [[ -z "$directory" || ! -d "$directory" ]]; then
-        log_error "Directory does not exist: ${directory:-<empty>}" >&2
+        log_error "Directory does not exist: ${directory:-<empty>}"
         return 1
     fi
 
     if [[ -z "$agent" || -z "${AGENT_COMMANDS[$agent]:-}" ]]; then
-        log_error "Invalid agent type: ${agent:-<empty>}" >&2
+        log_error "Invalid agent type: ${agent:-<empty>}"
         return 1
     fi
 
