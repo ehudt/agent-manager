@@ -242,45 +242,50 @@ _form_process_key() {
     esac
 }
 
-# Draw the full form to terminal
+# Draw the full form to /dev/tty (not stdout, which may be captured by $())
 _form_draw() {
-    tput cup 0 0 2>/dev/null || true
-    tput ed 2>/dev/null || true
+    {
+        tput cup 0 0 2>/dev/null || true
+        tput ed 2>/dev/null || true
 
-    printf '\033[1m  New Session\033[0m\n'
-    printf '  Enter: create  Space: toggle/cycle  Tab: dir picker  Esc: cancel\n'
-    printf '\n'
-
-    local i name
-    for ((i=0; i<${#FORM_FIELDS[@]}; i++)); do
-        name="${FORM_FIELDS[$i]}"
-        local focused="false"
-        [[ $i -eq $FORM_CURSOR ]] && focused="true"
-        _form_render_field "$name" "$focused"
-        tput el 2>/dev/null || true
+        printf '\033[1m  New Session\033[0m\n'
+        printf '  Enter: create  Space: toggle/cycle  Tab: dir picker  Esc: cancel\n'
         printf '\n'
-    done
+
+        local i name
+        for ((i=0; i<${#FORM_FIELDS[@]}; i++)); do
+            name="${FORM_FIELDS[$i]}"
+            local focused="false"
+            [[ $i -eq $FORM_CURSOR ]] && focused="true"
+            _form_render_field "$name" "$focused"
+            tput el 2>/dev/null || true
+            printf '\n'
+        done
+    } > /dev/tty
 }
 
 # Main form loop
-# Returns form values on stdout (same format as fzf_new_session_form)
+# Returns form values on stdout (same format as fzf_new_session_form).
+# All rendering and input go through /dev/tty so this works inside $() capture.
 _form_run() {
-    tput civis 2>/dev/null || true
-    tput smcup 2>/dev/null || true
+    {
+        tput civis 2>/dev/null || true
+        tput smcup 2>/dev/null || true
+    } > /dev/tty
     trap '_form_cleanup' EXIT INT TERM
 
     while true; do
         _form_draw
 
         local key=""
-        IFS= read -rsn1 key
+        IFS= read -rsn1 key < /dev/tty
 
         if [[ "$key" == $'\x1b' ]]; then
             local seq=""
-            IFS= read -rsn1 -t 0.05 seq || true
+            IFS= read -rsn1 -t 0.05 seq < /dev/tty || true
             if [[ -n "$seq" ]]; then
                 local seq2=""
-                IFS= read -rsn1 -t 0.05 seq2 || true
+                IFS= read -rsn1 -t 0.05 seq2 < /dev/tty || true
                 seq+="$seq2"
             fi
             _form_process_key "$key" "$seq"
@@ -302,8 +307,7 @@ _form_run() {
                     if picked=$(_form_directory_popup "${FORM_VALUES[$name]}"); then
                         [[ -n "$picked" ]] && FORM_VALUES[$name]="$picked"
                     fi
-                    tput smcup 2>/dev/null || true
-                    tput civis 2>/dev/null || true
+                    { tput smcup 2>/dev/null || true; tput civis 2>/dev/null || true; } > /dev/tty
                 fi
                 ;;
         esac
@@ -314,8 +318,7 @@ _form_run() {
 }
 
 _form_cleanup_screen() {
-    tput rmcup 2>/dev/null || true
-    tput cnorm 2>/dev/null || true
+    { tput rmcup 2>/dev/null || true; tput cnorm 2>/dev/null || true; } > /dev/tty
 }
 
 _form_cleanup() {
