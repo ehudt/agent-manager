@@ -2880,6 +2880,34 @@ test_form_loop() {
     echo ""
 }
 
+test_form_modes() {
+    echo "=== Testing form mode state ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/form.sh"
+    set -u
+
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+
+    # Mode starts as navigate
+    assert_eq "navigate" "$_FORM_MODE" "mode: starts as navigate"
+
+    # Last field is submit pseudo-field
+    local last_idx=$(( ${#FORM_FIELDS[@]} - 1 ))
+    assert_eq "submit" "${FORM_FIELDS[$last_idx]}" "mode: last field is submit"
+    assert_eq "submit" "${FORM_TYPES[submit]}" "mode: submit field type is submit"
+
+    # Dir highlight starts at 0
+    assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "mode: dir highlight starts at 0"
+
+    echo ""
+}
+
 # ============================================
 # Main
 # ============================================
@@ -2929,6 +2957,7 @@ main() {
     test_new_form_flag
     test_form_core
     test_form_loop
+    test_form_modes
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

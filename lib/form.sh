@@ -27,6 +27,12 @@ declare -A FORM_OPTIONS=()
 declare -A FORM_DISABLED=()
 FORM_CURSOR=0
 
+# Mode: "navigate" or "edit"
+_FORM_MODE="navigate"
+
+# Directory suggestion highlight index (used in edit mode)
+_FORM_DIR_HIGHLIGHT=0
+
 # Directory suggestions cache
 declare -a _FORM_DIR_SUGGESTIONS=()
 _FORM_DIR_SUGGESTIONS_LOADED=false
@@ -57,6 +63,8 @@ _form_init() {
     _FORM_DIR_SUGGESTIONS=()
     _FORM_DIR_SUGGESTIONS_LOADED=false
     _FORM_DIR_FILTERED=()
+    _FORM_MODE="navigate"
+    _FORM_DIR_HIGHLIGHT=0
 
     _form_add_field "directory"         "Directory"      "directory"  "$directory"
     _form_add_field "agent"             "Agent"          "select"     "$agent"
@@ -81,6 +89,9 @@ _form_init() {
             FORM_DISABLED[worktree_enabled]="true"
         fi
     fi
+
+    # Submit button (always last)
+    _form_add_field "submit" "" "submit" ""
 }
 
 _form_add_field() {
