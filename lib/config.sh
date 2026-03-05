@@ -113,6 +113,17 @@ am_stream_logs_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
+am_new_form_enabled() {
+    if [[ -n "${AM_NEW_FORM:-}" ]]; then
+        am_bool_is_true "${AM_NEW_FORM,,}"
+        return $?
+    fi
+
+    local configured
+    configured=$(am_config_get "new_form")
+    am_bool_is_true "${configured,,}"
+}
+
 am_args_contain_yolo_flag() {
     local arg
     for arg in "$@"; do
@@ -154,6 +165,7 @@ am_config_key_alias() {
         yolo|default-yolo|default_yolo) echo "default_yolo" ;;
         sandbox|default-sandbox|default_sandbox) echo "default_sandbox" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
+        new-form|new_form) echo "new_form" ;;
         *) return 1 ;;
     esac
 }
@@ -161,7 +173,7 @@ am_config_key_alias() {
 am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
-        default_yolo|default_sandbox|stream_logs) echo "boolean" ;;
+        default_yolo|default_sandbox|stream_logs|new_form) echo "boolean" ;;
         *) return 1 ;;
     esac
 }
@@ -173,7 +185,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        default_yolo|default_sandbox|stream_logs)
+        default_yolo|default_sandbox|stream_logs|new_form)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         *)
@@ -200,12 +212,19 @@ am_config_print() {
     else
         stream_logs_value=false
     fi
+    local new_form_value
+    if am_new_form_enabled; then
+        new_form_value=true
+    else
+        new_form_value=false
+    fi
 
     cat <<EOF
 default_agent=$default_agent_value
 default_yolo=$default_yolo_value
 default_sandbox=$default_sandbox_value
 stream_logs=$stream_logs_value
+new_form=$new_form_value
 config_file=$AM_CONFIG
 EOF
 }
