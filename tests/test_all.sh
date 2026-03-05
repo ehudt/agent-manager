@@ -2807,13 +2807,17 @@ test_form_loop() {
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
 
-    # Regular char on text field
+    # Regular char on text field — only works in edit mode
     FORM_CURSOR=2  # task
+    _FORM_MODE="edit"
     _form_process_key "H"
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: char returns continue"
     assert_eq "H" "${FORM_VALUES[task]}" "dispatch: char is applied"
+    _FORM_MODE="navigate"
 
-    # Enter returns submit
+    # Enter on submit field returns submit
+    local submit_idx=$(( ${#FORM_FIELDS[@]} - 1 ))
+    FORM_CURSOR=$submit_idx
     _form_process_key $'\n'
     assert_eq "submit" "$FORM_KEY_RESULT" "dispatch: enter returns submit"
 
@@ -2904,6 +2908,137 @@ test_form_modes() {
 
     # Dir highlight starts at 0
     assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "mode: dir highlight starts at 0"
+
+    echo ""
+    echo "=== Testing navigate mode key dispatch ==="
+
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+
+    # In navigate mode, Enter on text field enters edit mode
+    FORM_CURSOR=2  # task (text field)
+    _form_process_key $'\n'
+    assert_eq "continue" "$FORM_KEY_RESULT" "nav: enter on text field returns continue"
+    assert_eq "edit" "$_FORM_MODE" "nav: enter on text field enters edit mode"
+
+    # Reset
+    _FORM_MODE="navigate"
+
+    # In navigate mode, Enter on checkbox toggles it
+    FORM_CURSOR=4  # yolo
+    FORM_VALUES[yolo]="false"
+    _form_process_key $'\n'
+    assert_eq "continue" "$FORM_KEY_RESULT" "nav: enter on checkbox returns continue"
+    assert_eq "true" "${FORM_VALUES[yolo]}" "nav: enter on checkbox toggles"
+    assert_eq "navigate" "$_FORM_MODE" "nav: enter on checkbox stays in navigate"
+
+    # In navigate mode, Enter on select cycles it
+    _FORM_MODE="navigate"
+    FORM_CURSOR=3  # mode (select)
+    FORM_VALUES[mode]="new"
+    _form_process_key $'\n'
+    assert_eq "continue" "$FORM_KEY_RESULT" "nav: enter on select returns continue"
+    assert_eq "resume" "${FORM_VALUES[mode]}" "nav: enter on select cycles"
+    assert_eq "navigate" "$_FORM_MODE" "nav: enter on select stays in navigate"
+
+    # In navigate mode, Enter on submit returns submit
+    _FORM_MODE="navigate"
+    local submit_idx=$(( ${#FORM_FIELDS[@]} - 1 ))
+    FORM_CURSOR=$submit_idx
+    _form_process_key $'\n'
+    assert_eq "submit" "$FORM_KEY_RESULT" "nav: enter on submit returns submit"
+
+    # In navigate mode, Space on checkbox toggles
+    _FORM_MODE="navigate"
+    FORM_CURSOR=4  # yolo
+    FORM_VALUES[yolo]="false"
+    _form_process_key " "
+    assert_eq "true" "${FORM_VALUES[yolo]}" "nav: space toggles checkbox"
+
+    # In navigate mode, typing is ignored on text fields
+    _FORM_MODE="navigate"
+    FORM_CURSOR=2  # task
+    FORM_VALUES[task]=""
+    _form_process_key "x"
+    assert_eq "" "${FORM_VALUES[task]}" "nav: typing ignored on text field"
+
+    # In navigate mode, Ctrl-S submits
+    _FORM_MODE="navigate"
+    FORM_CURSOR=0
+    _form_process_key $'\x13'
+    assert_eq "submit" "$FORM_KEY_RESULT" "nav: ctrl-s submits"
+
+    echo ""
+    echo "=== Testing edit mode key dispatch ==="
+
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _FORM_MODE="edit"
+    FORM_CURSOR=2  # task (text field)
+
+    # Typing works in edit mode
+    _form_process_key "H"
+    assert_eq "H" "${FORM_VALUES[task]}" "edit: typing works"
+    assert_eq "edit" "$_FORM_MODE" "edit: stays in edit mode"
+
+    # Space types a space in edit mode
+    _form_process_key " "
+    assert_eq "H " "${FORM_VALUES[task]}" "edit: space types space"
+
+    # Backspace works
+    _form_process_key $'\x7f'
+    assert_eq "H" "${FORM_VALUES[task]}" "edit: backspace works"
+
+    # Enter exits edit mode
+    _form_process_key $'\n'
+    assert_eq "navigate" "$_FORM_MODE" "edit: enter exits to navigate"
+    assert_eq "continue" "$FORM_KEY_RESULT" "edit: enter returns continue"
+
+    # Esc exits edit mode
+    _FORM_MODE="edit"
+    _form_process_key $'\x1b' ""
+    assert_eq "navigate" "$_FORM_MODE" "edit: esc exits to navigate"
+    assert_eq "continue" "$FORM_KEY_RESULT" "edit: esc returns continue (not cancel)"
+
+    echo ""
+    echo "=== Testing directory highlight scrolling ==="
+
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _FORM_MODE="edit"
+    FORM_CURSOR=0  # directory
+
+    # Preload some fake suggestions for testing
+    _FORM_DIR_SUGGESTIONS=("/home/user/project1" "/home/user/project2" "/home/user/project3")
+    _FORM_DIR_SUGGESTIONS_LOADED=true
+    _form_filter_dir_suggestions "" 5
+
+    # Highlight starts at 0
+    assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "dir scroll: starts at 0"
+
+    # Down moves highlight
+    _form_process_key $'\x1b' "[B"
+    assert_eq "1" "$_FORM_DIR_HIGHLIGHT" "dir scroll: down moves to 1"
+
+    # Down again
+    _form_process_key $'\x1b' "[B"
+    assert_eq "2" "$_FORM_DIR_HIGHLIGHT" "dir scroll: down moves to 2"
+
+    # Down clamps at max
+    _form_process_key $'\x1b' "[B"
+    assert_eq "2" "$_FORM_DIR_HIGHLIGHT" "dir scroll: down clamps at max"
+
+    # Up moves back
+    _form_process_key $'\x1b' "[A"
+    assert_eq "1" "$_FORM_DIR_HIGHLIGHT" "dir scroll: up moves to 1"
+
+    # Tab accepts highlighted suggestion
+    FORM_VALUES[directory]=""
+    _FORM_DIR_HIGHLIGHT=1
+    _form_handle_tab
+    assert_eq "/home/user/project2" "${FORM_VALUES[directory]}" "dir scroll: tab accepts highlighted"
+
+    # Typing resets highlight to 0
+    _FORM_DIR_HIGHLIGHT=2
+    _form_handle_char "x"
+    assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "dir scroll: typing resets highlight"
 
     echo ""
 }

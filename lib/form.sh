@@ -269,6 +269,7 @@ _form_handle_char() {
     case "$type" in
         text|directory)
             FORM_VALUES[$name]+="$ch"
+            [[ "$type" == "directory" ]] && _FORM_DIR_HIGHLIGHT=0
             ;;
     esac
 }
@@ -283,6 +284,7 @@ _form_handle_backspace() {
             local val="${FORM_VALUES[$name]}"
             if [[ -n "$val" ]]; then
                 FORM_VALUES[$name]="${val%?}"
+                [[ "$type" == "directory" ]] && _FORM_DIR_HIGHLIGHT=0
             fi
             ;;
     esac
@@ -295,25 +297,57 @@ _form_handle_tab() {
 
     if [[ "$type" == "directory" ]]; then
         local query="${FORM_VALUES[$name]}"
-        _form_filter_dir_suggestions "$query" 1
+        _form_filter_dir_suggestions "$query" "$_FORM_DIR_SUGGESTION_LINES"
         if [[ ${#_FORM_DIR_FILTERED[@]} -gt 0 ]]; then
-            local top="${_FORM_DIR_FILTERED[0]}"
-            FORM_VALUES[$name]="${top%%$'\t'*}"
+            local idx=$_FORM_DIR_HIGHLIGHT
+            [[ $idx -ge ${#_FORM_DIR_FILTERED[@]} ]] && idx=0
+            local entry="${_FORM_DIR_FILTERED[$idx]}"
+            FORM_VALUES[$name]="${entry%%$'\t'*}"
         fi
     fi
 }
 
 # Process a single keystroke. Sets FORM_KEY_RESULT to "continue", "submit", or "cancel".
 # Must be called in current shell (not a subshell) so mutations take effect.
-# Usage: _form_process_key <key> [extra_seq]
+# Dispatches to mode-specific handler based on _FORM_MODE.
 FORM_KEY_RESULT=""
 _form_process_key() {
     local key="$1"
     local extra="${2:-__unset__}"
 
+    if [[ "$_FORM_MODE" == "edit" ]]; then
+        _form_process_key_edit "$key" "$extra"
+    else
+        _form_process_key_navigate "$key" "$extra"
+    fi
+}
+
+# Navigate mode: move between fields, toggle/cycle, enter edit mode
+_form_process_key_navigate() {
+    local key="$1"
+    local extra="$2"
+
     case "$key" in
         $'\n'|"")
-            FORM_KEY_RESULT="submit"
+            local name="${FORM_FIELDS[$FORM_CURSOR]}"
+            local type="${FORM_TYPES[$name]}"
+            case "$type" in
+                text|directory)
+                    _FORM_MODE="edit"
+                    FORM_KEY_RESULT="continue"
+                    ;;
+                checkbox)
+                    _form_handle_space
+                    FORM_KEY_RESULT="continue"
+                    ;;
+                select)
+                    _form_handle_space
+                    FORM_KEY_RESULT="continue"
+                    ;;
+                submit)
+                    FORM_KEY_RESULT="submit"
+                    ;;
+            esac
             ;;
         $'\x1b')
             if [[ "$extra" == "__unset__" || -z "$extra" ]]; then
@@ -328,6 +362,64 @@ _form_process_key() {
             ;;
         " ")
             _form_handle_space
+            FORM_KEY_RESULT="continue"
+            ;;
+        $'\x13')
+            # Ctrl-S: submit from anywhere
+            FORM_KEY_RESULT="submit"
+            ;;
+        *)
+            # Ignore all other keys in navigate mode
+            FORM_KEY_RESULT="continue"
+            ;;
+    esac
+}
+
+# Edit mode: type into current field, scroll directory suggestions
+_form_process_key_edit() {
+    local key="$1"
+    local extra="$2"
+
+    case "$key" in
+        $'\n'|"")
+            # Exit edit mode
+            _FORM_MODE="navigate"
+            FORM_KEY_RESULT="continue"
+            ;;
+        $'\x1b')
+            if [[ "$extra" == "__unset__" || -z "$extra" ]]; then
+                # Esc: exit edit mode (not cancel)
+                _FORM_MODE="navigate"
+                FORM_KEY_RESULT="continue"
+            else
+                local name="${FORM_FIELDS[$FORM_CURSOR]}"
+                local type="${FORM_TYPES[$name]}"
+                case "$extra" in
+                    "[A")
+                        # Up: scroll directory suggestions
+                        if [[ "$type" == "directory" && $_FORM_DIR_HIGHLIGHT -gt 0 ]]; then
+                            ((_FORM_DIR_HIGHLIGHT--))
+                        fi
+                        FORM_KEY_RESULT="continue"
+                        ;;
+                    "[B")
+                        # Down: scroll directory suggestions
+                        if [[ "$type" == "directory" ]]; then
+                            local max=$(( ${#_FORM_DIR_FILTERED[@]} - 1 ))
+                            [[ $max -lt 0 ]] && max=0
+                            if [[ $_FORM_DIR_HIGHLIGHT -lt $max ]]; then
+                                ((_FORM_DIR_HIGHLIGHT++))
+                            fi
+                        fi
+                        FORM_KEY_RESULT="continue"
+                        ;;
+                    *) FORM_KEY_RESULT="continue" ;;
+                esac
+            fi
+            ;;
+        " ")
+            # Space types a literal space in edit mode
+            _form_handle_char " "
             FORM_KEY_RESULT="continue"
             ;;
         $'\x7f'|$'\b')
@@ -388,7 +480,7 @@ _form_draw() {
                 local spath="${sline%%$'\t'*}"
                 local sannotation=""
                 [[ "$sline" == *$'\t'* ]] && sannotation="${sline#*$'\t'}"
-                if [[ "$dir_focused" == "true" && $si -eq 0 ]]; then
+                if [[ "$dir_focused" == "true" && $si -eq $_FORM_DIR_HIGHLIGHT ]]; then
                     _FORM_BUF+="    ${_FORM_CYAN}${spath}${_FORM_RESET}"
                     [[ -n "$sannotation" ]] && _FORM_BUF+="  ${_FORM_DIM}${sannotation}${_FORM_RESET}"
                 else
