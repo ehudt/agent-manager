@@ -2926,22 +2926,20 @@ test_form_modes() {
     # Reset
     _FORM_MODE="navigate"
 
-    # In navigate mode, Enter on checkbox toggles it
+    # In navigate mode, Enter on checkbox submits
     FORM_CURSOR=4  # yolo
     FORM_VALUES[yolo]="false"
     _form_process_key $'\n'
-    assert_eq "continue" "$FORM_KEY_RESULT" "nav: enter on checkbox returns continue"
-    assert_eq "true" "${FORM_VALUES[yolo]}" "nav: enter on checkbox toggles"
-    assert_eq "navigate" "$_FORM_MODE" "nav: enter on checkbox stays in navigate"
+    assert_eq "submit" "$FORM_KEY_RESULT" "nav: enter on checkbox submits"
+    assert_eq "false" "${FORM_VALUES[yolo]}" "nav: enter on checkbox does not toggle"
 
-    # In navigate mode, Enter on select cycles it
+    # In navigate mode, Enter on select submits
     _FORM_MODE="navigate"
     FORM_CURSOR=3  # mode (select)
     FORM_VALUES[mode]="new"
     _form_process_key $'\n'
-    assert_eq "continue" "$FORM_KEY_RESULT" "nav: enter on select returns continue"
-    assert_eq "resume" "${FORM_VALUES[mode]}" "nav: enter on select cycles"
-    assert_eq "navigate" "$_FORM_MODE" "nav: enter on select stays in navigate"
+    assert_eq "submit" "$FORM_KEY_RESULT" "nav: enter on select submits"
+    assert_eq "new" "${FORM_VALUES[mode]}" "nav: enter on select does not cycle"
 
     # In navigate mode, Enter on submit returns submit
     _FORM_MODE="navigate"

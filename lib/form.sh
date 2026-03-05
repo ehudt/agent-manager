@@ -187,7 +187,12 @@ _form_render_field() {
             ;;
     esac
 
-    _FORM_BUF+="${prefix}$(printf '%-14s' "$label:") ${display}${_FORM_EL}"$'\n'
+    if [[ "$type" == "submit" ]]; then
+        _FORM_BUF+="${_FORM_EL}"$'\n'
+        _FORM_BUF+="${prefix}${display}${_FORM_EL}"$'\n'
+    else
+        _FORM_BUF+="${prefix}$(printf '%-14s' "$label:") ${display}${_FORM_EL}"$'\n'
+    fi
 }
 
 # Load directory suggestions (once, lazily)
@@ -348,13 +353,8 @@ _form_process_key_navigate() {
                     _FORM_MODE="edit"
                     FORM_KEY_RESULT="continue"
                     ;;
-                checkbox)
-                    _form_handle_space
-                    FORM_KEY_RESULT="continue"
-                    ;;
-                select)
-                    _form_handle_space
-                    FORM_KEY_RESULT="continue"
+                checkbox|select)
+                    FORM_KEY_RESULT="submit"
                     ;;
                 submit)
                     FORM_KEY_RESULT="submit"
@@ -526,6 +526,11 @@ _form_run() {
     tput smcup > /dev/tty 2>/dev/null || true
     trap '_form_cleanup' EXIT INT TERM
 
+    # Disable XON/XOFF flow control so Ctrl-S reaches us
+    local _form_old_stty
+    _form_old_stty=$(stty -g < /dev/tty 2>/dev/null) || true
+    stty -ixon < /dev/tty 2>/dev/null || true
+
     _form_draw_header
 
     while true; do
@@ -562,6 +567,8 @@ _form_run() {
 
 _form_cleanup_screen() {
     { tput rmcup 2>/dev/null || true; printf '%s' "${_FORM_SHOW_CURSOR}"; } > /dev/tty
+    # Restore terminal settings (XON/XOFF)
+    [[ -n "${_form_old_stty:-}" ]] && stty "$_form_old_stty" < /dev/tty 2>/dev/null || true
 }
 
 _form_cleanup() {

@@ -11,6 +11,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/registry.sh` | JSON storage for session metadata, persistent session history, auto-titling |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
+| `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit), gated by `new_form` config flag |
 | `lib/fzf.sh` | fzf UI: list generation, directory picker with history annotations, main loop |
 | `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
 | `lib/title-upgrade` | Standalone script: fire-and-forget Haiku title upgrade for a session |
@@ -29,7 +30,7 @@ Architecture reference for AI agents working with this codebase.
 am → fzf_main() → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
 fzf_list_sessions() / fzf_list_json() → auto_title_scan() → _title_fallback() → registry_update() + history_append()
-Ctrl-N in fzf → fzf_pick_directory() → _annotate_directory() → history_for_directory()
+Ctrl-N in fzf → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
 am new --yolo ~/project → agent_launch() → sandbox_start() → tmux panes attach → agent runs in container
 agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
 ```
@@ -148,6 +149,15 @@ For agent orchestration, prefer this sequence:
 - `sandbox_rebuild_and_restart([no_cache])` - Rebuild image, recreate running containers
 - `sandbox_identity_init()` - Initialize `~/.sb/` with dedicated sandbox credentials
 
+**Form (lib/form.sh):**
+- `am_new_session_form(...)` - Dispatch: picks tput form or legacy fzf form based on `new_form` config flag
+- `_form_init(directory, agent, task, mode, yolo, sandbox, worktree_enabled, worktree_name, docker_available)` - Initialize form state, fields, submit row
+- `_form_run()` - Main loop: draw → read key → dispatch (navigate/edit) → repeat. Returns tab-delimited output on stdout
+- `_form_process_key(key, [extra_seq])` - Route to `_form_process_key_navigate` or `_form_process_key_edit` based on `_FORM_MODE`
+- `_form_draw()` - Buffer all fields + directory suggestions into `_FORM_BUF`, single write to `/dev/tty`
+- `_form_filter_dir_suggestions(query, max)` - Filter cached zoxide/frecent list into `_FORM_DIR_FILTERED` array (no subshell)
+- `_form_output()` - Format form values as `directory\tagent\ttask\tworktree\tflags` (same contract as fzf form)
+
 **fzf:**
 - `fzf_list_sessions()` - Format: `session|display_name`
 - `fzf_list_simple()` - Plain text session list for `am list`
@@ -181,5 +191,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Add history integration | `lib/registry.sh` → `history_append()` |
 | Change sandbox config | `lib/sandbox.sh` → globals, `sandbox/Dockerfile` |
+| Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch |
+| Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
 | Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
