@@ -2625,6 +2625,261 @@ test_strip_ansi() {
 }
 
 # ============================================
+# Test: new_form feature flag
+# ============================================
+test_new_form_flag() {
+    echo "=== Testing new_form feature flag ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    set -u
+
+    # Default is false
+    local result=""
+    am_new_form_enabled && result="true" || result="false"
+    assert_eq "false" "$result" "new_form: default is false"
+
+    # Env override works
+    result=""
+    AM_NEW_FORM=true am_new_form_enabled && result="true" || result="false"
+    assert_eq "true" "$result" "new_form: env override works"
+
+    # Config key alias resolves
+    local key
+    key=$(am_config_key_alias "new-form")
+    assert_eq "new_form" "$key" "new_form: key alias resolves"
+
+    # Validation accepts boolean
+    am_config_value_is_valid "new_form" "true" && result="true" || result="false"
+    assert_eq "true" "$result" "new_form: validation accepts boolean"
+
+    # Type is boolean
+    local ktype
+    ktype=$(am_config_key_type "new_form")
+    assert_eq "boolean" "$ktype" "new_form: type is boolean"
+
+    # am_new_session_form dispatch function exists (from Task 4)
+    set +u
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/fzf.sh"
+    source "$LIB_DIR/form.sh"
+    set -u
+
+    local fn_type
+    fn_type="$(type -t am_new_session_form 2>/dev/null || true)"
+    assert_eq "function" "$fn_type" "new_form: am_new_session_form function exists"
+
+    echo ""
+}
+
+# ============================================
+# Test: form core (rendering + input + text editing)
+# ============================================
+test_form_core() {
+    echo "=== Testing form field display ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/form.sh"
+    set -u
+
+    local display
+
+    display=$(_form_field_display "text" "Fix the bug" "" "" "")
+    assert_eq "Fix the bug" "$display" "form render: text field shows value"
+
+    display=$(_form_field_display "text" "" "" "" "")
+    assert_eq "" "$display" "form render: empty text field"
+
+    display=$(_form_field_display "select" "claude" "" "" "")
+    assert_eq "< claude >" "$display" "form render: select shows cycling indicator"
+
+    display=$(_form_field_display "checkbox" "true" "" "" "")
+    assert_eq "[x]" "$display" "form render: checkbox on"
+
+    display=$(_form_field_display "checkbox" "false" "" "" "")
+    assert_eq "[ ]" "$display" "form render: checkbox off"
+
+    display=$(_form_field_display "checkbox" "false" "" "true" "")
+    assert_eq "[disabled]" "$display" "form render: checkbox disabled"
+
+    display=$(_form_field_display "directory" "/tmp/project" "" "" "")
+    assert_eq "/tmp/project" "$display" "form render: directory shows path"
+
+    echo ""
+    echo "=== Testing form input handling ==="
+
+    _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
+
+    # Select cycling
+    FORM_CURSOR=1  # agent field
+    _form_handle_space
+    local agent_after="${FORM_VALUES[agent]}"
+    assert_eq "false" "$( [[ "$agent_after" == "claude" ]] && echo true || echo false )" \
+        "form input: space cycles select field"
+
+    # Checkbox toggle
+    FORM_CURSOR=4  # yolo field
+    assert_eq "false" "${FORM_VALUES[yolo]}" "form input: yolo starts false"
+    _form_handle_space
+    assert_eq "true" "${FORM_VALUES[yolo]}" "form input: space toggles yolo on"
+    _form_handle_space
+    assert_eq "false" "${FORM_VALUES[yolo]}" "form input: space toggles yolo off"
+
+    # Disabled checkbox doesn't toggle
+    FORM_DISABLED[sandbox]="true"
+    FORM_CURSOR=5  # sandbox
+    FORM_VALUES[sandbox]="false"
+    _form_handle_space
+    assert_eq "false" "${FORM_VALUES[sandbox]}" "form input: disabled checkbox ignores space"
+
+    # Mode cycling
+    FORM_CURSOR=3  # mode field
+    assert_eq "new" "${FORM_VALUES[mode]}" "form input: mode starts at new"
+    _form_handle_space
+    assert_eq "resume" "${FORM_VALUES[mode]}" "form input: mode cycles to resume"
+    _form_handle_space
+    assert_eq "continue" "${FORM_VALUES[mode]}" "form input: mode cycles to continue"
+    _form_handle_space
+    assert_eq "new" "${FORM_VALUES[mode]}" "form input: mode wraps to new"
+
+    # Navigation
+    FORM_CURSOR=0
+    _form_handle_down
+    assert_eq "1" "$FORM_CURSOR" "form input: down increments cursor"
+    _form_handle_up
+    assert_eq "0" "$FORM_CURSOR" "form input: up decrements cursor"
+    _form_handle_up
+    assert_eq "0" "$FORM_CURSOR" "form input: up clamps at 0"
+
+    echo ""
+    echo "=== Testing form text editing ==="
+
+    _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
+
+    FORM_CURSOR=2  # task
+    _form_handle_char "H"
+    _form_handle_char "i"
+    assert_eq "Hi" "${FORM_VALUES[task]}" "form text: typing appends chars"
+
+    _form_handle_backspace
+    assert_eq "H" "${FORM_VALUES[task]}" "form text: backspace removes last char"
+
+    _form_handle_backspace
+    _form_handle_backspace
+    assert_eq "" "${FORM_VALUES[task]}" "form text: backspace on empty is noop"
+
+    FORM_CURSOR=1  # agent (select)
+    local before="${FORM_VALUES[agent]}"
+    _form_handle_char "x"
+    assert_eq "$before" "${FORM_VALUES[agent]}" "form text: char ignored on select field"
+
+    echo ""
+}
+
+# ============================================
+# Test: form loop (keystroke dispatch + output contract)
+# ============================================
+test_form_loop() {
+    echo "=== Testing form keystroke dispatch ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/form.sh"
+    set -u
+
+    # Parse tab-delimited output using cut (read collapses empty fields)
+    _parse_field() {
+        local output="$1" field="$2"
+        printf '%s' "$output" | cut -d$'\t' -f"$field"
+    }
+
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+
+    # Regular char on text field
+    FORM_CURSOR=2  # task
+    _form_process_key "H"
+    assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: char returns continue"
+    assert_eq "H" "${FORM_VALUES[task]}" "dispatch: char is applied"
+
+    # Enter returns submit
+    _form_process_key $'\n'
+    assert_eq "submit" "$FORM_KEY_RESULT" "dispatch: enter returns submit"
+
+    # Escape returns cancel
+    _form_process_key $'\x1b' ""
+    assert_eq "cancel" "$FORM_KEY_RESULT" "dispatch: escape returns cancel"
+
+    # Arrow down
+    FORM_CURSOR=0
+    _form_process_key $'\x1b' "[B"
+    assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: arrow down returns continue"
+    assert_eq "1" "$FORM_CURSOR" "dispatch: arrow down moves cursor"
+
+    # Arrow up
+    _form_process_key $'\x1b' "[A"
+    assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: arrow up returns continue"
+    assert_eq "0" "$FORM_CURSOR" "dispatch: arrow up moves cursor"
+
+    # Space
+    FORM_CURSOR=4  # yolo
+    _form_process_key " "
+    assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: space returns continue"
+    assert_eq "true" "${FORM_VALUES[yolo]}" "dispatch: space toggled yolo"
+
+    # Tab
+    _form_process_key $'\t'
+    assert_eq "tab" "$FORM_KEY_RESULT" "dispatch: tab returns tab"
+
+    echo ""
+    echo "=== Testing form output contract ==="
+
+    _form_init "/tmp" "claude" "fix bugs" "new" "true" "false" "false" "" "true"
+
+    local output directory agent task worktree flags
+    output=$(_form_output)
+    directory=$(_parse_field "$output" 1)
+    agent=$(_parse_field "$output" 2)
+    task=$(_parse_field "$output" 3)
+    worktree=$(_parse_field "$output" 4)
+    flags=$(_parse_field "$output" 5)
+
+    assert_eq "/tmp" "$directory" "form output: directory"
+    assert_eq "claude" "$agent" "form output: agent"
+    assert_eq "fix bugs" "$task" "form output: task"
+    assert_eq "" "$worktree" "form output: no worktree"
+    assert_contains "$flags" "--yolo" "form output: yolo flag"
+
+    # With worktree
+    _form_init "/tmp" "claude" "" "resume" "false" "true" "true" "my-branch" "true"
+    output=$(_form_output)
+    worktree=$(_parse_field "$output" 4)
+    flags=$(_parse_field "$output" 5)
+    assert_eq "my-branch" "$worktree" "form output: worktree name"
+    assert_contains "$flags" "--resume" "form output: resume flag"
+    assert_contains "$flags" "--sandbox" "form output: sandbox flag"
+
+    # Auto worktree
+    _form_init "/tmp" "claude" "" "new" "false" "false" "true" "" "true"
+    output=$(_form_output)
+    worktree=$(_parse_field "$output" 4)
+    assert_eq "__auto__" "$worktree" "form output: auto worktree"
+
+    echo ""
+}
+
+# ============================================
 # Main
 # ============================================
 main() {
@@ -2670,6 +2925,9 @@ main() {
     test_claude_first_user_message
     test_sandbox_pytest_integration
     test_strip_ansi
+    test_new_form_flag
+    test_form_core
+    test_form_loop
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

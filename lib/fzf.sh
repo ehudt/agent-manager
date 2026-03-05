@@ -735,7 +735,7 @@ fzf_main() {
     # Handle new session request (either Ctrl-N or selecting the "new" option)
     if [[ "$key" == "ctrl-n" || "$session_name" == "__new__" ]]; then
         local form_values directory agent_type task worktree_name flags
-        if ! form_values=$(fzf_new_session_form); then
+        if ! form_values=$(am_new_session_form); then
             fzf_main
             return $?
         fi

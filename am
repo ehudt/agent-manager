@@ -133,6 +133,7 @@ source "$AM_LIB_DIR/registry.sh"
 source "$AM_LIB_DIR/agents.sh"
 source "$AM_LIB_DIR/sandbox.sh"
 source "$AM_LIB_DIR/fzf.sh"
+source "$AM_LIB_DIR/form.sh"
 
 # Command: list
 cmd_list() {
@@ -312,7 +313,7 @@ cmd_new() {
     # One-page form for fully interactive new-session creation
     if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && -z "$worktree_name" && ${#agent_args[@]} -eq 0 ]]; then
         local form_values flags
-        if ! form_values=$(fzf_new_session_form "$directory" "$(am_default_agent)" "$task" "$worktree_name"); then
+        if ! form_values=$(am_new_session_form "$directory" "$(am_default_agent)" "$task" "$worktree_name"); then
             log_info "Cancelled"
             return 0
         fi

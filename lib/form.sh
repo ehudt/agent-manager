@@ -401,3 +401,52 @@ _form_output() {
 
     printf '%s\t%s\t%s\t%s\t%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
 }
+
+# Dispatch function: picks form implementation based on feature flag.
+# Same signature and output as fzf_new_session_form().
+am_new_session_form() {
+    if am_new_form_enabled; then
+        local prefill_directory="${1:-.}"
+        local prefill_agent="${2:-$(am_default_agent)}"
+        local prefill_task="${3:-}"
+        local prefill_worktree="${4:-}"
+        local prefill_mode_flags="${5:-}"
+
+        local directory="${prefill_directory/#\~/$HOME}"
+        local agent="$prefill_agent"
+        local task="$prefill_task"
+        local mode="new"
+        local yolo="false"
+        local sandbox="false"
+        local worktree_enabled="false"
+        local worktree_name=""
+        local docker_available="true"
+        am_docker_available || docker_available="false"
+
+        # Parse prefill flags
+        [[ "$prefill_mode_flags" == *"--resume"* ]] && mode="resume"
+        [[ "$prefill_mode_flags" == *"--continue"* ]] && mode="continue"
+        if [[ "$prefill_mode_flags" == *"--yolo"* ]]; then
+            yolo="true"
+        elif am_default_yolo_enabled; then
+            yolo="true"
+        fi
+        if [[ "$prefill_mode_flags" == *"--sandbox"* ]]; then
+            sandbox="true"
+        elif am_default_sandbox_enabled && [[ "$docker_available" == "true" ]]; then
+            sandbox="true"
+        fi
+
+        case "$prefill_worktree" in
+            ""|false) worktree_enabled="false"; worktree_name="" ;;
+            true|__auto__) worktree_enabled="true"; worktree_name="" ;;
+            *) worktree_enabled="true"; worktree_name="$prefill_worktree" ;;
+        esac
+
+        _form_init "$directory" "$agent" "$task" "$mode" "$yolo" "$sandbox" \
+            "$worktree_enabled" "$worktree_name" "$docker_available"
+        _form_run
+    else
+        fzf_new_session_form "$@"
+    fi
+}
