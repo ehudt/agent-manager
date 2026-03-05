@@ -307,17 +307,10 @@ _form_process_key() {
 # Number of inline directory suggestion lines
 _FORM_DIR_SUGGESTION_LINES=5
 
-# Draw the full form to /dev/tty (not stdout, which may be captured by $()).
-# Uses line-by-line overwrite instead of screen clear to avoid flashing.
-_form_draw() {
-    local row=0
-    local current_name="${FORM_FIELDS[$FORM_CURSOR]}"
-
+# Draw the static header (called once at form start)
+_form_draw_header() {
     {
-        # Position at top
         tput cup 0 0 2>/dev/null || true
-
-        # Header (rows 0-2)
         printf '\033[1m  New Session\033[0m'
         tput el 2>/dev/null || true
         printf '\n'
@@ -326,7 +319,20 @@ _form_draw() {
         printf '\n'
         tput el 2>/dev/null || true
         printf '\n'
-        row=3
+    } > /dev/tty
+}
+
+# Row where dynamic content starts (after header)
+_FORM_CONTENT_ROW=3
+
+# Draw the form fields to /dev/tty (not stdout, which may be captured by $()).
+# Header is static (drawn once). Only fields + suggestions are redrawn per keystroke.
+# Directory suggestions always occupy their fixed space to prevent layout shifts.
+_form_draw() {
+    local row=$_FORM_CONTENT_ROW
+
+    {
+        tput cup $row 0 2>/dev/null || true
 
         # Render each field
         local i name
@@ -339,9 +345,10 @@ _form_draw() {
             printf '\n'
             ((row++))
 
-            # Inline directory suggestions (shown when directory field is focused)
-            if [[ "$name" == "directory" && "$focused" == "true" ]]; then
-                local suggestions query
+            # Directory suggestions always shown (stable layout)
+            if [[ "$name" == "directory" ]]; then
+                local suggestions query dir_focused="false"
+                [[ "$focused" == "true" ]] && dir_focused="true"
                 query="${FORM_VALUES[directory]}"
                 suggestions=$(_form_filtered_dir_suggestions "$query" "$_FORM_DIR_SUGGESTION_LINES")
                 local sline scount=0
@@ -350,8 +357,8 @@ _form_draw() {
                     local spath="${sline%%$'\t'*}"
                     local sannotation=""
                     [[ "$sline" == *$'\t'* ]] && sannotation="${sline#*$'\t'}"
-                    if [[ $scount -eq 0 ]]; then
-                        # Highlight top suggestion (Tab will accept it)
+                    if [[ "$dir_focused" == "true" && $scount -eq 0 ]]; then
+                        # Highlight top suggestion when directory is focused
                         printf '    \033[36m%s\033[0m' "$spath"
                         [[ -n "$sannotation" ]] && printf '  \033[2m%s\033[0m' "$sannotation"
                     else
@@ -363,7 +370,7 @@ _form_draw() {
                     ((row++))
                     ((scount++))
                 done <<< "$suggestions"
-                # Pad remaining suggestion lines (so they clear when fewer results)
+                # Pad to fixed height (prevents layout shift)
                 while [[ $scount -lt $_FORM_DIR_SUGGESTION_LINES ]]; do
                     tput el 2>/dev/null || true
                     printf '\n'
@@ -373,13 +380,11 @@ _form_draw() {
             fi
         done
 
-        # Clear any leftover lines from previous renders
-        local total_rows
-        total_rows=$(tput lines 2>/dev/null || echo 24)
-        while [[ $row -lt $total_rows ]]; do
+        # Clear a few extra lines to handle field count changes (e.g. worktree toggle)
+        local extra
+        for extra in 1 2 3; do
             tput el 2>/dev/null || true
             printf '\n'
-            ((row++))
         done
     } > /dev/tty
 }
@@ -393,6 +398,8 @@ _form_run() {
         tput smcup 2>/dev/null || true
     } > /dev/tty
     trap '_form_cleanup' EXIT INT TERM
+
+    _form_draw_header
 
     while true; do
         _form_draw
