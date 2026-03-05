@@ -2713,6 +2713,9 @@ test_form_core() {
     display=$(_form_field_display "directory" "/tmp/project" "" "" "" "false")
     assert_eq "/tmp/project" "$display" "form render: directory shows path"
 
+    display=$(_form_field_display "submit" "" "" "" "" "false")
+    assert_eq "[ Create ]" "$display" "form render: submit shows button"
+
     echo ""
     echo "=== Testing form input handling ==="
 

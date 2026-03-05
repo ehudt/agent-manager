@@ -135,6 +135,9 @@ _form_field_display() {
                 echo "[ ]"
             fi
             ;;
+        submit)
+            echo "[ Create ]"
+            ;;
     esac
 }
 
@@ -149,7 +152,13 @@ _form_render_field() {
     local disabled="${FORM_DISABLED[$name]:-}"
 
     local prefix="  "
-    [[ "$focused" == "true" ]] && prefix="> "
+    if [[ "$focused" == "true" ]]; then
+        if [[ "$_FORM_MODE" == "edit" ]]; then
+            prefix="» "
+        else
+            prefix="> "
+        fi
+    fi
 
     # Inline display formatting (no subshell)
     local display=""
@@ -172,6 +181,9 @@ _form_render_field() {
             else
                 display="[ ]"
             fi
+            ;;
+        submit)
+            display="[ Create ]"
             ;;
     esac
 
@@ -449,7 +461,7 @@ _FORM_CONTENT_ROW=3
 _form_draw_header() {
     printf '%s' "${_FORM_CUP_PREFIX}0;0H" > /dev/tty
     printf '%s  New Session%s\n' "${_FORM_BOLD}" "${_FORM_RESET}" > /dev/tty
-    printf '  Enter: create  Space: toggle/cycle  Tab: complete  Esc: cancel%s\n' "${_FORM_EL}" > /dev/tty
+    printf '  ↑↓: move  Enter: edit/toggle  Space: toggle  Ctrl-S: create  Esc: back/cancel%s\n' "${_FORM_EL}" > /dev/tty
     printf '%s\n' "${_FORM_EL}" > /dev/tty
 }
 
