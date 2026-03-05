@@ -198,3 +198,206 @@ _form_handle_backspace() {
             ;;
     esac
 }
+
+# Process a single keystroke. Sets FORM_KEY_RESULT to "continue", "submit", "cancel", or "tab".
+# Must be called in current shell (not a subshell) so mutations take effect.
+# Usage: _form_process_key <key> [extra_seq]
+FORM_KEY_RESULT=""
+_form_process_key() {
+    local key="$1"
+    local extra="${2:-__unset__}"
+
+    case "$key" in
+        $'\n'|"")
+            FORM_KEY_RESULT="submit"
+            ;;
+        $'\x1b')
+            if [[ "$extra" == "__unset__" || -z "$extra" ]]; then
+                FORM_KEY_RESULT="cancel"
+            else
+                case "$extra" in
+                    "[A") _form_handle_up; FORM_KEY_RESULT="continue" ;;
+                    "[B") _form_handle_down; FORM_KEY_RESULT="continue" ;;
+                    *) FORM_KEY_RESULT="continue" ;;
+                esac
+            fi
+            ;;
+        " ")
+            _form_handle_space
+            FORM_KEY_RESULT="continue"
+            ;;
+        $'\x7f'|$'\b')
+            _form_handle_backspace
+            FORM_KEY_RESULT="continue"
+            ;;
+        $'\t')
+            FORM_KEY_RESULT="tab"
+            ;;
+        *)
+            if [[ "$key" =~ [[:print:]] ]]; then
+                _form_handle_char "$key"
+            fi
+            FORM_KEY_RESULT="continue"
+            ;;
+    esac
+}
+
+# Draw the full form to terminal
+_form_draw() {
+    tput cup 0 0 2>/dev/null || true
+    tput ed 2>/dev/null || true
+
+    printf '\033[1m  New Session\033[0m\n'
+    printf '  Enter: create  Space: toggle/cycle  Tab: dir picker  Esc: cancel\n'
+    printf '\n'
+
+    local i name
+    for ((i=0; i<${#FORM_FIELDS[@]}; i++)); do
+        name="${FORM_FIELDS[$i]}"
+        local focused="false"
+        [[ $i -eq $FORM_CURSOR ]] && focused="true"
+        _form_render_field "$name" "$focused"
+        tput el 2>/dev/null || true
+        printf '\n'
+    done
+}
+
+# Main form loop
+# Returns form values on stdout (same format as fzf_new_session_form)
+_form_run() {
+    tput civis 2>/dev/null || true
+    tput smcup 2>/dev/null || true
+    trap '_form_cleanup' EXIT INT TERM
+
+    while true; do
+        _form_draw
+
+        local key=""
+        IFS= read -rsn1 key
+
+        if [[ "$key" == $'\x1b' ]]; then
+            local seq=""
+            IFS= read -rsn1 -t 0.05 seq || true
+            if [[ -n "$seq" ]]; then
+                local seq2=""
+                IFS= read -rsn1 -t 0.05 seq2 || true
+                seq+="$seq2"
+            fi
+            _form_process_key "$key" "$seq"
+        else
+            _form_process_key "$key"
+        fi
+
+        case "$FORM_KEY_RESULT" in
+            submit) break ;;
+            cancel)
+                _form_cleanup
+                return 1
+                ;;
+            tab)
+                local name="${FORM_FIELDS[$FORM_CURSOR]}"
+                if [[ "${FORM_TYPES[$name]}" == "directory" ]]; then
+                    _form_cleanup_screen
+                    local picked
+                    if picked=$(_form_directory_popup "${FORM_VALUES[$name]}"); then
+                        [[ -n "$picked" ]] && FORM_VALUES[$name]="$picked"
+                    fi
+                    tput smcup 2>/dev/null || true
+                    tput civis 2>/dev/null || true
+                fi
+                ;;
+        esac
+    done
+
+    _form_cleanup
+    _form_output
+}
+
+_form_cleanup_screen() {
+    tput rmcup 2>/dev/null || true
+    tput cnorm 2>/dev/null || true
+}
+
+_form_cleanup() {
+    _form_cleanup_screen
+    trap - EXIT INT TERM
+}
+
+# Directory picker popup — delegates to fzf
+_form_directory_popup() {
+    local current="$1"
+
+    export -f _list_directories _annotate_directory _strip_annotation detect_git_branch 2>/dev/null || true
+
+    local initial_list
+    initial_list=$(_list_directories "$current" 2>/dev/null | grep -v '^$' || true)
+
+    local selected
+    selected=$(echo "$initial_list" | fzf \
+        --ansi \
+        --height=12 \
+        --layout=reverse \
+        --print-query \
+        --query="$current" \
+        --header="Directory  Tab:complete  Type to filter  Esc:back" \
+        --bind="tab:reload(bash -c '_list_directories {q}' | grep -v '^$')+clear-query" \
+        --bind="ctrl-u:reload(bash -c '_list_directories \$(dirname {q})' | grep -v '^$')+transform-query(dirname {q})" \
+    ) || true
+
+    local query selection
+    query=$(echo "$selected" | head -n1)
+    selection=$(echo "$selected" | tail -n1)
+    selection=$(_strip_annotation "$selection")
+    query=$(_strip_annotation "$query")
+
+    [[ -z "$selection" && -n "$query" ]] && selection="$query"
+    selection="${selection/#\~/$HOME}"
+
+    if [[ -n "$selection" ]]; then
+        echo "$selection"
+    else
+        echo "$current"
+    fi
+}
+
+# Format output matching fzf_new_session_form contract:
+# directory<TAB>agent<TAB>task<TAB>worktree_name<TAB>flags
+_form_output() {
+    local directory="${FORM_VALUES[directory]}"
+    local agent="${FORM_VALUES[agent]}"
+    local task="${FORM_VALUES[task]}"
+    local mode="${FORM_VALUES[mode]}"
+    local yolo="${FORM_VALUES[yolo]}"
+    local sandbox="${FORM_VALUES[sandbox]}"
+    local worktree_enabled="${FORM_VALUES[worktree_enabled]:-false}"
+    local worktree_name="${FORM_VALUES[worktree_name]:-}"
+
+    directory="${directory/#\~/$HOME}"
+
+    if [[ -z "$directory" || ! -d "$directory" ]]; then
+        log_error "Directory does not exist: ${directory:-<empty>}" >&2
+        return 1
+    fi
+
+    if [[ -z "$agent" || -z "${AGENT_COMMANDS[$agent]:-}" ]]; then
+        log_error "Invalid agent type: ${agent:-<empty>}" >&2
+        return 1
+    fi
+
+    local flags=""
+    [[ "$mode" == "resume" ]] && flags+=" --resume"
+    [[ "$mode" == "continue" ]] && flags+=" --continue"
+    [[ "$yolo" == "true" ]] && flags+=" --yolo"
+    [[ "$sandbox" == "true" ]] && flags+=" --sandbox"
+
+    local worktree=""
+    if [[ "$worktree_enabled" == "true" ]] && agent_supports_worktree "$agent"; then
+        if [[ -n "$worktree_name" ]]; then
+            worktree="$worktree_name"
+        else
+            worktree="__auto__"
+        fi
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
+}
