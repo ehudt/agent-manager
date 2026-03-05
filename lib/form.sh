@@ -8,17 +8,23 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 [[ "$(type -t agent_supports_worktree)" != "function" ]] && source "$SCRIPT_DIR/agents.sh"
 
 # Field type display formatter
-# Usage: _form_field_display <type> <value> <options> <disabled> <label>
+# Usage: _form_field_display <type> <value> <options> <disabled> <label> <focused>
 _form_field_display() {
     local type="$1"
     local value="$2"
     local options="${3:-}"
     local disabled="${4:-}"
     local label="${5:-}"
+    local focused="${6:-false}"
 
     case "$type" in
         text|directory)
-            echo "$value"
+            if [[ "$focused" == "true" ]]; then
+                # Show blinking cursor when focused
+                printf '%s\033[7m \033[0m' "$value"
+            else
+                echo "$value"
+            fi
             ;;
         select)
             echo "< $value >"
@@ -44,6 +50,10 @@ declare -A FORM_OPTIONS=()
 declare -A FORM_DISABLED=()
 FORM_CURSOR=0
 
+# Directory suggestions cache
+declare -a _FORM_DIR_SUGGESTIONS=()
+_FORM_DIR_SUGGESTIONS_LOADED=false
+
 # Initialize form state
 # Usage: _form_init <directory> <agent> <task> <mode> <yolo> <sandbox> <worktree_enabled> <worktree_name> <docker_available>
 _form_init() {
@@ -64,6 +74,8 @@ _form_init() {
     FORM_OPTIONS=()
     FORM_DISABLED=()
     FORM_CURSOR=0
+    _FORM_DIR_SUGGESTIONS=()
+    _FORM_DIR_SUGGESTIONS_LOADED=false
 
     _form_add_field "directory"         "Directory"      "directory"  "$directory"
     _form_add_field "agent"             "Agent"          "select"     "$agent"
@@ -114,12 +126,45 @@ _form_render_field() {
     local options="${FORM_OPTIONS[$name]:-}"
 
     local display
-    display=$(_form_field_display "$type" "$value" "$options" "$disabled" "$label")
+    display=$(_form_field_display "$type" "$value" "$options" "$disabled" "$label" "$focused")
 
     local prefix="  "
     [[ "$focused" == "true" ]] && prefix="> "
 
     printf '%s%-14s %s' "$prefix" "$label:" "$display"
+}
+
+# Load directory suggestions (once, lazily)
+_form_load_dir_suggestions() {
+    [[ "$_FORM_DIR_SUGGESTIONS_LOADED" == "true" ]] && return 0
+    _FORM_DIR_SUGGESTIONS=()
+    local line
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        _FORM_DIR_SUGGESTIONS+=("$line")
+    done < <(_list_directories 2>/dev/null || true)
+    _FORM_DIR_SUGGESTIONS_LOADED=true
+}
+
+# Filter directory suggestions by current value, return top N
+# Usage: _form_filtered_dir_suggestions <query> <max>
+_form_filtered_dir_suggestions() {
+    local query="$1"
+    local max="${2:-5}"
+    local count=0
+    local entry path
+
+    _form_load_dir_suggestions
+
+    for entry in "${_FORM_DIR_SUGGESTIONS[@]}"; do
+        # Extract path (before tab if annotated)
+        path="${entry%%$'\t'*}"
+        if [[ -z "$query" || "$path" == *"$query"* ]]; then
+            echo "$entry"
+            ((count++))
+            [[ $count -ge $max ]] && break
+        fi
+    done
 }
 
 # Handle space: toggle checkbox or cycle select
@@ -199,7 +244,23 @@ _form_handle_backspace() {
     esac
 }
 
-# Process a single keystroke. Sets FORM_KEY_RESULT to "continue", "submit", "cancel", or "tab".
+# Handle Tab: accept top directory suggestion
+_form_handle_tab() {
+    local name="${FORM_FIELDS[$FORM_CURSOR]}"
+    local type="${FORM_TYPES[$name]}"
+
+    if [[ "$type" == "directory" ]]; then
+        local query="${FORM_VALUES[$name]}"
+        local top
+        top=$(_form_filtered_dir_suggestions "$query" 1 | head -1)
+        if [[ -n "$top" ]]; then
+            # Extract just the path (strip annotation after tab)
+            FORM_VALUES[$name]="${top%%$'\t'*}"
+        fi
+    fi
+}
+
+# Process a single keystroke. Sets FORM_KEY_RESULT to "continue", "submit", or "cancel".
 # Must be called in current shell (not a subshell) so mutations take effect.
 # Usage: _form_process_key <key> [extra_seq]
 FORM_KEY_RESULT=""
@@ -231,7 +292,8 @@ _form_process_key() {
             FORM_KEY_RESULT="continue"
             ;;
         $'\t')
-            FORM_KEY_RESULT="tab"
+            _form_handle_tab
+            FORM_KEY_RESULT="continue"
             ;;
         *)
             if [[ "$key" =~ [[:print:]] ]]; then
@@ -242,16 +304,31 @@ _form_process_key() {
     esac
 }
 
-# Draw the full form to /dev/tty (not stdout, which may be captured by $())
+# Number of inline directory suggestion lines
+_FORM_DIR_SUGGESTION_LINES=5
+
+# Draw the full form to /dev/tty (not stdout, which may be captured by $()).
+# Uses line-by-line overwrite instead of screen clear to avoid flashing.
 _form_draw() {
+    local row=0
+    local current_name="${FORM_FIELDS[$FORM_CURSOR]}"
+
     {
+        # Position at top
         tput cup 0 0 2>/dev/null || true
-        tput ed 2>/dev/null || true
 
-        printf '\033[1m  New Session\033[0m\n'
-        printf '  Enter: create  Space: toggle/cycle  Tab: dir picker  Esc: cancel\n'
+        # Header (rows 0-2)
+        printf '\033[1m  New Session\033[0m'
+        tput el 2>/dev/null || true
         printf '\n'
+        printf '  Enter: create  Space: toggle/cycle  Tab: complete  Esc: cancel'
+        tput el 2>/dev/null || true
+        printf '\n'
+        tput el 2>/dev/null || true
+        printf '\n'
+        row=3
 
+        # Render each field
         local i name
         for ((i=0; i<${#FORM_FIELDS[@]}; i++)); do
             name="${FORM_FIELDS[$i]}"
@@ -260,6 +337,49 @@ _form_draw() {
             _form_render_field "$name" "$focused"
             tput el 2>/dev/null || true
             printf '\n'
+            ((row++))
+
+            # Inline directory suggestions (shown when directory field is focused)
+            if [[ "$name" == "directory" && "$focused" == "true" ]]; then
+                local suggestions query
+                query="${FORM_VALUES[directory]}"
+                suggestions=$(_form_filtered_dir_suggestions "$query" "$_FORM_DIR_SUGGESTION_LINES")
+                local sline scount=0
+                while IFS= read -r sline; do
+                    [[ -z "$sline" ]] && continue
+                    local spath="${sline%%$'\t'*}"
+                    local sannotation=""
+                    [[ "$sline" == *$'\t'* ]] && sannotation="${sline#*$'\t'}"
+                    if [[ $scount -eq 0 ]]; then
+                        # Highlight top suggestion (Tab will accept it)
+                        printf '    \033[36m%s\033[0m' "$spath"
+                        [[ -n "$sannotation" ]] && printf '  \033[2m%s\033[0m' "$sannotation"
+                    else
+                        printf '    \033[2m%s\033[0m' "$spath"
+                        [[ -n "$sannotation" ]] && printf '  \033[2m%s\033[0m' "$sannotation"
+                    fi
+                    tput el 2>/dev/null || true
+                    printf '\n'
+                    ((row++))
+                    ((scount++))
+                done <<< "$suggestions"
+                # Pad remaining suggestion lines (so they clear when fewer results)
+                while [[ $scount -lt $_FORM_DIR_SUGGESTION_LINES ]]; do
+                    tput el 2>/dev/null || true
+                    printf '\n'
+                    ((row++))
+                    ((scount++))
+                done
+            fi
+        done
+
+        # Clear any leftover lines from previous renders
+        local total_rows
+        total_rows=$(tput lines 2>/dev/null || echo 24)
+        while [[ $row -lt $total_rows ]]; do
+            tput el 2>/dev/null || true
+            printf '\n'
+            ((row++))
         done
     } > /dev/tty
 }
@@ -299,17 +419,6 @@ _form_run() {
                 _form_cleanup
                 return 1
                 ;;
-            tab)
-                local name="${FORM_FIELDS[$FORM_CURSOR]}"
-                if [[ "${FORM_TYPES[$name]}" == "directory" ]]; then
-                    _form_cleanup_screen
-                    local picked
-                    if picked=$(_form_directory_popup "${FORM_VALUES[$name]}"); then
-                        [[ -n "$picked" ]] && FORM_VALUES[$name]="$picked"
-                    fi
-                    { tput smcup 2>/dev/null || true; tput civis 2>/dev/null || true; } > /dev/tty
-                fi
-                ;;
         esac
     done
 
@@ -324,43 +433,6 @@ _form_cleanup_screen() {
 _form_cleanup() {
     _form_cleanup_screen
     trap - EXIT INT TERM
-}
-
-# Directory picker popup — delegates to fzf
-_form_directory_popup() {
-    local current="$1"
-
-    export -f _list_directories _annotate_directory _strip_annotation detect_git_branch 2>/dev/null || true
-
-    local initial_list
-    initial_list=$(_list_directories 2>/dev/null | grep -v '^$' || true)
-
-    local selected
-    selected=$(echo "$initial_list" | fzf \
-        --ansi \
-        --height=12 \
-        --layout=reverse \
-        --print-query \
-        --query="$current" \
-        --header="Directory  Tab:complete  Type to filter  Esc:back" \
-        --bind="tab:reload(bash -c '_list_directories {q}' | grep -v '^$')+clear-query" \
-        --bind="ctrl-u:reload(bash -c '_list_directories \$(dirname {q})' | grep -v '^$')+transform-query(dirname {q})" \
-    ) || true
-
-    local query selection
-    query=$(echo "$selected" | head -n1)
-    selection=$(echo "$selected" | tail -n1)
-    selection=$(_strip_annotation "$selection")
-    query=$(_strip_annotation "$query")
-
-    [[ -z "$selection" && -n "$query" ]] && selection="$query"
-    selection="${selection/#\~/$HOME}"
-
-    if [[ -n "$selection" ]]; then
-        echo "$selection"
-    else
-        echo "$current"
-    fi
 }
 
 # Format output matching fzf_new_session_form contract:

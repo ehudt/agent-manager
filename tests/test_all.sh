@@ -2692,25 +2692,25 @@ test_form_core() {
 
     local display
 
-    display=$(_form_field_display "text" "Fix the bug" "" "" "")
+    display=$(_form_field_display "text" "Fix the bug" "" "" "" "false")
     assert_eq "Fix the bug" "$display" "form render: text field shows value"
 
-    display=$(_form_field_display "text" "" "" "" "")
+    display=$(_form_field_display "text" "" "" "" "" "false")
     assert_eq "" "$display" "form render: empty text field"
 
-    display=$(_form_field_display "select" "claude" "" "" "")
+    display=$(_form_field_display "select" "claude" "" "" "" "false")
     assert_eq "< claude >" "$display" "form render: select shows cycling indicator"
 
-    display=$(_form_field_display "checkbox" "true" "" "" "")
+    display=$(_form_field_display "checkbox" "true" "" "" "" "false")
     assert_eq "[x]" "$display" "form render: checkbox on"
 
-    display=$(_form_field_display "checkbox" "false" "" "" "")
+    display=$(_form_field_display "checkbox" "false" "" "" "" "false")
     assert_eq "[ ]" "$display" "form render: checkbox off"
 
-    display=$(_form_field_display "checkbox" "false" "" "true" "")
+    display=$(_form_field_display "checkbox" "false" "" "true" "" "false")
     assert_eq "[disabled]" "$display" "form render: checkbox disabled"
 
-    display=$(_form_field_display "directory" "/tmp/project" "" "" "")
+    display=$(_form_field_display "directory" "/tmp/project" "" "" "" "false")
     assert_eq "/tmp/project" "$display" "form render: directory shows path"
 
     echo ""
@@ -2838,9 +2838,10 @@ test_form_loop() {
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: space returns continue"
     assert_eq "true" "${FORM_VALUES[yolo]}" "dispatch: space toggled yolo"
 
-    # Tab
+    # Tab (handled inline now, returns continue)
+    FORM_CURSOR=0  # directory field
     _form_process_key $'\t'
-    assert_eq "tab" "$FORM_KEY_RESULT" "dispatch: tab returns tab"
+    assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: tab returns continue"
 
     echo ""
     echo "=== Testing form output contract ==="
