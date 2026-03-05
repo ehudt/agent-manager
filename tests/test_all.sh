@@ -2901,8 +2901,8 @@ test_form_modes() {
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
 
-    # Mode starts as navigate
-    assert_eq "navigate" "$_FORM_MODE" "mode: starts as navigate"
+    # Mode starts as edit (on directory field)
+    assert_eq "edit" "$_FORM_MODE" "mode: starts as edit"
 
     # Last field is submit pseudo-field
     local last_idx=$(( ${#FORM_FIELDS[@]} - 1 ))
@@ -2916,6 +2916,7 @@ test_form_modes() {
     echo "=== Testing navigate mode key dispatch ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _FORM_MODE="navigate"
 
     # In navigate mode, Enter on text field enters edit mode
     FORM_CURSOR=2  # task (text field)
@@ -3040,6 +3041,88 @@ test_form_modes() {
     _FORM_DIR_HIGHLIGHT=2
     _form_handle_char "x"
     assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "dir scroll: typing resets highlight"
+
+    # Enter in edit mode accepts highlighted suggestion
+    _FORM_MODE="edit"
+    FORM_CURSOR=0
+    FORM_VALUES[directory]=""
+    _FORM_DIR_HIGHLIGHT=2
+    _form_filter_dir_suggestions "" 5
+    _form_process_key $'\n'
+    assert_eq "/home/user/project3" "${FORM_VALUES[directory]}" "dir scroll: enter accepts highlighted"
+    assert_eq "navigate" "$_FORM_MODE" "dir scroll: enter returns to navigate"
+
+    echo ""
+    echo "=== Testing disabled field behavior ==="
+
+    _form_init "/tmp" "claude" "" "new" "false" "false" "true" "" "true"
+
+    # worktree_name is not disabled when worktree_enabled=true
+    assert_eq "" "${FORM_DISABLED[worktree_name]:-}" "disabled: worktree_name enabled when worktree on"
+
+    # Toggling worktree off disables worktree_name
+    FORM_CURSOR=6  # worktree_enabled
+    _form_handle_space  # toggle off
+    assert_eq "true" "${FORM_DISABLED[worktree_name]}" "disabled: worktree_name disabled when worktree off"
+
+    # Toggling worktree back on re-enables worktree_name
+    _form_handle_space  # toggle on
+    assert_eq "" "${FORM_DISABLED[worktree_name]:-}" "disabled: worktree_name re-enabled when worktree on"
+
+    # Disabled text field shows "--"
+    local display
+    display=$(_form_field_display "text" "anything" "" "true" "" "false")
+    assert_eq "--" "$display" "disabled: text field shows --"
+
+    # Navigate mode: enter on disabled text field does not enter edit mode
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    FORM_DISABLED[worktree_name]="true"
+    local wt_idx=-1 fi
+    for ((fi=0; fi<${#FORM_FIELDS[@]}; fi++)); do
+        [[ "${FORM_FIELDS[$fi]}" == "worktree_name" ]] && wt_idx=$fi
+    done
+    if [[ $wt_idx -ge 0 ]]; then
+        FORM_CURSOR=$wt_idx
+        _FORM_MODE="navigate"
+        _form_process_key $'\n'
+        assert_eq "navigate" "$_FORM_MODE" "disabled: enter on disabled text stays in navigate"
+    fi
+
+    # Cursor block only shows in edit mode (not navigate)
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    FORM_CURSOR=2  # task field
+    _FORM_MODE="navigate"
+    _FORM_BUF=""
+    _form_render_field "task" "true"
+    local nav_render="$_FORM_BUF"
+    # In navigate mode, should NOT contain inverse block cursor
+    assert_eq "false" "$( [[ "$nav_render" == *$'\033[7m'* ]] && echo true || echo false )" \
+        "cursor: no inverse block in navigate mode"
+
+    _FORM_MODE="edit"
+    _FORM_BUF=""
+    _form_render_field "task" "true"
+    local edit_render="$_FORM_BUF"
+    # In edit mode, SHOULD contain inverse block cursor
+    assert_eq "true" "$( [[ "$edit_render" == *$'\033[7m'* ]] && echo true || echo false )" \
+        "cursor: inverse block shown in edit mode"
+
+    # Background highlight: navigate=gray (236), edit=blue (24), only on label
+    _FORM_MODE="navigate"
+    _FORM_BUF=""
+    _form_render_field "task" "true"
+    assert_eq "true" "$( [[ "$_FORM_BUF" == *$'\033[48;5;236m'* ]] && echo true || echo false )" \
+        "highlight: navigate mode uses gray bg"
+    assert_eq "false" "$( [[ "$_FORM_BUF" == *$'\033[48;5;24m'* ]] && echo true || echo false )" \
+        "highlight: navigate mode does not use blue bg"
+
+    _FORM_MODE="edit"
+    _FORM_BUF=""
+    _form_render_field "task" "true"
+    assert_eq "true" "$( [[ "$_FORM_BUF" == *$'\033[48;5;24m'* ]] && echo true || echo false )" \
+        "highlight: edit mode uses blue bg"
+    assert_eq "false" "$( [[ "$_FORM_BUF" == *$'\033[48;5;236m'* ]] && echo true || echo false )" \
+        "highlight: edit mode does not use gray bg"
 
     echo ""
 }

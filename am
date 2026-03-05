@@ -203,7 +203,7 @@ read_prompt_input() {
 
 # Command: new
 cmd_new() {
-    local directory="."
+    local directory=""
     local dir_given=false
     local agent_type=""
     local task=""
@@ -331,6 +331,8 @@ cmd_new() {
                 log_info "Cancelled"
                 return 0
             fi
+        elif [[ "$dir_given" == false ]]; then
+            directory="."
         fi
 
         agent_type="${agent_type:-$(am_default_agent)}"

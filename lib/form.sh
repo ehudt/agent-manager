@@ -17,6 +17,8 @@ _FORM_INVERSE=$'\033[7m'
 _FORM_RESET=$'\033[0m'
 _FORM_HIDE_CURSOR=$'\033[?25l'
 _FORM_SHOW_CURSOR=$'\033[?25h'
+_FORM_BG_NAV=$'\033[48;5;236m'    # dark gray background in navigate mode
+_FORM_BG_EDIT=$'\033[48;5;24m'   # dark blue background in edit mode
 
 # Form field definitions
 declare -a FORM_FIELDS=()
@@ -63,7 +65,7 @@ _form_init() {
     _FORM_DIR_SUGGESTIONS=()
     _FORM_DIR_SUGGESTIONS_LOADED=false
     _FORM_DIR_FILTERED=()
-    _FORM_MODE="navigate"
+    _FORM_MODE="edit"
     _FORM_DIR_HIGHLIGHT=0
 
     _form_add_field "directory"         "Directory"      "directory"  "$directory"
@@ -84,6 +86,9 @@ _form_init() {
         _form_add_field "worktree_enabled" "Worktree" "checkbox" "$worktree_enabled"
         if agent_supports_worktree "$agent"; then
             _form_add_field "worktree_name" "Worktree Name" "text" "$worktree_name"
+            if [[ "$worktree_enabled" != "true" ]]; then
+                FORM_DISABLED[worktree_name]="true"
+            fi
         fi
         if ! agent_supports_worktree "$agent"; then
             FORM_DISABLED[worktree_enabled]="true"
@@ -117,8 +122,8 @@ _form_field_display() {
 
     case "$type" in
         text|directory)
-            if [[ "$focused" == "true" ]]; then
-                printf '%s\033[7m \033[0m' "$value"
+            if [[ "$disabled" == "true" ]]; then
+                echo "--"
             else
                 echo "$value"
             fi
@@ -164,8 +169,12 @@ _form_render_field() {
     local display=""
     case "$type" in
         text|directory)
-            if [[ "$focused" == "true" ]]; then
+            if [[ "$disabled" == "true" ]]; then
+                display="${_FORM_DIM}--${_FORM_RESET}"
+            elif [[ "$focused" == "true" && "$_FORM_MODE" == "edit" ]]; then
                 display="${value}${_FORM_INVERSE} ${_FORM_RESET}"
+            elif [[ -z "$value" && "$name" == "worktree_name" ]]; then
+                display="${_FORM_DIM}(auto)${_FORM_RESET}"
             else
                 display="$value"
             fi
@@ -187,9 +196,25 @@ _form_render_field() {
             ;;
     esac
 
+    # Pick highlight color based on mode
+    local bg=""
+    if [[ "$focused" == "true" ]]; then
+        if [[ "$_FORM_MODE" == "edit" ]]; then
+            bg="$_FORM_BG_EDIT"
+        else
+            bg="$_FORM_BG_NAV"
+        fi
+    fi
+
     if [[ "$type" == "submit" ]]; then
         _FORM_BUF+="${_FORM_EL}"$'\n'
-        _FORM_BUF+="${prefix}${display}${_FORM_EL}"$'\n'
+        if [[ "$focused" == "true" ]]; then
+            _FORM_BUF+="${prefix}${bg}${display}${_FORM_RESET}${_FORM_EL}"$'\n'
+        else
+            _FORM_BUF+="${prefix}${display}${_FORM_EL}"$'\n'
+        fi
+    elif [[ "$focused" == "true" ]]; then
+        _FORM_BUF+="${prefix}${bg}$(printf '%-14s' "$label:")${_FORM_RESET} ${display}${_FORM_EL}"$'\n'
     else
         _FORM_BUF+="${prefix}$(printf '%-14s' "$label:") ${display}${_FORM_EL}"$'\n'
     fi
@@ -243,6 +268,14 @@ _form_handle_space() {
             else
                 FORM_VALUES[$name]="true"
             fi
+            # Update worktree_name disabled state when worktree_enabled toggles
+            if [[ "$name" == "worktree_enabled" ]]; then
+                if [[ "${FORM_VALUES[$name]}" == "true" ]]; then
+                    FORM_DISABLED[worktree_name]=""
+                else
+                    FORM_DISABLED[worktree_name]="true"
+                fi
+            fi
             ;;
         select)
             local options_str="${FORM_OPTIONS[$name]}"
@@ -282,6 +315,9 @@ _form_handle_char() {
     local ch="$1"
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
     local type="${FORM_TYPES[$name]}"
+    local disabled="${FORM_DISABLED[$name]:-}"
+
+    [[ "$disabled" == "true" ]] && return 0
 
     case "$type" in
         text|directory)
@@ -295,6 +331,9 @@ _form_handle_char() {
 _form_handle_backspace() {
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
     local type="${FORM_TYPES[$name]}"
+    local disabled="${FORM_DISABLED[$name]:-}"
+
+    [[ "$disabled" == "true" ]] && return 0
 
     case "$type" in
         text|directory)
@@ -348,10 +387,15 @@ _form_process_key_navigate() {
         $'\n'|"")
             local name="${FORM_FIELDS[$FORM_CURSOR]}"
             local type="${FORM_TYPES[$name]}"
+            local disabled="${FORM_DISABLED[$name]:-}"
             case "$type" in
                 text|directory)
-                    _FORM_MODE="edit"
-                    FORM_KEY_RESULT="continue"
+                    if [[ "$disabled" == "true" ]]; then
+                        FORM_KEY_RESULT="continue"
+                    else
+                        _FORM_MODE="edit"
+                        FORM_KEY_RESULT="continue"
+                    fi
                     ;;
                 checkbox|select)
                     FORM_KEY_RESULT="submit"
@@ -394,7 +438,14 @@ _form_process_key_edit() {
 
     case "$key" in
         $'\n'|"")
-            # Exit edit mode
+            # On directory field, Enter accepts highlighted suggestion
+            local name="${FORM_FIELDS[$FORM_CURSOR]}"
+            if [[ "${FORM_TYPES[$name]}" == "directory" && ${#_FORM_DIR_FILTERED[@]} -gt 0 ]]; then
+                local idx=$_FORM_DIR_HIGHLIGHT
+                [[ $idx -ge ${#_FORM_DIR_FILTERED[@]} ]] && idx=0
+                local entry="${_FORM_DIR_FILTERED[$idx]}"
+                FORM_VALUES[$name]="${entry%%$'\t'*}"
+            fi
             _FORM_MODE="navigate"
             FORM_KEY_RESULT="continue"
             ;;
