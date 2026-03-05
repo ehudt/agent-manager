@@ -405,7 +405,7 @@ cmd_attach() {
 
     if [[ -z "$name" ]]; then
         log_error "Session name required"
-        echo "Usage: am attach <session-name>"
+        echo "Usage: am attach <session-name>" >&2
         return 1
     fi
 
@@ -431,9 +431,9 @@ cmd_attach() {
         tmux_attach "$matches"
     else
         log_info "Multiple matches found:"
-        echo "$matches"
-        echo ""
-        echo -n "Enter session name: "
+        echo "$matches" >&2
+        echo "" >&2
+        echo -n "Enter session name: " >&2
         read -r selected
         if [[ -n "$selected" ]]; then
             agent_refresh_tmux_status "$selected"
@@ -577,7 +577,7 @@ cmd_peek() {
 cmd_kill() {
     if [[ $# -eq 0 ]]; then
         log_error "Session name required (or --all)"
-        echo "Usage: am kill <session-name> | --all"
+        echo "Usage: am kill <session-name> | --all" >&2
         return 1
     fi
 
