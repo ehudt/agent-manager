@@ -333,7 +333,7 @@ _form_directory_popup() {
     export -f _list_directories _annotate_directory _strip_annotation detect_git_branch 2>/dev/null || true
 
     local initial_list
-    initial_list=$(_list_directories "$current" 2>/dev/null | grep -v '^$' || true)
+    initial_list=$(_list_directories 2>/dev/null | grep -v '^$' || true)
 
     local selected
     selected=$(echo "$initial_list" | fzf \
