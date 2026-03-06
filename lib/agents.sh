@@ -358,7 +358,9 @@ agent_send_prompt() {
     pane_target=$(agent_target_pane "$session_name")
 
     tmux_paste_text "$pane_target" "$prompt"
-    tmux_send_keys "$pane_target" Enter
+    # Let interactive UIs finish handling bracketed paste before submit.
+    sleep 0.05
+    tmux_send_keys "$pane_target" C-m
 }
 
 # Get display name for a session (for fzf listing)
