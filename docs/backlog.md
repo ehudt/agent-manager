@@ -2,8 +2,6 @@
 
 ## In Progress
 
-- **Yolo/sandbox split + form redesign** — plan at `docs/plans/2026-03-04-form-yolo-sandbox-plan.md`, worktree at `.worktrees/yolo-sandbox-form`
-- **Fix 3 failing tests** (macOS timing, sandbox pytest) — session `am-f8db29`
 
 ## Up Next
 
@@ -16,15 +14,14 @@
 - **MCP server for am** — expose launch/send/peek/list/kill as structured tools instead of CLI-over-bash; better for agents that don't have shell access
 - **Speed issues** - opening the popup on mac can be pretty slow. Fix it
 - **Detach mode doesn't trigger agent** - it pastes the prompt but doesn't send the Enter
-- **New session form** - select box for multi-select (see all options all the time)
-- **New session form** - toggle multi select with arrows
-- **New session form** - directory selector - scrolling for more options
+- **New session form** - select box in multi-select style (see all options all the time)
+- **New session form** - toggle multi select options with left/right arrow keys
+- **New session form** - directory selector - allow scrolling down/up for more options
 
 ## Ideas
 
 - **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model
 - **Session tagging** — add labels/tags to sessions for filtering (`am list --tag debug`)
-- **Cost tracking** — parse Claude API usage from session logs, show per-session cost
 - **Session templates** — predefined launch configs (agent type + flags + prompt skeleton) for common workflows
 - **Inter-session messaging** — structured message passing between sessions (beyond raw `am send`)
 - **Auto-cleanup** — kill sessions that have been idle beyond a configurable threshold
