@@ -150,7 +150,7 @@ For agent orchestration, prefer this sequence:
 - `sandbox_identity_init()` - Initialize `~/.sb/` with dedicated sandbox credentials
 
 **Form (lib/form.sh):**
-- `am_new_session_form(...)` - Dispatch: picks tput form or legacy fzf form based on `new_form` config flag
+- `am_new_session_form(...)` - Dispatch: picks tput form or legacy fzf form based on the new_form config flag
 - `_form_init(directory, agent, task, mode, yolo, sandbox, worktree_enabled, worktree_name, docker_available)` - Initialize form state, fields, submit row
 - `_form_run()` - Main loop: draw → read key → dispatch (navigate/edit) → repeat. Returns tab-delimited output on stdout
 - `_form_process_key(key, [extra_seq])` - Route to `_form_process_key_navigate` or `_form_process_key_edit` based on `_FORM_MODE`
