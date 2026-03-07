@@ -46,64 +46,144 @@ Each session is in exactly one of the following states at any moment:
 | State | Meaning |
 |-------|---------|
 | `starting` | Session created; agent process not yet confirmed running |
-| `running` | Agent is actively executing (spinner visible, tool use in progress) |
+| `running` | Agent is actively executing (tool use in progress, response streaming) |
 | `waiting_input` | Agent has finished a turn and is waiting for a user message |
 | `waiting_permission` | Agent is blocked on a permission prompt (y/n/a) |
 | `waiting_custom` | Agent is blocked on a non-permission question (e.g. `/ask`) |
 | `idle` | Agent process has exited cleanly (task complete or `exit` sent) |
 | `dead` | Agent process exited with an error, or tmux session no longer exists |
 
-### Detection Mechanism
+### Detection Strategy: Two-Source Model
 
-State is derived by inspecting live tmux pane content using
-`tmux_capture_pane`. No persistent state is written — detection is stateless
-and re-evaluable at any time.
+Detection uses **two complementary sources** depending on agent type. Each
+source has different reliability characteristics; together they cover all cases.
+
+```
+Source A: Claude JSONL file (Claude sessions only)
+  Reliable, structured, no false positives
+  Slightly trailing (last write may be seconds old for active responses)
+
+Source B: tmux pane content (all agent types)
+  Real-time but requires pattern matching; permission prompts only visible here
+  Required for Codex, Gemini, and as tie-breaker for Claude
+```
+
+**For Claude sessions:** use Source A as primary; Source B only for
+`waiting_permission` and `waiting_custom` (permission prompts are not logged
+to JSONL — they are rendered in the terminal by Claude Code's UI layer).
+
+**For all other agents:** use Source B exclusively.
+
+### Source A: Claude JSONL State Inference
+
+Claude Code appends a JSONL entry to its session file for every message and
+every streaming chunk as it is produced. The file lives at:
+
+```
+~/.claude/projects/<encoded-dir>/<session-uuid>.jsonl
+```
+
+The directory encoding replaces `/` and `.` with `-` (e.g. `/home/user/myapp`
+→ `home-user-myapp`). The active session file is the most recently modified
+`.jsonl` in the project directory.
+
+**JSONL entry schema (observed):**
+
+```json
+{"type": "user"|"assistant"|"queue-operation",
+ "message": {
+   "role": "user"|"assistant",
+   "content": [{"type": "text"|"tool_use"|"tool_result"|"thinking", ...}],
+   "stop_reason": null | "end_turn" | "tool_use"
+ },
+ "timestamp": "2026-03-07T09:31:48.604Z"}
+```
+
+**State rules (evaluated against the last entry in the file):**
+
+| Last entry | State |
+|------------|-------|
+| `type=assistant, stop_reason=end_turn` | `waiting_input` |
+| `type=assistant, stop_reason=tool_use` | `running` (tool call dispatched) |
+| `type=assistant, stop_reason=null, content=[tool_use]` | `running` (stream in progress) |
+| `type=assistant, stop_reason=null, content=[text\|thinking]` | `running` (response streaming) |
+| `type=user, content=[tool_result]` | `running` (tool result sent; Claude processing) |
+| `type=queue-operation, operation=enqueue` | `running` (new user message queued) |
+
+**Staleness check:** if the JSONL mtime is > 30s old and the last entry has
+`stop_reason=null`, the file may have been written by a crashed process. Fall
+back to Source B to resolve.
+
+**Locating the Claude session JSONL:**
+
+`am` records the working directory at launch time in the registry. The JSONL
+path can be derived without the session UUID by finding the newest `.jsonl`
+in the encoded project dir:
+
+```bash
+encoded=$(echo "$dir" | sed -E 's|^/||; s|[/.]|-|g')
+project_dir="$HOME/.claude/projects/$encoded"
+jsonl=$(ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1)
+```
+
+The session UUID is not stored in the `am` registry today. The implementation
+should either:
+- (Option A) Store the Claude session UUID in the registry at launch time by
+  watching for the first new `.jsonl` to appear after launch, or
+- (Option B) Always use the newest `.jsonl` in the project dir (simpler;
+  correct as long as only one `am` session per directory, which is the common
+  case; warn if multiple `.jsonl` files are < 60s old).
+
+Option B is recommended for the initial implementation.
+
+### Source B: tmux Pane Content Pattern Matching
+
+Used for all agents for `waiting_permission`/`waiting_custom`, and as the sole
+source for Codex/Gemini.
 
 **Dead check (first, fast):**
 - `tmux has-session` fails → `dead`
 - `pane_current_command` is a shell (`bash`, `zsh`, `sh`, `fish`) → process
-  exited; classify as `idle` or `dead` based on exit status heuristics (see
-  below)
+  exited; classify as `idle` or `dead` based on exit status heuristics
 
 **Content pattern matching (ordered by priority):**
 
-Each pattern is matched against the last 40 lines of the agent pane, stripped
-of ANSI codes.
+Patterns matched against the last 40 lines of the agent pane, ANSI stripped.
 
 ```
-waiting_permission patterns:
-  - /Do you want to (proceed|continue|make this edit)\?/
+waiting_permission patterns (highest priority — checked even for Claude):
+  - /Do you want to (proceed|continue|make this edit|allow)\?/i
   - /\[y\/n\]/i
   - /\(y\/n\/a\/s\)/i
   - /Allow .+ to (read|write|execute|run)\?/i
 
-waiting_custom patterns (non-permission questions):
-  - /\? .*:?\s*$/ (ends with question mark)
+waiting_custom patterns:
   - Claude's /ask block header
+  - /\?\s*$/ on a non-permission line
 
-waiting_input patterns:
-  - Claude's input box: "╭─" or "│" prompt frame at bottom of pane
-  - Cursor visible on input line with no spinner
+waiting_input patterns (Codex/Gemini only; Claude uses JSONL):
+  - Bare prompt character with no spinner on same line
+  - Known agent "ready" prompts
 
-running patterns:
-  - Spinner characters: ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ on any visible line
-  - "Working…", "Thinking…", "Running tool", "Reading file", "Writing file"
-  - Tool use block: "⎿ Running", "⎿ Reading"
+running patterns (Codex/Gemini only):
+  - Spinner characters: ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏
+  - "Working…", "Thinking…"
+  - Tool use indicators
 ```
 
 **Fallback:**
-- If no content pattern matches and the agent process is alive → `running`
-  (conservative: assume work is in progress rather than falsely signaling ready)
+- No pattern matches + agent process alive → `running` (conservative)
 
 ### Implementation Notes
 
-- Pattern matching lives in a new `lib/state.sh` module.
+- All state logic lives in a new `lib/state.sh` module.
 - `agent_get_state(session_name)` → echoes one of the state strings to stdout.
-- Patterns are defined as arrays so they can be extended without changing
-  detection logic.
-- ANSI stripping uses the existing `lib/strip-ansi` script (already in repo).
-- The function must be fast enough to call in a tight poll loop (target < 100ms
-  per call; a single `tmux capture-pane` + sed pass satisfies this).
+- `_state_claude_jsonl(dir)` → reads JSONL; echoes state or empty string.
+- `_state_pane_patterns(session)` → reads pane; echoes state or empty string.
+- `agent_get_state` calls `_state_claude_jsonl` first (if Claude); falls back
+  to `_state_pane_patterns` if result is empty or staleness check fails.
+- ANSI stripping uses the existing `lib/strip-ansi` script.
+- Target latency: < 150ms per call (JSONL tail is fast; pane capture adds ~50ms).
 
 ---
 
@@ -394,46 +474,65 @@ am interrupt --confirm <session>    # prompt before sending (safety guard)
 
 ---
 
-## State Detection Patterns (Reference)
+## State Detection Reference
 
-All patterns matched against ANSI-stripped pane content (last 40 lines).
-
-### Claude Code specific
+### Source A: Claude JSONL (Claude sessions only)
 
 ```
-# Spinner → running
-[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]
+File: ~/.claude/projects/<encoded-dir>/<newest>.jsonl
+Read: last line only
 
-# Tool use → running
-^⎿\s+(Running|Reading|Writing|Executing|Searching)
+Entry → state mapping:
+  type=assistant  stop_reason=end_turn          → waiting_input
+  type=assistant  stop_reason=tool_use          → running
+  type=assistant  stop_reason=null              → running (stream in progress)
+  type=user       content=[tool_result]         → running
+  type=queue-operation  operation=enqueue       → running
 
-# Input prompt frame → waiting_input
-^╭─
-^│\s*$        (empty input box line)
-^\s*>\s*$     (bare prompt)
+Staleness guard: if mtime > 30s AND last stop_reason=null → fall back to pane
+
+Directory encoding:
+  strip leading /  →  replace / and . with -
+  e.g. /home/user/myapp  →  home-user-myapp
+  Newest .jsonl in project dir = active session file
+```
+
+### Source B: tmux Pane Patterns (all agents; primary for Codex/Gemini)
+
+```
+Checked first even for Claude (permission prompts not in JSONL):
 
 # Permission prompt → waiting_permission
-Do you want to (proceed|continue|make this edit|allow)\?
-\[y/n\]
-\(y/n/a/s\)
-Allow .+ \(read|write|execute|run\)
+/Do you want to (proceed|continue|make this edit|allow)\?/i
+/\[y\/n\]/i
+/\(y\/n\/a\/s\)/i
+/Allow .+ (read|write|execute|run)/i
 
-# Question prompt → waiting_custom
-\?\s*$        (line ending in question mark)
+# Custom question → waiting_custom
+Claude /ask block header
+Line ending in ? that is not a permission match
+
+# Input ready → waiting_input  (Codex/Gemini only; Claude uses JSONL)
+Known "ready" prompt with no spinner on same line
+
+# Running → running  (Codex/Gemini only)
+Spinner chars:  ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏
+"Working…" / "Thinking…"
+Tool indicators:  ⎿ Running|Reading|Writing|Executing
 ```
 
-### Shell-level check (all agent types)
+### Shell-level check (all agents, evaluated first)
 
 ```bash
 tmux_pane_current_command "$session" "top"
-# If result is bash/zsh/sh/fish → agent exited; classify idle vs dead
+# bash/zsh/sh/fish → agent process exited → classify idle vs dead
 ```
 
 ### Exit classification heuristic
 
 When pane command is a shell, check the last visible line:
-- Matches shell prompt (`$`, `%`, `#`, `>`) → `idle`
-- Matches error indicator (non-zero exit, `error:`, `fatal:`) → `dead`
+- Shell prompt (`$`, `%`, `#`, `>`) → `idle`
+- Error indicator (`error:`, `fatal:`, non-zero exit display) → `dead`
 - Otherwise → `idle` (conservative)
 
 ---
@@ -442,11 +541,13 @@ When pane command is a shell, check the last visible line:
 
 ```
 lib/state.sh
-  agent_get_state(session_name)       → state string
+  agent_get_state(session_name)            → state string
   agent_wait_state(session, states[], timeout_s) → matched state or "timeout"
-  agent_classify_exit(pane_content)   → "idle" | "dead"
-  _state_capture_pane(session)        → stripped pane lines
-  _state_match_patterns(lines)        → state string or ""
+  agent_classify_exit(session)             → "idle" | "dead"
+  _state_from_jsonl(dir)                   → state string or ""  [Claude only]
+  _state_from_pane(session)               → state string or ""
+  _state_jsonl_path(dir)                  → path to newest .jsonl or ""
+  _state_jsonl_stale(path)               → 0 (fresh) | 1 (stale, >30s)
 ```
 
 All functions follow existing conventions:
