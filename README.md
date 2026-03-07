@@ -41,7 +41,7 @@ cd agent-manager
 am new ~/my-project
 ```
 
-That's it. You're in a tmux session with Claude running in the top pane and a shell in the bottom. Press `Prefix + d` to detach, then run `am` to browse all your sessions.
+That's it. You're in a tmux session with Claude running in the top pane and a shell in the bottom. Press `Prefix + d` to detach, or `Prefix + s` to browse all your sessions.
 
 <!-- TODO: Video (15-20s) — terminal recording showing: `am new ~/project` → agent starts → user detaches → `am` opens browser → user selects session → reattaches. Keep it fast. -->
 
