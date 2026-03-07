@@ -153,23 +153,39 @@ _state_from_pane() {
         | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g; s/\x1b\[?[0-9;]*[a-zA-Z]//g' \
         || true)
 
-    # Permission prompts — highest priority, checked for all agents
+    # --- Permission prompts (checked first for all agents) ---
+
+    # Claude permission patterns
     if printf '%s' "$content" | grep -qiE \
             'Do you want to (proceed|continue|make this edit|allow)\?|\[y/n\]|\(y/n/a/s\)|Allow .+ to (read|write|execute|run)\?'; then
         echo "waiting_permission"
         return
     fi
 
-    # Custom question prompts
-    if printf '%s' "$content" | grep -qE '^\s*/ask|\?\s*$'; then
+    # Codex permission patterns: command approval and edit approval dialogs
+    # "Would you like to run the following command?"
+    # "Would you like to make the following edits?"
+    # Both end with "Press enter to confirm or esc to cancel"
+    if printf '%s' "$content" | grep -qE \
+            'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel'; then
+        echo "waiting_permission"
+        return
+    fi
+
+    # --- Custom question prompts ---
+
+    # Claude /ask block
+    if printf '%s' "$content" | grep -qE '^\s*/ask'; then
         echo "waiting_custom"
         return
     fi
 
-    # For non-Claude agents, determine running vs waiting_input from pane
-    if [[ "$agent_type" != "claude" ]]; then
-        if printf '%s' "$content" | grep -qE \
-                '[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|Working…|Thinking…|⎿ (Running|Reading|Writing|Executing)'; then
+    # --- Agent-specific running vs waiting_input ---
+
+    if [[ "$agent_type" == "codex" ]]; then
+        # Codex shows "• Working (Xs • esc to interrupt)" or "○ Working (Xs •..."
+        # while busy. Absence of this indicator means it is waiting for input.
+        if printf '%s' "$content" | grep -qE 'Working \([0-9]+s|esc to interrupt'; then
             echo "running"
         else
             echo "waiting_input"
@@ -178,6 +194,7 @@ _state_from_pane() {
     fi
 
     # Claude fallback: process is alive → conservative running
+    # (Claude primary detection is via JSONL in agent_get_state)
     echo "running"
 }
 

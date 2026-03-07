@@ -3212,6 +3212,78 @@ test_state() {
 
     rm -rf "$tmp_dir"
 
+    # --- Test: Codex pane pattern matching ---
+    # Override _state_from_pane to call the pattern-matching logic directly
+    # by stubbing tmux calls and feeding canned pane content.
+    # We test _state_from_pane by calling it with a fake session where tmux
+    # is mocked to return specific content.
+
+    # Helper: exercise permission/running/waiting_input branches via the
+    # _state_from_pane internals without a real tmux session.
+    # We test the pattern-matching regexes directly.
+
+    local codex_running='• Working (3s • esc to interrupt)'
+    local codex_running2='○ Working (12s • esc to interrupt)'
+    local codex_cmd_approval='Would you like to run the following command?
+Reason: read ~/.zshrc
+$ /usr/bin/zsh -lc something
+1. Yes, proceed (y)
+Press enter to confirm or esc to cancel'
+    local codex_edit_approval='Would you like to make the following edits?
+Reason: command failed; retry without sandbox?
+README.md (+5 -0)
+Press enter to confirm or esc to cancel'
+    local codex_idle='› some previous output
+here is the result
+› '
+
+    # Running pattern
+    if printf '%s' "$codex_running" | grep -qE 'Working \([0-9]+s|esc to interrupt'; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: codex pane: Working indicator matches running pattern"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: codex pane: Working indicator should match running pattern"
+    fi
+
+    if printf '%s' "$codex_running2" | grep -qE 'Working \([0-9]+s|esc to interrupt'; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: codex pane: hollow-circle Working variant matches running pattern"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: codex pane: hollow-circle Working variant should match"
+    fi
+
+    # Command approval pattern
+    if printf '%s' "$codex_cmd_approval" | grep -qE \
+            'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel'; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: codex pane: command approval matches permission pattern"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: codex pane: command approval should match permission pattern"
+    fi
+
+    # Edit approval pattern
+    if printf '%s' "$codex_edit_approval" | grep -qE \
+            'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel'; then
+        ((TESTS_RUN++)); ((TESTS_PASSED++))
+        echo -e "${GREEN}PASS${RESET}: codex pane: edit approval matches permission pattern"
+    else
+        ((TESTS_RUN++)); ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: codex pane: edit approval should match permission pattern"
+    fi
+
+    # Idle content does NOT match running or permission patterns
+    local idle_matches_running=false
+    local idle_matches_permission=false
+    printf '%s' "$codex_idle" | grep -qE 'Working \([0-9]+s|esc to interrupt' && idle_matches_running=true
+    printf '%s' "$codex_idle" | grep -qE \
+        'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel' \
+        && idle_matches_permission=true
+    assert_eq "false" "$idle_matches_running" "codex pane: idle content does not match running pattern"
+    assert_eq "false" "$idle_matches_permission" "codex pane: idle content does not match permission pattern"
+
     echo ""
 }
 
