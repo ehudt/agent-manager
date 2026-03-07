@@ -792,15 +792,21 @@ fzf_list_json() {
         local directory branch agent_type task
         IFS='|' read -r directory branch agent_type task <<< "$fields"
 
+        local state=""
+        if [[ "$(type -t agent_get_state)" == "function" ]]; then
+            state=$(agent_get_state "$session" 2>/dev/null || true)
+        fi
+
         sessions+=("$(jq -n \
             --arg name "$session" \
+            --arg state "$state" \
             --arg dir "$directory" \
             --arg branch "$branch" \
             --arg agent "$agent_type" \
             --arg task "$task" \
             --arg activity "${tmux_activity[$session]:-0}" \
             --arg created "${tmux_created[$session]:-0}" \
-            '{name: $name, directory: $dir, branch: $branch, agent_type: $agent, task: $task, activity: ($activity | tonumber), created: ($created | tonumber)}'
+            '{name: $name, state: $state, directory: $dir, branch: $branch, agent_type: $agent, task: $task, activity: ($activity | tonumber), created: ($created | tonumber)}'
         )")
     done < <(tmux_list_am_sessions_with_activity)
 
