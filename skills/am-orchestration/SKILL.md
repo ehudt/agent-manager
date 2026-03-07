@@ -114,6 +114,9 @@ if [[ "$state" == "waiting_input" ]]; then
 fi
 
 am wait --state idle,dead "$session"
+
+# Clean up completed workers you no longer need
+am kill "$session"
 ```
 
 **Event-driven monitoring** — react to state transitions:
@@ -191,3 +194,4 @@ tail -f /tmp/am-logs/$session/agent.log   # direct log access (no tmux)
 | `am send` while agent is still running | Use `am send --wait` or `am wait` first |
 | Monitoring too aggressively | `am wait` + `am peek --json` once is cleaner than polling |
 | Not telling the user | Always report session ID and how to attach |
+| Leaving finished sessions running | Kill sessions no longer needed with `am kill <session>` |
