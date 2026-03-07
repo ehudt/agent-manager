@@ -240,18 +240,111 @@ done
 
 <!-- TODO: Video (30-40s) — terminal recording showing an orchestrator agent launching two parallel workers with `am new --detach`, waiting for them with `am wait`, peeking at results with `am peek --json`, and then killing the sessions. Show the session IDs being captured and reused. -->
 
-## Advanced Features
+## Sandbox Mode
 
-### Sandbox mode
+> **Not a security boundary.** The sandbox reduces the blast radius of permissive (`--yolo`) agent runs by placing them inside a Docker container. It is **not** designed to contain a determined adversary. The project directory is bind-mounted read-write, host credentials are shared into the container, and Docker itself requires root-equivalent access on the host. Treat the sandbox as a safety net for accidental damage, not as isolation from malicious code.
 
-When `--yolo` is used, am can run agents inside Docker sandbox containers for safe permissive execution:
+### When it activates
+
+Sandbox mode is used when `--yolo` and `--sandbox` are both set (or when yolo + sandbox are the saved defaults). The container is created per-session and removed when the session is killed.
 
 ```bash
-am new --yolo ~/project               # Auto-sandboxed
+am new --yolo --sandbox ~/project      # Explicit sandbox
+am new --yolo ~/project                # Also sandboxed if `sandbox=true` in config
 am sandbox ls                          # List sandbox containers
 am sandbox prune                       # Remove stopped containers
-am sandbox rebuild --restart           # Rebuild image, restart running sandboxes
+am sandbox rebuild --restart           # Rebuild image, restart running containers
 ```
+
+### Container architecture
+
+Each sandbox is a Docker container running **Ubuntu 24.04** with a long-lived init process (`tail -f /dev/null`). The agent and shell panes connect via `docker exec` — there is no SSH overhead for the default workflow.
+
+The entrypoint aligns the container's user identity (username, UID, GID, home directory) with the host user, so file ownership on bind-mounted directories is consistent.
+
+**Pre-installed packages:**
+
+| Category | Packages |
+|----------|----------|
+| Shell & editors | zsh (with Pure prompt), vim-nox, tmux |
+| Dev tools | git, build-essential, python3 + venv, Node.js 22, npm |
+| Python tooling | [uv](https://github.com/astral-sh/uv), ipython, shell-gpt |
+| Search & nav | ripgrep, fzf, zoxide, bat, eza |
+| Network | curl, wget, openssh-server, iproute2, dnsutils, iputils-ping |
+| Testing | Playwright + Chromium |
+| AI agents | Claude Code, Codex CLI |
+| Optional | Tailscale (for remote SSH access) |
+
+### Host file system mounts
+
+The container sees a mix of read-write and read-only bind mounts from the host:
+
+| Host path | Container path | Mode | Purpose |
+|-----------|---------------|------|---------|
+| Project directory | Same absolute path | **rw** | Working directory — agent reads and writes code here |
+| `~/.claude.json` | `~/.claude.json` | **rw** | Claude auth tokens and settings (needs write for token refresh) |
+| `~/.claude/` | `~/.claude/` | **rw** | Claude data directory |
+| `~/.codex/config.toml` | `~/.codex/config.toml` | **rw** | Codex configuration |
+| `~/.local/bin/claude` | Same path | ro | Claude native binary (only if native install detected) |
+| `~/.local/share/claude/versions/` | Same path | ro | Claude native version artifacts |
+| `~/.codex/auth.json` | `~/.codex/auth.json` | ro | Codex authentication |
+| `~/.ssh/` | `~/.ssh/` | ro | SSH keys for git operations |
+| `~/.gitconfig` | `~/.gitconfig` | ro | Git identity and aliases |
+| `~/.zshrc`, `~/.vimrc`, `~/.tmux.conf` | Same paths | ro | Shell, editor, and tmux preferences |
+| `~/code/tools/` | Same path | ro | Shared tools directory (only if it exists on host) |
+
+**Important:** The project directory is mounted **read-write**. Any changes the agent makes to files in that directory are immediately visible on the host and vice versa.
+
+### Sandbox identity (`~/.sb`)
+
+By default, the container shares your host credentials. For stronger isolation, initialize a dedicated sandbox identity:
+
+```bash
+am sandbox identity init
+```
+
+This creates `~/.sb/` with:
+- A dedicated SSH keypair (`~/.sb/ssh/id_ed25519`) — add to GitHub/GitLab as a deploy key
+- Copies of `~/.claude.json`, `~/.claude/`, and `~/.codex/` config/auth
+
+When `~/.sb/` exists, am mounts sandbox-specific credentials instead of host-global ones. This lets you scope sandbox access (e.g., read-only deploy keys) without affecting your main development environment.
+
+### Resource limits
+
+| Resource | Default | Environment variable |
+|----------|---------|---------------------|
+| Memory | 4 GB | `SB_MEMORY_LIMIT` |
+| CPUs | 2.0 | `SB_CPUS_LIMIT` |
+| PIDs | 512 | `SB_PIDS_LIMIT` |
+
+### Security hardening
+
+By default, the container runs with:
+
+- **`--cap-drop=ALL`** — all Linux capabilities dropped, then only `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` are added back (required by the entrypoint for user alignment)
+- **`--security-opt no-new-privileges:true`** — prevents privilege escalation inside the container
+- **No passwordless sudo** — `sudo` is blocked unless you explicitly set `SB_UNSAFE_ROOT=1`
+
+Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `SB_UNSAFE_ROOT` | `0` | `1` = enable passwordless sudo (for `apt install`, etc.) |
+| `SB_READ_ONLY_ROOTFS` | `0` | `1` = mount root filesystem read-only (`/tmp`, `/run` remain writable) |
+| `SB_ENABLE_TAILSCALE` | `1` | `0` = disable Tailscale networking |
+| `SB_FORWARD_SSH_AGENT` | `0` | `1` = forward host SSH agent socket into the container |
+| `ENABLE_SSH` | `0` | `1` = start sshd inside the container |
+| `TS_AUTHKEY` | (unset) | Tailscale auth key for automatic VPN join |
+
+### Remote access via Tailscale
+
+When `SB_ENABLE_TAILSCALE=1` and `TS_AUTHKEY` is set, each container joins your Tailscale network with its session name as the hostname. With `TS_ENABLE_SSH=1` (default), you can SSH directly into any sandbox:
+
+```bash
+ssh youruser@am-abc123              # From any device on your tailnet
+```
+
+This is useful for accessing sandbox sessions from a phone, tablet, or another machine.
 
 ### Worktree isolation
 
