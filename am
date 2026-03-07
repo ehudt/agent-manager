@@ -45,7 +45,10 @@ COMMANDS:
     kill --all, -a      Kill all agent-manager sessions
     config              Show or change saved defaults
     info, i             Show detailed session info
-    status, s           Show summary of all sessions
+    status, s           Show session state (all or single); --json for machine output
+    wait                Block until a session reaches a target state
+    events              Stream state-change events as JSONL
+    interrupt           Send Ctrl-C to an agent pane
     sandbox, sb         Manage sandbox containers and image
     help                Show this help message
 
@@ -67,11 +70,27 @@ OPTIONS FOR 'new':
     --              Pass remaining args to agent (e.g., -- --resume)
 
 OPTIONS FOR 'send':
+    --wait          Wait until session is ready before sending
+    --timeout N     Seconds to wait (default: 600; used with --wait)
     Read prompt text from argv or stdin and inject it into the running agent pane.
 
 OPTIONS FOR 'peek':
     --pane <name>   Pane to inspect: agent|shell (default: agent)
     --follow, -f    Stream output continuously
+    --json          Return structured JSON snapshot with state field
+    --lines N       Lines of pane content to include (default: 50; used with --json)
+
+OPTIONS FOR 'wait':
+    --state <list>  Comma-separated target states (default: waiting_input,waiting_permission,waiting_custom,idle,dead)
+    --timeout N     Seconds before giving up (default: 600)
+    --json          Print final state as JSON object on exit
+
+OPTIONS FOR 'events':
+    --follow        Keep streaming after idle/dead (default: stop on idle/dead)
+    --timeout N     Seconds before stopping (default: 600)
+
+OPTIONS FOR 'status':
+    --json          Output as JSON (single session or array of all sessions)
 
 KEYBINDINGS (interactive browser):
     Enter           Attach to selected session
@@ -137,6 +156,7 @@ source "$AM_LIB_DIR/config.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
 source "$AM_LIB_DIR/agents.sh"
+source "$AM_LIB_DIR/state.sh"
 source "$AM_LIB_DIR/sandbox.sh"
 source "$AM_LIB_DIR/fzf.sh"
 source "$AM_LIB_DIR/form.sh"
@@ -451,12 +471,39 @@ cmd_attach() {
 }
 
 cmd_send() {
+    local do_wait=false
+    local timeout_s=600
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --wait)
+                do_wait=true
+                shift
+                ;;
+            --timeout)
+                timeout_s="${2:-600}"
+                shift 2
+                ;;
+            -h|--help)
+                echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
+                return 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
     local name="${1:-}"
     shift 2>/dev/null || true
 
     if [[ -z "$name" ]]; then
         log_error "Session name required"
-        echo "Usage: am send <session-name> [prompt]"
+        echo "Usage: am send [--wait] <session-name> [prompt]"
         return 1
     fi
 
@@ -465,7 +512,7 @@ cmd_send() {
 
     if [[ -z "$prompt" ]]; then
         log_error "Prompt required via argv or stdin"
-        echo "Usage: am send <session-name> [prompt]"
+        echo "Usage: am send [--wait] <session-name> [prompt]"
         return 1
     fi
 
@@ -473,6 +520,25 @@ cmd_send() {
     if ! resolved=$(resolve_session_fuzzy "$name"); then
         log_error "Session not found: $name"
         return 1
+    fi
+
+    if $do_wait; then
+        local ready_states="waiting_input,waiting_permission,waiting_custom,idle"
+        local reached
+        reached=$(agent_wait_state "$resolved" "$ready_states" "$timeout_s")
+        local wait_exit=$?
+        if [[ $wait_exit -eq 1 ]]; then
+            log_error "Session not found while waiting: $resolved"
+            return 1
+        fi
+        if [[ $wait_exit -eq 3 ]]; then
+            log_error "Timed out waiting for session to be ready: $resolved"
+            return 3
+        fi
+        if [[ "$reached" == "dead" ]]; then
+            log_error "Session exited before prompt could be sent: $resolved"
+            return 2
+        fi
     fi
 
     agent_send_prompt "$resolved" "$prompt"
@@ -525,6 +591,8 @@ peek_follow_poll() {
 cmd_peek() {
     local follow=false
     local pane_name="agent"
+    local json=false
+    local lines=50
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -536,8 +604,16 @@ cmd_peek() {
                 follow=true
                 shift
                 ;;
+            --json)
+                json=true
+                shift
+                ;;
+            --lines)
+                lines="${2:-50}"
+                shift 2
+                ;;
             -h|--help)
-                echo "Usage: am peek [--pane agent|shell] [--follow] <session-name>"
+                echo "Usage: am peek [--pane agent|shell] [--follow] [--json [--lines N]] <session-name>"
                 return 0
                 ;;
             -*)
@@ -572,7 +648,28 @@ cmd_peek() {
             ;;
     esac
 
-    if $follow; then
+    if $json; then
+        local state pane_target raw_content content ts
+        state=$(agent_get_state "$resolved")
+        pane_target=$(tmux_session_pane_target "$resolved" "$pane_name")
+        raw_content=$(tmux_capture_pane "$pane_target" 2>/dev/null || true)
+        # Strip ANSI, trim trailing blank lines, take last N lines
+        content=$(printf '%s' "$raw_content" \
+            | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g; s/\x1b\[?[0-9;]*[a-zA-Z]//g' \
+            | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}' \
+            | tail -"$lines")
+        ts=$(date +%s)
+        # Build JSON array of lines
+        local lines_json
+        lines_json=$(printf '%s\n' "$content" | jq -R . | jq -s .)
+        jq -n \
+            --arg name "$resolved" \
+            --arg state "$state" \
+            --arg pane "$pane_name" \
+            --argjson lines_arr "$lines_json" \
+            --argjson ts "$ts" \
+            '{name: $name, state: $state, pane: $pane, lines: $lines_arr, ts: $ts}'
+    elif $follow; then
         if ! peek_follow_logs "$resolved" "$pane_name"; then
             peek_follow_poll "$resolved" "$pane_name"
         fi
@@ -742,6 +839,76 @@ cmd_info() {
 
 # Command: status
 cmd_status() {
+    local json=false
+    local session_arg=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json|-j)
+                json=true
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: am status [--json] [<session-name>]"
+                return 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                session_arg="$1"
+                shift
+                ;;
+        esac
+    done
+
+    # Single-session mode
+    if [[ -n "$session_arg" ]]; then
+        local resolved
+        if ! resolved=$(resolve_session_fuzzy "$session_arg"); then
+            log_error "Session not found: $session_arg"
+            return 1
+        fi
+
+        local state
+        state=$(agent_get_state "$resolved")
+
+        if $json; then
+            local fields directory branch agent_type task
+            fields=$(registry_get_fields "$resolved" directory branch agent_type task)
+            IFS='|' read -r directory branch agent_type task <<< "$fields"
+            local activity created
+            activity=$(tmux_get_activity "$resolved")
+            created=$(tmux_get_created "$resolved")
+            jq -n \
+                --arg name "$resolved" \
+                --arg state "$state" \
+                --arg dir "$directory" \
+                --arg branch "$branch" \
+                --arg agent "$agent_type" \
+                --arg task "$task" \
+                --arg activity "${activity:-0}" \
+                --arg created "${created:-0}" \
+                '{name: $name, state: $state, directory: $dir, branch: $branch,
+                  agent_type: $agent, task: $task,
+                  activity: ($activity | tonumber), created: ($created | tonumber)}'
+        else
+            local dir_short
+            dir_short=$(registry_get_field "$resolved" directory 2>/dev/null | xargs basename 2>/dev/null || echo "?")
+            printf '%-20s  %-20s  %-30s  %s\n' "$resolved" "$state" "$dir_short" "$(registry_get_field "$resolved" task 2>/dev/null || true)"
+        fi
+
+        [[ "$state" == "dead" ]] && return 2
+        return 0
+    fi
+
+    # All-sessions mode
+    if $json; then
+        fzf_list_json
+        return 0
+    fi
+
     registry_gc >/dev/null 2>&1
 
     local count
@@ -759,6 +926,232 @@ cmd_status() {
     else
         echo "Run 'am new' to create your first session."
     fi
+}
+
+# Command: wait
+cmd_wait() {
+    local target_states="waiting_input,waiting_permission,waiting_custom,idle,dead"
+    local timeout_s=600
+    local json=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --state)
+                target_states="${2:-}"
+                shift 2
+                ;;
+            --timeout)
+                timeout_s="${2:-600}"
+                shift 2
+                ;;
+            --json)
+                json=true
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: am wait [--state <states>] [--timeout N] [--json] <session-name>"
+                echo "  states: comma-separated list of: starting,running,waiting_input,"
+                echo "          waiting_permission,waiting_custom,idle,dead"
+                return 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then
+        log_error "Session name required"
+        echo "Usage: am wait [--state <states>] [--timeout N] <session-name>"
+        return 1
+    fi
+
+    local resolved
+    if ! resolved=$(resolve_session_fuzzy "$name"); then
+        log_error "Session not found: $name"
+        return 1
+    fi
+
+    local reached exit_code
+    reached=$(agent_wait_state "$resolved" "$target_states" "$timeout_s")
+    exit_code=$?
+
+    if $json; then
+        jq -n --arg session "$resolved" --arg state "$reached" \
+            '{session: $session, state: $state}'
+    else
+        echo "$reached"
+    fi
+
+    return $exit_code
+}
+
+# Command: events
+cmd_events() {
+    local follow=false
+    local timeout_s=600
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --follow|-f)
+                follow=true
+                shift
+                ;;
+            --timeout)
+                timeout_s="${2:-600}"
+                shift 2
+                ;;
+            -h|--help)
+                echo "Usage: am events [--follow] [--timeout N] <session-name>"
+                return 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then
+        log_error "Session name required"
+        echo "Usage: am events [--follow] <session-name>"
+        return 1
+    fi
+
+    local resolved
+    if ! resolved=$(resolve_session_fuzzy "$name"); then
+        log_error "Session not found: $name"
+        return 1
+    fi
+
+    local prev_state="" current_state ts start elapsed
+    start=$(date +%s)
+
+    # Emit started event
+    ts=$(date +%s)
+    current_state=$(agent_get_state "$resolved")
+    printf '%s\n' "$(jq -n \
+        --arg event "started" \
+        --arg session "$resolved" \
+        --arg state "$current_state" \
+        --argjson ts "$ts" \
+        '{event: $event, session: $session, state: $state, ts: $ts}')"
+    prev_state="$current_state"
+
+    while true; do
+        sleep 0.5
+
+        elapsed=$(( $(date +%s) - start ))
+        if (( elapsed >= timeout_s )); then
+            break
+        fi
+
+        if ! tmux_session_exists "$resolved"; then
+            current_state="dead"
+        else
+            current_state=$(agent_get_state "$resolved")
+        fi
+
+        if [[ "$current_state" != "$prev_state" ]]; then
+            ts=$(date +%s)
+            printf '%s\n' "$(jq -n \
+                --arg event "state_change" \
+                --arg session "$resolved" \
+                --arg from "$prev_state" \
+                --arg to "$current_state" \
+                --argjson ts "$ts" \
+                '{event: $event, session: $session, from: $from, to: $to, ts: $ts}')"
+            prev_state="$current_state"
+        fi
+
+        # Stop on terminal states unless --follow
+        if ! $follow; then
+            case "$current_state" in
+                idle|dead)
+                    ts=$(date +%s)
+                    printf '%s\n' "$(jq -n \
+                        --arg event "ended" \
+                        --arg session "$resolved" \
+                        --arg state "$current_state" \
+                        --argjson ts "$ts" \
+                        '{event: $event, session: $session, state: $state, ts: $ts}')"
+                    return 0
+                    ;;
+            esac
+        fi
+
+        if ! tmux_session_exists "$resolved"; then
+            break
+        fi
+    done
+}
+
+# Command: interrupt
+cmd_interrupt() {
+    local confirmed=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --confirm)
+                confirmed=true
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: am interrupt [--confirm] <session-name>"
+                return 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                return 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then
+        log_error "Session name required"
+        echo "Usage: am interrupt <session-name>"
+        return 1
+    fi
+
+    local resolved
+    if ! resolved=$(resolve_session_fuzzy "$name"); then
+        log_error "Session not found: $name"
+        return 1
+    fi
+
+    local state
+    state=$(agent_get_state "$resolved")
+    case "$state" in
+        idle|dead)
+            log_warn "Session is already $state; nothing to interrupt"
+            return 1
+            ;;
+    esac
+
+    if $confirmed; then
+        printf 'Interrupt session %s (state: %s)? [y/N] ' "$resolved" "$state" >&2
+        local answer
+        read -r answer
+        [[ "$answer" == "y" || "$answer" == "Y" ]] || { log_info "Aborted"; return 0; }
+    fi
+
+    local pane_target
+    pane_target=$(tmux_session_pane_target "$resolved" "agent")
+    tmux_send_keys "$pane_target" "C-c"
+    log_info "Sent interrupt to $resolved"
 }
 
 # Command: sandbox
@@ -868,7 +1261,16 @@ main() {
             cmd_info "$@"
             ;;
         status|s)
-            cmd_status
+            cmd_status "$@"
+            ;;
+        wait)
+            cmd_wait "$@"
+            ;;
+        events)
+            cmd_events "$@"
+            ;;
+        interrupt)
+            cmd_interrupt "$@"
             ;;
         sandbox|sb)
             cmd_sandbox "$@"
