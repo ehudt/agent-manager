@@ -56,8 +56,23 @@ That's it. You're in a tmux session with Claude running in the top pane and a sh
 | **fzf** | 0.40+ | `brew install fzf` / `apt install fzf` / `pacman -S fzf` |
 | **jq** | 1.6+ | `brew install jq` / `apt install jq` / `pacman -S jq` |
 | **git** | any | Required for worktree isolation and branch display |
+| **[zoxide](https://github.com/ajeetdsouza/zoxide)** | any | Frecent directory ranking in the session creation form |
 
-**Optional:** [zoxide](https://github.com/ajeetdsouza/zoxide) for frecent directory ranking in the session creation form.
+**One-liner install for all dependencies:**
+
+```bash
+# macOS (Homebrew)
+brew install bash tmux fzf jq zoxide
+
+# Debian / Ubuntu
+sudo apt install tmux fzf jq zoxide
+
+# Fedora
+sudo dnf install tmux fzf jq zoxide
+
+# Arch Linux
+sudo pacman -S tmux fzf jq zoxide
+```
 
 **At least one AI coding agent must be installed:**
 
