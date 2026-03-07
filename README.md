@@ -240,9 +240,9 @@ done
 
 <!-- TODO: Video (30-40s) — terminal recording showing an orchestrator agent launching two parallel workers with `am new --detach`, waiting for them with `am wait`, peeking at results with `am peek --json`, and then killing the sessions. Show the session IDs being captured and reused. -->
 
-## Sandbox Mode
+## Sandbox Mode (Experimental)
 
-> **Not a security boundary.** The sandbox reduces the blast radius of permissive (`--yolo`) agent runs by placing them inside a Docker container. It is **not** designed to contain a determined adversary. The project directory is bind-mounted read-write, host credentials are shared into the container, and Docker itself requires root-equivalent access on the host. Treat the sandbox as a safety net for accidental damage, not as isolation from malicious code.
+> **Experimental feature — not a security boundary.** The sandbox reduces the blast radius of permissive (`--yolo`) agent runs by placing them inside a Docker container. It is **not** designed to contain a determined adversary. The project directory is bind-mounted read-write, host credentials are shared into the container, and Docker itself requires root-equivalent access on the host. Treat the sandbox as a safety net for accidental damage, not as isolation from malicious code. The sandbox API and defaults may change in future releases.
 
 ### When it activates
 
