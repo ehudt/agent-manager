@@ -185,30 +185,6 @@ am sandbox identity init  # Initialize sandbox credentials
 | `?` | Show help |
 | `Esc` | Exit |
 
-## Implementation Plan
-
-All core phases are complete.
-
-### ~~Phase 1: Core Infrastructure~~ *(Done)*
-
-1. Session Registry Module — JSON CRUD, garbage collection
-2. tmux Wrapper Module — session create/capture/attach, dedicated socket
-3. Agent Launcher Module — multi-agent launch, git branch detection
-
-### ~~Phase 2: fzf Interface~~ *(Done)*
-
-4. List Generator — rich metadata, activity sorting
-5. Preview Renderer — pane capture, metadata header
-6. Main fzf Loop — keybindings, reload, edge cases
-
-### ~~Phase 3: Polish~~ *(Done)*
-
-7. Configuration — `~/.agent-manager/config.json`, default agent, yolo, sandbox, log streaming
-8. Session state detection — `lib/state.sh`, JSONL + pane pattern matching
-9. Orchestration commands — `send`, `peek`, `wait`, `events`, `status`, `interrupt`
-10. Docker sandbox — per-session containers, identity isolation, fleet ops
-11. New session form — tput-based form with Navigate/Edit modes (feature-flagged)
-
 ## File Structure
 
 ```
