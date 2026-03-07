@@ -2,6 +2,9 @@
 # stub_agent - Fake agent for integration tests
 # Stays alive until killed, prints a marker so tests can verify it started
 echo "stub-agent-ready"
+if [[ $# -gt 0 ]]; then
+    echo "stub-agent-argv:$*"
+fi
 while IFS= read -r line; do
     echo "stub-agent-input:$line"
 done

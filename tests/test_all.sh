@@ -1448,7 +1448,7 @@ test_cli_extended() {
     assert_contains "$pane_output" "stub-agent-input:run tests now" "am send: prompt reaches agent pane"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
-    # --- Test: am new --detach can read initial prompt from stdin ---
+    # --- Test: am new --detach can pass initial prompt from stdin as argv ---
     local detached_session
     detached_session=$(printf 'initial prompt from stdin\n' | AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" new --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
     assert_not_empty "$detached_session" "am new --detach: returns session name"
@@ -1458,11 +1458,11 @@ test_cli_extended() {
     pane_output=""
     for _i in $(seq 1 20); do
         pane_output=$(am_tmux capture-pane -pt "$detached_session:.{top}" 2>/dev/null || true)
-        [[ "$pane_output" == *"stub-agent-input:initial prompt from stdin"* ]] && break
+        [[ "$pane_output" == *"stub-agent-argv:initial prompt from stdin"* ]] && break
         sleep 0.2
     done
-    assert_contains "$pane_output" "stub-agent-input:initial prompt from stdin" \
-        "am new --detach: stdin prompt reaches agent pane"
+    assert_contains "$pane_output" "stub-agent-argv:initial prompt from stdin" \
+        "am new --detach: stdin prompt passed as initial argv"
     [[ -n "$detached_session" ]] && agent_kill "$detached_session" 2>/dev/null
 
     # Cleanup

@@ -129,7 +129,7 @@ agent_wait_until_ready() {
     local pane_target current_cmd
     pane_target=$(agent_target_pane "$session_name")
 
-    for _i in $(seq 1 30); do
+    for _i in $(seq 1 150); do
         current_cmd=$(tmux_pane_current_command "$pane_target" 2>/dev/null || true)
         case "$current_cmd" in
             ""|bash|zsh|sh|fish) sleep 0.1 ;;
@@ -137,7 +137,7 @@ agent_wait_until_ready() {
         esac
     done
 
-    return 0
+    return 1
 }
 
 # Detect git branch for a directory
@@ -290,14 +290,23 @@ agent_launch() {
         tmux_send_keys "$session_name:.{bottom}" " export AM_LOG_DIR='$log_dir'" Enter
     fi
 
-    # Build the full agent command
-    local full_cmd="$agent_cmd"
+    # Build the full agent command with shell-safe argument quoting.
+    local -a cmd_parts=("$agent_cmd")
     if [[ -n "$worktree_name" ]] && agent_cli_manages_worktree "$agent_type"; then
-        full_cmd="$full_cmd -w '$worktree_name'"
+        cmd_parts+=("-w" "$worktree_name")
     fi
     if [[ ${#agent_args[@]} -gt 0 ]]; then
-        full_cmd="$full_cmd ${agent_args[*]}"
+        cmd_parts+=("${agent_args[@]}")
     fi
+
+    local full_cmd="" quoted_part part
+    for part in "${cmd_parts[@]}"; do
+        printf -v quoted_part '%q' "$part"
+        if [[ -n "$full_cmd" ]]; then
+            full_cmd+=" "
+        fi
+        full_cmd+="$quoted_part"
+    done
 
     # Sandbox mode (independent of yolo)
     if $wants_sandbox; then
@@ -358,9 +367,7 @@ agent_send_prompt() {
     pane_target=$(agent_target_pane "$session_name")
 
     tmux_paste_text "$pane_target" "$prompt"
-    # Let interactive UIs finish handling bracketed paste before submit.
-    sleep 0.05
-    tmux_send_keys "$pane_target" C-m
+    tmux_send_keys "$pane_target" Enter
 }
 
 # Get display name for a session (for fzf listing)

@@ -353,16 +353,15 @@ cmd_new() {
     fi
 
     initial_prompt=$(read_prompt_input)
+    if [[ -n "$initial_prompt" ]]; then
+        agent_args+=("$initial_prompt")
+    fi
 
     # Launch agent
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
-        if [[ -n "$initial_prompt" ]]; then
-            agent_wait_until_ready "$session_name"
-            agent_send_prompt "$session_name" "$initial_prompt"
-        fi
         if $print_session || ! $attach_session; then
             echo "$session_name"
         fi
