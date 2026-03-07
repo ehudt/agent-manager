@@ -2,6 +2,23 @@
 
 Architecture reference for AI agents working with this codebase.
 
+## Commands
+
+- Run tests: `./tests/test_all.sh`
+- Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
+
+## Code Style
+
+- Libs in `lib/` are sourced, not executed — no shebang, no `set -euo pipefail` (the entry point `am` sets it)
+- Functions prefixed by module name: `registry_add`, `tmux_create_session`, `agent_launch`
+- Return values via stdout; all logging/UI output to stderr (`>&2`)
+- Use `sed -E` (not `sed -r`) for portable regex (macOS + Linux)
+
+## Gotchas
+
+- `SCRIPT_DIR` is overwritten when sourcing `lib/agents.sh` — if you need a stable reference, save it before sourcing
+- Tests source libs directly — test helpers like `registry_exists` live in `test_all.sh`, not in production code
+
 ## Key Files
 
 | File | Purpose |
@@ -17,6 +34,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/title-upgrade` | Standalone script: fire-and-forget Haiku title upgrade for a session |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
+| `lib/state.sh` | Session state detection: JSONL parsing, pane pattern matching, wait/poll |
 | `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
 | `lib/sandbox.sh` | Docker sandbox lifecycle: start, attach, stop, remove, fleet ops |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
@@ -122,6 +140,15 @@ For agent orchestration, prefer this sequence:
 - `history_prune()` - Remove entries older than 7 days
 - `history_for_directory(path)` - Get recent sessions for a directory, newest first
 
+**State detection (lib/state.sh):**
+- `agent_get_state(session_name)` - Get current state: starting, running, waiting_input, waiting_permission, waiting_custom, idle, dead
+- `agent_wait_state(session, [states], [timeout])` - Block until target state reached
+- `agent_classify_exit(session)` - Classify shell exit as idle or dead
+- `_state_from_jsonl(directory)` - Derive state from Claude JSONL (primary source for Claude sessions)
+- `_state_from_pane(session, [agent_type])` - Derive state from pane content (all agents)
+- `_state_jsonl_path(dir)` - Find newest Claude JSONL for directory
+- `_state_jsonl_stale(path)` - Check if JSONL is >30s old
+
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
 - `claude_first_user_message(dir)` - Extract first user message from Claude session JSONL
@@ -194,4 +221,5 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
+| Add state detection pattern | `lib/state.sh` → `_state_from_pane()` pattern list |
 | Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |

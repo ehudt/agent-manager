@@ -10,7 +10,7 @@ A CLI tool for managing multiple AI coding agent sessions (Claude Code, Gemini C
 |-------------|-------|
 | Use case | Both cross-project and same-project agents |
 | Launch mode | Both from manager AND attach to existing |
-| Agent types | Claude Code initially (extensible) |
+| Agent types | Claude Code, Codex, Gemini CLI (extensible via `AGENT_COMMANDS`) |
 | Persistence | Sessions must survive logout/reboot |
 | Metadata | Rich: directory, branch, agent type, running time, last command |
 
@@ -52,7 +52,10 @@ Stores metadata that tmux doesn't track natively:
       "agent_type": "claude",
       "created_at": "2024-01-15T10:30:00Z",
       "task": "implement user auth flow",
-      "worktree_path": "/home/user/code/myapp/.claude/worktrees/am-abc123"
+      "worktree_path": "/home/user/code/myapp/.claude/worktrees/am-abc123",
+      "yolo_mode": "false",
+      "sandbox_mode": "false",
+      "container_name": ""
     }
   }
 }
@@ -119,13 +122,32 @@ fzf preview will show:
 # List/browse sessions (default action)
 am                      # Opens fzf browser
 am list                 # Same as above
-am list --json          # Output JSON for scripting
+am list --json          # Output JSON for scripting (includes state field)
 
 # Create new session
 am new                  # Interactive: pick directory, starts claude
 am new /path/to/project # Start claude in specific directory
 am new -t gemini        # Start gemini instead of claude
 am new --name "my-task" # Custom display name
+am new --yolo           # Enable yolo mode (agent permissive flags)
+am new --sandbox        # Run in Docker sandbox container
+am new -w               # Git worktree isolation
+am new --detach         # Create without attaching
+am new --print-session  # Print session name to stdout
+
+# Interact with sessions
+am send <session> "prompt"        # Send prompt to running session
+am send --wait <session> "prompt" # Wait for ready, then send
+am peek <session>                 # Snapshot of agent pane
+am peek --follow <session>        # Stream agent output
+am peek --json <session>          # Structured snapshot with state
+
+# Session state and orchestration
+am status <session>               # Show session state
+am status --json <session>        # Machine-readable state
+am wait <session>                 # Block until agent finishes
+am events <session>               # Stream state-change events as JSONL
+am interrupt <session>            # Send Ctrl-C to agent pane
 
 # Attach to session
 am attach <session>     # Attach by name or fuzzy match
@@ -136,7 +158,17 @@ am kill --all           # Kill all agent-manager sessions
 
 # Session info
 am info <session>       # Show detailed session info
-am status               # Summary of all sessions
+
+# Configuration
+am config               # Show current config
+am config set <key> <value>  # Set config value
+am config get <key>          # Get config value
+
+# Sandbox management
+am sandbox build        # Build sandbox Docker image
+am sandbox list         # List sandbox containers
+am sandbox prune        # Remove stopped containers
+am sandbox identity init  # Initialize sandbox credentials
 ```
 
 ### fzf Keybindings
@@ -153,56 +185,6 @@ am status               # Summary of all sessions
 | `?` | Show help |
 | `Esc` | Exit |
 
-## Implementation Plan
-
-### Phase 1: Core Infrastructure
-
-1. **Session Registry Module**
-   - JSON file management with atomic writes
-   - CRUD operations for session metadata
-   - Garbage collection (clean up stale entries)
-
-2. **tmux Wrapper Module**
-   - Create sessions with proper naming
-   - Capture pane content
-   - Get session activity timestamps
-   - Attach/detach handling
-
-3. **Agent Launcher Module**
-   - Launch Claude Code in a tmux pane
-   - Parse directory and detect git branch
-   - Store initial command/task description
-
-### Phase 2: fzf Interface
-
-4. **List Generator**
-   - Merge tmux sessions with registry metadata
-   - Format for fzf display (rich metadata)
-   - Sort by activity (most recent first)
-
-5. **Preview Renderer**
-   - Capture pane content via `tmux capture-pane`
-   - Add metadata header
-   - Handle color/formatting
-
-6. **Main fzf Loop**
-   - Key bindings for all actions
-   - Reload after mutations
-   - Handle edge cases (no sessions, etc.)
-
-### Phase 3: Polish & Persistence
-
-7. **Reboot Persistence**
-   - Integrate tmux-resurrect or implement custom solution
-   - Registry survives, tmux sessions need restoration
-   - On launch, reconcile registry with actual tmux state
-
-8. **Configuration**
-   - `~/.agent-manager/config.yaml`
-   - Customizable display format
-   - Default agent type
-   - Preview window settings
-
 ## File Structure
 
 ```
@@ -210,14 +192,26 @@ agent-manager/
 ├── am                      # Main executable (bash)
 ├── lib/
 │   ├── agents.sh           # Agent lifecycle, launch, display formatting, kill
+│   ├── config.sh           # User config: defaults, feature flags, persistent settings
+│   ├── form.sh             # tput-based new session form (Navigate/Edit modes)
 │   ├── fzf.sh              # fzf UI, directory picker with history annotations
 │   ├── preview             # Standalone preview script for fzf panel
+│   ├── dir-preview         # Standalone preview script for directory picker
+│   ├── title-upgrade       # Standalone script: fire-and-forget Haiku title upgrade
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
+│   ├── sandbox.sh          # Docker sandbox lifecycle: start, attach, stop, fleet ops
+│   ├── state.sh            # Session state detection: JSONL + pane pattern matching
 │   ├── tmux.sh             # tmux wrapper functions
 │   └── utils.sh            # Common utilities
 ├── bin/
 │   ├── kill-and-switch     # tmux helper: kill session + switch to next
 │   └── switch-last         # tmux helper: switch to most recent am-* session
+├── sandbox/
+│   ├── Dockerfile          # Docker image for sandbox containers
+│   └── entrypoint.sh       # Container init: user alignment, Tailscale, SSH
+├── skills/
+│   └── am-orchestration/
+│       └── SKILL.md        # Claude Code skill for multi-session orchestration
 ├── scripts/
 │   └── install.sh          # Installer (symlinks, shell rc, tmux config)
 ├── tests/
@@ -327,10 +321,10 @@ am new -w my-feature ~/project   # worktree at .claude/worktrees/my-feature
 
 ## Future Enhancements
 
-1. ~~**Multi-agent types:** Gemini CLI, Cursor, Aider, etc.~~ *(Implemented: claude, codex, gemini + extensible)*
+1. ~~**Multi-agent types:** Gemini CLI, Cursor, Aider, etc.~~ *(Done: claude, codex, gemini + extensible)*
 2. **Session groups:** Group related sessions
 3. **Task tracking:** Integration with todo systems
 4. **Remote sessions:** SSH tunnel support
 5. **Web UI:** Optional browser-based view
-6. **Notifications:** Alert when agent needs input
+6. ~~**Notifications:** Alert when agent needs input~~ *(Done: `am wait`, `am events`, state detection)*
 7. **Reboot persistence:** tmux-resurrect integration or custom solution
