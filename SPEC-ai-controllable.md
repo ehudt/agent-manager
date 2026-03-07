@@ -1,5 +1,7 @@
 # Spec: AI-Controllable Agent Manager
 
+**Status: Fully implemented.** All features described below are live in `lib/state.sh` and the corresponding CLI commands. See `skills/am-orchestration/SKILL.md` for the user-facing guide.
+
 ## Problem
 
 `am` has the primitives to launch and communicate with sessions, but lacks the
@@ -646,19 +648,19 @@ multi-line strings to `_state_match_patterns` and assert the returned state.
 
 ## Success Criteria
 
-An AI orchestrator can:
+All criteria have been met. An AI orchestrator can:
 
-- [ ] Launch a session and reliably detect when it is first ready for input
+- [x] Launch a session and reliably detect when it is first ready for input
       (`am wait --state waiting_input`)
-- [ ] Send a follow-up prompt only when the agent is not mid-execution
+- [x] Send a follow-up prompt only when the agent is not mid-execution
       (`am send --wait`)
-- [ ] Detect and handle permission prompts without human intervention
+- [x] Detect and handle permission prompts without human intervention
       (`am status --json` + pattern match + `am send`)
-- [ ] Know when a session's task is complete (`am wait --state idle,dead`)
-- [ ] Get structured state for all running sessions in one call
+- [x] Know when a session's task is complete (`am wait --state idle,dead`)
+- [x] Get structured state for all running sessions in one call
       (`am list --json` with `state` field)
-- [ ] Subscribe to a session's state transitions without polling
+- [x] Subscribe to a session's state transitions without polling
       (`am events`)
-- [ ] Interrupt a stuck or misdirected agent (`am interrupt`)
-- [ ] Get a structured snapshot of what the agent last said
+- [x] Interrupt a stuck or misdirected agent (`am interrupt`)
+- [x] Get a structured snapshot of what the agent last said
       (`am peek --json`)
