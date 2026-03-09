@@ -503,7 +503,7 @@ _form_process_key_edit() {
 }
 
 # Number of inline directory suggestion lines
-_FORM_DIR_SUGGESTION_LINES=5
+_FORM_DIR_SUGGESTION_LINES=10
 
 # Row where dynamic content starts (after header)
 _FORM_CONTENT_ROW=3
