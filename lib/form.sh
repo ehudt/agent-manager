@@ -628,7 +628,7 @@ _form_cleanup() {
 }
 
 # Format output matching fzf_new_session_form contract:
-# directory<TAB>agent<TAB>task<TAB>worktree_name<TAB>flags
+# directory<US>agent<US>task<US>worktree_name<US>flags  (US = \x1f unit separator)
 _form_output() {
     local directory="${FORM_VALUES[directory]}"
     local agent="${FORM_VALUES[agent]}"
@@ -666,7 +666,7 @@ _form_output() {
         fi
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
 }
 
 # Dispatch function: picks form implementation based on feature flag.

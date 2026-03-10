@@ -185,10 +185,10 @@ cmd_list() {
         local result
         result=$(fzf_main)
 
-        if [[ "$result" == $'__NEW_SESSION__\t'* ]]; then
-            # Parse: __NEW_SESSION__<TAB>directory<TAB>agent_type<TAB>flags<TAB>task<TAB>worktree_name
+        if [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
+            # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task<US>worktree_name
             local directory agent_type flags task worktree_name
-            IFS=$'\t' read -r _tag directory agent_type flags task worktree_name <<< "$result"
+            IFS=$'\x1f' read -r _tag directory agent_type flags task worktree_name <<< "$result"
 
             # Create new session from form values
             # shellcheck disable=SC2086
@@ -344,7 +344,7 @@ cmd_new() {
             return 0
         fi
 
-        IFS=$'\t' read -r directory agent_type task worktree_name flags <<< "$form_values"
+        IFS=$'\x1f' read -r directory agent_type task worktree_name flags <<< "$form_values"
         # shellcheck disable=SC2206
         agent_args=($flags)
     else

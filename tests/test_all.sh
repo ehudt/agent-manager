@@ -2817,10 +2817,10 @@ test_form_loop() {
     source "$LIB_DIR/form.sh"
     set -u
 
-    # Parse tab-delimited output using cut (read collapses empty fields)
+    # Parse unit-separator-delimited output using cut (tab would collapse empty fields)
     _parse_field() {
         local output="$1" field="$2"
-        printf '%s' "$output" | cut -d$'\t' -f"$field"
+        printf '%s' "$output" | cut -d$'\x1f' -f"$field"
     }
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"

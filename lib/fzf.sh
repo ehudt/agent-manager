@@ -450,7 +450,7 @@ _new_session_form_directory() {
 
 # One-page form for new session creation.
 # Usage: fzf_new_session_form [prefill_directory] [prefill_agent] [prefill_task] [prefill_worktree] [prefill_mode_flags]
-# Returns: directory<TAB>agent<TAB>task<TAB>worktree_name<TAB>flags
+# Returns: directory<US>agent<US>task<US>worktree_name<US>flags  (US = \x1f unit separator)
 fzf_new_session_form() {
     local prefill_directory="${1:-.}"
     local prefill_agent="${2:-$(am_default_agent)}"
@@ -629,7 +629,7 @@ fzf_new_session_form() {
         fi
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
 }
 
 # Generate session list for fzf
@@ -733,10 +733,10 @@ fzf_main() {
             return $?
         fi
 
-        IFS=$'\t' read -r directory agent_type task worktree_name flags <<< "$form_values"
+        IFS=$'\x1f' read -r directory agent_type task worktree_name flags <<< "$form_values"
 
         # Return new session command
-        printf "__NEW_SESSION__\t%s\t%s\t%s\t%s\t%s\n" "$directory" "$agent_type" "$flags" "$task" "$worktree_name"
+        printf "__NEW_SESSION__\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n" "$directory" "$agent_type" "$flags" "$task" "$worktree_name"
         return 0
     fi
 
