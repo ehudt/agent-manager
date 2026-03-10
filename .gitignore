@@ -16,3 +16,4 @@ __pycache__/
 
 # Sandbox secrets
 sandbox/.env
+.evolver/
