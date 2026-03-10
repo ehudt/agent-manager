@@ -17,7 +17,7 @@ source "$repo_dir/lib/tmux.sh"
 
 cur=$(am_tmux display-message -p '#{session_name}')
 tgt=$(am_tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null \
-    | grep ' am-' \
+    | grep " ${AM_SESSION_PREFIX}" \
     | grep -v " ${cur}$" \
     | sort -rn \
     | head -1 \

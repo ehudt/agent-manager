@@ -50,7 +50,7 @@ fi
 if [[ "$target" == "$current" ]]; then
     # Find the next best session (most recent that isn't the target)
     next=$(am_tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null \
-        | grep ' am-' \
+        | grep " ${AM_SESSION_PREFIX}" \
         | grep -v " ${target}$" \
         | sort -rn \
         | head -1 \

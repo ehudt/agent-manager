@@ -186,6 +186,7 @@ setup_integration_env() {
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/codex"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/gemini"
     TEST_OLD_PATH="${PATH:-}"
+    TEST_OLD_TMUX_PATH=$(tmux -L "${AM_TMUX_SOCKET:-agent-manager}" show-environment -g PATH 2>/dev/null | sed 's/^PATH=//' || true)
     export PATH="$TEST_STUB_BIN:$PATH"
     tmux -L "${AM_TMUX_SOCKET:-agent-manager}" set-environment -g PATH "$PATH" 2>/dev/null || true
 
@@ -215,6 +216,9 @@ teardown_integration_env() {
     export AM_CONFIG="$AM_DIR/config.json"
     export AM_SESSION_PREFIX="am-"
     export PATH="${TEST_OLD_PATH:-$PATH}"
+    if [[ -n "${TEST_OLD_TMUX_PATH:-}" ]]; then
+        tmux -L "${AM_TMUX_SOCKET:-agent-manager}" set-environment -g PATH "$TEST_OLD_TMUX_PATH" 2>/dev/null || true
+    fi
 }
 
 # ============================================
@@ -3891,7 +3895,7 @@ test_standalone_switch_last_errors() {
         return
     fi
 
-    am_tmux attach-session -t "$s1" 2>/dev/null &
+    TMUX= am_tmux attach-session -t "$s1" 2>/dev/null &
     local attach_pid=$!
     sleep 0.3
 
