@@ -15,6 +15,7 @@
 - **New session form** - select box in multi-select style (see all options all the time)
 - **New session form** - toggle multi select options with left/right arrow keys
 - **New session form** - directory selector - allow scrolling down/up for more options
+- **Tests** - add a mode that only prints a summary and the failed test and their output
 
 ## Ideas
 
