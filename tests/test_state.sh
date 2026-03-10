@@ -193,10 +193,10 @@ test_state_integration() {
 
     # Wait for stub agent to print ready marker
     local pane_output=""
-    for _i in $(seq 1 20); do
+    for _i in $(seq 1 15); do
         pane_output=$(am_tmux capture-pane -pt "$session_name:.{top}" 2>/dev/null || true)
         [[ "$pane_output" == *"stub-agent-ready"* ]] && break
-        sleep 0.2
+        sleep 0.1
     done
 
     # agent_get_state should not return dead or empty for a live session

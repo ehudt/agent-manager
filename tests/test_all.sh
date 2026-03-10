@@ -5,9 +5,11 @@ set -uo pipefail
 
 # Parse test runner flags before anything else
 SUMMARY_MODE=false
+INCLUDE_SLOW=false
 for _arg in "$@"; do
     case "$_arg" in
         --summary|-s) SUMMARY_MODE=true ;;
+        --include-slow) INCLUDE_SLOW=true ;;
     esac
 done
 
@@ -46,6 +48,7 @@ main() {
     run_tmux_tests
     run_agents_tests
     run_sandbox_tests
+    $INCLUDE_SLOW && run_sandbox_slow_tests
     run_fzf_tests
     run_form_tests
     run_state_tests

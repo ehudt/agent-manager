@@ -185,6 +185,7 @@ setup_integration_env() {
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_CONFIG="$AM_DIR/config.json"
     export AM_SESSION_PREFIX="test-am-"
+    export AM_TEST_MODE=1
     am_init
     am_config_init
 
