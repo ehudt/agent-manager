@@ -8,6 +8,7 @@
 - **Tests** - split the one giant test file into tests by file tested
 - **Tests** - use a dedicated tmux socket (e.g., `agent-manager-test`) so test runs don't switch the user's live sessions
 - **tmux status-right** - show `dirname/branch` instead of just `dirname`
+- **tmux status-right** - split to two parts - needing attention and idle: ! session-1  ! session-2  |  > session-3  > session-4
 
 ## Ideas
 
