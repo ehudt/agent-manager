@@ -373,11 +373,10 @@ cmd_new() {
     fi
 
     initial_prompt=$(read_prompt_input)
-    if [[ -n "$initial_prompt" ]]; then
-        agent_args+=("$initial_prompt")
-    fi
 
-    # Launch agent
+    # Launch agent (prompt passed via _AM_LAUNCH_PROMPT to avoid tty buffer overflow
+    # when piping long prompts through tmux send-keys)
+    _AM_LAUNCH_PROMPT="$initial_prompt"
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
 

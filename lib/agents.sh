@@ -160,6 +160,7 @@ generate_session_name() {
 
 # Launch an agent in a new tmux session
 # Usage: agent_launch <directory> [agent_type] [task_description] [worktree_name] [agent_args...]
+# Set _AM_LAUNCH_PROMPT before calling to pipe an initial prompt to the agent.
 # Returns: session name on success, empty on failure
 agent_launch() {
     local directory="$1"
@@ -168,6 +169,8 @@ agent_launch() {
     local worktree_name="${4:-}"
     shift 4 2>/dev/null || shift $#
     local agent_args=("$@")
+    local initial_prompt="${_AM_LAUNCH_PROMPT:-}"
+    _AM_LAUNCH_PROMPT=""
 
     # Validate directory
     if [[ ! -d "$directory" ]]; then
@@ -307,6 +310,16 @@ agent_launch() {
         fi
         full_cmd+="$quoted_part"
     done
+
+    # If there's an initial prompt, write it to a temp file and pipe it to the agent.
+    # This avoids overflowing the kernel tty input buffer (~4096 bytes on macOS)
+    # which garbles long prompts sent via tmux send-keys or paste-buffer.
+    local prompt_file=""
+    if [[ -n "$initial_prompt" ]]; then
+        prompt_file="/tmp/am-prompt-${session_name}"
+        printf '%s\n' "$initial_prompt" > "$prompt_file"
+        full_cmd="cat ${prompt_file@Q} | $full_cmd; rm -f ${prompt_file@Q}"
+    fi
 
     # Sandbox mode (independent of yolo)
     if $wants_sandbox; then
