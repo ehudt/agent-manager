@@ -18,7 +18,7 @@ Architecture reference for AI agents working with this codebase.
 ## Gotchas
 
 - `SCRIPT_DIR` is overwritten when sourcing `lib/agents.sh` — if you need a stable reference, save it before sourcing
-- Tests source libs directly — test helpers like `registry_exists` live in `test_all.sh`, not in production code
+- Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
 
 ## Key Files
 

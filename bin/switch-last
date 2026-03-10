@@ -15,7 +15,7 @@ repo_dir="$(cd "$script_dir/.." && pwd -P)"
 source "$repo_dir/lib/utils.sh"
 source "$repo_dir/lib/tmux.sh"
 
-cur=$(am_tmux display-message -p '#{session_name}')
+cur=$(am_tmux display-message -p '#{session_name}' 2>/dev/null) || exit 0
 tgt=$(am_tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null \
     | grep " ${AM_SESSION_PREFIX}" \
     | grep -v " ${cur}$" \
@@ -24,5 +24,5 @@ tgt=$(am_tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null
     | cut -d' ' -f2 || true)
 
 if [[ -n "$tgt" ]]; then
-    am_tmux switch-client -t "$tgt"
+    am_tmux switch-client -t "$tgt" 2>/dev/null || true
 fi
