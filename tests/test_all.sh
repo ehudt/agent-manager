@@ -104,15 +104,21 @@ run_external_test() {
     local msg="$1"
     shift
     ((TESTS_RUN++))
-    if "$@"; then
+    local _ext_output _ext_rc=0
+    if $SUMMARY_MODE; then
+        _ext_output=$("$@" 2>&1) || _ext_rc=$?
+    else
+        "$@" || _ext_rc=$?
+    fi
+    if [[ $_ext_rc -eq 0 ]]; then
         ((TESTS_PASSED++))
         $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
     else
-        local rc=$?
         ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: $msg"
-        echo "  Exit code: $rc"
-        FAIL_DETAILS+=("FAIL: $msg|  Exit code: $rc")
+        echo "  Exit code: $_ext_rc"
+        [[ -n "${_ext_output:-}" ]] && echo "$_ext_output"
+        FAIL_DETAILS+=("FAIL: $msg|  Exit code: $_ext_rc")
     fi
 }
 
@@ -215,7 +221,7 @@ teardown_integration_env() {
 # Test: utils.sh
 # ============================================
 test_utils() {
-    echo "=== Testing utils.sh ==="
+    $SUMMARY_MODE || echo "=== Testing utils.sh ==="
     source "$LIB_DIR/utils.sh"
 
     # Test format_time_ago
@@ -242,14 +248,14 @@ test_utils() {
     # Test dir_basename
     assert_eq "foo" "$(dir_basename '/path/to/foo')" "dir_basename: extracts basename"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: utils.sh (extended edge cases)
 # ============================================
 test_utils_extended() {
-    echo "=== Testing utils.sh (extended) ==="
+    $SUMMARY_MODE || echo "=== Testing utils.sh (extended) ==="
     source "$LIB_DIR/utils.sh"
 
     # format_time_ago: edge cases
@@ -286,14 +292,14 @@ test_utils_extended() {
     assert_eq "$tmpd" "$(abspath "$tmpd")" "abspath: absolute path unchanged"
     rm -rf "$tmpd"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: config.sh
 # ============================================
 test_config() {
-    echo "=== Testing config.sh ==="
+    $SUMMARY_MODE || echo "=== Testing config.sh ==="
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/config.sh"
@@ -352,14 +358,14 @@ test_config() {
     export AM_DEFAULT_YOLO="$original_default_yolo"
     export AM_STREAM_LOGS="$original_stream_logs"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: registry.sh
 # ============================================
 test_registry() {
-    echo "=== Testing registry.sh ==="
+    $SUMMARY_MODE || echo "=== Testing registry.sh ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "registry tests (jq not installed)"
@@ -407,14 +413,14 @@ test_registry() {
     # Cleanup
     rm -rf "$AM_DIR"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: registry.sh (extended edge cases)
 # ============================================
 test_registry_extended() {
-    echo "=== Testing registry.sh (extended) ==="
+    $SUMMARY_MODE || echo "=== Testing registry.sh (extended) ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "registry extended tests (jq not installed)"
@@ -469,14 +475,14 @@ test_registry_extended() {
     export AM_DIR="$old_am_dir"
     export AM_REGISTRY="$old_am_registry"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: registry_get_fields helper
 # ============================================
 test_registry_get_fields() {
-    echo "=== Testing registry_get_fields ==="
+    $SUMMARY_MODE || echo "=== Testing registry_get_fields ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "registry_get_fields tests (jq not installed)"
@@ -532,14 +538,14 @@ test_registry_get_fields() {
     export AM_DIR="$old_am_dir"
     export AM_REGISTRY="$old_am_registry"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: tmux.sh (requires tmux)
 # ============================================
 test_tmux() {
-    echo "=== Testing tmux.sh ==="
+    $SUMMARY_MODE || echo "=== Testing tmux.sh ==="
 
     if ! command -v tmux &>/dev/null; then
         skip_test "tmux tests (tmux not installed)"
@@ -565,14 +571,14 @@ test_tmux() {
         skip_test "tmux create/kill tests (unable to create session)"
     fi
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: agents.sh
 # ============================================
 test_agents() {
-    echo "=== Testing agents.sh ==="
+    $SUMMARY_MODE || echo "=== Testing agents.sh ==="
 
     source "$LIB_DIR/utils.sh"
 
@@ -613,14 +619,14 @@ test_agents() {
     assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
     assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: agents.sh (extended)
 # ============================================
 test_agents_extended() {
-    echo "=== Testing agents.sh (extended) ==="
+    $SUMMARY_MODE || echo "=== Testing agents.sh (extended) ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "agents extended tests (jq or tmux not installed)"
@@ -663,14 +669,14 @@ test_agents_extended() {
     # Test agent_get_yolo_flag for gemini (uses default --yolo)
     assert_eq "--yolo" "$(agent_get_yolo_flag gemini)" "agent_get_yolo_flag: gemini"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: sandbox.sh (pure functions, no Docker)
 # ============================================
 test_sandbox() {
-    echo "=== Testing sandbox.sh ==="
+    $SUMMARY_MODE || echo "=== Testing sandbox.sh ==="
 
     source "$LIB_DIR/utils.sh"
 
@@ -734,14 +740,14 @@ CJSON
     assert_contains "$SANDBOX_DIR" "sandbox" "SANDBOX_DIR: contains 'sandbox'"
     assert_cmd_succeeds "SANDBOX_DIR: directory exists" test -d "$SANDBOX_DIR"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: fzf option ordering helpers
 # ============================================
 test_fzf_helpers() {
-    echo "=== Testing fzf helpers ==="
+    $SUMMARY_MODE || echo "=== Testing fzf helpers ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -792,14 +798,14 @@ test_fzf_helpers() {
     assert_contains "$sandbox_enabled_rows" $'sandbox\tSandbox\t[x]' \
         "fzf helpers: sandbox enabled shows [x]"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: tmux binding snippets
 # ============================================
 test_tmux_binding_snippets() {
-    echo "=== Testing tmux binding snippets ==="
+    $SUMMARY_MODE || echo "=== Testing tmux binding snippets ==="
 
     local example_conf
     example_conf=$(cat "$PROJECT_DIR/config/tmux.conf.example")
@@ -828,14 +834,14 @@ test_tmux_binding_snippets() {
     assert_contains "$fzf_script" 'ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($am_cmd list-internal)' \
         "fzf: ctrl-x passes resolved client name to kill-and-switch"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: symlinked kill-and-switch helper
 # ============================================
 test_symlinked_kill_and_switch() {
-    echo "=== Testing symlinked kill-and-switch ==="
+    $SUMMARY_MODE || echo "=== Testing symlinked kill-and-switch ==="
 
     local temp_root bin_dir linked_bin tmux_stub am_dir
     temp_root=$(mktemp -d)
@@ -893,14 +899,14 @@ EOF
         env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "client-1" "am-16fdf3"
 
     rm -rf "$temp_root"
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: kill-and-switch helper switches client before kill
 # ============================================
 test_kill_and_switch_switches_client_before_kill() {
-    echo "=== Testing kill-and-switch switch ordering ==="
+    $SUMMARY_MODE || echo "=== Testing kill-and-switch switch ordering ==="
 
     local temp_root bin_dir linked_bin am_dir log_file
     temp_root=$(mktemp -d)
@@ -976,14 +982,14 @@ EOF
         "kill-and-switch: switch happens before kill"
 
     rm -rf "$temp_root"
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: kill-and-switch helper with no alternate session
 # ============================================
 test_kill_and_switch_no_alternate_session() {
-    echo "=== Testing kill-and-switch with no alternate session ==="
+    $SUMMARY_MODE || echo "=== Testing kill-and-switch with no alternate session ==="
 
     local temp_root bin_dir linked_bin am_dir log_file
     temp_root=$(mktemp -d)
@@ -1052,14 +1058,14 @@ EOF
         "kill-and-switch: does not switch when no alternate exists"
 
     rm -rf "$temp_root"
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: kill-and-switch helper supports legacy one-arg binding
 # ============================================
 test_kill_and_switch_legacy_single_arg() {
-    echo "=== Testing kill-and-switch legacy one-arg mode ==="
+    $SUMMARY_MODE || echo "=== Testing kill-and-switch legacy one-arg mode ==="
 
     local temp_root bin_dir linked_bin am_dir log_file
     temp_root=$(mktemp -d)
@@ -1134,14 +1140,14 @@ EOF
         "kill-and-switch: legacy mode still kills target session"
 
     rm -rf "$temp_root"
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: switch-last helper with no alternate session
 # ============================================
 test_switch_last_no_alternate_session() {
-    echo "=== Testing switch-last with no alternate session ==="
+    $SUMMARY_MODE || echo "=== Testing switch-last with no alternate session ==="
 
     local temp_root bin_dir linked_bin
     temp_root=$(mktemp -d)
@@ -1181,14 +1187,14 @@ EOF
         env PATH="$bin_dir:$PATH" "$linked_bin/switch-last"
 
     rm -rf "$temp_root"
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: installer block replacement
 # ============================================
 test_installer_replaces_managed_blocks() {
-    echo "=== Testing installer block replacement ==="
+    $SUMMARY_MODE || echo "=== Testing installer block replacement ==="
 
     local temp_root prefix shell_rc tmux_conf shell_contents tmux_contents
     temp_root=$(mktemp -d)
@@ -1224,14 +1230,14 @@ EOF
     assert_cmd_fails "installer: tmux managed block removed" grep -Fq '# >>> agent-manager >>>' "$tmux_conf"
 
     rm -rf "$temp_root"
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: am install command
 # ============================================
 test_install() {
-    echo "=== Testing am install ==="
+    $SUMMARY_MODE || echo "=== Testing am install ==="
 
     # Test help mentions install
     local help_output=$("$PROJECT_DIR/am" help)
@@ -1297,14 +1303,14 @@ test_install() {
     assert_contains "$install_output2" "already exists" "install: skills symlink idempotent"
 
     rm -rf "$temp_root"
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: am CLI
 # ============================================
 test_cli() {
-    echo "=== Testing am CLI ==="
+    $SUMMARY_MODE || echo "=== Testing am CLI ==="
 
     # Test help (no deps needed)
     local help_output=$("$PROJECT_DIR/am" help)
@@ -1320,14 +1326,14 @@ test_cli() {
     local version_output=$("$PROJECT_DIR/am" version)
     assert_contains "$version_output" "0.1.0" "am version: shows version"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: Integration - Session Lifecycle
 # ============================================
 test_integration_lifecycle() {
-    echo "=== Testing Integration: Session Lifecycle ==="
+    $SUMMARY_MODE || echo "=== Testing Integration: Session Lifecycle ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "integration lifecycle tests (jq or tmux not installed)"
@@ -1403,14 +1409,14 @@ test_integration_lifecycle() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: CLI commands (extended)
 # ============================================
 test_cli_extended() {
-    echo "=== Testing CLI commands (extended) ==="
+    $SUMMARY_MODE || echo "=== Testing CLI commands (extended) ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "cli extended tests (jq or tmux not installed)"
@@ -1564,14 +1570,14 @@ test_cli_extended() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: Integration - Registry GC
 # ============================================
 test_registry_gc() {
-    echo "=== Testing Integration: Registry GC ==="
+    $SUMMARY_MODE || echo "=== Testing Integration: Registry GC ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "registry GC tests (jq or tmux not installed)"
@@ -1638,14 +1644,14 @@ test_registry_gc() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: Session History (history.jsonl)
 # ============================================
 test_history() {
-    echo "=== Testing Session History ==="
+    $SUMMARY_MODE || echo "=== Testing Session History ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "history tests (jq not installed)"
@@ -1747,14 +1753,14 @@ test_history() {
     export AM_REGISTRY="$old_am_registry"
     export AM_HISTORY="$old_am_history"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: History Integration (wiring into lifecycle)
 # ============================================
 test_history_integration() {
-    echo "=== Testing History Integration ==="
+    $SUMMARY_MODE || echo "=== Testing History Integration ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "history integration tests (jq not installed)"
@@ -1816,14 +1822,14 @@ test_history_integration() {
     export AM_REGISTRY="$old_am_registry"
     export AM_HISTORY="$old_am_history"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: Worktree feature (-w/--worktree)
 # ============================================
 test_worktree() {
-    echo "=== Testing Worktree Feature ==="
+    $SUMMARY_MODE || echo "=== Testing Worktree Feature ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "worktree tests (jq or tmux not installed)"
@@ -1989,14 +1995,14 @@ test_worktree() {
     rm -rf "$git_dir" "$nongit_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: Sandbox/Yolo Independence
 # ============================================
 test_sandbox_yolo_independence() {
-    echo "=== Testing sandbox/yolo independence ==="
+    $SUMMARY_MODE || echo "=== Testing sandbox/yolo independence ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "sandbox/yolo tests (jq or tmux not installed)"
@@ -2040,14 +2046,14 @@ test_sandbox_yolo_independence() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: CLI yolo/sandbox integration
 # ============================================
 test_cli_yolo_sandbox_integration() {
-    echo "=== Testing CLI yolo/sandbox integration ==="
+    $SUMMARY_MODE || echo "=== Testing CLI yolo/sandbox integration ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "cli yolo/sandbox tests (jq or tmux not installed)"
@@ -2132,15 +2138,15 @@ test_cli_yolo_sandbox_integration() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: Annotated Directories (_annotate_directory, _strip_annotation)
 # ============================================
 test_annotated_directories() {
-    echo ""
-    echo "=== Annotated Directory Tests ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Annotated Directory Tests ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "annotated directory tests (jq not installed)"
@@ -2194,7 +2200,7 @@ test_annotated_directories() {
     rm -rf "$git_dir" "$non_git_dir"
     rm -rf "$AM_DIR"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
@@ -2206,8 +2212,8 @@ test_annotated_directories() {
 # - Cleanup/validation (markdown strip, length check)
 # ============================================
 test_auto_title_session() {
-    echo ""
-    echo "=== Auto-Title Session Tests ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Auto-Title Session Tests ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "auto-title tests (jq not installed)"
@@ -2328,15 +2334,15 @@ test_auto_title_session() {
     export AM_REGISTRY="$old_am_registry"
     export AM_HISTORY="$old_am_history"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: auto_title_scan (piggyback scanner)
 # ============================================
 test_auto_title_scan() {
-    echo ""
-    echo "=== Auto-Title Scan Tests ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Auto-Title Scan Tests ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "auto-title scan tests (jq not installed)"
@@ -2457,14 +2463,14 @@ EOF
     export AM_REGISTRY="$old_am_registry"
     export AM_HISTORY="$old_am_history"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: resolve_session (from am CLI)
 # ============================================
 test_resolve_session() {
-    echo "=== Testing resolve_session ==="
+    $SUMMARY_MODE || echo "=== Testing resolve_session ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "resolve_session tests (jq or tmux not installed)"
@@ -2515,14 +2521,14 @@ test_resolve_session() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: tmux session listing and counting
 # ============================================
 test_tmux_listing() {
-    echo "=== Testing tmux listing ==="
+    $SUMMARY_MODE || echo "=== Testing tmux listing ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "tmux listing tests (jq or tmux not installed)"
@@ -2579,14 +2585,14 @@ test_tmux_listing() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: claude_first_user_message helper
 # ============================================
 test_claude_first_user_message() {
-    echo "=== Testing claude_first_user_message ==="
+    $SUMMARY_MODE || echo "=== Testing claude_first_user_message ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "claude_first_user_message tests (jq not installed)"
@@ -2636,14 +2642,14 @@ test_claude_first_user_message() {
     # Cleanup
     rm -rf "$claude_dir" "$test_dir"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: sandbox pytest integration suite
 # ============================================
 test_sandbox_pytest_integration() {
-    echo "=== Testing sandbox pytest integration suite ==="
+    $SUMMARY_MODE || echo "=== Testing sandbox pytest integration suite ==="
 
     if ! command -v docker &>/dev/null || ! docker info >/dev/null 2>&1; then
         skip_test "sandbox pytest integration (docker unavailable)"
@@ -2667,11 +2673,11 @@ test_sandbox_pytest_integration() {
         skip_test "sandbox pytest integration (requires uv or python3 with pytest)"
     fi
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_strip_ansi() {
-    echo "=== Testing strip-ansi filter ==="
+    $SUMMARY_MODE || echo "=== Testing strip-ansi filter ==="
 
     local strip="$LIB_DIR/strip-ansi"
 
@@ -2721,14 +2727,14 @@ test_strip_ansi() {
     result=$(printf '%s' "$input" | "$strip")
     assert_eq "just plain text" "$result" "strip-ansi: plain text unchanged"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: new_form feature flag
 # ============================================
 test_new_form_flag() {
-    echo "=== Testing new_form feature flag ==="
+    $SUMMARY_MODE || echo "=== Testing new_form feature flag ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -2787,14 +2793,14 @@ test_new_form_flag() {
     export AM_CONFIG="$original_am_config"
     [[ -n "$original_new_form" ]] && export AM_NEW_FORM="$original_new_form" || unset AM_NEW_FORM
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: form core (rendering + input + text editing)
 # ============================================
 test_form_core() {
-    echo "=== Testing form field display ==="
+    $SUMMARY_MODE || echo "=== Testing form field display ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -2837,8 +2843,8 @@ test_form_core() {
     display=$(_form_field_display "submit" "" "" "" "" "false")
     assert_eq "[ Create ]" "$display" "form render: submit shows button"
 
-    echo ""
-    echo "=== Testing form input handling ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing form input handling ==="
 
     _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
 
@@ -2883,8 +2889,8 @@ test_form_core() {
     _form_handle_up
     assert_eq "0" "$FORM_CURSOR" "form input: up clamps at 0"
 
-    echo ""
-    echo "=== Testing form text editing ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing form text editing ==="
 
     _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
 
@@ -2905,14 +2911,14 @@ test_form_core() {
     _form_handle_char "x"
     assert_eq "$before" "${FORM_VALUES[agent]}" "form text: char ignored on select field"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: form loop (keystroke dispatch + output contract)
 # ============================================
 test_form_loop() {
-    echo "=== Testing form keystroke dispatch ==="
+    $SUMMARY_MODE || echo "=== Testing form keystroke dispatch ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -2991,8 +2997,8 @@ test_form_loop() {
     _form_process_key $'\t'
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: tab returns continue"
 
-    echo ""
-    echo "=== Testing form output contract ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing form output contract ==="
 
     _form_init "/tmp" "claude" "fix bugs" "new" "true" "false" "false" "" "true"
 
@@ -3025,11 +3031,11 @@ test_form_loop() {
     worktree=$(_parse_field "$output" 4)
     assert_eq "__auto__" "$worktree" "form output: auto worktree"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_form_modes() {
-    echo "=== Testing form mode state ==="
+    $SUMMARY_MODE || echo "=== Testing form mode state ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -3053,8 +3059,8 @@ test_form_modes() {
     # Dir highlight starts at 0
     assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "mode: dir highlight starts at 0"
 
-    echo ""
-    echo "=== Testing navigate mode key dispatch ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing navigate mode key dispatch ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
     _FORM_MODE="navigate"
@@ -3110,8 +3116,8 @@ test_form_modes() {
     _form_process_key $'\x13'
     assert_eq "submit" "$FORM_KEY_RESULT" "nav: ctrl-s submits"
 
-    echo ""
-    echo "=== Testing edit mode key dispatch ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing edit mode key dispatch ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
     _FORM_MODE="edit"
@@ -3141,8 +3147,8 @@ test_form_modes() {
     assert_eq "navigate" "$_FORM_MODE" "edit: esc exits to navigate"
     assert_eq "continue" "$FORM_KEY_RESULT" "edit: esc returns continue (not cancel)"
 
-    echo ""
-    echo "=== Testing directory highlight scrolling ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing directory highlight scrolling ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
     _FORM_MODE="edit"
@@ -3193,8 +3199,8 @@ test_form_modes() {
     assert_eq "/home/user/project3" "${FORM_VALUES[directory]}" "dir scroll: enter accepts highlighted"
     assert_eq "navigate" "$_FORM_MODE" "dir scroll: enter returns to navigate"
 
-    echo ""
-    echo "=== Testing directory scroll offset ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing directory scroll offset ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
     _FORM_MODE="edit"
@@ -3239,8 +3245,8 @@ test_form_modes() {
     _form_handle_tab
     assert_eq "0" "$_FORM_DIR_SCROLL_OFFSET" "dir scroll offset: tab resets offset"
 
-    echo ""
-    echo "=== Testing disabled field behavior ==="
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing disabled field behavior ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "true" "" "true"
 
@@ -3311,14 +3317,14 @@ test_form_modes() {
     assert_eq "false" "$( [[ "$_FORM_BUF" == *$'\033[48;5;236m'* ]] && echo true || echo false )" \
         "highlight: edit mode does not use gray bg"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: state.sh — unit tests (no tmux needed)
 # ============================================
 test_state() {
-    echo "=== Testing state.sh (unit) ==="
+    $SUMMARY_MODE || echo "=== Testing state.sh (unit) ==="
 
     if ! command -v jq &>/dev/null; then
         skip_test "state unit tests (jq not installed)"
@@ -3476,14 +3482,14 @@ here is the result
     assert_eq "false" "$idle_matches_running" "codex pane: idle content does not match running pattern"
     assert_eq "false" "$idle_matches_permission" "codex pane: idle content does not match permission pattern"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================
 # Test: state.sh — integration (requires tmux)
 # ============================================
 test_state_integration() {
-    echo "=== Testing state.sh (integration) ==="
+    $SUMMARY_MODE || echo "=== Testing state.sh (integration) ==="
 
     if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
         skip_test "state integration tests (jq or tmux not installed)"
@@ -3600,11 +3606,11 @@ test_state_integration() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_standalone_preview() {
-    echo "=== Testing lib/preview (standalone) ==="
+    $SUMMARY_MODE || echo "=== Testing lib/preview (standalone) ==="
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
     source "$LIB_DIR/registry.sh"
@@ -3678,11 +3684,11 @@ EOF
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_standalone_dir_preview() {
-    echo "=== Testing lib/dir-preview (standalone) ==="
+    $SUMMARY_MODE || echo "=== Testing lib/dir-preview (standalone) ==="
 
     local output rc test_dir
 
@@ -3717,11 +3723,11 @@ test_standalone_dir_preview() {
 
     rm -rf "$test_dir"
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_standalone_title_upgrade() {
-    echo "=== Testing lib/title-upgrade (standalone) ==="
+    $SUMMARY_MODE || echo "=== Testing lib/title-upgrade (standalone) ==="
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/registry.sh"
     set +u; source "$LIB_DIR/agents.sh"; set -u
@@ -3802,11 +3808,11 @@ test_standalone_title_upgrade() {
 
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_standalone_status_right() {
-    echo "=== Testing lib/status-right (standalone) ==="
+    $SUMMARY_MODE || echo "=== Testing lib/status-right (standalone) ==="
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/config.sh"
     source "$LIB_DIR/tmux.sh"
@@ -3859,11 +3865,11 @@ test_standalone_status_right() {
     rm -rf "$test_dir1" "$test_dir2" "$test_dir3"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_standalone_switch_last_errors() {
-    echo "=== Testing bin/switch-last error handling ==="
+    $SUMMARY_MODE || echo "=== Testing bin/switch-last error handling ==="
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
     set +u; source "$LIB_DIR/agents.sh"; set -u
@@ -3901,11 +3907,11 @@ test_standalone_switch_last_errors() {
     rm -rf "$test_dir1" "$test_dir2"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 test_standalone_kill_and_switch_errors() {
-    echo "=== Testing bin/kill-and-switch error handling ==="
+    $SUMMARY_MODE || echo "=== Testing bin/kill-and-switch error handling ==="
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
     source "$LIB_DIR/registry.sh"
@@ -3948,7 +3954,7 @@ test_standalone_kill_and_switch_errors() {
     rm -rf "$test_dir"
     teardown_integration_env
 
-    echo ""
+    $SUMMARY_MODE || echo ""
 }
 
 # ============================================

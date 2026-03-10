@@ -12,9 +12,9 @@
   - Optionally set up tmux plugin (source am's tmux config)
 - **MCP server for am** — expose launch/send/peek/list/kill as structured tools instead of CLI-over-bash; better for agents that don't have shell access
 - **Speed issues** - opening the popup on mac can be pretty slow. Fix it
-- **New session form** - select box in multi-select style (see all options all the time)
-- **New session form** - toggle multi select options with left/right arrow keys
-- **New session form** - directory selector - allow scrolling down/up for more options
+- ~~**New session form** - select box in multi-select style (see all options all the time)~~ ✓
+- ~~**New session form** - toggle multi select options with left/right arrow keys~~ ✓
+- ~~**New session form** - directory selector - allow scrolling down/up for more options~~ ✓
 - ~~**Tests** - add a mode that only prints a summary and the failed test and their output~~ ✓ `--summary`/`-s`
 - **Tests** - split the one giant test file into tests by file tested
 - **Tests** - use a dedicated tmux socket (e.g., `agent-manager-test`) so test runs don't switch the user's live sessions

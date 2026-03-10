@@ -34,6 +34,7 @@ _FORM_MODE="navigate"
 
 # Directory suggestion highlight index (used in edit mode)
 _FORM_DIR_HIGHLIGHT=0
+_FORM_DIR_SCROLL_OFFSET=0
 
 # Directory suggestions cache
 declare -a _FORM_DIR_SUGGESTIONS=()
@@ -67,6 +68,7 @@ _form_init() {
     _FORM_DIR_FILTERED=()
     _FORM_MODE="edit"
     _FORM_DIR_HIGHLIGHT=0
+    _FORM_DIR_SCROLL_OFFSET=0
 
     _form_add_field "directory"         "Directory"      "directory"  "$directory"
     _form_add_field "agent"             "Agent"          "select"     "$agent"
@@ -129,7 +131,23 @@ _form_field_display() {
             fi
             ;;
         select)
-            echo "< $value >"
+            local options_str="$3"
+            if [[ -n "$options_str" ]]; then
+                local -a _ffd_opts
+                IFS=',' read -ra _ffd_opts <<< "$options_str"
+                local _ffd_parts=""
+                local _ffd_opt
+                for _ffd_opt in "${_ffd_opts[@]}"; do
+                    if [[ "$_ffd_opt" == "$value" ]]; then
+                        _ffd_parts+="[${_ffd_opt}]  "
+                    else
+                        _ffd_parts+="${_ffd_opt}  "
+                    fi
+                done
+                echo "${_ffd_parts%  }"
+            else
+                echo "[$value]"
+            fi
             ;;
         checkbox)
             if [[ "$disabled" == "true" ]]; then
@@ -180,7 +198,18 @@ _form_render_field() {
             fi
             ;;
         select)
-            display="< $value >"
+            local options_str="${FORM_OPTIONS[$name]}"
+            local -a _render_opts
+            IFS=',' read -ra _render_opts <<< "$options_str"
+            display=""
+            local _render_opt
+            for _render_opt in "${_render_opts[@]}"; do
+                if [[ "$_render_opt" == "$value" ]]; then
+                    display+="${_FORM_INVERSE}${_FORM_CYAN} ${_render_opt} ${_FORM_RESET} "
+                else
+                    display+="${_FORM_DIM}${_render_opt}${_FORM_RESET} "
+                fi
+            done
             ;;
         checkbox)
             if [[ "$disabled" == "true" ]]; then
@@ -253,6 +282,26 @@ _form_filter_dir_suggestions() {
     done
 }
 
+# Cycle a select field. direction: 1=forward, -1=backward
+_form_cycle_select() {
+    local name="$1"
+    local direction="${2:-1}"
+    local options_str="${FORM_OPTIONS[$name]}"
+    local -a options
+    IFS=',' read -ra options <<< "$options_str"
+    local count=${#options[@]}
+    local current="${FORM_VALUES[$name]}"
+    local i next_idx
+    for ((i=0; i<count; i++)); do
+        if [[ "${options[$i]}" == "$current" ]]; then
+            next_idx=$(( (i + direction + count) % count ))
+            FORM_VALUES[$name]="${options[$next_idx]}"
+            return 0
+        fi
+    done
+    FORM_VALUES[$name]="${options[0]}"
+}
+
 # Handle space: toggle checkbox or cycle select
 _form_handle_space() {
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
@@ -278,20 +327,7 @@ _form_handle_space() {
             fi
             ;;
         select)
-            local options_str="${FORM_OPTIONS[$name]}"
-            local -a options
-            IFS=',' read -ra options <<< "$options_str"
-            local count=${#options[@]}
-            local current="${FORM_VALUES[$name]}"
-            local i next_idx
-            for ((i=0; i<count; i++)); do
-                if [[ "${options[$i]}" == "$current" ]]; then
-                    next_idx=$(( (i + 1) % count ))
-                    FORM_VALUES[$name]="${options[$next_idx]}"
-                    return 0
-                fi
-            done
-            FORM_VALUES[$name]="${options[0]}"
+            _form_cycle_select "$name" 1
             ;;
     esac
 }
@@ -322,7 +358,10 @@ _form_handle_char() {
     case "$type" in
         text|directory)
             FORM_VALUES[$name]+="$ch"
-            [[ "$type" == "directory" ]] && _FORM_DIR_HIGHLIGHT=0
+            if [[ "$type" == "directory" ]]; then
+                _FORM_DIR_HIGHLIGHT=0
+                _FORM_DIR_SCROLL_OFFSET=0
+            fi
             ;;
     esac
 }
@@ -340,7 +379,10 @@ _form_handle_backspace() {
             local val="${FORM_VALUES[$name]}"
             if [[ -n "$val" ]]; then
                 FORM_VALUES[$name]="${val%?}"
-                [[ "$type" == "directory" ]] && _FORM_DIR_HIGHLIGHT=0
+                if [[ "$type" == "directory" ]]; then
+                    _FORM_DIR_HIGHLIGHT=0
+                    _FORM_DIR_SCROLL_OFFSET=0
+                fi
             fi
             ;;
     esac
@@ -353,14 +395,45 @@ _form_handle_tab() {
 
     if [[ "$type" == "directory" ]]; then
         local query="${FORM_VALUES[$name]}"
-        _form_filter_dir_suggestions "$query" "$_FORM_DIR_SUGGESTION_LINES"
+        _form_filter_dir_suggestions "$query" "$_FORM_DIR_FILTER_MAX"
         if [[ ${#_FORM_DIR_FILTERED[@]} -gt 0 ]]; then
             local idx=$_FORM_DIR_HIGHLIGHT
             [[ $idx -ge ${#_FORM_DIR_FILTERED[@]} ]] && idx=0
             local entry="${_FORM_DIR_FILTERED[$idx]}"
             FORM_VALUES[$name]="${entry%%$'\t'*}"
+            _FORM_DIR_HIGHLIGHT=0
+            _FORM_DIR_SCROLL_OFFSET=0
         fi
     fi
+}
+
+# Ensure the directory highlight is within the visible scroll window
+_form_ensure_dir_highlight_visible() {
+    local total=${#_FORM_DIR_FILTERED[@]}
+    local visible=$_FORM_DIR_SUGGESTION_LINES
+    if [[ $total -le $visible ]]; then
+        _FORM_DIR_SCROLL_OFFSET=0
+        return
+    fi
+
+    local highlight=$_FORM_DIR_HIGHLIGHT
+    # Scroll up if highlight is above window
+    if [[ $highlight -lt $_FORM_DIR_SCROLL_OFFSET ]]; then
+        _FORM_DIR_SCROLL_OFFSET=$highlight
+        return
+    fi
+
+    # Scroll down if highlight is below visible entries
+    while true; do
+        local offset=$_FORM_DIR_SCROLL_OFFSET
+        local entry_lines=$visible
+        [[ $offset -gt 0 ]] && ((entry_lines--))
+        [[ $((offset + entry_lines)) -lt $total ]] && ((entry_lines--))
+        if [[ $highlight -lt $((offset + entry_lines)) ]]; then
+            break
+        fi
+        ((_FORM_DIR_SCROLL_OFFSET++))
+    done
 }
 
 # Process a single keystroke. Sets FORM_KEY_RESULT to "continue", "submit", or "cancel".
@@ -412,6 +485,24 @@ _form_process_key_navigate() {
                 case "$extra" in
                     "[A") _form_handle_up; FORM_KEY_RESULT="continue" ;;
                     "[B") _form_handle_down; FORM_KEY_RESULT="continue" ;;
+                    "[C"|"[D")
+                        local _nav_name="${FORM_FIELDS[$FORM_CURSOR]}"
+                        local _nav_type="${FORM_TYPES[$_nav_name]}"
+                        local _nav_disabled="${FORM_DISABLED[$_nav_name]:-}"
+                        if [[ "$_nav_disabled" != "true" ]]; then
+                            case "$_nav_type" in
+                                select)
+                                    if [[ "$extra" == "[C" ]]; then
+                                        _form_cycle_select "$_nav_name" 1
+                                    else
+                                        _form_cycle_select "$_nav_name" -1
+                                    fi
+                                    ;;
+                                checkbox) _form_handle_space ;;
+                            esac
+                        fi
+                        FORM_KEY_RESULT="continue"
+                        ;;
                     *) FORM_KEY_RESULT="continue" ;;
                 esac
             fi
@@ -462,6 +553,7 @@ _form_process_key_edit() {
                         # Up: scroll directory suggestions
                         if [[ "$type" == "directory" && $_FORM_DIR_HIGHLIGHT -gt 0 ]]; then
                             ((_FORM_DIR_HIGHLIGHT--))
+                            _form_ensure_dir_highlight_visible
                         fi
                         FORM_KEY_RESULT="continue"
                         ;;
@@ -472,6 +564,7 @@ _form_process_key_edit() {
                             [[ $max -lt 0 ]] && max=0
                             if [[ $_FORM_DIR_HIGHLIGHT -lt $max ]]; then
                                 ((_FORM_DIR_HIGHLIGHT++))
+                                _form_ensure_dir_highlight_visible
                             fi
                         fi
                         FORM_KEY_RESULT="continue"
@@ -504,6 +597,7 @@ _form_process_key_edit() {
 
 # Number of inline directory suggestion lines
 _FORM_DIR_SUGGESTION_LINES=10
+_FORM_DIR_FILTER_MAX=50
 
 # Row where dynamic content starts (after header)
 _FORM_CONTENT_ROW=3
@@ -512,7 +606,7 @@ _FORM_CONTENT_ROW=3
 _form_draw_header() {
     printf '%s' "${_FORM_CUP_PREFIX}0;0H" > /dev/tty
     printf '%s  New Session%s\n' "${_FORM_BOLD}" "${_FORM_RESET}" > /dev/tty
-    printf '  ↑↓: move  Enter: edit/toggle  Space: toggle  Ctrl-S: create  Esc: back/cancel%s\n' "${_FORM_EL}" > /dev/tty
+    printf '  ↑↓: move  ←→/Space: toggle  Enter: edit  Ctrl-S: create  Esc: back/cancel%s\n' "${_FORM_EL}" > /dev/tty
     printf '%s\n' "${_FORM_EL}" > /dev/tty
 }
 
@@ -536,9 +630,36 @@ _form_draw() {
         if [[ "$name" == "directory" ]]; then
             local dir_focused="false"
             [[ "$focused" == "true" ]] && dir_focused="true"
-            _form_filter_dir_suggestions "${FORM_VALUES[directory]}" "$_FORM_DIR_SUGGESTION_LINES"
+            _form_filter_dir_suggestions "${FORM_VALUES[directory]}" "$_FORM_DIR_FILTER_MAX"
+            local total=${#_FORM_DIR_FILTERED[@]}
+            local visible=$_FORM_DIR_SUGGESTION_LINES
+            local offset=$_FORM_DIR_SCROLL_OFFSET
+
+            # Clamp offset
+            if [[ $total -le $visible ]]; then
+                offset=0
+            else
+                local max_offset=$((total - visible + 1))
+                [[ $offset -gt $max_offset ]] && offset=$max_offset
+            fi
+            _FORM_DIR_SCROLL_OFFSET=$offset
+
+            # Compute indicators and entry count
+            local has_above=false has_below=false
+            local entry_lines=$visible
+            [[ $offset -gt 0 ]] && { has_above=true; ((entry_lines--)); }
+            [[ $((offset + entry_lines)) -lt $total ]] && { has_below=true; ((entry_lines--)); }
+
             local scount=0 si
-            for ((si=0; si<${#_FORM_DIR_FILTERED[@]}; si++)); do
+
+            # Scroll-up indicator
+            if [[ "$has_above" == true ]]; then
+                _FORM_BUF+="    ${_FORM_DIM}▲ $offset more${_FORM_RESET}${_FORM_EL}"$'\n'
+                ((scount++))
+            fi
+
+            # Directory entries
+            for ((si=offset; si < offset + entry_lines && si < total; si++)); do
                 local sline="${_FORM_DIR_FILTERED[$si]}"
                 local spath="${sline%%$'\t'*}"
                 local sannotation=""
@@ -553,8 +674,16 @@ _form_draw() {
                 _FORM_BUF+="${_FORM_EL}"$'\n'
                 ((scount++))
             done
+
+            # Scroll-down indicator
+            if [[ "$has_below" == true ]]; then
+                local remaining=$((total - offset - entry_lines))
+                _FORM_BUF+="    ${_FORM_DIM}▼ $remaining more${_FORM_RESET}${_FORM_EL}"$'\n'
+                ((scount++))
+            fi
+
             # Pad to fixed height
-            while [[ $scount -lt $_FORM_DIR_SUGGESTION_LINES ]]; do
+            while [[ $scount -lt $visible ]]; do
                 _FORM_BUF+="${_FORM_EL}"$'\n'
                 ((scount++))
             done
