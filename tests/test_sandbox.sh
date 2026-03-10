@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_sandbox.sh - Tests for lib/sandbox.sh
 
 test_sandbox() {
@@ -100,3 +101,11 @@ run_sandbox_tests() {
     _run_test test_sandbox
     _run_test test_sandbox_pytest_integration
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_sandbox_tests
+    test_report
+fi

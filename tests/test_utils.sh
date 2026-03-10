@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_utils.sh - Tests for lib/utils.sh
 
 test_utils() {
@@ -134,3 +135,11 @@ run_utils_tests() {
     _run_test test_utils_extended
     _run_test test_claude_first_user_message
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_utils_tests
+    test_report
+fi

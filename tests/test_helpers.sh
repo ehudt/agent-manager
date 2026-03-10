@@ -239,3 +239,26 @@ _run_test() {
         "$1"
     fi
 }
+
+# Print test results summary and exit with appropriate code
+# Usage: test_report
+test_report() {
+    echo "========================================"
+    echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"
+    [[ $TESTS_SKIPPED -gt 0 ]] && echo "  $TESTS_SKIPPED skipped"
+    if [[ $TESTS_FAILED -gt 0 ]]; then
+        echo -e "  ${RED}$TESTS_FAILED tests failed${RESET}"
+        if $SUMMARY_MODE && [[ ${#FAIL_DETAILS[@]} -gt 0 ]]; then
+            echo ""
+            echo "  Failed tests:"
+            for detail in "${FAIL_DETAILS[@]}"; do
+                echo "$detail" | tr '|' '\n' | sed 's/^/    /'
+            done
+        fi
+        echo "========================================"
+        exit 1
+    else
+        echo -e "  ${GREEN}All tests passed!${RESET}"
+    fi
+    echo "========================================"
+}

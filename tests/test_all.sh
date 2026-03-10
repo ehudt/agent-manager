@@ -19,14 +19,14 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # Check required tools
 check_deps
 
-# Source all test_*.sh files (excluding this runner, helpers, and standalone scripts)
+# Source all test module files (excluding this runner, helpers, and container-level scripts)
+_AM_TEST_RUNNER=1
 for _test_file in "$SCRIPT_DIR"/test_*.sh; do
     _basename="$(basename "$_test_file")"
     case "$_basename" in
         test_all.sh|test_helpers.sh) continue ;;
+        test_cap_chown.sh|test_claude_mount.sh|test_codex_permissions.sh) continue ;;
     esac
-    # Skip standalone executable scripts (they have shebangs and run on source)
-    head -1 "$_test_file" | grep -q '^#!' && continue
     source "$_test_file"
 done
 
@@ -54,23 +54,7 @@ main() {
     run_standalone_scripts_tests
     run_install_tests
 
-    echo "========================================"
-    echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"
-    [[ $TESTS_SKIPPED -gt 0 ]] && echo "  $TESTS_SKIPPED skipped"
-    if [[ $TESTS_FAILED -gt 0 ]]; then
-        echo -e "  ${RED}$TESTS_FAILED tests failed${RESET}"
-        if $SUMMARY_MODE && [[ ${#FAIL_DETAILS[@]} -gt 0 ]]; then
-            echo ""
-            echo "  Failed tests:"
-            for detail in "${FAIL_DETAILS[@]}"; do
-                echo "$detail" | tr '|' '\n' | sed 's/^/    /'
-            done
-        fi
-        exit 1
-    else
-        echo -e "  ${GREEN}All tests passed!${RESET}"
-    fi
-    echo "========================================"
+    test_report
 }
 
 main "$@"

@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_registry.sh - Tests for lib/registry.sh
 
 test_registry() {
@@ -691,3 +692,11 @@ run_registry_tests() {
     _run_test test_auto_title_session
     _run_test test_auto_title_scan
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_registry_tests
+    test_report
+fi

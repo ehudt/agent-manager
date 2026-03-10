@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_bin_helpers.sh - Tests for bin/kill-and-switch, bin/switch-last
 
 test_symlinked_kill_and_switch() {
@@ -436,3 +437,11 @@ run_bin_helpers_tests() {
     _run_test test_standalone_switch_last_errors
     _run_test test_standalone_kill_and_switch_errors
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_bin_helpers_tests
+    test_report
+fi

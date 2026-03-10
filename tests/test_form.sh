@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_form.sh - Tests for lib/form.sh
 
 test_form_core() {
@@ -523,3 +524,11 @@ run_form_tests() {
     _run_test test_form_loop
     _run_test test_form_modes
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_form_tests
+    test_report
+fi

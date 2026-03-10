@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_fzf.sh - Tests for lib/fzf.sh
 
 test_fzf_helpers() {
@@ -118,3 +119,11 @@ run_fzf_tests() {
     _run_test test_fzf_helpers
     _run_test test_annotated_directories
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_fzf_tests
+    test_report
+fi

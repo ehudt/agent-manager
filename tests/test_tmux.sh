@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_tmux.sh - Tests for lib/tmux.sh
 
 test_tmux() {
@@ -129,3 +130,11 @@ run_tmux_tests() {
     _run_test test_tmux_listing
     _run_test test_tmux_binding_snippets
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_tmux_tests
+    test_report
+fi

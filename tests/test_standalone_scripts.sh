@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_standalone_scripts.sh - Tests for standalone lib scripts
 
 test_standalone_preview() {
@@ -320,3 +321,11 @@ run_standalone_scripts_tests() {
     _run_test test_standalone_status_right
     _run_test test_strip_ansi
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_standalone_scripts_tests
+    test_report
+fi

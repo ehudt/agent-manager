@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_state.sh - Tests for lib/state.sh
 
 test_state() {
@@ -287,3 +288,11 @@ run_state_tests() {
     _run_test test_state
     _run_test test_state_integration
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_state_tests
+    test_report
+fi

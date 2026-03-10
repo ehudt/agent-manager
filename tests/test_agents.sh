@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_agents.sh - Tests for lib/agents.sh
 
 test_agents() {
@@ -455,3 +456,11 @@ run_agents_tests() {
     _run_test test_sandbox_yolo_independence
     _run_test test_resolve_session
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_agents_tests
+    test_report
+fi

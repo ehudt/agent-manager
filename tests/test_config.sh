@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_config.sh - Tests for lib/config.sh
 
 test_config() {
@@ -130,3 +131,11 @@ run_config_tests() {
     _run_test test_config
     _run_test test_new_form_flag
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_config_tests
+    test_report
+fi

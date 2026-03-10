@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_install.sh - Tests for install
 
 test_installer_replaces_managed_blocks() {
@@ -114,3 +115,11 @@ run_install_tests() {
     _run_test test_installer_replaces_managed_blocks
     _run_test test_install
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_install_tests
+    test_report
+fi

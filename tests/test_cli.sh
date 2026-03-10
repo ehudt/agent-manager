@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # tests/test_cli.sh - Tests for the `am` entry point
 
 test_cli() {
@@ -272,3 +273,11 @@ run_cli_tests() {
     _run_test test_cli_extended
     _run_test test_cli_yolo_sandbox_integration
 }
+
+if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
+    set -uo pipefail
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helpers.sh"
+    check_deps
+    run_cli_tests
+    test_report
+fi
