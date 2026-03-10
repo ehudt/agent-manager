@@ -652,12 +652,11 @@ cmd_peek() {
         local state pane_target raw_content content ts
         state=$(agent_get_state "$resolved")
         pane_target=$(tmux_session_pane_target "$resolved" "$pane_name")
-        raw_content=$(tmux_capture_pane "$pane_target" 2>/dev/null || true)
-        # Strip ANSI, trim trailing blank lines, take last N lines
+        raw_content=$(tmux_capture_pane "$pane_target" "$lines" 2>/dev/null || true)
+        # Strip ANSI, trim trailing blank lines
         content=$(printf '%s' "$raw_content" \
             | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g; s/\x1b\[?[0-9;]*[a-zA-Z]//g' \
-            | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}' \
-            | tail -"$lines")
+            | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}')
         ts=$(date +%s)
         # Build JSON array of lines
         local lines_json

@@ -267,10 +267,18 @@ tmux_session_pane_log_file() {
 }
 
 # Capture the visible history of a pane.
-# Usage: tmux_capture_pane <target-pane>
+# Usage: tmux_capture_pane <target-pane> [lines]
+# If lines is specified, captures only the last N lines using -S -N flag.
+# Otherwise captures entire history with -S - -E -.
 tmux_capture_pane() {
     local target="$1"
-    am_tmux capture-pane -t "$target" -p -e -S - -E - 2>/dev/null
+    local lines="${2:-}"
+
+    if [[ -n "$lines" && "$lines" =~ ^[0-9]+$ ]]; then
+        am_tmux capture-pane -t "$target" -p -e -S "-${lines}" -E - 2>/dev/null
+    else
+        am_tmux capture-pane -t "$target" -p -e -S - -E - 2>/dev/null
+    fi
 }
 
 # Count agent-manager sessions

@@ -123,7 +123,7 @@ agent_classify_exit() {
     pane_target=$(tmux_session_pane_target "$session" "agent") || { echo "dead"; return; }
 
     local last_line
-    last_line=$(tmux_capture_pane "$pane_target" 2>/dev/null \
+    last_line=$(tmux_capture_pane "$pane_target" 10 2>/dev/null \
         | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g; s/\x1b\[?[0-9;]*[a-zA-Z]//g' \
         | grep -v '^[[:space:]]*$' | tail -1 || true)
 
@@ -188,8 +188,7 @@ _state_from_pane() {
     # Capture and strip ANSI from last 40 lines
     local pane_target content
     pane_target=$(tmux_session_pane_target "$session" "agent") || { echo "running"; return; }
-    content=$(tmux_capture_pane "$pane_target" 2>/dev/null \
-        | tail -40 \
+    content=$(tmux_capture_pane "$pane_target" 40 2>/dev/null \
         | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g; s/\x1b\[?[0-9;]*[a-zA-Z]//g' \
         || true)
 

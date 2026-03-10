@@ -42,11 +42,11 @@ fi
 echo ""
 
 # Capture terminal output from the agent pane (top pane)
-output=$(tmux_capture_pane "$session_name:.{top}" || tmux_capture_pane "$session_name")
+output=$(tmux_capture_pane "$session_name:.{top}" 50 || tmux_capture_pane "$session_name" 50)
 
 if [[ -n "$output" ]]; then
-    # Strip trailing blank lines (capture-pane pads with empties), then show last 50 lines
-    echo "$output" | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}' | tail -n 50
+    # Strip trailing blank lines (capture-pane pads with empties)
+    echo "$output" | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}'
 else
     echo "(Unable to capture)"
 fi
