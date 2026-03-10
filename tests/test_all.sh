@@ -2635,6 +2635,15 @@ test_new_form_flag() {
     source "$LIB_DIR/config.sh"
     set -u
 
+    # Isolate from user's real config
+    local original_am_dir="${AM_DIR:-}"
+    local original_am_config="${AM_CONFIG:-}"
+    local original_new_form="${AM_NEW_FORM:-}"
+    export AM_DIR=$(mktemp -d)
+    export AM_CONFIG="$AM_DIR/config.json"
+    unset AM_NEW_FORM
+    am_config_init
+
     # Default is false
     local result=""
     am_new_form_enabled && result="true" || result="false"
@@ -2671,6 +2680,12 @@ test_new_form_flag() {
     local fn_type
     fn_type="$(type -t am_new_session_form 2>/dev/null || true)"
     assert_eq "function" "$fn_type" "new_form: am_new_session_form function exists"
+
+    # Cleanup
+    rm -rf "$AM_DIR"
+    export AM_DIR="${original_am_dir:-$HOME/.agent-manager}"
+    export AM_CONFIG="$original_am_config"
+    [[ -n "$original_new_form" ]] && export AM_NEW_FORM="$original_new_form" || unset AM_NEW_FORM
 
     echo ""
 }
