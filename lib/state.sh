@@ -59,8 +59,13 @@ _state_from_jsonl() {
     jsonl=$(_state_jsonl_path "$dir")
     [[ -n "$jsonl" && -f "$jsonl" ]] || return 0
 
+    # Find the last meaningful entry: assistant, user, or queue-operation.
+    # Skip metadata entries (system, progress, file-history-snapshot, etc.)
+    # that Claude appends after the actual conversation turn.
     local last_line
-    last_line=$(tail -1 "$jsonl" 2>/dev/null) || return 0
+    last_line=$(tail -20 "$jsonl" 2>/dev/null \
+        | grep -E '"type"\s*:\s*"(assistant|user|queue-operation)"' \
+        | tail -1) || return 0
     [[ -n "$last_line" ]] || return 0
 
     local entry_type stop_reason operation content_has_tool_result
