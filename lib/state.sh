@@ -16,10 +16,11 @@
 # ---------------------------------------------------------------------------
 
 # Encode a filesystem path as a Claude project directory name.
-# Strips the leading slash then replaces every / and . with -.
+# Replaces every / and . with -, matching Claude's own encoding.
+# e.g. /Users/foo/code → -Users-foo-code
 # Usage: _state_encode_dir <path>
 _state_encode_dir() {
-    echo "$1" | sed -E 's|^/||; s|[/.]|-|g'
+    echo "$1" | sed -E 's|[/.]|-|g'
 }
 
 # Return the path to the newest Claude session JSONL for a directory.
@@ -27,11 +28,14 @@ _state_encode_dir() {
 # Returns: file path on stdout, or empty string if not found
 _state_jsonl_path() {
     local dir="$1"
+    # Resolve symlinks to match Claude's encoding (e.g. /tmp → /private/tmp)
+    local resolved
+    resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
     local encoded project_dir
-    encoded=$(_state_encode_dir "$dir")
+    encoded=$(_state_encode_dir "$resolved")
     project_dir="$HOME/.claude/projects/$encoded"
     [[ -d "$project_dir" ]] || return 0
-    ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1
+    command ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1
 }
 
 # Check whether a JSONL file is stale (mtime older than 30 seconds).
@@ -122,6 +126,35 @@ agent_classify_exit() {
     fi
 }
 
+# Check whether the pane's foreground process is a bare shell (agent exited).
+# Some agents (e.g. Claude) override process.title to a version string,
+# so pane_current_command returns e.g. "2.1.69" instead of "claude".
+# We check the pane PID: if it's a shell with no child processes, the agent
+# has exited and we're back at the prompt.
+# Usage: _state_pane_is_shell <session>
+# Returns: 0 if shell, 1 otherwise
+_state_pane_is_shell() {
+    local session="$1"
+
+    local pane_pid
+    pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
+    [[ -z "$pane_pid" ]] && return 1
+
+    local pane_proc
+    pane_proc=$(ps -p "$pane_pid" -o comm= 2>/dev/null || true)
+    case "${pane_proc:-}" in
+        bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash) ;;
+        *) return 1 ;;
+    esac
+
+    # Pane PID is a shell. If it has no child processes, the agent has exited.
+    if ! pgrep -P "$pane_pid" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
+}
+
 # Derive session state from tmux pane content.
 # Usage: _state_from_pane <session> [agent_type]
 # Returns: state string on stdout, or empty string if cannot determine
@@ -135,15 +168,10 @@ _state_from_pane() {
         return
     fi
 
-    local pane_cmd
-    pane_cmd=$(tmux_pane_current_command "${session}:.{top}" 2>/dev/null || true)
-
-    case "${pane_cmd:-}" in
-        bash|zsh|sh|fish|dash)
-            agent_classify_exit "$session"
-            return
-            ;;
-    esac
+    if _state_pane_is_shell "$session"; then
+        agent_classify_exit "$session"
+        return
+    fi
 
     # Capture and strip ANSI from last 40 lines
     local pane_target content
@@ -193,8 +221,22 @@ _state_from_pane() {
         return
     fi
 
-    # Claude fallback: process is alive → conservative running
-    # (Claude primary detection is via JSONL in agent_get_state)
+    # Claude: detect input prompt as waiting_input (fallback when JSONL unavailable)
+    if [[ "$agent_type" == "claude" ]]; then
+        # Claude shows ❯ (or >) at the start of a line when waiting for input,
+        # plus a status line with token counts like "░░░░" or "███".
+        # The (running) indicator means a tool is executing.
+        if printf '%s' "$content" | grep -qE '\(running\)'; then
+            echo "running"
+        elif printf '%s' "$content" | grep -qE '(^|\s)❯\s*$'; then
+            echo "waiting_input"
+        else
+            echo "running"
+        fi
+        return
+    fi
+
+    # Generic fallback: process is alive → conservative running
     echo "running"
 }
 
@@ -215,29 +257,24 @@ agent_get_state() {
         return
     fi
 
-    local pane_cmd
-    pane_cmd=$(tmux_pane_current_command "${session}:.{top}" 2>/dev/null || true)
-
-    case "${pane_cmd:-}" in
-        bash|zsh|sh|fish|dash)
-            # Shell running in agent pane: either still starting or already exited
-            local created_at created_epoch now age
-            created_at=$(registry_get_field "$session" created_at 2>/dev/null || true)
-            if [[ -n "$created_at" ]]; then
-                now=$(date +%s)
-                created_epoch=$(date -d "$created_at" +%s 2>/dev/null \
-                    || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null \
-                    || echo 0)
-                age=$(( now - created_epoch ))
-                if (( age < 5 )); then
-                    echo "starting"
-                    return
-                fi
+    if _state_pane_is_shell "$session"; then
+        # Shell running in agent pane: either still starting or already exited
+        local created_at created_epoch now age
+        created_at=$(registry_get_field "$session" created_at 2>/dev/null || true)
+        if [[ -n "$created_at" ]]; then
+            now=$(date +%s)
+            created_epoch=$(date -d "$created_at" +%s 2>/dev/null \
+                || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null \
+                || echo 0)
+            age=$(( now - created_epoch ))
+            if (( age < 5 )); then
+                echo "starting"
+                return
             fi
-            agent_classify_exit "$session"
-            return
-            ;;
-    esac
+        fi
+        agent_classify_exit "$session"
+        return
+    fi
 
     local agent_type
     agent_type=$(registry_get_field "$session" agent_type 2>/dev/null || true)

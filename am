@@ -977,9 +977,8 @@ cmd_wait() {
         return 1
     fi
 
-    local reached exit_code
-    reached=$(agent_wait_state "$resolved" "$target_states" "$timeout_s")
-    exit_code=$?
+    local reached exit_code=0
+    reached=$(agent_wait_state "$resolved" "$target_states" "$timeout_s") || exit_code=$?
 
     if $json; then
         jq -n --arg session "$resolved" --arg state "$reached" \

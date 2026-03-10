@@ -3164,12 +3164,12 @@ test_state() {
     set -u
 
     # --- Test: _state_encode_dir ---
-    assert_eq "home-user-myapp" "$(_state_encode_dir "/home/user/myapp")" \
+    assert_eq "-home-user-myapp" "$(_state_encode_dir "/home/user/myapp")" \
         "_state_encode_dir: slashes become dashes"
-    assert_eq "home-user-my-app" "$(_state_encode_dir "/home/user/my.app")" \
+    assert_eq "-home-user-my-app" "$(_state_encode_dir "/home/user/my.app")" \
         "_state_encode_dir: dots become dashes (matches Claude encoding)"
-    assert_eq "tmp-project" "$(_state_encode_dir "/tmp/project")" \
-        "_state_encode_dir: leading slash stripped"
+    assert_eq "-tmp-project" "$(_state_encode_dir "/tmp/project")" \
+        "_state_encode_dir: leading slash becomes dash"
 
     # --- Test: _state_jsonl_stale on missing file ---
     if _state_jsonl_stale "/nonexistent/file.jsonl"; then

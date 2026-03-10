@@ -32,6 +32,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/fzf.sh` | fzf UI: list generation, directory picker with history annotations, main loop |
 | `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
 | `lib/title-upgrade` | Standalone script: fire-and-forget Haiku title upgrade for a session |
+| `lib/status-right` | Standalone script: tmux status-right showing sessions waiting for attention |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: JSONL parsing, pane pattern matching, wait/poll |

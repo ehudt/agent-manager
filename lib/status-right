@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# status-right - tmux status-right helper
+# Shows agent sessions waiting for user attention.
+# Called by tmux via:  #(/path/to/status-right <current_session>)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/utils.sh"
+source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/tmux.sh"
+source "$SCRIPT_DIR/registry.sh"
+source "$SCRIPT_DIR/state.sh"
+
+current="${1:-}"
+
+# Build a short label for a session: directory basename, or session hash.
+_label() {
+    local session="$1"
+    local dir label
+    dir=$(registry_get_field "$session" directory 2>/dev/null || true)
+    label="${dir:+$(dir_basename "$dir")}"
+    : "${label:=${session#am-}}"
+    echo "$label"
+}
+
+parts=()
+
+while IFS=' ' read -r session _; do
+    [[ -z "$session" || "$session" == "$current" ]] && continue
+
+    state=$(agent_get_state "$session" 2>/dev/null || true)
+
+    case "$state" in
+        waiting_permission|waiting_custom)
+            parts+=("#[fg=colour214,bold]! $(_label "$session")#[default]")
+            ;;
+        waiting_input)
+            parts+=("#[fg=colour75]> $(_label "$session")#[default]")
+            ;;
+        idle)
+            parts+=("#[fg=colour244]- $(_label "$session")#[default]")
+            ;;
+    esac
+done < <(tmux_list_am_sessions_with_activity)
+
+[[ ${#parts[@]} -eq 0 ]] && exit 0
+
+output=""
+for part in "${parts[@]}"; do
+    [[ -n "$output" ]] && output+="  "
+    output+="$part"
+done
+
+echo "$output"
