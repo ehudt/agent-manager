@@ -1217,6 +1217,9 @@ EOF
 
 # Main entry point
 main() {
+    # Initialize tracing if requested
+    trace_init
+
     # Initialize
     am_init
     am_config_init

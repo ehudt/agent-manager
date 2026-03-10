@@ -202,3 +202,81 @@ claude_first_user_message() {
         fi
     done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
 }
+
+# TRACE=1 profiling — uses bash set -x with timestamped PS4.
+# Traces every line automatically, no per-function instrumentation needed.
+# Usage: TRACE=1 am list-internal
+
+declare -g TRACE_LOG=""
+
+trace_init() {
+    [[ "${TRACE:-0}" == "1" ]] || return 0
+
+    TRACE_LOG="/tmp/am-trace-$$.log"
+    : > "$TRACE_LOG"
+
+    # Timestamp each traced line with function name and line number
+    if command -v gdate &>/dev/null; then
+        PS4='+ $(gdate +%s%N) ${FUNCNAME[0]:-main}:${LINENO} '
+    else
+        # macOS date lacks %N — fall back to second-level granularity
+        PS4='+ $(date +%s)000000000 ${FUNCNAME[0]:-main}:${LINENO} '
+    fi
+
+    exec 19>"$TRACE_LOG"
+    BASH_XTRACEFD=19
+    set -x
+
+    trap 'trace_on_exit' EXIT
+}
+
+trace_on_exit() {
+    set +x
+    exec 19>&-
+
+    [[ -f "$TRACE_LOG" && -s "$TRACE_LOG" ]] || return 0
+
+    echo "" >&2
+    echo "=== Trace Summary ===" >&2
+    echo "Log: $TRACE_LOG ($(wc -l < "$TRACE_LOG" | tr -d ' ') lines)" >&2
+    echo "" >&2
+
+    # Parse xtrace lines: "+ TIMESTAMP FUNC:LINE rest..."
+    # Aggregate: line count per function, first/last timestamp per function
+    awk '
+    /^\+/ {
+        split($3, a, ":")
+        fn = a[1]
+        ts = $2 + 0
+        count[fn]++
+        if (!(fn in first) || ts < first[fn]) first[fn] = ts
+        if (!(fn in last) || ts > last[fn]) last[fn] = ts
+    }
+    END {
+        n = 0
+        for (fn in count) {
+            span_ms = (last[fn] - first[fn]) / 1000000
+            results[n] = sprintf("%d|%s|%d", span_ms, fn, count[fn])
+            n++
+        }
+        # Sort by span descending (simple insertion sort)
+        for (i = 1; i < n; i++) {
+            key = results[i]
+            split(key, k, "|")
+            j = i - 1
+            while (j >= 0) {
+                split(results[j], jk, "|")
+                if (jk[1]+0 >= k[1]+0) break
+                results[j+1] = results[j]
+                j--
+            }
+            results[j+1] = key
+        }
+        printf "Top functions by wall-clock span:\n"
+        limit = (n < 15) ? n : 15
+        for (i = 0; i < limit; i++) {
+            split(results[i], r, "|")
+            printf "  %s: %dms (%d lines)\n", r[2], r[1], r[3]
+        }
+    }' "$TRACE_LOG" >&2
+}
