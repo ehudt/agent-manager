@@ -39,6 +39,15 @@ if [[ -n "$task" ]]; then
     echo ""
     echo -e "\033[1;36m$task\033[0m"
 fi
+
+# Show first user message from Claude JSONL if available
+if [[ -n "$directory" ]]; then
+    first_msg=$(claude_first_user_message "$directory" 2>/dev/null || true)
+    if [[ -n "$first_msg" ]]; then
+        echo ""
+        echo -e "\033[2m$first_msg\033[0m"
+    fi
+fi
 echo ""
 
 # Capture terminal output from the agent pane (top pane)

@@ -5,9 +5,6 @@
 
 ## Up Next
 
-- **Tests** - split the one giant test file into tests by file tested
-- **Tests** - use a dedicated tmux socket (e.g., `agent-manager-test`) so test runs don't switch the user's live sessions
-- **tmux status-right** - show `dirname/branch` instead of just `dirname`
 - **tmux status-right** - split to two parts - needing attention and idle: ! session-1  ! session-2  |  > session-3  > session-4
 - **tmux status-right** - change text color to something with more contrast, like the left bar color
 - **Tests** - make it possible to run just 1 test file by running it as a script, or running all of them together using test_all.sh
