@@ -1261,14 +1261,11 @@ test_install() {
     local temp_shell_rc="$temp_root/.zshrc"
     touch "$temp_shell_rc"
 
-    local install_output install_rc=0
-    install_output=$(AM_DIR="$temp_am_dir" AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
+    local install_output
+    install_output=$(AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
+        AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
         "$PROJECT_DIR/am" install \
-        --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1) || install_rc=$?
-
-    # Debug
-    echo "  [debug] install exit=$install_rc am_dir=$temp_am_dir" >&2
-    ls "$temp_am_dir/config.json" >&2 2>&1 || echo "  [debug] config.json missing" >&2
+        --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
 
     # Verify config was created
     assert_cmd_succeeds "install: config file created" test -f "$temp_am_dir/config.json"
@@ -1293,7 +1290,8 @@ test_install() {
 
     # Verify idempotent (run again)
     local install_output2
-    install_output2=$(AM_DIR="$temp_am_dir" AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
+    install_output2=$(AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
+        AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
     assert_contains "$install_output2" "already exists" "install: skills symlink idempotent"
@@ -3956,62 +3954,70 @@ test_standalone_kill_and_switch_errors() {
 # ============================================
 # Main
 # ============================================
+_run_test() {
+    if $SUMMARY_MODE; then
+        "$1" 2>/dev/null
+    else
+        "$1"
+    fi
+}
+
 main() {
-    echo "========================================"
-    echo "  Agent Manager Test Suite"
-    echo "========================================"
-    echo ""
+    $SUMMARY_MODE || echo "========================================"
+    $SUMMARY_MODE || echo "  Agent Manager Test Suite"
+    $SUMMARY_MODE || echo "========================================"
+    $SUMMARY_MODE || echo ""
 
     check_deps
 
-    test_utils
-    test_utils_extended
-    test_config
-    test_registry
-    test_registry_extended
-    test_registry_get_fields
-    test_tmux
-    test_agents
-    test_agents_extended
-    test_sandbox
-    test_fzf_helpers
-    test_tmux_binding_snippets
-    test_symlinked_kill_and_switch
-    test_kill_and_switch_switches_client_before_kill
-    test_kill_and_switch_no_alternate_session
-    test_kill_and_switch_legacy_single_arg
-    test_switch_last_no_alternate_session
-    test_installer_replaces_managed_blocks
-    test_install
-    test_cli
-    test_integration_lifecycle
-    test_cli_extended
-    test_registry_gc
-    test_history
-    test_history_integration
-    test_worktree
-    test_sandbox_yolo_independence
-    test_cli_yolo_sandbox_integration
-    test_annotated_directories
-    test_auto_title_session
-    test_auto_title_scan
-    test_resolve_session
-    test_tmux_listing
-    test_claude_first_user_message
-    test_sandbox_pytest_integration
-    test_strip_ansi
-    test_new_form_flag
-    test_form_core
-    test_form_loop
-    test_form_modes
-    test_state
-    test_state_integration
-    test_standalone_preview
-    test_standalone_dir_preview
-    test_standalone_title_upgrade
-    test_standalone_status_right
-    test_standalone_switch_last_errors
-    test_standalone_kill_and_switch_errors
+    _run_test test_utils
+    _run_test test_utils_extended
+    _run_test test_config
+    _run_test test_registry
+    _run_test test_registry_extended
+    _run_test test_registry_get_fields
+    _run_test test_tmux
+    _run_test test_agents
+    _run_test test_agents_extended
+    _run_test test_sandbox
+    _run_test test_fzf_helpers
+    _run_test test_tmux_binding_snippets
+    _run_test test_symlinked_kill_and_switch
+    _run_test test_kill_and_switch_switches_client_before_kill
+    _run_test test_kill_and_switch_no_alternate_session
+    _run_test test_kill_and_switch_legacy_single_arg
+    _run_test test_switch_last_no_alternate_session
+    _run_test test_installer_replaces_managed_blocks
+    _run_test test_install
+    _run_test test_cli
+    _run_test test_integration_lifecycle
+    _run_test test_cli_extended
+    _run_test test_registry_gc
+    _run_test test_history
+    _run_test test_history_integration
+    _run_test test_worktree
+    _run_test test_sandbox_yolo_independence
+    _run_test test_cli_yolo_sandbox_integration
+    _run_test test_annotated_directories
+    _run_test test_auto_title_session
+    _run_test test_auto_title_scan
+    _run_test test_resolve_session
+    _run_test test_tmux_listing
+    _run_test test_claude_first_user_message
+    _run_test test_sandbox_pytest_integration
+    _run_test test_strip_ansi
+    _run_test test_new_form_flag
+    _run_test test_form_core
+    _run_test test_form_loop
+    _run_test test_form_modes
+    _run_test test_state
+    _run_test test_state_integration
+    _run_test test_standalone_preview
+    _run_test test_standalone_dir_preview
+    _run_test test_standalone_title_upgrade
+    _run_test test_standalone_status_right
+    _run_test test_standalone_switch_last_errors
+    _run_test test_standalone_kill_and_switch_errors
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"

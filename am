@@ -50,6 +50,7 @@ COMMANDS:
     events              Stream state-change events as JSONL
     interrupt           Send Ctrl-C to an agent pane
     sandbox, sb         Manage sandbox containers and image
+    install             First-time setup (deps, config, skills, PATH)
     help                Show this help message
 
 SHORTCUT:
@@ -1214,6 +1215,143 @@ EOF
     esac
 }
 
+# Helper: compare version strings (true if actual >= required)
+_install_version_ge() {
+    local required="$1"
+    local actual="$2"
+    local oldest
+    oldest=$(printf '%s\n%s' "$required" "$actual" | sort -V | head -1)
+    [[ "$oldest" == "$required" ]]
+}
+
+# Helper: check a single dependency, optionally with minimum version
+_install_check_cmd() {
+    local cmd="$1"
+    local min_version="${2:-}"
+
+    if ! command -v "$cmd" &>/dev/null; then
+        log_warn "  $cmd ... MISSING"
+        return 1
+    fi
+
+    if [[ -z "$min_version" ]]; then
+        log_success "  $cmd ... OK"
+        return 0
+    fi
+
+    local actual_version=""
+    case "$cmd" in
+        tmux) actual_version=$(tmux -V 2>/dev/null | sed -E 's/tmux ([0-9.]+).*/\1/') ;;
+        fzf)  actual_version=$(fzf --version 2>/dev/null | sed -E 's/([0-9.]+).*/\1/') ;;
+    esac
+
+    if [[ -z "$actual_version" ]]; then
+        log_warn "  $cmd ... version unknown (need >= $min_version)"
+        return 1
+    fi
+
+    if _install_version_ge "$min_version" "$actual_version"; then
+        log_success "  $cmd $actual_version ... OK (>= $min_version)"
+        return 0
+    else
+        log_warn "  $cmd $actual_version ... too old (need >= $min_version)"
+        return 1
+    fi
+}
+
+# Command: install
+cmd_install() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        cat <<'EOF'
+Usage: am install [options]
+
+First-time setup: check dependencies, create config, symlink skills,
+and install am onto PATH.
+
+Options (forwarded to scripts/install.sh):
+  --prefix <dir>      Install directory (default: ~/.local/bin)
+  --shell-rc <file>   Shell rc file to update
+  --tmux-conf <file>  tmux config to clean up
+  --no-shell          Skip shell rc update
+  --no-tmux           Skip tmux config cleanup
+  -y, --yes           Non-interactive mode
+  -h, --help          Show this help
+EOF
+        return 0
+    fi
+
+    echo -e "${BOLD}am install — first-time setup${RESET}" >&2
+    echo "" >&2
+
+    local warnings=0
+    local steps_done=()
+
+    # --- Step 1: Check dependencies ---
+    echo -e "${BOLD}Checking dependencies...${RESET}" >&2
+    _install_check_cmd tmux 3.0  || (( warnings += 1 ))
+    _install_check_cmd fzf 0.40  || (( warnings += 1 ))
+    _install_check_cmd jq        || (( warnings += 1 ))
+    _install_check_cmd git       || (( warnings += 1 ))
+    steps_done+=("Dependencies checked")
+
+    # --- Step 2: Create config ---
+    echo "" >&2
+    echo -e "${BOLD}Setting up config...${RESET}" >&2
+    # am_init + am_config_init already called by main() before we get here
+    log_success "  Config directory: $AM_DIR"
+    log_success "  Config file: $AM_CONFIG"
+    steps_done+=("Config: $AM_CONFIG")
+
+    # --- Step 3: Symlink skills for Claude Code discovery ---
+    echo "" >&2
+    echo -e "${BOLD}Setting up skills...${RESET}" >&2
+    local skills_src="$AM_SCRIPT_DIR/skills/am-orchestration"
+    local skills_dir="${AM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+    local skills_target="$skills_dir/am-orchestration"
+
+    if [[ ! -d "$skills_src" ]]; then
+        log_warn "  Skills source not found: $skills_src"
+        (( warnings += 1 ))
+    elif [[ -L "$skills_target" ]]; then
+        local existing
+        existing=$(readlink "$skills_target")
+        if [[ "$existing" == "$skills_src" ]]; then
+            log_success "  Symlink already exists: $skills_target"
+            steps_done+=("Skills symlink verified")
+        else
+            log_warn "  Symlink points to $existing (expected $skills_src)"
+            (( warnings += 1 ))
+        fi
+    elif [[ -e "$skills_target" ]]; then
+        log_warn "  Target exists but is not a symlink: $skills_target"
+        (( warnings += 1 ))
+    else
+        mkdir -p "$skills_dir"
+        ln -s "$skills_src" "$skills_target"
+        log_success "  Symlinked: $skills_target -> $skills_src"
+        steps_done+=("Skills symlinked")
+    fi
+
+    # --- Step 4: Install am onto PATH (via scripts/install.sh) ---
+    echo "" >&2
+    echo -e "${BOLD}Installing am onto PATH...${RESET}" >&2
+    "$AM_SCRIPT_DIR/scripts/install.sh" "$@"
+    steps_done+=("PATH setup complete")
+
+    # --- Summary ---
+    echo "" >&2
+    echo -e "${BOLD}Summary${RESET}" >&2
+    local step
+    for step in "${steps_done[@]}"; do
+        echo "  * $step" >&2
+    done
+    if [[ $warnings -gt 0 ]]; then
+        log_warn "$warnings warning(s) -- review above"
+    fi
+    echo "" >&2
+    log_success "Setup complete! Run 'am version' to verify."
+}
+
 # Main entry point
 main() {
     # Initialize tracing if requested
@@ -1223,14 +1361,20 @@ main() {
     am_init
     am_config_init
 
+    # Parse command
+    local cmd="${1:-list}"
+    [[ $# -gt 0 ]] && shift
+
+    # Install runs before strict dependency checks (it verifies deps itself)
+    if [[ "$cmd" == "install" ]]; then
+        cmd_install "$@"
+        return $?
+    fi
+
     # Check dependencies
     require_cmd tmux
     require_cmd fzf
     require_cmd jq
-
-    # Parse command
-    local cmd="${1:-list}"
-    [[ $# -gt 0 ]] && shift
 
     case "$cmd" in
         list-internal)
