@@ -636,9 +636,10 @@ fzf_new_session_form() {
 # Format: "session_name|display_name"
 # Usage: fzf_list_sessions
 fzf_list_sessions() {
-    # Clean up stale registry entries first
-    registry_gc >/dev/null 2>&1
-    auto_title_scan >/dev/null 2>&1 &
+    # Background GC and title scan — don't block list rendering
+    { registry_gc >/dev/null 2>&1; } &
+    { auto_title_scan >/dev/null 2>&1; } &
+    disown 2>/dev/null || true
 
     _fzf_list_display "with_name"
 }

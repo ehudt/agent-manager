@@ -12,9 +12,14 @@ _SB_SSH_DIR="$SB_HOME/ssh"
 _SB_CLAUDE_JSON="$SB_HOME/claude.json"
 _SB_CLAUDE_DIR="$SB_HOME/claude"
 _SB_CODEX_DIR="$SB_HOME/codex"
-_SB_HOST_USER=$(id -un)
-_SB_HOST_UID=$(id -u)
-_SB_HOST_GID=$(id -g)
+# Lazy-init host identity (avoid 3 subprocess spawns at source time)
+_SB_HOST_USER="" _SB_HOST_UID="" _SB_HOST_GID=""
+_sandbox_ensure_host_identity() {
+    [[ -n "$_SB_HOST_USER" ]] && return
+    _SB_HOST_USER=$(id -un)
+    _SB_HOST_UID=$(id -u)
+    _SB_HOST_GID=$(id -g)
+}
 
 [[ -f "$SANDBOX_ENV_FILE" ]] && source "$SANDBOX_ENV_FILE"
 
@@ -176,6 +181,7 @@ sandbox_build_image() {
 sandbox_start() {
     local session_name="$1"
     local directory="$2"
+    _sandbox_ensure_host_identity
     _sandbox_log_event "$session_name" "start_requested" "directory=$directory"
 
     if [[ ! -d "$directory" ]]; then
@@ -369,6 +375,7 @@ sandbox_start() {
 sandbox_attach_cmd() {
     local session_name="$1"
     local directory="$2"
+    _sandbox_ensure_host_identity
     local event_log
     event_log="$(_sandbox_event_log_path "$session_name")"
     printf "%s" "docker exec -it -u '$_SB_HOST_USER' -w '$directory' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=${TERM:-xterm-256color}' '$session_name' zsh; _am_rc=\$?; if docker inspect '$session_name' >/dev/null 2>&1; then if [[ \$_am_rc -eq 0 ]]; then clear; else printf '\\n[am] sandbox shell exited (status %s) for %s. Container is still present.\\n' \"\$_am_rc\" '$session_name'; fi; else printf '\\n[am] sandbox %s is gone; you are now on the host shell.\\n[am] inspect: ./am sandbox status %s\\n[am] events: %s\\n' '$session_name' '$session_name' '$event_log'; fi"
@@ -408,6 +415,7 @@ sandbox_stop() {
 
 sandbox_status() {
     local session_name="$1"
+    _sandbox_ensure_host_identity
     local state ts_ip
     local event_log
     event_log="$(_sandbox_event_log_path "$session_name")"

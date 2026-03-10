@@ -11,10 +11,9 @@ if [[ -z "$session_name" ]]; then
     exit 0
 fi
 
-# Source utils and registry for helpers
+# Minimal init — only source utils and tmux (skip registry; use jq directly)
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/tmux.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
 
 # Check session exists
 if ! am_tmux has-session -t "$session_name" 2>/dev/null; then
@@ -22,31 +21,27 @@ if ! am_tmux has-session -t "$session_name" 2>/dev/null; then
     exit 0
 fi
 
-# Get session title from Claude JSONL
+# Read directory and task from registry in one jq call (avoids sourcing registry.sh)
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
+directory="" task=""
 if [[ -f "$AM_REGISTRY" ]]; then
-    directory=$(jq -r --arg name "$session_name" '.sessions[$name].directory // empty' "$AM_REGISTRY" 2>/dev/null)
-
-    echo -e "\033[1mSession:\033[0m $session_name"
-
-    if [[ -n "$directory" ]]; then
-        echo -e "\033[1mDirectory:\033[0m $directory"
-        echo ""
-        title=$(claude_first_user_message "$directory" || true)
-        if [[ -n "$title" ]]; then
-            title=$(_title_fallback "$title")
-            echo -e "\033[1;36m📝 $title\033[0m"
-            echo ""
-        fi
-    else
-        echo ""
-    fi
+    local_fields=$(jq -r --arg name "$session_name" \
+        '.sessions[$name] | [.directory // "", .task // ""] | join("|")' \
+        "$AM_REGISTRY" 2>/dev/null || true)
+    IFS='|' read -r directory task <<< "$local_fields"
 fi
 
+echo -e "\033[1mSession:\033[0m $session_name"
+if [[ -n "$directory" ]]; then
+    echo -e "\033[1mDirectory:\033[0m $directory"
+fi
+if [[ -n "$task" ]]; then
+    echo ""
+    echo -e "\033[1;36m$task\033[0m"
+fi
+echo ""
+
 # Capture terminal output from the agent pane (top pane)
-# -p: print to stdout, -e: include escape sequences (colors)
-# -S -: start from beginning of history, -E -: end at current cursor position
-# Then tail to get the most recent output (bottom of the pane)
 output=$(tmux_capture_pane "$session_name:.{top}" || tmux_capture_pane "$session_name")
 
 if [[ -n "$output" ]]; then
