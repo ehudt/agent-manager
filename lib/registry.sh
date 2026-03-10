@@ -124,18 +124,31 @@ registry_gc() {
 
     local removed=0
     local orphaned_containers=0
-    local name container
 
     if [[ "$(type -t sandbox_gc_orphans)" == "function" ]]; then
         orphaned_containers=$(sandbox_gc_orphans)
         removed=$((removed + orphaned_containers))
     fi
 
-    for name in $(registry_list); do
-        if ! tmux_session_exists "$name"; then
+    # Bulk-read live tmux sessions and registry in parallel (avoids N+1 tmux calls)
+    local -A live_sessions
+    local _sname
+    while IFS= read -r _sname; do
+        live_sessions[$_sname]=1
+    done < <(tmux_list_am_sessions)
+
+    # Bulk-read container_name for all registry entries (one jq call)
+    local -A reg_containers
+    local _rname _rcontainer
+    while IFS='|' read -r _rname _rcontainer; do
+        reg_containers[$_rname]=$_rcontainer
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.container_name // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+
+    local name
+    for name in "${!reg_containers[@]}"; do
+        if [[ -z "${live_sessions[$name]:-}" ]]; then
             # Clean up sandbox container if one exists
-            container=$(registry_get_field "$name" "container_name")
-            if [[ -n "$container" ]]; then
+            if [[ -n "${reg_containers[$name]}" ]]; then
                 sandbox_remove "$name"
             fi
             registry_remove "$name"
@@ -266,14 +279,24 @@ auto_title_scan() {
 
     _titler_log "scan start (force=$force)"
 
+    # Bulk-read all sessions with their fields in one jq call (avoids N+1 registry reads)
+    local -A reg_task reg_dir reg_branch reg_agent
+    local _rname _rtask _rdir _rbranch _ragent
+    while IFS='|' read -r _rname _rtask _rdir _rbranch _ragent; do
+        reg_task[$_rname]=$_rtask
+        reg_dir[$_rname]=$_rdir
+        reg_branch[$_rname]=$_rbranch
+        reg_agent[$_rname]=$_ragent
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.branch // "", .value.agent_type // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+
     local name dir task first_msg fallback
     local scanned=0 titled=0
-    for name in $(registry_list); do
-        task=$(registry_get_field "$name" "task")
+    for name in "${!reg_task[@]}"; do
+        task="${reg_task[$name]}"
         [[ -n "$task" ]] && continue  # already titled
 
         scanned=$((scanned + 1))
-        dir=$(registry_get_field "$name" "directory")
+        dir="${reg_dir[$name]}"
         if [[ -z "$dir" ]]; then
             _titler_log "  $name: skip (no directory)"
             continue
@@ -294,10 +317,7 @@ auto_title_scan() {
         fi
 
         registry_update "$name" "task" "$fallback"
-        local branch agent
-        branch=$(registry_get_field "$name" "branch")
-        agent=$(registry_get_field "$name" "agent_type")
-        history_append "$dir" "$fallback" "$agent" "$branch"
+        history_append "$dir" "$fallback" "${reg_agent[$name]}" "${reg_branch[$name]}"
         titled=$((titled + 1))
         _titler_log "  $name: fallback=\"$fallback\""
 

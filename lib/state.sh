@@ -68,13 +68,17 @@ _state_from_jsonl() {
         | tail -1) || return 0
     [[ -n "$last_line" ]] || return 0
 
+    # Extract all needed fields in a single jq call (avoids 4 separate process spawns)
+    # Use pipe delimiter (not tab — bash read collapses consecutive tabs for empty fields)
     local entry_type stop_reason operation content_has_tool_result
-    entry_type=$(printf '%s' "$last_line" | jq -r '.type // empty' 2>/dev/null)
-    stop_reason=$(printf '%s' "$last_line" | jq -r '.message.stop_reason // empty' 2>/dev/null)
-    operation=$(printf '%s' "$last_line" | jq -r '.operation // empty' 2>/dev/null)
-    content_has_tool_result=$(printf '%s' "$last_line" \
-        | jq -r 'if (.message.content | arrays | map(select(.type == "tool_result")) | length > 0) then "yes" else "" end' \
-        2>/dev/null || true)
+    local _jsonl_fields
+    _jsonl_fields=$(printf '%s' "$last_line" | jq -r '[
+        (.type // ""),
+        (.message.stop_reason // ""),
+        (.operation // ""),
+        (if (.message.content | arrays | map(select(.type == "tool_result")) | length > 0) then "yes" else "" end)
+    ] | join("|")' 2>/dev/null || true)
+    IFS='|' read -r entry_type stop_reason operation content_has_tool_result <<< "$_jsonl_fields"
 
     case "$entry_type" in
         assistant)
@@ -99,10 +103,10 @@ _state_from_jsonl() {
             ;;
         user)
             # tool_result: tool ran, Claude is processing the result
-            [[ "$content_has_tool_result" == "yes" ]] && echo "running"
+            if [[ "$content_has_tool_result" == "yes" ]]; then echo "running"; fi
             ;;
         queue-operation)
-            [[ "$operation" == "enqueue" ]] && echo "running"
+            if [[ "$operation" == "enqueue" ]]; then echo "running"; fi
             ;;
     esac
 }
@@ -161,21 +165,24 @@ _state_pane_is_shell() {
 }
 
 # Derive session state from tmux pane content.
-# Usage: _state_from_pane <session> [agent_type]
+# Usage: _state_from_pane <session> [agent_type] [--skip-alive-check]
 # Returns: state string on stdout, or empty string if cannot determine
 _state_from_pane() {
     local session="$1"
     local agent_type="${2:-}"
+    local skip_alive="${3:-}"
 
-    # Dead check
-    if ! tmux_session_exists "$session"; then
-        echo "dead"
-        return
-    fi
+    if [[ "$skip_alive" != "--skip-alive-check" ]]; then
+        # Dead check
+        if ! tmux_session_exists "$session"; then
+            echo "dead"
+            return
+        fi
 
-    if _state_pane_is_shell "$session"; then
-        agent_classify_exit "$session"
-        return
+        if _state_pane_is_shell "$session"; then
+            agent_classify_exit "$session"
+            return
+        fi
     fi
 
     # Capture and strip ANSI from last 40 lines
@@ -285,8 +292,9 @@ agent_get_state() {
     agent_type=$(registry_get_field "$session" agent_type 2>/dev/null || true)
 
     # Check permission/custom prompts first via pane (applies to all agents)
+    # Skip alive check — we already verified session exists and is not a bare shell above
     local pane_state
-    pane_state=$(_state_from_pane "$session" "$agent_type" 2>/dev/null || true)
+    pane_state=$(_state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || true)
     case "$pane_state" in
         waiting_permission|waiting_custom|dead|idle)
             echo "$pane_state"
@@ -308,6 +316,39 @@ agent_get_state() {
     fi
 
     # Fall back to pane result (running or waiting_input)
+    echo "${pane_state:-running}"
+}
+
+# Lean state detection for a single session.
+# Skips session-existence check and registry reads; caller provides metadata.
+# Usage: _agent_get_state_fast <session> <agent_type> <directory>
+# Outputs: state string
+_agent_get_state_fast() {
+    local session="$1" agent_type="$2" dir="$3"
+
+    # 1. Shell check — catches idle/dead quickly
+    if _state_pane_is_shell "$session"; then
+        agent_classify_exit "$session"
+        return
+    fi
+
+    # 2. For Claude: try JSONL first (cheaper than pane capture)
+    if [[ "$agent_type" == "claude" && -n "$dir" ]]; then
+        local jsonl_state
+        jsonl_state=$(_state_from_jsonl "$dir")
+        if [[ -n "$jsonl_state" ]]; then
+            # JSONL says waiting_input → done (no permission prompt can exist)
+            if [[ "$jsonl_state" == "waiting_input" ]]; then
+                echo "waiting_input"
+                return
+            fi
+            # JSONL says running → still need to check pane for permission prompts
+        fi
+    fi
+
+    # 3. Pane-based detection (permission prompts, agent-specific patterns)
+    local pane_state
+    pane_state=$(_state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || true)
     echo "${pane_state:-running}"
 }
 
