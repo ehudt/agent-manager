@@ -3,6 +3,14 @@
 
 set -uo pipefail
 
+# Parse test runner flags before anything else
+SUMMARY_MODE=false
+for _arg in "$@"; do
+    case "$_arg" in
+        --summary|-s) SUMMARY_MODE=true ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_DIR="$SCRIPT_DIR"  # Stable ref — SCRIPT_DIR gets overwritten by lib/agents.sh
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -12,6 +20,10 @@ LIB_DIR="$PROJECT_DIR/lib"
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
+TESTS_SKIPPED=0
+
+# Summary mode: collect failure details for replay
+FAIL_DETAILS=()
 
 # Colors
 RED='\033[0;31m'
@@ -26,13 +38,14 @@ assert_eq() {
     local msg="${3:-}"
     ((TESTS_RUN++))
     if [[ "$expected" == "$actual" ]]; then
-        echo -e "${GREEN}PASS${RESET}: $msg"
         ((TESTS_PASSED++))
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
     else
+        ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: $msg"
         echo "  Expected: '$expected'"
         echo "  Actual:   '$actual'"
-        ((TESTS_FAILED++))
+        FAIL_DETAILS+=("FAIL: $msg|  Expected: '$expected'|  Actual:   '$actual'")
     fi
 }
 
@@ -42,13 +55,14 @@ assert_contains() {
     local msg="${3:-}"
     ((TESTS_RUN++))
     if [[ "$haystack" == *"$needle"* ]]; then
-        echo -e "${GREEN}PASS${RESET}: $msg"
         ((TESTS_PASSED++))
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
     else
+        ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: $msg"
         echo "  String: '$haystack'"
         echo "  Does not contain: '$needle'"
-        ((TESTS_FAILED++))
+        FAIL_DETAILS+=("FAIL: $msg|  String: '$haystack'|  Does not contain: '$needle'")
     fi
 }
 
@@ -57,11 +71,12 @@ assert_not_empty() {
     local msg="${2:-}"
     ((TESTS_RUN++))
     if [[ -n "$value" ]]; then
-        echo -e "${GREEN}PASS${RESET}: $msg"
         ((TESTS_PASSED++))
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
     else
-        echo -e "${RED}FAIL${RESET}: $msg (value is empty)"
         ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: $msg (value is empty)"
+        FAIL_DETAILS+=("FAIL: $msg (value is empty)")
     fi
 }
 
@@ -70,17 +85,19 @@ assert_cmd_succeeds() {
     shift
     ((TESTS_RUN++))
     if "$@" &>/dev/null; then
-        echo -e "${GREEN}PASS${RESET}: $msg"
         ((TESTS_PASSED++))
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
     else
-        echo -e "${RED}FAIL${RESET}: $msg"
         ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: $msg"
+        FAIL_DETAILS+=("FAIL: $msg")
     fi
 }
 
 skip_test() {
     local msg="$1"
-    echo -e "${YELLOW}SKIP${RESET}: $msg"
+    ((TESTS_SKIPPED++))
+    $SUMMARY_MODE || echo -e "${YELLOW}SKIP${RESET}: $msg"
 }
 
 run_external_test() {
@@ -88,13 +105,14 @@ run_external_test() {
     shift
     ((TESTS_RUN++))
     if "$@"; then
-        echo -e "${GREEN}PASS${RESET}: $msg"
         ((TESTS_PASSED++))
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
     else
         local rc=$?
+        ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: $msg"
         echo "  Exit code: $rc"
-        ((TESTS_FAILED++))
+        FAIL_DETAILS+=("FAIL: $msg|  Exit code: $rc")
     fi
 }
 
@@ -132,11 +150,12 @@ assert_cmd_fails() {
     shift
     ((TESTS_RUN++))
     if "$@" &>/dev/null; then
-        echo -e "${RED}FAIL${RESET}: $msg (expected failure, got success)"
         ((TESTS_FAILED++))
+        echo -e "${RED}FAIL${RESET}: $msg (expected failure, got success)"
+        FAIL_DETAILS+=("FAIL: $msg (expected failure, got success)")
     else
-        echo -e "${GREEN}PASS${RESET}: $msg"
         ((TESTS_PASSED++))
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
     fi
 }
 
@@ -255,10 +274,11 @@ test_utils_extended() {
     # Different inputs SHOULD produce different hashes (not guaranteed but overwhelmingly likely)
     if [[ "$h1" != "$h3" ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: generate_hash: different inputs different output"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: generate_hash: different inputs different output"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: generate_hash: different inputs produced same hash"
+        FAIL_DETAILS+=("FAIL: generate_hash: different inputs produced same hash")
     fi
 
     # abspath: with real directories
@@ -628,10 +648,11 @@ test_agents_extended() {
     local name2=$(generate_session_name "/tmp/project-b")
     if [[ "$name1" != "$name2" ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: generate_session_name: different dirs different names"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: generate_session_name: different dirs different names"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: generate_session_name: collision for different dirs"
+        FAIL_DETAILS+=("FAIL: generate_session_name: collision for different dirs")
     fi
 
     # Test generate_session_name format: am-XXXXXX
@@ -1207,6 +1228,81 @@ EOF
 }
 
 # ============================================
+# Test: am install command
+# ============================================
+test_install() {
+    echo "=== Testing am install ==="
+
+    # Test help mentions install
+    local help_output=$("$PROJECT_DIR/am" help)
+    assert_contains "$help_output" "install" "am help: mentions install command"
+
+    # Test install --help
+    local install_help
+    install_help=$("$PROJECT_DIR/am" install --help 2>&1)
+    assert_contains "$install_help" "First-time setup" "am install --help: shows description"
+    assert_contains "$install_help" "--prefix" "am install --help: shows --prefix option"
+
+    # Test version comparison via sort -V (same logic as _install_version_ge)
+    local oldest
+    oldest=$(printf '3.0\n3.4' | sort -V | head -1)
+    assert_eq "3.0" "$oldest" "version_ge: 3.4 >= 3.0"
+    oldest=$(printf '0.40\n0.35' | sort -V | head -1)
+    assert_eq "0.35" "$oldest" "version_ge: 0.35 < 0.40"
+    oldest=$(printf '0.40\n0.40' | sort -V | head -1)
+    assert_eq "0.40" "$oldest" "version_ge: 0.40 == 0.40"
+
+    # Test full install in temp environment
+    local temp_root
+    temp_root=$(mktemp -d)
+    local temp_am_dir="$temp_root/am-dir"
+    local temp_skills_dir="$temp_root/claude-skills"
+    local temp_prefix="$temp_root/bin"
+    local temp_shell_rc="$temp_root/.zshrc"
+    touch "$temp_shell_rc"
+
+    local install_output install_rc=0
+    install_output=$(AM_DIR="$temp_am_dir" AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
+        "$PROJECT_DIR/am" install \
+        --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1) || install_rc=$?
+
+    # Debug
+    echo "  [debug] install exit=$install_rc am_dir=$temp_am_dir" >&2
+    ls "$temp_am_dir/config.json" >&2 2>&1 || echo "  [debug] config.json missing" >&2
+
+    # Verify config was created
+    assert_cmd_succeeds "install: config file created" test -f "$temp_am_dir/config.json"
+
+    # Verify skills symlink was created
+    assert_cmd_succeeds "install: skills symlink created" test -L "$temp_skills_dir/am-orchestration"
+    local link_target
+    link_target=$(readlink "$temp_skills_dir/am-orchestration")
+    assert_eq "$PROJECT_DIR/skills/am-orchestration" "$link_target" "install: skills symlink target correct"
+
+    # Verify am binary was installed
+    assert_cmd_succeeds "install: am binary installed" test -e "$temp_prefix/am"
+
+    # Verify dependency check output
+    assert_contains "$install_output" "tmux" "install: checks tmux"
+    assert_contains "$install_output" "fzf" "install: checks fzf"
+    assert_contains "$install_output" "jq" "install: checks jq"
+    assert_contains "$install_output" "git" "install: checks git"
+
+    # Verify summary output
+    assert_contains "$install_output" "Setup complete" "install: shows completion message"
+
+    # Verify idempotent (run again)
+    local install_output2
+    install_output2=$(AM_DIR="$temp_am_dir" AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
+        "$PROJECT_DIR/am" install \
+        --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
+    assert_contains "$install_output2" "already exists" "install: skills symlink idempotent"
+
+    rm -rf "$temp_root"
+    echo ""
+}
+
+# ============================================
 # Test: am CLI
 # ============================================
 test_cli() {
@@ -1351,10 +1447,11 @@ test_cli_extended() {
     # Validate JSON
     if echo "$json_output" | jq . >/dev/null 2>&1; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: am list --json: valid JSON"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: am list --json: valid JSON"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: am list --json: invalid JSON"
+        FAIL_DETAILS+=("FAIL: am list --json: invalid JSON")
     fi
     assert_contains "$json_output" "$session_name" "am list --json: contains session"
     assert_eq "claude" "$(echo "$json_output" | jq -r '.[0].agent_type')" \
@@ -1448,7 +1545,7 @@ test_cli_extended() {
     assert_contains "$pane_output" "stub-agent-input:run tests now" "am send: prompt reaches agent pane"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
-    # --- Test: am new --detach can pass initial prompt from stdin as argv ---
+    # --- Test: am new --detach can pass initial prompt from stdin (piped to agent) ---
     local detached_session
     detached_session=$(printf 'initial prompt from stdin\n' | AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" new --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
     assert_not_empty "$detached_session" "am new --detach: returns session name"
@@ -1458,11 +1555,11 @@ test_cli_extended() {
     pane_output=""
     for _i in $(seq 1 20); do
         pane_output=$(am_tmux capture-pane -pt "$detached_session:.{top}" 2>/dev/null || true)
-        [[ "$pane_output" == *"stub-agent-argv:initial prompt from stdin"* ]] && break
+        [[ "$pane_output" == *"stub-agent-input:initial prompt from stdin"* ]] && break
         sleep 0.2
     done
-    assert_contains "$pane_output" "stub-agent-argv:initial prompt from stdin" \
-        "am new --detach: stdin prompt passed as initial argv"
+    assert_contains "$pane_output" "stub-agent-input:initial prompt from stdin" \
+        "am new --detach: stdin prompt piped to agent"
     [[ -n "$detached_session" ]] && agent_kill "$detached_session" 2>/dev/null
 
     # Cleanup
@@ -1783,10 +1880,11 @@ test_worktree() {
     info_output=$(agent_info "$session_name")
     if [[ "$info_output" != *"Worktree:"* ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: no-worktree launch: info omits Worktree line"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: no-worktree launch: info omits Worktree line"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: no-worktree launch: info unexpectedly shows Worktree"
+        FAIL_DETAILS+=("FAIL: no-worktree launch: info unexpectedly shows Worktree")
     fi
 
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
@@ -2149,10 +2247,11 @@ test_auto_title_session() {
     assert_not_empty "$fallback" "title_gen: fallback handles URLs"
     if [[ "$fallback" != *"https"* ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: title_gen: fallback removes URLs"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: fallback removes URLs"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: title_gen: fallback should remove URLs"
+        FAIL_DETAILS+=("FAIL: title_gen: fallback should remove URLs")
     fi
 
     # --- Test 4: Haiku output markdown stripping ---
@@ -2172,27 +2271,30 @@ test_auto_title_session() {
     # --- Test 5: Title validation - length check ---
     if _title_valid "Short title"; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: title_gen: accepts valid short title"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: accepts valid short title"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: title_gen: accepts valid short title"
+        FAIL_DETAILS+=("FAIL: title_gen: accepts valid short title")
     fi
 
     if _title_valid "This is a really really really really really really really long title over 60 chars"; then
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: title_gen: rejects title >60 chars"
+        FAIL_DETAILS+=("FAIL: title_gen: rejects title >60 chars")
     else
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: title_gen: rejects title >60 chars"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: rejects title >60 chars"
     fi
 
     # --- Test 6: Title validation - newline check ---
     if _title_valid $'Multi\nline'; then
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: title_gen: rejects multiline titles"
+        FAIL_DETAILS+=("FAIL: title_gen: rejects multiline titles")
     else
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: title_gen: rejects multiline titles"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: rejects multiline titles"
     fi
 
     # --- Test 7: Edge case - empty message produces empty fallback ---
@@ -2713,8 +2815,14 @@ test_form_core() {
     display=$(_form_field_display "text" "" "" "" "" "false")
     assert_eq "" "$display" "form render: empty text field"
 
-    display=$(_form_field_display "select" "claude" "" "" "" "false")
-    assert_eq "< claude >" "$display" "form render: select shows cycling indicator"
+    display=$(_form_field_display "select" "claude" "claude,codex,gemini" "" "" "false")
+    assert_eq "[claude]  codex  gemini" "$display" "form render: select shows all options"
+
+    display=$(_form_field_display "select" "codex" "claude,codex,gemini" "" "" "false")
+    assert_eq "claude  [codex]  gemini" "$display" "form render: select highlights current"
+
+    display=$(_form_field_display "select" "unknown" "" "" "" "false")
+    assert_eq "[unknown]" "$display" "form render: select without options shows value"
 
     display=$(_form_field_display "checkbox" "true" "" "" "" "false")
     assert_eq "[x]" "$display" "form render: checkbox on"
@@ -2859,6 +2967,26 @@ test_form_loop() {
     _form_process_key " "
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: space returns continue"
     assert_eq "true" "${FORM_VALUES[yolo]}" "dispatch: space toggled yolo"
+
+    # Right arrow cycles select forward
+    FORM_CURSOR=3  # mode
+    FORM_VALUES[mode]="new"
+    _FORM_MODE="navigate"
+    _form_process_key $'\x1b' "[C"
+    assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: right arrow returns continue"
+    assert_eq "resume" "${FORM_VALUES[mode]}" "dispatch: right arrow cycles select forward"
+
+    # Left arrow cycles select backward
+    _form_process_key $'\x1b' "[D"
+    assert_eq "new" "${FORM_VALUES[mode]}" "dispatch: left arrow cycles select backward"
+
+    # Right arrow toggles checkbox
+    FORM_CURSOR=4  # yolo
+    FORM_VALUES[yolo]="false"
+    _form_process_key $'\x1b' "[C"
+    assert_eq "true" "${FORM_VALUES[yolo]}" "dispatch: right arrow toggles checkbox"
+    _form_process_key $'\x1b' "[D"
+    assert_eq "false" "${FORM_VALUES[yolo]}" "dispatch: left arrow toggles checkbox"
 
     # Tab (handled inline now, returns continue)
     FORM_CURSOR=0  # directory field
@@ -3068,6 +3196,52 @@ test_form_modes() {
     assert_eq "navigate" "$_FORM_MODE" "dir scroll: enter returns to navigate"
 
     echo ""
+    echo "=== Testing directory scroll offset ==="
+
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _FORM_MODE="edit"
+    FORM_CURSOR=0  # directory
+
+    # Create 15 fake suggestions (more than visible window of 10)
+    _FORM_DIR_SUGGESTIONS=()
+    local di
+    for ((di=0; di<15; di++)); do
+        _FORM_DIR_SUGGESTIONS+=("/home/user/project$di")
+    done
+    _FORM_DIR_SUGGESTIONS_LOADED=true
+    _form_filter_dir_suggestions "" 50
+
+    # Scroll offset starts at 0
+    assert_eq "0" "$_FORM_DIR_SCROLL_OFFSET" "dir scroll offset: starts at 0"
+
+    # Move highlight down past visible window
+    for ((di=0; di<12; di++)); do
+        _form_process_key $'\x1b' "[B"
+    done
+    assert_eq "12" "$_FORM_DIR_HIGHLIGHT" "dir scroll offset: highlight at 12"
+    # Scroll offset should have moved
+    assert_eq "true" "$( [[ $_FORM_DIR_SCROLL_OFFSET -gt 0 ]] && echo true || echo false )" \
+        "dir scroll offset: offset moved from 0"
+
+    # Move back up to 0
+    for ((di=0; di<12; di++)); do
+        _form_process_key $'\x1b' "[A"
+    done
+    assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "dir scroll offset: highlight back at 0"
+    assert_eq "0" "$_FORM_DIR_SCROLL_OFFSET" "dir scroll offset: offset back at 0"
+
+    # Typing resets scroll offset
+    _FORM_DIR_SCROLL_OFFSET=5
+    _form_handle_char "x"
+    assert_eq "0" "$_FORM_DIR_SCROLL_OFFSET" "dir scroll offset: typing resets offset"
+
+    # Tab resets scroll offset
+    _FORM_DIR_SCROLL_OFFSET=5
+    FORM_VALUES[directory]=""
+    _form_handle_tab
+    assert_eq "0" "$_FORM_DIR_SCROLL_OFFSET" "dir scroll offset: tab resets offset"
+
+    echo ""
     echo "=== Testing disabled field behavior ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "true" "" "true"
@@ -3174,10 +3348,11 @@ test_state() {
     # --- Test: _state_jsonl_stale on missing file ---
     if _state_jsonl_stale "/nonexistent/file.jsonl"; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: _state_jsonl_stale: missing file is stale"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: _state_jsonl_stale: missing file is stale"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: _state_jsonl_stale: missing file should be stale"
+        FAIL_DETAILS+=("FAIL: _state_jsonl_stale: missing file should be stale")
     fi
 
     # --- Test: _state_from_jsonl with canned content ---
@@ -3255,38 +3430,42 @@ here is the result
     # Running pattern
     if printf '%s' "$codex_running" | grep -qE 'Working \([0-9]+s|esc to interrupt'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: codex pane: Working indicator matches running pattern"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: Working indicator matches running pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: codex pane: Working indicator should match running pattern"
+        FAIL_DETAILS+=("FAIL: codex pane: Working indicator should match running pattern")
     fi
 
     if printf '%s' "$codex_running2" | grep -qE 'Working \([0-9]+s|esc to interrupt'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: codex pane: hollow-circle Working variant matches running pattern"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: hollow-circle Working variant matches running pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: codex pane: hollow-circle Working variant should match"
+        FAIL_DETAILS+=("FAIL: codex pane: hollow-circle Working variant should match")
     fi
 
     # Command approval pattern
     if printf '%s' "$codex_cmd_approval" | grep -qE \
             'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: codex pane: command approval matches permission pattern"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: command approval matches permission pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: codex pane: command approval should match permission pattern"
+        FAIL_DETAILS+=("FAIL: codex pane: command approval should match permission pattern")
     fi
 
     # Edit approval pattern
     if printf '%s' "$codex_edit_approval" | grep -qE \
             'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: codex pane: edit approval matches permission pattern"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: edit approval matches permission pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: codex pane: edit approval should match permission pattern"
+        FAIL_DETAILS+=("FAIL: codex pane: edit approval should match permission pattern")
     fi
 
     # Idle content does NOT match running or permission patterns
@@ -3365,10 +3544,11 @@ test_state_integration() {
         "$PROJECT_DIR/am" status --json "$session_name" 2>/dev/null || true)
     if echo "$status_json" | jq . >/dev/null 2>&1; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: am status --json: valid JSON"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: am status --json: valid JSON"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: am status --json: invalid JSON (got: $status_json)"
+        FAIL_DETAILS+=("FAIL: am status --json: invalid JSON (got: $status_json)")
     fi
     local status_state
     status_state=$(echo "$status_json" | jq -r '.state // empty' 2>/dev/null || true)
@@ -3392,10 +3572,11 @@ test_state_integration() {
         "$PROJECT_DIR/am" peek --json "$session_name" 2>/dev/null || true)
     if echo "$peek_json" | jq . >/dev/null 2>&1; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        echo -e "${GREEN}PASS${RESET}: am peek --json: valid JSON"
+        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: am peek --json: valid JSON"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         echo -e "${RED}FAIL${RESET}: am peek --json: invalid JSON (got: $peek_json)"
+        FAIL_DETAILS+=("FAIL: am peek --json: invalid JSON (got: $peek_json)")
     fi
     local peek_has_lines
     peek_has_lines=$(echo "$peek_json" | jq 'has("lines")' 2>/dev/null || echo "false")
@@ -3600,16 +3781,17 @@ test_standalone_title_upgrade() {
         updated_task=$(registry_get_field "test-session-2" task 2>/dev/null || echo "original task")
 
         if [[ "$updated_task" != "original task" ]]; then
-            echo -e "${GREEN}PASS${RESET}: title-upgrade: updates task in registry"
+            $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title-upgrade: updates task in registry"
             ((TESTS_PASSED++))
             ((TESTS_RUN++))
 
             ((TESTS_RUN++))
             if [[ ${#updated_task} -le 60 ]]; then
-                echo -e "${GREEN}PASS${RESET}: title-upgrade: respects 60 char limit"
+                $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title-upgrade: respects 60 char limit"
                 ((TESTS_PASSED++))
             else
                 echo -e "${RED}FAIL${RESET}: title-upgrade: respects 60 char limit"
+                FAIL_DETAILS+=("FAIL: title-upgrade: respects 60 char limit")
                 echo "  Task length: ${#updated_task}"
                 ((TESTS_FAILED++))
             fi
@@ -3665,7 +3847,7 @@ test_standalone_status_right() {
     assert_eq "0" "$rc" "status-right: exits 0 with mixed states"
 
     [[ -n "$output" ]] || output="(empty)"
-    echo -e "${GREEN}PASS${RESET}: status-right: produces output format (content: $output)"
+    $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: status-right: produces output format (content: $output)"
     ((TESTS_PASSED++))
     ((TESTS_RUN++))
 
@@ -3800,6 +3982,7 @@ main() {
     test_kill_and_switch_legacy_single_arg
     test_switch_last_no_alternate_session
     test_installer_replaces_managed_blocks
+    test_install
     test_cli
     test_integration_lifecycle
     test_cli_extended
@@ -3832,8 +4015,16 @@ main() {
 
     echo "========================================"
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"
+    [[ $TESTS_SKIPPED -gt 0 ]] && echo "  $TESTS_SKIPPED skipped"
     if [[ $TESTS_FAILED -gt 0 ]]; then
         echo -e "  ${RED}$TESTS_FAILED tests failed${RESET}"
+        if $SUMMARY_MODE && [[ ${#FAIL_DETAILS[@]} -gt 0 ]]; then
+            echo ""
+            echo "  Failed tests:"
+            for detail in "${FAIL_DETAILS[@]}"; do
+                echo "$detail" | tr '|' '\n' | sed 's/^/    /'
+            done
+        fi
         exit 1
     else
         echo -e "  ${GREEN}All tests passed!${RESET}"
