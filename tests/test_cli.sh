@@ -83,19 +83,19 @@ test_cli_extended() {
 
     # --- Test: am peek snapshots agent and shell panes ---
     local peek_output=""
-    for _i in $(seq 1 15); do
+    for _i in $(seq 1 20); do
         peek_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek "$session_name" 2>/dev/null)
         [[ "$peek_output" == *"stub-agent-ready"* ]] && break
-        sleep 0.1
+        sleep 0.2
     done
     assert_contains "$peek_output" "stub-agent-ready" "am peek: captures agent pane"
 
     tmux_send_keys "$session_name:.{bottom}" "echo shell-peek-ready" Enter
     local shell_peek=""
-    for _i in $(seq 1 15); do
+    for _i in $(seq 1 20); do
         shell_peek=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek --pane shell "$session_name" 2>/dev/null)
         [[ "$shell_peek" == *"shell-peek-ready"* ]] && break
-        sleep 0.1
+        sleep 0.2
     done
     assert_contains "$shell_peek" "shell-peek-ready" "am peek --pane shell: captures shell pane"
 
@@ -147,10 +147,10 @@ test_cli_extended() {
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$session_name" "run tests now" >/dev/null 2>/dev/null || send_rc=$?
     assert_eq "0" "$send_rc" "am send: exits 0"
     local pane_output=""
-    for _i in $(seq 1 15); do
+    for _i in $(seq 1 20); do
         pane_output=$(am_tmux capture-pane -pt "$session_name:.{top}" 2>/dev/null || true)
         [[ "$pane_output" == *"stub-agent-input:run tests now"* ]] && break
-        sleep 0.1
+        sleep 0.2
     done
     assert_contains "$pane_output" "stub-agent-input:run tests now" "am send: prompt reaches agent pane"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
@@ -163,10 +163,10 @@ test_cli_extended() {
         "am new --detach: session created"
 
     pane_output=""
-    for _i in $(seq 1 15); do
+    for _i in $(seq 1 20); do
         pane_output=$(am_tmux capture-pane -pt "$detached_session:.{top}" 2>/dev/null || true)
         [[ "$pane_output" == *"stub-agent-input:initial prompt from stdin"* ]] && break
-        sleep 0.1
+        sleep 0.2
     done
     assert_contains "$pane_output" "stub-agent-input:initial prompt from stdin" \
         "am new --detach: stdin prompt piped to agent"

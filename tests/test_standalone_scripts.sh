@@ -28,7 +28,7 @@ test_standalone_preview() {
 
     local session_name
     session_name=$(set +u; agent_launch "$test_dir" bash "test task" ""; set -u) 2>/dev/null
-    sleep 0.2
+    sleep 0.5
 
     if [[ -z "$session_name" ]] || ! tmux_session_exists "$session_name"; then
         skip_test "preview: session creation failed"
@@ -171,7 +171,7 @@ test_standalone_title_upgrade() {
         local killer_pid=$!
         "$LIB_DIR/title-upgrade" "test-session-2" "Implement user authentication with OAuth2" 2>/dev/null || true
         kill "$killer_pid" 2>/dev/null || true
-        sleep 0.2
+        sleep 0.5
 
         local updated_task
         updated_task=$(registry_get_field "test-session-2" task 2>/dev/null || echo "original task")
@@ -228,7 +228,7 @@ test_standalone_status_right() {
     s1=$(set +u; agent_launch "$test_dir1" bash "task1" ""; set -u) 2>/dev/null
     s2=$(set +u; agent_launch "$test_dir2" bash "task2" ""; set -u) 2>/dev/null
     s3=$(set +u; agent_launch "$test_dir3" bash "task3" ""; set -u) 2>/dev/null
-    sleep 0.2
+    sleep 0.5
 
     rc=0
     output=$("$LIB_DIR/status-right" "$s1" 2>&1) || rc=$?
@@ -236,7 +236,7 @@ test_standalone_status_right() {
 
     [[ -n "$s1" ]] && tmux_send_keys "$s1" "sleep 10000"
     [[ -n "$s2" ]] && tmux_send_keys "$s2" "echo hello"
-    sleep 0.2
+    sleep 0.3
 
     rc=0
     output=$("$LIB_DIR/status-right" "$s1" 2>&1) || rc=$?

@@ -352,7 +352,7 @@ test_standalone_switch_last_errors() {
     test_dir2=$(mktemp -d)
     s1=$(set +u; agent_launch "$test_dir1" bash "task1" ""; set -u) 2>/dev/null
     s2=$(set +u; agent_launch "$test_dir2" bash "task2" ""; set -u) 2>/dev/null
-    sleep 0.2
+    sleep 0.5
 
     if [[ -z "$s1" ]] || ! am_tmux has-session -t "$s1" 2>/dev/null; then
         skip_test "switch-last error handling: session creation failed"
@@ -364,7 +364,7 @@ test_standalone_switch_last_errors() {
 
     TMUX= am_tmux attach-session -t "$s1" </dev/null >/dev/null 2>&1 &
     local attach_pid=$!
-    sleep 0.2
+    sleep 0.3
 
     local rc=0
     am_tmux run-shell -t "$s1" "$PROJECT_DIR/bin/switch-last" 2>/dev/null || rc=$?
@@ -403,7 +403,7 @@ test_standalone_kill_and_switch_errors() {
     local test_dir s1
     test_dir=$(mktemp -d)
     s1=$(set +u; agent_launch "$test_dir" bash "task" ""; set -u) 2>/dev/null
-    sleep 0.2
+    sleep 0.5
 
     if [[ -z "$s1" ]] || ! am_tmux has-session -t "$s1" 2>/dev/null; then
         skip_test "kill-and-switch: session creation failed"

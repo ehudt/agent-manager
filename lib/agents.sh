@@ -345,7 +345,7 @@ agent_launch() {
     if [[ -n "$worktree_path" ]]; then
         registry_update "$session_name" "worktree_path" "$worktree_path"
         agent_refresh_tmux_status "$session_name"
-        if [[ "$session_directory" != "$worktree_path" ]] && [[ -z "${AM_TEST_MODE:-}" ]]; then
+        if [[ "$session_directory" != "$worktree_path" ]]; then
             (for _i in $(seq 1 20); do
                 if [ -d "$worktree_path" ]; then
                     am_tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
