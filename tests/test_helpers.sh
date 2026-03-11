@@ -2,7 +2,8 @@
 # Sourced by test runners — no shebang, no set -euo pipefail
 
 # Parse test runner flags before anything else
-SUMMARY_MODE=false
+# Preserve SUMMARY_MODE if already set (e.g., by parallel worker)
+SUMMARY_MODE="${SUMMARY_MODE:-false}"
 for _arg in "$@"; do
     case "$_arg" in
         --summary|-s) SUMMARY_MODE=true ;;
@@ -15,7 +16,8 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LIB_DIR="$PROJECT_DIR/lib"
 
 # Dedicated tmux socket so tests never touch the user's live sessions
-export AM_TMUX_SOCKET="agent-manager-test"
+# Workers in parallel mode override this before sourcing test files
+export AM_TMUX_SOCKET="${AM_TMUX_SOCKET:-am-test-$$}"
 
 # Test counters
 TESTS_RUN=0
@@ -162,10 +164,13 @@ check_deps() {
 }
 
 # Kill the dedicated test tmux server on exit (even on failure/signal)
+# In parallel mode (_AM_PARALLEL_WORKER=1), workers manage their own cleanup
 cleanup_test_tmux_server() {
     tmux -L "$AM_TMUX_SOCKET" kill-server 2>/dev/null || true
 }
-trap cleanup_test_tmux_server EXIT
+if [[ -z "${_AM_PARALLEL_WORKER:-}" ]]; then
+    trap cleanup_test_tmux_server EXIT
+fi
 
 # ============================================
 # Integration test helpers
