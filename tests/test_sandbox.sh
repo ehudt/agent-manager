@@ -97,12 +97,49 @@ test_sandbox_pytest_integration() {
     $SUMMARY_MODE || echo ""
 }
 
+test_sandbox_pytest_integration_group() {
+    local group_name="$1"
+    local marker_expr="$2"
+
+    if ! command -v docker &>/dev/null || ! docker info >/dev/null 2>&1; then
+        skip_test "sandbox pytest integration ($group_name, docker unavailable)"
+        return
+    fi
+
+    if command -v uv &>/dev/null; then
+        run_external_test \
+            "sandbox pytest integration [$group_name]: tests/test_sandbox_security_integration.py" \
+            uv run --with pytest pytest -q -m "$marker_expr" "$TEST_DIR/test_sandbox_security_integration.py"
+        return
+    fi
+
+    if python3 -c 'import pytest' &>/dev/null; then
+        run_external_test \
+            "sandbox pytest integration [$group_name]: tests/test_sandbox_security_integration.py" \
+            python3 -m pytest -q -m "$marker_expr" "$TEST_DIR/test_sandbox_security_integration.py"
+    else
+        skip_test "sandbox pytest integration [$group_name] (requires uv or python3 with pytest)"
+    fi
+}
+
 run_sandbox_tests() {
     _run_test test_sandbox
 }
 
 run_sandbox_slow_tests() {
     _run_test test_sandbox_pytest_integration
+}
+
+run_sandbox_slow_security_tests() {
+    _run_test test_sandbox_pytest_integration_group security "security"
+}
+
+run_sandbox_slow_functional_tests() {
+    _run_test test_sandbox_pytest_integration_group functional "functional"
+}
+
+run_sandbox_slow_ux_tests() {
+    _run_test test_sandbox_pytest_integration_group ux "ux and not functional and not security"
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

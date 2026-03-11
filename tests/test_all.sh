@@ -157,9 +157,17 @@ worker1_tests() {
     run_install_tests
 }
 
-# Worker 8: Sandbox slow tests (~17s solo, only with --include-slow)
+# Worker 8-10: Sandbox slow tests, sharded by marker to avoid one long pole
 worker8_tests() {
-    $INCLUDE_SLOW && run_sandbox_slow_tests || true
+    $INCLUDE_SLOW && run_sandbox_slow_security_tests || true
+}
+
+worker9_tests() {
+    $INCLUDE_SLOW && run_sandbox_slow_functional_tests || true
+}
+
+worker10_tests() {
+    $INCLUDE_SLOW && run_sandbox_slow_ux_tests || true
 }
 
 # Worker 2: Registry + tmux (~4s solo)
@@ -203,7 +211,7 @@ main() {
     $SUMMARY_MODE || echo "========================================"
     $SUMMARY_MODE || echo ""
 
-    local worker_ids=(1 2 3 4 5 6 7 8)
+    local worker_ids=(1 2 3 4 5 6 7 8 9 10)
     local pids=()
 
     # Launch workers in parallel, each with its own tmux socket
@@ -224,6 +232,10 @@ main() {
     run_worker 7 "am-test-${_run_id}-w7" worker7_tests &
     pids+=($!)
     run_worker 8 "am-test-${_run_id}-w8" worker8_tests &
+    pids+=($!)
+    run_worker 9 "am-test-${_run_id}-w9" worker9_tests &
+    pids+=($!)
+    run_worker 10 "am-test-${_run_id}-w10" worker10_tests &
     pids+=($!)
 
     # Wait for all workers

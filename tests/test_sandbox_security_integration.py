@@ -119,23 +119,40 @@ def _container_mount(inspect_payload, destination):
     raise AssertionError(f"Mount for destination {destination} not found")
 
 
-def _wait_for_running(container_name, timeout=30):
+def _wait_for_state(container_name, target_state, *, timeout=30, interval=0.2):
     end = time.time() + timeout
     while time.time() < end:
         state = _container_state(container_name)
-        if state == "running":
+        if state == target_state:
             return
-        if state in {"exited", "dead"}:
+        if target_state == "running" and state in {"exited", "dead"}:
             logs = _container_logs(container_name)
             raise AssertionError(
                 f"Container did not stay up (state={state}). Recent logs:\n{logs}"
             )
-        time.sleep(1)
+        time.sleep(interval)
     state = _container_state(container_name)
-    logs = _container_logs(container_name)
-    raise AssertionError(
-        f"Timed out waiting for running state (state={state}). Recent logs:\n{logs}"
-    )
+    if target_state == "running":
+        logs = _container_logs(container_name)
+        raise AssertionError(
+            f"Timed out waiting for running state (state={state}). Recent logs:\n{logs}"
+        )
+    raise AssertionError(f"Timed out waiting for state={target_state!r} (state={state})")
+
+
+def _wait_for_running(container_name, timeout=30, interval=0.2):
+    _wait_for_state(container_name, "running", timeout=timeout, interval=interval)
+
+
+def _wait_for_not_running(container_name, timeout=15, interval=0.2):
+    end = time.time() + timeout
+    while time.time() < end:
+        state = _container_state(container_name)
+        if state != "running":
+            return state
+        time.sleep(interval)
+    state = _container_state(container_name)
+    raise AssertionError(f"Timed out waiting for container to stop (state={state})")
 
 
 def _prepare_fake_home(home_dir):
@@ -860,12 +877,7 @@ def test_f005_attach_failure_when_not_running(sandbox_context):
         env=env,
         check=True,
     )
-    # Wait for container to stop
-    for _ in range(15):
-        state = _container_state(session_name)
-        if state != "running":
-            break
-        time.sleep(1)
+    _wait_for_not_running(session_name)
 
     # Attempt docker exec on the stopped container — should fail
     attach_cmd = _run_sandbox_function(
@@ -911,11 +923,7 @@ def test_f007_stop_and_resume(sandbox_context):
         env=env,
         check=True,
     )
-    for _ in range(15):
-        state = _container_state(session_name)
-        if state != "running":
-            break
-        time.sleep(1)
+    _wait_for_not_running(session_name)
     assert _container_state(session_name) != "running"
 
     # Resume via sandbox_start
@@ -1031,10 +1039,7 @@ def test_f009_sandbox_list_and_prune(tmp_path, isolated_am_dir):
             env=env,
             check=True,
         )
-        for _ in range(15):
-            if _container_state(stopped_session) != "running":
-                break
-            time.sleep(1)
+        _wait_for_not_running(stopped_session)
 
         # sandbox_list should show both
         list_result = _run_sandbox_function("sandbox_list", env=env, check=True)
