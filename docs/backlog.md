@@ -9,6 +9,7 @@
 - **tmux status-right** - change text color to something with more contrast, like the left bar color
 - **Tests** - make it possible to run just 1 test file by running it as a script, or running all of them together using test_all.sh
 - **Tests** - make the test suite run in under 10 seconds
+- **Tests** - tests pollute zsh history still
 
 ## Ideas
 
