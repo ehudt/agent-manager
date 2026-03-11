@@ -6,7 +6,6 @@
 ## Up Next
 
 - **Tests** - make the test suite run in under 10 seconds
-- **Tests** - tests pollute zsh history still
 
 ## Ideas
 
