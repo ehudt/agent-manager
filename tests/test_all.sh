@@ -5,11 +5,12 @@ set -uo pipefail
 
 # Parse test runner flags before anything else
 SUMMARY_MODE=false
-INCLUDE_SLOW=false
+INCLUDE_SLOW=true
 for _arg in "$@"; do
     case "$_arg" in
         --summary|-s) SUMMARY_MODE=true ;;
         --include-slow) INCLUDE_SLOW=true ;;
+        --no-include-slow) INCLUDE_SLOW=false ;;
     esac
 done
 
