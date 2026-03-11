@@ -203,7 +203,16 @@ setup_integration_env() {
     tmux -L "$AM_TMUX_SOCKET" set-environment -g AM_TMUX_SOCKET "$AM_TMUX_SOCKET" 2>/dev/null || true
     tmux -L "$AM_TMUX_SOCKET" set-environment -g AM_SESSION_PREFIX "$AM_SESSION_PREFIX" 2>/dev/null || true
     tmux -L "$AM_TMUX_SOCKET" set-environment -g AM_DIR "$AM_DIR" 2>/dev/null || true
-    tmux -L "$AM_TMUX_SOCKET" set-environment -g HISTFILE /dev/null 2>/dev/null || true
+
+    # Prevent test commands from polluting the user's zsh history.
+    # Setting HISTFILE via tmux set-environment is insufficient — .zshrc overrides it.
+    # Redirect ZDOTDIR to a temp dir with a minimal .zshrc that disables history.
+    # Export it so the tmux server inherits it on startup (set-environment fails
+    # silently when the server isn't running yet).
+    TEST_ZDOTDIR=$(mktemp -d)
+    printf 'HISTFILE=/dev/null\n' > "$TEST_ZDOTDIR/.zshrc"
+    export ZDOTDIR="$TEST_ZDOTDIR"
+    tmux -L "$AM_TMUX_SOCKET" set-environment -g ZDOTDIR "$TEST_ZDOTDIR" 2>/dev/null || true
 
     # Point agent commands to stub
     AGENT_COMMANDS[claude]="$TEST_STUB_DIR/stub_agent"
@@ -224,8 +233,11 @@ teardown_integration_env() {
     # Restore AM_DIR and session prefix
     rm -rf "${TEST_AM_DIR:-}"
     rm -rf "${TEST_STUB_BIN:-}"
+    rm -rf "${TEST_ZDOTDIR:-}"
+    unset ZDOTDIR
     TEST_AM_DIR=""
     TEST_STUB_BIN=""
+    TEST_ZDOTDIR=""
     export AM_DIR="${HOME}/.agent-manager"
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_CONFIG="$AM_DIR/config.json"
