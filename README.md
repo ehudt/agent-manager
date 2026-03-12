@@ -438,10 +438,12 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 
 ```bash
 ./tests/test_all.sh                # Run the test suite
+./tests/perf_test.sh               # Standalone latency benchmark for am list-internal
 bash -n lib/*.sh am                # Syntax check
 ```
 
 Tests require `tmux`, `fzf`, and `jq`.
+`tests/perf_test.sh` is not part of `test_all.sh`; it is a manual benchmark and should not create persistent resources.
 
 ## License
 

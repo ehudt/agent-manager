@@ -6,6 +6,7 @@ Architecture reference for AI agents working with this codebase.
 
 - Run tests: `./tests/test_all.sh`
 - Run tests (summary): `./tests/test_all.sh --summary` — suppresses PASS lines, shows only failures with details and a counts summary
+- Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
 
 ## Code Style
