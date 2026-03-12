@@ -467,10 +467,10 @@ test_auto_title_session() {
     assert_not_empty "$fallback" "title_gen: fallback handles URLs"
     if [[ "$fallback" != *"https"* ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: fallback removes URLs"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: fallback removes URLs"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: title_gen: fallback should remove URLs"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: fallback should remove URLs"
         FAIL_DETAILS+=("FAIL: title_gen: fallback should remove URLs")
     fi
 
@@ -491,30 +491,30 @@ test_auto_title_session() {
     # --- Test 5: Title validation - length check ---
     if _title_valid "Short title"; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: accepts valid short title"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: accepts valid short title"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: title_gen: accepts valid short title"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: accepts valid short title"
         FAIL_DETAILS+=("FAIL: title_gen: accepts valid short title")
     fi
 
     if _title_valid "This is a really really really really really really really long title over 60 chars"; then
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: title_gen: rejects title >60 chars"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: rejects title >60 chars"
         FAIL_DETAILS+=("FAIL: title_gen: rejects title >60 chars")
     else
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: rejects title >60 chars"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: rejects title >60 chars"
     fi
 
     # --- Test 6: Title validation - newline check ---
     if _title_valid $'Multi\nline'; then
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: title_gen: rejects multiline titles"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: rejects multiline titles"
         FAIL_DETAILS+=("FAIL: title_gen: rejects multiline titles")
     else
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title_gen: rejects multiline titles"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: rejects multiline titles"
     fi
 
     # --- Test 7: Edge case - empty message produces empty fallback ---

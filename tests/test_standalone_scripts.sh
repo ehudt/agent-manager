@@ -177,16 +177,16 @@ test_standalone_title_upgrade() {
         updated_task=$(registry_get_field "test-session-2" task 2>/dev/null || echo "original task")
 
         if [[ "$updated_task" != "original task" ]]; then
-            $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title-upgrade: updates task in registry"
+            $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title-upgrade: updates task in registry"
             ((TESTS_PASSED++))
             ((TESTS_RUN++))
 
             ((TESTS_RUN++))
             if [[ ${#updated_task} -le 60 ]]; then
-                $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: title-upgrade: respects 60 char limit"
+                $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title-upgrade: respects 60 char limit"
                 ((TESTS_PASSED++))
             else
-                echo -e "${RED}FAIL${RESET}: title-upgrade: respects 60 char limit"
+                printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title-upgrade: respects 60 char limit"
                 FAIL_DETAILS+=("FAIL: title-upgrade: respects 60 char limit")
                 echo "  Task length: ${#updated_task}"
                 ((TESTS_FAILED++))
@@ -243,7 +243,7 @@ test_standalone_status_right() {
     assert_eq "0" "$rc" "status-right: exits 0 with mixed states"
 
     [[ -n "$output" ]] || output="(empty)"
-    $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: status-right: produces output format (content: $output)"
+    $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: status-right: produces output format (content: $output)"
     ((TESTS_PASSED++))
     ((TESTS_RUN++))
 

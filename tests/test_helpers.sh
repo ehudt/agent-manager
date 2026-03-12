@@ -29,10 +29,10 @@ TESTS_SKIPPED=0
 FAIL_DETAILS=()
 
 # Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-RESET='\033[0m'
+TEST_RED='\033[0;31m'
+TEST_GREEN='\033[0;32m'
+TEST_YELLOW='\033[0;33m'
+TEST_RESET='\033[0m'
 
 # Test utilities
 assert_eq() {
@@ -42,10 +42,10 @@ assert_eq() {
     ((TESTS_RUN++))
     if [[ "$expected" == "$actual" ]]; then
         ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: $msg"
     else
         ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: $msg"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: $msg"
         echo "  Expected: '$expected'"
         echo "  Actual:   '$actual'"
         FAIL_DETAILS+=("FAIL: $msg|  Expected: '$expected'|  Actual:   '$actual'")
@@ -59,10 +59,10 @@ assert_contains() {
     ((TESTS_RUN++))
     if [[ "$haystack" == *"$needle"* ]]; then
         ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: $msg"
     else
         ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: $msg"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: $msg"
         echo "  String: '$haystack'"
         echo "  Does not contain: '$needle'"
         FAIL_DETAILS+=("FAIL: $msg|  String: '$haystack'|  Does not contain: '$needle'")
@@ -75,10 +75,10 @@ assert_not_empty() {
     ((TESTS_RUN++))
     if [[ -n "$value" ]]; then
         ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: $msg"
     else
         ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: $msg (value is empty)"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: $msg (value is empty)"
         FAIL_DETAILS+=("FAIL: $msg (value is empty)")
     fi
 }
@@ -89,10 +89,10 @@ assert_cmd_succeeds() {
     ((TESTS_RUN++))
     if "$@" &>/dev/null; then
         ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: $msg"
     else
         ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: $msg"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: $msg"
         FAIL_DETAILS+=("FAIL: $msg")
     fi
 }
@@ -103,18 +103,18 @@ assert_cmd_fails() {
     ((TESTS_RUN++))
     if "$@" &>/dev/null; then
         ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: $msg (expected failure, got success)"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: $msg (expected failure, got success)"
         FAIL_DETAILS+=("FAIL: $msg (expected failure, got success)")
     else
         ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: $msg"
     fi
 }
 
 skip_test() {
     local msg="$1"
     ((TESTS_SKIPPED++))
-    $SUMMARY_MODE || echo -e "${YELLOW}SKIP${RESET}: $msg"
+    $SUMMARY_MODE || printf '%b\n' "${TEST_YELLOW}SKIP${TEST_RESET}: $msg"
 }
 
 run_external_test() {
@@ -129,10 +129,10 @@ run_external_test() {
     fi
     if [[ $_ext_rc -eq 0 ]]; then
         ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: $msg"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: $msg"
     else
         ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: $msg"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: $msg"
         echo "  Exit code: $_ext_rc"
         [[ -n "${_ext_output:-}" ]] && echo "$_ext_output"
         FAIL_DETAILS+=("FAIL: $msg|  Exit code: $_ext_rc")
@@ -156,7 +156,7 @@ check_deps() {
     command -v fzf &>/dev/null || missing+=("fzf")
 
     if [[ ${#missing[@]} -gt 0 ]]; then
-        echo -e "${RED}Missing required dependencies: ${missing[*]}${RESET}"
+        printf '%b\n' "${TEST_RED}Missing required dependencies: ${missing[*]}${TEST_RESET}"
         echo "Install prerequisites first, then rerun tests."
         echo "See README prerequisites section."
         exit 1
@@ -250,10 +250,12 @@ teardown_integration_env() {
 # ============================================
 
 _run_test() {
+    local test_func="$1"
+    shift || true
     if $SUMMARY_MODE; then
-        "$1" 2>/dev/null
+        "$test_func" "$@" 2>/dev/null
     else
-        "$1"
+        "$test_func" "$@"
     fi
 }
 
@@ -264,7 +266,7 @@ test_report() {
     echo "  Results: $TESTS_PASSED/$TESTS_RUN passed"
     [[ $TESTS_SKIPPED -gt 0 ]] && echo "  $TESTS_SKIPPED skipped"
     if [[ $TESTS_FAILED -gt 0 ]]; then
-        echo -e "  ${RED}$TESTS_FAILED tests failed${RESET}"
+        printf '%b\n' "  ${TEST_RED}$TESTS_FAILED tests failed${TEST_RESET}"
         if $SUMMARY_MODE && [[ ${#FAIL_DETAILS[@]} -gt 0 ]]; then
             echo ""
             echo "  Failed tests:"
@@ -275,7 +277,7 @@ test_report() {
         echo "========================================"
         exit 1
     else
-        echo -e "  ${GREEN}All tests passed!${RESET}"
+        printf '%b\n' "  ${TEST_GREEN}All tests passed!${TEST_RESET}"
     fi
     echo "========================================"
 }

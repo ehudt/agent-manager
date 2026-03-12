@@ -69,28 +69,29 @@ run_worker() {
             source "$_test_file"
         done
 
-        # Ensure worker cleanup on exit
-        trap 'tmux -L "$AM_TMUX_SOCKET" kill-server 2>/dev/null || true' EXIT
+        # Always write worker results, even if the shell exits on an error like set -u.
+        trap '
+            _worker_rc=$?
+            _worker_end=$(date +%s)
+            {
+                echo "TESTS_RUN=$TESTS_RUN"
+                echo "TESTS_PASSED=$TESTS_PASSED"
+                echo "TESTS_FAILED=$TESTS_FAILED"
+                echo "TESTS_SKIPPED=$TESTS_SKIPPED"
+                echo "WORKER_ELAPSED=$(( _worker_end - _worker_start ))"
+                echo "WORKER_STATUS=$_worker_rc"
+                for detail in "${FAIL_DETAILS[@]+${FAIL_DETAILS[@]}}"; do
+                    echo "FAIL_DETAIL=$detail"
+                done
+            } > "$_WORK_DIR/results-$worker_id"
+            tmux -L "$AM_TMUX_SOCKET" kill-server 2>/dev/null || true
+            exit $_worker_rc
+        ' EXIT
 
         # Run assigned test functions
         for func in "${test_functions[@]}"; do
             "$func"
         done
-
-        # Write counters to results file
-        local _worker_end
-        _worker_end=$(date +%s)
-        {
-            echo "TESTS_RUN=$TESTS_RUN"
-            echo "TESTS_PASSED=$TESTS_PASSED"
-            echo "TESTS_FAILED=$TESTS_FAILED"
-            echo "TESTS_SKIPPED=$TESTS_SKIPPED"
-            echo "WORKER_ELAPSED=$(( _worker_end - _worker_start ))"
-            # Serialize FAIL_DETAILS: one entry per line, pipe-delimited fields
-            for detail in "${FAIL_DETAILS[@]+${FAIL_DETAILS[@]}}"; do
-                echo "FAIL_DETAIL=$detail"
-            done
-        } > "$_WORK_DIR/results-$worker_id"
     ) > "$_WORK_DIR/output-$worker_id" 2>&1
 }
 
@@ -103,7 +104,11 @@ aggregate_results() {
     local worker_id
     for worker_id in "$@"; do
         local results_file="$_WORK_DIR/results-$worker_id"
-        [[ -f "$results_file" ]] || continue
+        if [[ ! -f "$results_file" ]]; then
+            total_failed=$(( total_failed + 1 ))
+            all_fail_details+=("FAIL: Worker $worker_id exited before writing results")
+            continue
+        fi
         while IFS= read -r line; do
             case "$line" in
                 TESTS_RUN=*)      total_run=$(( total_run + ${line#TESTS_RUN=} )) ;;
@@ -111,6 +116,12 @@ aggregate_results() {
                 TESTS_FAILED=*)   total_failed=$(( total_failed + ${line#TESTS_FAILED=} )) ;;
                 TESTS_SKIPPED=*)  total_skipped=$(( total_skipped + ${line#TESTS_SKIPPED=} )) ;;
                 WORKER_ELAPSED=*) _WORKER_TIMES="${_WORKER_TIMES}  Worker $worker_id: ${line#WORKER_ELAPSED=}s\n" ;;
+                WORKER_STATUS=*)
+                    if [[ "${line#WORKER_STATUS=}" -ne 0 ]]; then
+                        total_failed=$(( total_failed + 1 ))
+                        all_fail_details+=("FAIL: Worker $worker_id exited with status ${line#WORKER_STATUS=}")
+                    fi
+                    ;;
                 FAIL_DETAIL=*)    all_fail_details+=("${line#FAIL_DETAIL=}") ;;
             esac
         done < "$results_file"

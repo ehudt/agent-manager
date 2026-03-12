@@ -30,10 +30,10 @@ test_state() {
     # --- Test: _state_jsonl_stale on missing file ---
     if _state_jsonl_stale "/nonexistent/file.jsonl"; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: _state_jsonl_stale: missing file is stale"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: _state_jsonl_stale: missing file is stale"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: _state_jsonl_stale: missing file should be stale"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: _state_jsonl_stale: missing file should be stale"
         FAIL_DETAILS+=("FAIL: _state_jsonl_stale: missing file should be stale")
     fi
 
@@ -112,19 +112,19 @@ here is the result
     # Running pattern
     if printf '%s' "$codex_running" | grep -qE 'Working \([0-9]+s|esc to interrupt'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: Working indicator matches running pattern"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: codex pane: Working indicator matches running pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: codex pane: Working indicator should match running pattern"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: codex pane: Working indicator should match running pattern"
         FAIL_DETAILS+=("FAIL: codex pane: Working indicator should match running pattern")
     fi
 
     if printf '%s' "$codex_running2" | grep -qE 'Working \([0-9]+s|esc to interrupt'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: hollow-circle Working variant matches running pattern"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: codex pane: hollow-circle Working variant matches running pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: codex pane: hollow-circle Working variant should match"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: codex pane: hollow-circle Working variant should match"
         FAIL_DETAILS+=("FAIL: codex pane: hollow-circle Working variant should match")
     fi
 
@@ -132,10 +132,10 @@ here is the result
     if printf '%s' "$codex_cmd_approval" | grep -qE \
             'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: command approval matches permission pattern"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: codex pane: command approval matches permission pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: codex pane: command approval should match permission pattern"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: codex pane: command approval should match permission pattern"
         FAIL_DETAILS+=("FAIL: codex pane: command approval should match permission pattern")
     fi
 
@@ -143,10 +143,10 @@ here is the result
     if printf '%s' "$codex_edit_approval" | grep -qE \
             'Would you like to (run the following command|make the following edits)\?|Press enter to confirm or esc to cancel'; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: codex pane: edit approval matches permission pattern"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: codex pane: edit approval matches permission pattern"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: codex pane: edit approval should match permission pattern"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: codex pane: edit approval should match permission pattern"
         FAIL_DETAILS+=("FAIL: codex pane: edit approval should match permission pattern")
     fi
 
@@ -223,10 +223,10 @@ test_state_integration() {
         "$PROJECT_DIR/am" status --json "$session_name" 2>/dev/null || true)
     if echo "$status_json" | jq . >/dev/null 2>&1; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: am status --json: valid JSON"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: am status --json: valid JSON"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: am status --json: invalid JSON (got: $status_json)"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: am status --json: invalid JSON (got: $status_json)"
         FAIL_DETAILS+=("FAIL: am status --json: invalid JSON (got: $status_json)")
     fi
     local status_state
@@ -251,10 +251,10 @@ test_state_integration() {
         "$PROJECT_DIR/am" peek --json "$session_name" 2>/dev/null || true)
     if echo "$peek_json" | jq . >/dev/null 2>&1; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: am peek --json: valid JSON"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: am peek --json: valid JSON"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: am peek --json: invalid JSON (got: $peek_json)"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: am peek --json: invalid JSON (got: $peek_json)"
         FAIL_DETAILS+=("FAIL: am peek --json: invalid JSON (got: $peek_json)")
     fi
     local peek_has_lines

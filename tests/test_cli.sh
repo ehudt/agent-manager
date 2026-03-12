@@ -57,10 +57,10 @@ test_cli_extended() {
     # Validate JSON
     if echo "$json_output" | jq . >/dev/null 2>&1; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: am list --json: valid JSON"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: am list --json: valid JSON"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: am list --json: invalid JSON"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: am list --json: invalid JSON"
         FAIL_DETAILS+=("FAIL: am list --json: invalid JSON")
     fi
     assert_contains "$json_output" "$session_name" "am list --json: contains session"

@@ -61,10 +61,10 @@ test_utils_extended() {
     # Different inputs SHOULD produce different hashes (not guaranteed but overwhelmingly likely)
     if [[ "$h1" != "$h3" ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: generate_hash: different inputs different output"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: generate_hash: different inputs different output"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: generate_hash: different inputs produced same hash"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: generate_hash: different inputs produced same hash"
         FAIL_DETAILS+=("FAIL: generate_hash: different inputs produced same hash")
     fi
 

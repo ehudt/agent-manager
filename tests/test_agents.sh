@@ -75,10 +75,10 @@ test_agents_extended() {
     local name2=$(generate_session_name "/tmp/project-b")
     if [[ "$name1" != "$name2" ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: generate_session_name: different dirs different names"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: generate_session_name: different dirs different names"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: generate_session_name: collision for different dirs"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: generate_session_name: collision for different dirs"
         FAIL_DETAILS+=("FAIL: generate_session_name: collision for different dirs")
     fi
 
@@ -231,10 +231,10 @@ test_worktree() {
     info_output=$(agent_info "$session_name")
     if [[ "$info_output" != *"Worktree:"* ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || echo -e "${GREEN}PASS${RESET}: no-worktree launch: info omits Worktree line"
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: no-worktree launch: info omits Worktree line"
     else
         ((TESTS_RUN++)); ((TESTS_FAILED++))
-        echo -e "${RED}FAIL${RESET}: no-worktree launch: info unexpectedly shows Worktree"
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: no-worktree launch: info unexpectedly shows Worktree"
         FAIL_DETAILS+=("FAIL: no-worktree launch: info unexpectedly shows Worktree")
     fi
 
