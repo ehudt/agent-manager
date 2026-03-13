@@ -1214,7 +1214,7 @@ Subcommands:
   prune                           Remove stopped sandbox containers
   rebuild [--no-cache] [--restart] Rebuild sandbox Docker image
   identity init                   Initialize ~/.sb/ sandbox identity
-  enter <session>                 Re-enter a running sandbox shell
+  enter <session>                 Re-enter a running sandbox shell (exit 42 to stay on host)
   status <session>                Show sandbox status for a session
 EOF
             ;;

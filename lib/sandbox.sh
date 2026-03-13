@@ -7,6 +7,7 @@
 SANDBOX_DIR="$AM_SCRIPT_DIR/sandbox"
 SANDBOX_IMAGE="agent-sandbox:persistent"
 SANDBOX_ENV_FILE="$AM_DIR/sandbox.env"
+SANDBOX_HOST_EXIT_CODE="${SANDBOX_HOST_EXIT_CODE:-42}"
 SB_HOME="${SB_HOME:-$HOME/.sb}"
 _SB_SSH_DIR="$SB_HOME/ssh"
 _SB_CLAUDE_JSON="$SB_HOME/claude.json"
@@ -382,11 +383,12 @@ sandbox_enter_cmd() {
     local session_name="$1"
     local directory="${2:-}"
     _sandbox_ensure_host_identity
-    local event_log enter_cmd target_dir
+    local event_log enter_cmd target_dir host_exit_code
     event_log="$(_sandbox_event_log_path "$session_name")"
     target_dir="${directory:-\$PWD}"
+    host_exit_code="${SANDBOX_HOST_EXIT_CODE}"
     enter_cmd="docker exec -it -u '$_SB_HOST_USER' -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh"
-    printf "%s" "_am_sandbox_enter() { $enter_cmd; }; while true; do _am_sandbox_enter; _am_rc=\$?; if ! docker inspect '$session_name' >/dev/null 2>&1; then printf '\\n[am] sandbox %s is gone; you are now on the host shell.\\n[am] inspect: ./am sandbox status %s\\n[am] events: %s\\n' '$session_name' '$session_name' '$event_log'; break; fi; if [[ \$_am_rc -eq 0 ]]; then printf '\\n[am] sandbox shell exited for %s.\\n' '$session_name'; else printf '\\n[am] sandbox shell exited (status %s) for %s.\\n' \"\$_am_rc\" '$session_name'; fi; printf '[am] re-enter: ./am sandbox enter $session_name\\n'; printf '[am] press Enter to re-enter, h for host shell: '; read -r _am_reply; if [[ \$_am_reply == [Hh]* ]]; then break; fi; done"
+    printf "%s" "_am_sandbox_enter() { $enter_cmd; }; while true; do _am_sandbox_enter; _am_rc=\$?; if ! docker inspect '$session_name' >/dev/null 2>&1; then printf '\\n[am] sandbox %s is gone; you are now on the host shell.\\n[am] inspect: ./am sandbox status %s\\n[am] events: %s\\n' '$session_name' '$session_name' '$event_log'; break; fi; if [[ \$_am_rc -eq $host_exit_code ]]; then printf '\\n[am] leaving sandbox %s and staying on the host shell.\\n' '$session_name'; printf '[am] re-enter later: ./am sandbox enter $session_name\\n'; break; fi; if [[ \$_am_rc -eq 0 ]]; then printf '\\n[am] sandbox shell exited for %s; reconnecting...\\n' '$session_name'; else printf '\\n[am] sandbox shell exited (status %s) for %s; reconnecting...\\n' \"\$_am_rc\" '$session_name'; fi; printf '[am] to stay on the host shell, run: exit $host_exit_code\\n'; printf '[am] re-enter manually: ./am sandbox enter $session_name\\n'; sleep 1; done"
 }
 
 sandbox_remove() {

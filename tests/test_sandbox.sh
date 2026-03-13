@@ -17,7 +17,8 @@ test_sandbox() {
     assert_contains "$cmd" "am-abc123" "sandbox_attach_cmd: contains session name"
     assert_contains "$cmd" "/home/user/project" "sandbox_attach_cmd: contains directory"
     assert_contains "$cmd" "docker inspect" "sandbox_attach_cmd: checks container state after exit"
-    assert_contains "$cmd" "press Enter to re-enter, h for host shell" "sandbox_attach_cmd: prompts to re-enter"
+    assert_contains "$cmd" "reconnecting..." "sandbox_attach_cmd: auto-reconnects after shell exit"
+    assert_contains "$cmd" "exit 42" "sandbox_attach_cmd: documents explicit host-shell escape"
     assert_contains "$cmd" "./am sandbox enter am-abc123" "sandbox_attach_cmd: prints re-entry command"
     assert_contains "$cmd" "is gone; you are now on the host shell" "sandbox_attach_cmd: prints host-shell fallback message"
     assert_contains "$cmd" "$AM_DIR/logs/am-abc123/sandbox.log" "sandbox_attach_cmd: references session sandbox event log"
@@ -26,7 +27,8 @@ test_sandbox() {
     cmd=$(sandbox_enter_cmd "am-abc123" "/home/user/project")
     assert_contains "$cmd" "docker exec" "sandbox_enter_cmd: contains docker exec"
     assert_contains "$cmd" "./am sandbox enter am-abc123" "sandbox_enter_cmd: contains am re-entry command"
-    assert_contains "$cmd" "press Enter to re-enter, h for host shell" "sandbox_enter_cmd: contains re-entry prompt"
+    assert_contains "$cmd" "reconnecting..." "sandbox_enter_cmd: contains auto-reconnect message"
+    assert_contains "$cmd" "exit 42" "sandbox_enter_cmd: contains explicit host-shell escape"
 
     # --- Test 2: _sandbox_copy_if_missing skips existing ---
     local tmp
