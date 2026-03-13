@@ -375,10 +375,18 @@ sandbox_start() {
 sandbox_attach_cmd() {
     local session_name="$1"
     local directory="$2"
+    sandbox_enter_cmd "$session_name" "$directory"
+}
+
+sandbox_enter_cmd() {
+    local session_name="$1"
+    local directory="${2:-}"
     _sandbox_ensure_host_identity
-    local event_log
+    local event_log enter_cmd target_dir
     event_log="$(_sandbox_event_log_path "$session_name")"
-    printf "%s" "docker exec -it -u '$_SB_HOST_USER' -w '$directory' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=${TERM:-xterm-256color}' '$session_name' zsh; _am_rc=\$?; if docker inspect '$session_name' >/dev/null 2>&1; then if [[ \$_am_rc -eq 0 ]]; then clear; else printf '\\n[am] sandbox shell exited (status %s) for %s. Container is still present.\\n' \"\$_am_rc\" '$session_name'; fi; else printf '\\n[am] sandbox %s is gone; you are now on the host shell.\\n[am] inspect: ./am sandbox status %s\\n[am] events: %s\\n' '$session_name' '$session_name' '$event_log'; fi"
+    target_dir="${directory:-\$PWD}"
+    enter_cmd="docker exec -it -u '$_SB_HOST_USER' -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh"
+    printf "%s" "_am_sandbox_enter() { $enter_cmd; }; while true; do _am_sandbox_enter; _am_rc=\$?; if ! docker inspect '$session_name' >/dev/null 2>&1; then printf '\\n[am] sandbox %s is gone; you are now on the host shell.\\n[am] inspect: ./am sandbox status %s\\n[am] events: %s\\n' '$session_name' '$session_name' '$event_log'; break; fi; if [[ \$_am_rc -eq 0 ]]; then printf '\\n[am] sandbox shell exited for %s.\\n' '$session_name'; else printf '\\n[am] sandbox shell exited (status %s) for %s.\\n' \"\$_am_rc\" '$session_name'; fi; printf '[am] re-enter: ./am sandbox enter $session_name\\n'; printf '[am] press Enter to re-enter, h for host shell: '; read -r _am_reply; if [[ \$_am_reply == [Hh]* ]]; then break; fi; done"
 }
 
 sandbox_remove() {
@@ -435,6 +443,30 @@ sandbox_status() {
             echo "SSH:       ssh $_SB_HOST_USER@$session_name" >&2
         fi
     fi
+}
+
+sandbox_enter() {
+    local session_name="$1"
+    local directory="${2:-}"
+    local state
+    if ! state=$(docker inspect -f '{{.State.Status}}' "$session_name" 2>/dev/null); then
+        log_error "Sandbox not found: $session_name"
+        return 1
+    fi
+    if [[ "$state" != "running" ]]; then
+        log_error "Sandbox '$session_name' is not running (status: $state)"
+        return 1
+    fi
+
+    local dir
+    dir="${directory:-$(docker inspect -f '{{index .Config.Labels "agent-sandbox.dir"}}' "$session_name" 2>/dev/null)}"
+    if [[ -z "$dir" || "$dir" == "<no value>" ]]; then
+        dir="/workspace"
+    fi
+
+    local enter_cmd
+    enter_cmd=$(sandbox_enter_cmd "$session_name" "$dir")
+    eval "$enter_cmd"
 }
 
 sandbox_list() {

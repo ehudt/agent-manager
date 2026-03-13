@@ -125,6 +125,7 @@ EXAMPLES:
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
     am sandbox ls                   # List sandbox containers
+    am sandbox enter am-abc123      # Re-enter a running sandbox shell
     am sandbox status am-abc123     # Show sandbox details for a session
     am sandbox rebuild --restart    # Rebuild image and restart sandboxes
     am sandbox identity init        # Initialize ~/.sb sandbox identity
@@ -417,7 +418,7 @@ resolve_session_fuzzy() {
     local matches
     matches=$(tmux_list_am_sessions | grep -i "$name" || true)
     local count
-    count=$(echo "$matches" | grep -c . || echo 0)
+    count=$(printf '%s\n' "$matches" | grep -c .)
 
     if [[ $count -eq 1 ]]; then
         echo "$matches"
@@ -1196,6 +1197,14 @@ cmd_sandbox() {
             fi
             sandbox_status "$session"
             ;;
+        enter)
+            local session="${1:-}"
+            if [[ -z "$session" ]]; then
+                log_error "Usage: am sandbox enter <session>"
+                return 1
+            fi
+            sandbox_enter "$session"
+            ;;
         ""|help|--help|-h)
             cat <<'EOF'
 Usage: am sandbox <subcommand>
@@ -1205,6 +1214,7 @@ Subcommands:
   prune                           Remove stopped sandbox containers
   rebuild [--no-cache] [--restart] Rebuild sandbox Docker image
   identity init                   Initialize ~/.sb/ sandbox identity
+  enter <session>                 Re-enter a running sandbox shell
   status <session>                Show sandbox status for a session
 EOF
             ;;
