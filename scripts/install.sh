@@ -54,9 +54,9 @@ confirm() {
         return 0
     fi
 
-    printf "%s [y/N] " "$prompt"
+    printf "%s [Y/n] " "$prompt"
     read -r answer || true
-    [[ "$answer" == "y" || "$answer" == "Y" ]]
+    [[ -z "$answer" || "$answer" == "y" || "$answer" == "Y" ]]
 }
 
 install_link_or_copy() {

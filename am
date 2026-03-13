@@ -1338,6 +1338,14 @@ EOF
     "$AM_SCRIPT_DIR/scripts/install.sh" "$@"
     steps_done+=("PATH setup complete")
 
+    # --- Step 5: Refresh dedicated tmux config ---
+    echo "" >&2
+    echo -e "${BOLD}Refreshing tmux config...${RESET}" >&2
+    source "$AM_SCRIPT_DIR/lib/tmux.sh"
+    am_tmux_config_path >/dev/null
+    log_success "  Refreshed dedicated tmux config: $AM_TMUX_CONF"
+    steps_done+=("tmux config refreshed")
+
     # --- Summary ---
     echo "" >&2
     echo -e "${BOLD}Summary${RESET}" >&2

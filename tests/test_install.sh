@@ -41,6 +41,39 @@ EOF
     $SUMMARY_MODE || echo ""
 }
 
+test_installer_defaults_prompts_to_yes() {
+    $SUMMARY_MODE || echo "=== Testing installer default yes prompts ==="
+
+    local temp_root prefix shell_rc tmux_conf shell_contents
+    temp_root=$(mktemp -d)
+    prefix="$temp_root/bin"
+    shell_rc="$temp_root/.zshrc"
+    tmux_conf="$temp_root/.tmux.conf"
+
+    cat > "$shell_rc" <<'EOF'
+export PATH="/usr/bin:$PATH"
+EOF
+
+    cat > "$tmux_conf" <<'EOF'
+set -g mouse on
+# >>> agent-manager >>>
+bind x kill-pane
+# <<< agent-manager <<<
+EOF
+
+    printf '\n\n' | "$PROJECT_DIR/scripts/install.sh" \
+        --prefix "$prefix" --shell-rc "$shell_rc" --tmux-conf "$tmux_conf" >/dev/null
+
+    shell_contents=$(cat "$shell_rc")
+    assert_contains "$shell_contents" "export PATH=\"$prefix:\$PATH\"" \
+        "installer: Enter accepts shell rc update by default"
+    assert_cmd_fails "installer: Enter accepts tmux cleanup by default" \
+        grep -Fq '# >>> agent-manager >>>' "$tmux_conf"
+
+    rm -rf "$temp_root"
+    $SUMMARY_MODE || echo ""
+}
+
 test_install() {
     $SUMMARY_MODE || echo "=== Testing am install ==="
 
@@ -113,6 +146,7 @@ test_install() {
 
 run_install_tests() {
     _run_test test_installer_replaces_managed_blocks
+    _run_test test_installer_defaults_prompts_to_yes
     _run_test test_install
 }
 
