@@ -41,6 +41,12 @@ am peek --follow "$session"               # raw stream (legacy)
 am attach "$session"
 ```
 
+## Current Codex Caveats
+
+- As of 2026-03-16, `printf '...\n' | am new --detach --print-session <dir>` is broken for Codex sessions in at least one local setup: Codex exits the launch prompt path with `Error: stdin is not a terminal`.
+- As of 2026-03-16, `am send --wait <session> "..."` is also unreliable for sandboxed Codex sessions: the text can appear in the Codex TUI input box without being submitted, leaving the session in `waiting_input`.
+- If you hit either behavior, inspect with `am peek --json <session>` before assuming the worker is actually running.
+
 ## Writing Good Dispatch Prompts
 
 The spawned agent has NO context from this conversation. The prompt must be self-contained:
