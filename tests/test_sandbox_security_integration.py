@@ -620,7 +620,7 @@ def test_s007_ssh_agent_forwarding_gated_by_socket_presence(
 @pytest.mark.integration
 @pytest.mark.docker
 @pytest.mark.ux
-def test_u001_start_output_shows_host_global_identity_sources(sandbox_context, fake_home):
+def test_u001_start_auto_inits_sandbox_identity_when_missing(sandbox_context, fake_home):
     env = sandbox_context["env"].copy()
     env["HOME"] = str(fake_home)
     env["SB_HOME"] = str(fake_home / ".sb")
@@ -634,11 +634,10 @@ def test_u001_start_output_shows_host_global_identity_sources(sandbox_context, f
     )
     output = f"{result.stdout}\n{result.stderr}"
 
-    assert f"Using host-global Claude JSON: {fake_home}/.claude.json" in output
-    assert f"Using host-global Claude directory: {fake_home}/.claude" in output
-    assert f"Using host-global Codex config: {fake_home}/.codex/config.toml" in output
-    assert f"Using host-global Codex auth: {fake_home}/.codex/auth.json" in output
-    assert f"Using host-global SSH identity: {fake_home}/.ssh" in output
+    assert "Sandbox identity not found. Initializing ~/.sb/..." in output
+    assert f"Using sandbox Claude JSON: {fake_home}/.sb/claude.json" in output
+    assert f"Using sandbox Claude directory: {fake_home}/.sb/claude" in output
+    assert f"Using sandbox SSH identity: {fake_home}/.sb/ssh" in output
 
 
 @pytest.mark.integration

@@ -1,0 +1,11 @@
+^api\.anthropic\.com$
+^api\.openai\.com$
+^chatgpt\.com$
+^cdn\.oaistatic\.com$
+^github\.com$
+^.*\.githubusercontent\.com$
+^registry\.npmjs\.org$
+^pypi\.org$
+^files\.pythonhosted\.org$
+^crates\.io$
+^static\.crates\.io$

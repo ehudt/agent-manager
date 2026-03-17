@@ -45,10 +45,12 @@ _sandbox_resolve_source() {
 }
 
 _sandbox_log_source() {
-    local label="$1" src="$2" sb_path="$3"
+    local label="$1" src="$2" sb_path="$3" warn_on_host="${4:-}"
     [[ -z "$src" ]] && return 0
     if [[ "$src" == "$sb_path" ]]; then
         log_info "Using sandbox $label: $src"
+    elif [[ -n "$warn_on_host" ]]; then
+        log_warn "Using host-global $label: $src"
     else
         log_info "Using host-global $label: $src"
     fi
@@ -77,6 +79,64 @@ _sandbox_container_has_mount() {
 
 _sandbox_list_containers() {
     docker ps -a --filter "label=agent-sandbox" --format '{{.Names}}'
+}
+
+_sandbox_proxy_name() {
+    echo "${1}-proxy"
+}
+
+_sandbox_net_name() {
+    echo "${1}-net"
+}
+
+_sandbox_start_proxy() {
+    local session_name="$1"
+    local proxy_name net_name filter_file
+    proxy_name="$(_sandbox_proxy_name "$session_name")"
+    net_name="$(_sandbox_net_name "$session_name")"
+
+    log_info "Creating isolated network '$net_name'..." >&2
+    docker network create "$net_name" >/dev/null
+
+    # Build filter file: default list + any extra hosts from config
+    filter_file=$(mktemp)
+    cat "$SANDBOX_DIR/tinyproxy-filter.txt" > "$filter_file"
+    local extra_hosts
+    extra_hosts=$(am_config_get "sb_allowed_hosts")
+    if [[ -n "$extra_hosts" ]]; then
+        local host
+        while IFS=',' read -ra _hosts; do
+            for host in "${_hosts[@]}"; do
+                host=$(echo "$host" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+                [[ -n "$host" ]] && printf '^%s$\n' "$(sed -E 's/\./\\./g' <<<"$host")" >> "$filter_file"
+            done
+        done <<<"$extra_hosts"
+    fi
+
+    log_info "Starting proxy '$proxy_name'..." >&2
+    docker run -d --name "$proxy_name" \
+        --network "$net_name" \
+        -v "$SANDBOX_DIR/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro" \
+        -v "$filter_file:/etc/tinyproxy/filter:ro" \
+        --label "agent-sandbox-proxy=true" \
+        --label "agent-sandbox.session=$session_name" \
+        alpine:latest sh -c "apk add --no-cache tinyproxy >/dev/null 2>&1 && exec tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf" >/dev/null
+
+    # Connect proxy to bridge so it can reach the internet
+    docker network connect bridge "$proxy_name"
+
+    _sandbox_log_event "$session_name" "proxy_started" "proxy=$proxy_name network=$net_name"
+}
+
+_sandbox_stop_proxy() {
+    local session_name="$1"
+    local proxy_name net_name
+    proxy_name="$(_sandbox_proxy_name "$session_name")"
+    net_name="$(_sandbox_net_name "$session_name")"
+
+    docker rm -f "$proxy_name" >/dev/null 2>&1 || true
+    docker network rm "$net_name" >/dev/null 2>&1 || true
+    _sandbox_log_event "$session_name" "proxy_stopped" "proxy=$proxy_name network=$net_name"
 }
 
 _sandbox_log_dir() {
@@ -197,6 +257,11 @@ sandbox_start() {
         docker build -t "$SANDBOX_IMAGE" "$SANDBOX_DIR" || return 1
     fi
 
+    if [[ ! -d "$_SB_SSH_DIR" ]]; then
+        log_info "Sandbox identity not found. Initializing ~/.sb/..."
+        sandbox_identity_init
+    fi
+
     mkdir -p "$HOME/.claude"
     touch "$HOME/.claude.json"
     mkdir -p "$HOME/.codex"
@@ -240,7 +305,7 @@ sandbox_start() {
     log_info "Starting persistent sandbox '$session_name'..."
 
     local sb_enable_tailscale enable_ssh ts_enable_ssh sb_unsafe_root sb_read_only_rootfs
-    local sb_pids_limit sb_memory_limit sb_cpus_limit
+    local sb_pids_limit sb_memory_limit sb_cpus_limit sb_network_restrict
     sb_enable_tailscale="${SB_ENABLE_TAILSCALE:-1}"
     enable_ssh="${ENABLE_SSH:-0}"
     ts_enable_ssh="${TS_ENABLE_SSH:-1}"
@@ -249,6 +314,22 @@ sandbox_start() {
     sb_pids_limit="${SB_PIDS_LIMIT:-512}"
     sb_memory_limit="${SB_MEMORY_LIMIT:-4g}"
     sb_cpus_limit="${SB_CPUS_LIMIT:-2.0}"
+    if am_sb_network_restrict_enabled; then
+        sb_network_restrict=1
+    else
+        sb_network_restrict=0
+    fi
+
+    # Network restriction conflicts with Tailscale — prefer restriction
+    if [[ "$sb_network_restrict" == "1" && "$sb_enable_tailscale" == "1" ]]; then
+        log_warn "sb_network_restrict=true disables Tailscale (container has no direct network). Set 'am config set sb_network_restrict false' to use Tailscale."
+        sb_enable_tailscale=0
+    fi
+
+    # Start proxy sidecar if network restriction is enabled
+    if [[ "$sb_network_restrict" == "1" ]]; then
+        _sandbox_start_proxy "$session_name"
+    fi
 
     local MOUNTS=(-v "$directory:$directory")
     local codex_config_src codex_auth_src ssh_dir_src
@@ -264,7 +345,14 @@ sandbox_start() {
     codex_auth_src=$(_sandbox_resolve_source -f "$_SB_CODEX_DIR/auth.json" "$HOME/.codex/auth.json")
     [[ -n "$codex_auth_src" ]] && MOUNTS+=(-v "$codex_auth_src:$HOME/.codex/auth.json:ro")
 
-    ssh_dir_src=$(_sandbox_resolve_source -d "$_SB_SSH_DIR" "$HOME/.ssh")
+    local _sb_host_ssh_cfg
+    _sb_host_ssh_cfg=$(am_config_get "sb_host_ssh")
+    if am_bool_is_true "${_sb_host_ssh_cfg,,}"; then
+        ssh_dir_src="$HOME/.ssh"
+        log_warn "Using host SSH keys in sandbox (sb_host_ssh=true). Run 'am config set sb_host_ssh false' to use isolated keys."
+    else
+        ssh_dir_src=$(_sandbox_resolve_source -d "$_SB_SSH_DIR" "$HOME/.ssh")
+    fi
     [[ -n "$ssh_dir_src" ]] && MOUNTS+=(-v "$ssh_dir_src:$HOME/.ssh:ro")
     [[ -f "$HOME/.gitconfig" ]] && MOUNTS+=(-v "$HOME/.gitconfig:$HOME/.gitconfig:ro")
     [[ -f "$HOME/.zshrc" ]] && MOUNTS+=(-v "$HOME/.zshrc:$HOME/.zshrc:ro")
@@ -297,13 +385,13 @@ sandbox_start() {
         fi
     fi
 
-    _sandbox_log_source "Claude JSON" "$claude_json_src" "$_SB_CLAUDE_JSON"
-    _sandbox_log_source "Claude directory" "$claude_dir_src" "$_SB_CLAUDE_DIR"
+    _sandbox_log_source "Claude JSON" "$claude_json_src" "$_SB_CLAUDE_JSON" warn
+    _sandbox_log_source "Claude directory" "$claude_dir_src" "$_SB_CLAUDE_DIR" warn
     [[ -n "$claude_native_bin_src" ]] && log_info "Mounting native Claude binary: $claude_native_bin_src"
     [[ -n "$claude_native_versions_src" ]] && log_info "Mounting native Claude versions directory: $claude_native_versions_src"
     _sandbox_log_source "Codex config" "$codex_config_src" "$_SB_CODEX_DIR/config.toml"
     _sandbox_log_source "Codex auth" "$codex_auth_src" "$_SB_CODEX_DIR/auth.json"
-    _sandbox_log_source "SSH identity" "$ssh_dir_src" "$_SB_SSH_DIR"
+    _sandbox_log_source "SSH identity" "$ssh_dir_src" "$_SB_SSH_DIR" warn
 
     local RUN_OPTS=(
         # Ensure orphaned docker exec descendants are reaped instead of
@@ -343,7 +431,20 @@ sandbox_start() {
     if [[ "$sb_enable_tailscale" != "1" && "$ts_enable_ssh" == "1" ]]; then
         log_warn "TS_ENABLE_SSH=1 ignored because SB_ENABLE_TAILSCALE=0."
     fi
-    log_info "Runtime modes: tailscale=$sb_enable_tailscale tailscale_ssh=$ts_enable_ssh sshd=$enable_ssh unsafe_root=$sb_unsafe_root read_only_rootfs=$sb_read_only_rootfs"
+    if [[ "$sb_network_restrict" == "1" ]]; then
+        local proxy_name
+        proxy_name="$(_sandbox_proxy_name "$session_name")"
+        RUN_OPTS+=(--network "$(_sandbox_net_name "$session_name")")
+        ENV_VARS+=(
+            -e "HTTP_PROXY=http://${proxy_name}:8888"
+            -e "HTTPS_PROXY=http://${proxy_name}:8888"
+            -e "http_proxy=http://${proxy_name}:8888"
+            -e "https_proxy=http://${proxy_name}:8888"
+            -e "NO_PROXY=localhost,127.0.0.1"
+            -e "no_proxy=localhost,127.0.0.1"
+        )
+    fi
+    log_info "Runtime modes: tailscale=$sb_enable_tailscale tailscale_ssh=$ts_enable_ssh sshd=$enable_ssh unsafe_root=$sb_unsafe_root read_only_rootfs=$sb_read_only_rootfs network_restrict=$sb_network_restrict"
 
     if docker run -d \
         --name "$session_name" \
@@ -397,6 +498,7 @@ sandbox_remove() {
         _sandbox_log_event "$session_name" "remove" "reason=explicit_remove"
         log_info "Removed sandbox '$session_name'."
     fi
+    _sandbox_stop_proxy "$session_name"
 }
 
 sandbox_gc_orphans() {
