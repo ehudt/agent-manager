@@ -43,6 +43,14 @@ test_agents() {
     assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
     assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
 
+    # Test _agent_needs_tty
+    assert_eq "true" "$(_agent_needs_tty codex && echo true || echo false)" \
+        "_agent_needs_tty: codex needs TTY"
+    assert_eq "false" "$(_agent_needs_tty claude && echo true || echo false)" \
+        "_agent_needs_tty: claude does not need TTY"
+    assert_eq "false" "$(_agent_needs_tty gemini && echo true || echo false)" \
+        "_agent_needs_tty: gemini does not need TTY"
+
     $SUMMARY_MODE || echo ""
 }
 
@@ -448,6 +456,153 @@ test_resolve_session() {
     $SUMMARY_MODE || echo ""
 }
 
+test_deferred_prompt() {
+    $SUMMARY_MODE || echo "=== Testing deferred prompt (TTY-requiring agents) ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "deferred prompt tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir
+    test_dir=$(mktemp -d)
+
+    # --- Test: claude (non-TTY) gets piped prompt via cat ---
+    _AM_LAUNCH_PROMPT="hello from pipe"
+    local session_name
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "" "" 2>/dev/null)
+    assert_not_empty "$session_name" "claude piped prompt: session created"
+
+    if [[ -n "$session_name" ]]; then
+        # Wait for stub agent to start and process piped input
+        sleep 0.5
+        local pane_output
+        pane_output=$(am_tmux capture-pane -t "${session_name}:.{top}" -p 2>/dev/null || true)
+        # Claude path: prompt was piped via stdin, stub_agent prints "stub-agent-input:<line>"
+        assert_contains "$pane_output" "stub-agent-input:hello from pipe" \
+            "claude piped prompt: prompt delivered via stdin pipe"
+        # Verify no deferred prompt file lingers
+        assert_eq "false" "$(test -f "/tmp/am-prompt-${session_name}" && echo true || echo false)" \
+            "claude piped prompt: temp file cleaned up"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+
+    # --- Test: codex (TTY-requiring) gets deferred prompt via paste ---
+    _AM_LAUNCH_PROMPT="hello from paste"
+    session_name=$(set +u; agent_launch "$test_dir" "codex" "" "" 2>/dev/null)
+    assert_not_empty "$session_name" "codex deferred prompt: session created"
+
+    if [[ -n "$session_name" ]]; then
+        # The deferred prompt runs in background: agent_wait_until_ready polls for up to
+        # 15s (stub_agent's pane_current_command is "bash", matching the shell case), then
+        # falls through to paste.  Poll long enough to cover that timeout + paste latency.
+        local found=false
+        for _i in $(seq 1 80); do
+            pane_output=$(am_tmux capture-pane -t "${session_name}:.{top}" -p 2>/dev/null || true)
+            if [[ "$pane_output" == *"hello from paste"* ]]; then
+                found=true
+                break
+            fi
+            sleep 0.25
+        done
+        assert_eq "true" "$found" \
+            "codex deferred prompt: prompt pasted into pane after startup"
+        # Verify temp file was cleaned up by background job
+        sleep 0.3
+        assert_eq "false" "$(test -f "/tmp/am-prompt-${session_name}" && echo true || echo false)" \
+            "codex deferred prompt: temp file cleaned up"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+
+    # --- Test: codex without prompt does not create temp file ---
+    _AM_LAUNCH_PROMPT=""
+    session_name=$(set +u; agent_launch "$test_dir" "codex" "" "" 2>/dev/null)
+    assert_not_empty "$session_name" "codex no prompt: session created"
+    if [[ -n "$session_name" ]]; then
+        assert_eq "false" "$(test -f "/tmp/am-prompt-${session_name}" && echo true || echo false)" \
+            "codex no prompt: no temp file created"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
+test_send_prompt_sandbox_delay() {
+    $SUMMARY_MODE || echo "=== Testing agent_send_prompt sandbox delay ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "send_prompt sandbox delay tests (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir=$(mktemp -d)
+
+    # Create a real session so tmux_session_exists passes
+    local session_name
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "delay test" 2>/dev/null)
+
+    if [[ -z "$session_name" ]]; then
+        skip_test "send_prompt sandbox delay (agent_launch failed)"
+        teardown_integration_env
+        rm -rf "$test_dir"
+        echo ""
+        return
+    fi
+
+    # --- Stub sleep to record calls ---
+    local _sleep_called=false _sleep_arg=""
+    sleep() { _sleep_called=true; _sleep_arg="$1"; }
+
+    # --- Test: non-sandbox session does NOT sleep ---
+    _sleep_called=false
+    agent_send_prompt "$session_name" "hello no sandbox" 2>/dev/null
+    assert_eq "false" "$_sleep_called" \
+        "send_prompt: no delay for non-sandboxed session"
+
+    # --- Test: sandbox session (container_name set) DOES sleep ---
+    registry_update "$session_name" "container_name" "$session_name"
+    _sleep_called=false
+    agent_send_prompt "$session_name" "hello sandbox" 2>/dev/null
+    assert_eq "true" "$_sleep_called" \
+        "send_prompt: delay added for sandboxed session"
+    assert_eq "0.15" "$_sleep_arg" \
+        "send_prompt: delay is 0.15s for sandboxed session"
+
+    # --- Test: clearing container_name removes delay ---
+    registry_update "$session_name" "container_name" ""
+    _sleep_called=false
+    agent_send_prompt "$session_name" "hello again" 2>/dev/null
+    assert_eq "false" "$_sleep_called" \
+        "send_prompt: no delay after container_name cleared"
+
+    # Restore real sleep and clean up
+    unset -f sleep
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_agents_tests() {
     _run_test test_agents
     _run_test test_agents_extended
@@ -455,6 +610,8 @@ run_agents_tests() {
     _run_test test_worktree
     _run_test test_sandbox_yolo_independence
     _run_test test_resolve_session
+    _run_test test_deferred_prompt
+    _run_test test_send_prompt_sandbox_delay
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
