@@ -631,7 +631,7 @@ sandbox_identity_init() {
     _sandbox_copy_if_missing "$HOME/.ssh/known_hosts" "$_SB_SSH_DIR/known_hosts"
 
     if [[ ! -f "$_SB_SSH_DIR/id_ed25519" ]]; then
-        ssh-keygen -t ed25519 -f "$_SB_SSH_DIR/id_ed25519" -N "" -C "sb@$(hostname)"
+        ssh-keygen -t ed25519 -f "$_SB_SSH_DIR/id_ed25519" -N "" -C "sb@$(hostname)" >&2
     fi
     chmod 600 "$_SB_SSH_DIR/id_ed25519"
     chmod 644 "$_SB_SSH_DIR/id_ed25519.pub"
