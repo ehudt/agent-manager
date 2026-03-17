@@ -4,8 +4,6 @@
 
 ## Up Next
 
-- new sessions with --yolo default to sandbox and worktree. support for both launching from cli and from new session dialog
-
 - **Sandbox shell pane cosmetics** — two issues visible when a sandbox session starts:
   1. The `_am_sandbox_enter()` reconnect loop (from `sandbox_enter_cmd()` in `lib/sandbox.sh`) is pasted verbatim into the shell pane via `tmux send-keys`, showing a wall of escaped shell code. Could suppress by writing to a temp script and sourcing it, or using `tmux send-keys -l` with `clear` after.
   2. `~/.zshrc:bindkey:127/128: cannot bind to an empty key sequence` — host `.zshrc` has keybindings referencing terminal sequences not available in the container. Could mount a sandbox-specific `.zshrc` from `~/.sb/zshrc`, or wrap the bindkey calls in the host `.zshrc` with guards (`[[ -n "$key" ]] && bindkey ...`).
