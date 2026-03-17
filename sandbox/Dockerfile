@@ -26,6 +26,9 @@ RUN apt-get update && apt-get install -y \
     eza \
     ripgrep \
     zoxide \
+    gnuplot \
+    zstd \
+    libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://tailscale.com/install.sh | sh
@@ -76,7 +79,8 @@ USER dev
 WORKDIR /home/dev
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/home/dev/.local/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --component rustfmt
+ENV PATH="/home/dev/.cargo/bin:/home/dev/.local/bin:${PATH}"
 ENV UV_CACHE_DIR=/tmp/uv-cache
 
 RUN uv python install
