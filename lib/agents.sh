@@ -14,6 +14,15 @@ declare -A AGENT_COMMANDS=(
     [gemini]="gemini"
 )
 
+# Check if an agent type requires a TTY on stdin.
+# Codex checks isatty(0) at startup and refuses piped input.
+_agent_needs_tty() {
+    case "$1" in
+        codex) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Get the yolo mode flag for an agent type.
 # Usage: agent_get_yolo_flag <type>
 agent_get_yolo_flag() {
@@ -311,14 +320,19 @@ agent_launch() {
         full_cmd+="$quoted_part"
     done
 
-    # If there's an initial prompt, write it to a temp file and pipe it to the agent.
-    # This avoids overflowing the kernel tty input buffer (~4096 bytes on macOS)
-    # which garbles long prompts sent via tmux send-keys or paste-buffer.
-    local prompt_file=""
+    # If there's an initial prompt, write it to a temp file.
+    # For agents that accept piped stdin (claude): pipe the file into the command
+    # to avoid overflowing the kernel tty input buffer (~4096 bytes on macOS).
+    # For agents that require a TTY (codex): start normally, then paste after ready.
+    local prompt_file="" deferred_prompt=false
     if [[ -n "$initial_prompt" ]]; then
         prompt_file="/tmp/am-prompt-${session_name}"
         printf '%s\n' "$initial_prompt" > "$prompt_file"
-        full_cmd="cat ${prompt_file@Q} | $full_cmd; rm -f ${prompt_file@Q}"
+        if _agent_needs_tty "$agent_type"; then
+            deferred_prompt=true
+        else
+            full_cmd="cat ${prompt_file@Q} | $full_cmd; rm -f ${prompt_file@Q}"
+        fi
     fi
 
     # Sandbox mode (independent of yolo)
@@ -339,6 +353,14 @@ agent_launch() {
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+    fi
+
+    # Deferred prompt: agent needs a TTY, so paste prompt after it starts.
+    if $deferred_prompt; then
+        (   agent_wait_until_ready "$session_name" || true
+            agent_send_prompt "$session_name" "$initial_prompt"
+            rm -f "$prompt_file"
+        ) >/dev/null 2>&1 &
     fi
 
     # Background: wait for CLI-managed worktrees to appear, then cd shell pane into them.
@@ -380,6 +402,15 @@ agent_send_prompt() {
     pane_target=$(agent_target_pane "$session_name")
 
     tmux_paste_text "$pane_target" "$prompt"
+
+    # Sandboxed sessions run the agent inside docker exec, adding an extra
+    # PTY layer.  The paste-buffer content must traverse host-tmux → host-zsh
+    # → docker-PTY → container-zsh → TUI, so a small delay is needed before
+    # sending Enter to avoid the keystroke arriving before the pasted text.
+    if [[ -n "$(registry_get_field "$session_name" container_name)" ]]; then
+        sleep 0.15
+    fi
+
     tmux_send_keys "$pane_target" Enter
 }
 
