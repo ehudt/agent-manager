@@ -317,6 +317,16 @@ _form_handle_space() {
             else
                 FORM_VALUES[$name]="true"
             fi
+            # Yolo ON implies sandbox + worktree
+            if [[ "$name" == "yolo" && "${FORM_VALUES[$name]}" == "true" ]]; then
+                if [[ "${FORM_DISABLED[sandbox]:-}" != "true" ]]; then
+                    FORM_VALUES[sandbox]="true"
+                fi
+                if [[ -n "${FORM_TYPES[worktree_enabled]:-}" && "${FORM_DISABLED[worktree_enabled]:-}" != "true" ]]; then
+                    FORM_VALUES[worktree_enabled]="true"
+                    FORM_DISABLED[worktree_name]=""
+                fi
+            fi
             # Update worktree_name disabled state when worktree_enabled toggles
             if [[ "$name" == "worktree_enabled" ]]; then
                 if [[ "${FORM_VALUES[$name]}" == "true" ]]; then
@@ -831,6 +841,12 @@ am_new_session_form() {
             sandbox="true"
         elif am_default_sandbox_enabled && [[ "$docker_available" == "true" ]]; then
             sandbox="true"
+        fi
+
+        # --yolo implies sandbox + worktree
+        if [[ "$yolo" == "true" ]]; then
+            [[ "$docker_available" == "true" ]] && sandbox="true"
+            worktree_enabled="true"
         fi
 
         case "$prefill_worktree" in

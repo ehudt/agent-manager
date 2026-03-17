@@ -239,6 +239,8 @@ cmd_new() {
     local agent_args=()
     local yolo_override=""
     local sandbox_override=""
+    # shellcheck disable=SC2034
+    local worktree_override=""
     local attach_session=true
     local print_session=false
     local initial_prompt=""
@@ -286,6 +288,11 @@ cmd_new() {
                 sandbox_override="false"
                 shift
                 ;;
+            --no-worktree)
+                # shellcheck disable=SC2034
+                worktree_override="false"
+                shift
+                ;;
             --detach|--no-attach)
                 attach_session=false
                 shift
@@ -310,10 +317,11 @@ cmd_new() {
                 echo "  -d, --dir     Working directory"
                 echo "  -w, --worktree  Enable git worktree isolation (Claude, Codex)"
                 echo "                  Optional: -w <name> for custom worktree name"
-                echo "  --yolo        Enable yolo mode (agent permissive flags)"
+                echo "  --yolo        Enable yolo mode (implies sandbox + worktree)"
                 echo "  --no-yolo     Disable yolo mode even if enabled by default"
                 echo "  --sandbox     Run session in Docker sandbox container"
                 echo "  --no-sandbox  Disable sandbox even if enabled by default"
+                echo "  --no-worktree Disable worktree even when implied by --yolo"
                 echo "  --detach      Create the session without attaching"
                 echo "  --print-session  Print the created session name"
                 echo "  --            Pass remaining args to agent command"
@@ -371,6 +379,21 @@ cmd_new() {
 
         if [[ "$sandbox_override" != "false" ]] && am_maybe_apply_default_sandbox "${agent_args[@]}"; then
             agent_args+=("--sandbox")
+        fi
+
+        # --yolo implies sandbox + worktree unless explicitly opted out
+        if [[ "$yolo_override" == "true" ]]; then
+            if [[ "$sandbox_override" != "false" ]] && am_docker_available; then
+                # Add --sandbox if not already present
+                local _has_sb=false
+                for _a in "${agent_args[@]}"; do [[ "$_a" == "--sandbox" ]] && _has_sb=true; done
+                if ! $_has_sb; then
+                    agent_args+=("--sandbox")
+                fi
+            fi
+            if [[ "$worktree_override" != "false" && -z "$worktree_name" ]]; then
+                worktree_name="__auto__"
+            fi
         fi
     fi
 

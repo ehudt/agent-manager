@@ -199,15 +199,25 @@ test_cli_yolo_sandbox_integration() {
 
     local test_dir=$(mktemp -d)
 
-    # --- Test: am new --yolo creates session with yolo but no container ---
+    # --- Test: am new --yolo implies sandbox ---
     local session_name
     session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
         "$PROJECT_DIR/am" new --yolo --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "cli yolo-only: session created"
+    assert_not_empty "$session_name" "cli yolo: session created"
     assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
-        "cli yolo-only: yolo_mode is true"
+        "cli yolo: yolo_mode is true"
+    assert_not_empty "$(registry_get_field "$session_name" container_name)" \
+        "cli yolo: implies sandbox (container created)"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: am new --yolo --no-sandbox opts out of implied sandbox ---
+    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+        "$PROJECT_DIR/am" new --yolo --no-sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "cli yolo-no-sandbox: session created"
+    assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
+        "cli yolo-no-sandbox: yolo_mode is true"
     assert_eq "" "$(registry_get_field "$session_name" container_name)" \
-        "cli yolo-only: no container (sandbox not requested)"
+        "cli yolo-no-sandbox: sandbox opted out"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
     # --- Test: am new --sandbox without docker fails ---
