@@ -14,9 +14,9 @@ declare -A AGENT_COMMANDS=(
     [gemini]="gemini"
 )
 
-# Check if an agent type requires a TTY on stdin.
-# Codex checks isatty(0) at startup and refuses piped input.
-_agent_needs_tty() {
+# Check if an agent type accepts the initial prompt as a CLI argument.
+# Codex takes [PROMPT] as a positional arg; Claude reads from stdin.
+_agent_prompt_as_arg() {
     case "$1" in
         codex) return 0 ;;
         *) return 1 ;;
@@ -131,23 +131,6 @@ agent_target_pane() {
     echo "${session_name}:.{top}"
 }
 
-# Wait briefly for the agent pane to hand off from the shell to the launched process.
-# Usage: agent_wait_until_ready <session_name>
-agent_wait_until_ready() {
-    local session_name="$1"
-    local pane_target current_cmd
-    pane_target=$(agent_target_pane "$session_name")
-
-    for _i in $(seq 1 150); do
-        current_cmd=$(tmux_pane_current_command "$pane_target" 2>/dev/null || true)
-        case "$current_cmd" in
-            ""|bash|zsh|sh|fish) sleep 0.1 ;;
-            *) return 0 ;;
-        esac
-    done
-
-    return 1
-}
 
 # Detect git branch for a directory
 # Usage: detect_git_branch <directory>
@@ -320,17 +303,19 @@ agent_launch() {
         full_cmd+="$quoted_part"
     done
 
-    # If there's an initial prompt, write it to a temp file.
-    # For agents that accept piped stdin (claude): pipe the file into the command
-    # to avoid overflowing the kernel tty input buffer (~4096 bytes on macOS).
-    # For agents that require a TTY (codex): start normally, then paste after ready.
-    local prompt_file="" deferred_prompt=false
+    # If there's an initial prompt, inject it into the launch command.
+    # - Agents that accept a CLI prompt arg (codex): append to command args.
+    # - Agents that accept piped stdin (claude): pipe a temp file into the command
+    #   to avoid overflowing the kernel tty input buffer (~4096 bytes on macOS).
+    local prompt_file=""
     if [[ -n "$initial_prompt" ]]; then
-        prompt_file="/tmp/am-prompt-${session_name}"
-        printf '%s\n' "$initial_prompt" > "$prompt_file"
-        if _agent_needs_tty "$agent_type"; then
-            deferred_prompt=true
+        if _agent_prompt_as_arg "$agent_type"; then
+            local quoted_prompt
+            printf -v quoted_prompt '%q' "$initial_prompt"
+            full_cmd+=" $quoted_prompt"
         else
+            prompt_file="/tmp/am-prompt-${session_name}"
+            printf '%s\n' "$initial_prompt" > "$prompt_file"
             full_cmd="cat ${prompt_file@Q} | $full_cmd; rm -f ${prompt_file@Q}"
         fi
     fi
@@ -355,12 +340,9 @@ agent_launch() {
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     fi
 
-    # Deferred prompt: agent needs a TTY, so paste prompt after it starts.
-    if $deferred_prompt; then
-        (   agent_wait_until_ready "$session_name" || true
-            agent_send_prompt "$session_name" "$initial_prompt"
-            rm -f "$prompt_file"
-        ) >/dev/null 2>&1 &
+    # Clean up prompt temp file after agent starts (for stdin-piped agents).
+    if [[ -n "$prompt_file" ]]; then
+        ( sleep 5; rm -f "$prompt_file" ) >/dev/null 2>&1 &
     fi
 
     # Background: wait for CLI-managed worktrees to appear, then cd shell pane into them.
@@ -403,12 +385,14 @@ agent_send_prompt() {
 
     tmux_paste_text "$pane_target" "$prompt"
 
-    # Sandboxed sessions run the agent inside docker exec, adding an extra
-    # PTY layer.  The paste-buffer content must traverse host-tmux → host-zsh
-    # → docker-PTY → container-zsh → TUI, so a small delay is needed before
-    # sending Enter to avoid the keystroke arriving before the pasted text.
+    # TUI agents (Codex) need a brief pause between paste and Enter —
+    # without it, Enter arrives before the TUI finishes processing the
+    # pasted text and gets interpreted as a newline instead of submit.
+    # Sandboxed sessions need a longer delay due to the extra docker PTY layer.
     if [[ -n "$(registry_get_field "$session_name" container_name)" ]]; then
-        sleep 0.15
+        sleep 0.3
+    else
+        sleep 0.1
     fi
 
     tmux_send_keys "$pane_target" Enter
