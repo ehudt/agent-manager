@@ -4,6 +4,8 @@
 
 ## Up Next
 
+- new sessions with --yolo default to sandbox and worktree. support for both launching from cli and from new session dialog
+
 ## Ideas
 
 - **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model. The vision for the web UI is a full AM implementation on the web. with session switching, creating sessions, chatting with the agent and integrated shell. etc etc
