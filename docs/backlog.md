@@ -8,6 +8,7 @@
   1. The `_am_sandbox_enter()` reconnect loop (from `sandbox_enter_cmd()` in `lib/sandbox.sh`) is pasted verbatim into the shell pane via `tmux send-keys`, showing a wall of escaped shell code. Could suppress by writing to a temp script and sourcing it, or using `tmux send-keys -l` with `clear` after.
   2. `~/.zshrc:bindkey:127/128: cannot bind to an empty key sequence` — host `.zshrc` has keybindings referencing terminal sequences not available in the container. Could mount a sandbox-specific `.zshrc` from `~/.sb/zshrc`, or wrap the bindkey calls in the host `.zshrc` with guards (`[[ -n "$key" ]] && bindkey ...`).
 
+- **Sandbox** - consider a simple and more robust approach to mapping configs, etc. less brittle 
 ## Ideas
 
 - **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model. The vision for the web UI is a full AM implementation on the web. with session switching, creating sessions, chatting with the agent and integrated shell. etc etc
