@@ -10,51 +10,14 @@ SB_UNSAFE_ROOT="${SB_UNSAFE_ROOT:-0}"
 SB_ENABLE_TAILSCALE="${SB_ENABLE_TAILSCALE:-1}"
 ENABLE_SSH="${ENABLE_SSH:-0}"
 TS_ENABLE_SSH="${TS_ENABLE_SSH:-1}"
-SB_READ_ONLY_ROOTFS="${SB_READ_ONLY_ROOTFS:-0}"
-
-if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
-    # Read-only rootfs cannot support rewriting /home paths or moving the
-    # runtime user's home directory. Keep the stable in-image home instead.
-    RUNTIME_USER="$BASE_USER"
-    USER_HOME="$(getent passwd "$RUNTIME_USER" | cut -d: -f6)"
-fi
-
-ensure_dir() {
-    local path="$1"
-    shift
-
-    # Parse -o and -g flags for ownership fallback
-    local owner="" group="" mode=""
-    local args=()
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            -o) owner="$2"; args+=("$1" "$2"); shift 2 ;;
-            -g) group="$2"; args+=("$1" "$2"); shift 2 ;;
-            -m) mode="$2"; args+=("$1" "$2"); shift 2 ;;
-            *)  args+=("$1"); shift ;;
-        esac
-    done
-
-    if ! install -d "${args[@]}" "$path" 2>/dev/null; then
-        mkdir -p "$path" 2>/dev/null || true
-        # Explicit chown/chmod fallback
-        if [ -n "$owner" ] && [ -n "$group" ]; then
-            chown "$owner:$group" "$path" 2>/dev/null ||
-                echo "Warning: cannot chown $path to $owner:$group" >&2
-        fi
-        if [ -n "$mode" ]; then
-            chmod "$mode" "$path" 2>/dev/null || true
-        fi
-    fi
-}
 
 # Align the container identity with the host username/home.
-if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && id "$BASE_USER" >/dev/null 2>&1 && [ "$RUNTIME_USER" != "$BASE_USER" ] && ! id "$RUNTIME_USER" >/dev/null 2>&1; then
+if id "$BASE_USER" >/dev/null 2>&1 && [ "$RUNTIME_USER" != "$BASE_USER" ] && ! id "$RUNTIME_USER" >/dev/null 2>&1; then
     groupmod -n "$RUNTIME_USER" "$BASE_USER" || true
     usermod -l "$RUNTIME_USER" "$BASE_USER" || true
 fi
 
-if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && id "$RUNTIME_USER" >/dev/null 2>&1; then
+if id "$RUNTIME_USER" >/dev/null 2>&1; then
     current_home=$(getent passwd "$RUNTIME_USER" | cut -d: -f6)
     if [ -n "$current_home" ] && [ "$current_home" != "$USER_HOME" ]; then
         usermod -d "$USER_HOME" -m "$RUNTIME_USER" || true
@@ -66,7 +29,7 @@ if ! id "$RUNTIME_USER" >/dev/null 2>&1; then
     USER_HOME="$(getent passwd "$RUNTIME_USER" | cut -d: -f6)"
 fi
 
-if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && id "$RUNTIME_USER" >/dev/null 2>&1 && [ -n "${HOST_GID:-}" ]; then
+if id "$RUNTIME_USER" >/dev/null 2>&1 && [ -n "${HOST_GID:-}" ]; then
     current_gid=$(id -g "$RUNTIME_USER")
     if [ "$current_gid" != "$HOST_GID" ]; then
         if getent group "$HOST_GID" >/dev/null 2>&1; then
@@ -79,7 +42,7 @@ if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && id "$RUNTIME_USER" >/dev/null 2>&1 && [ 
     fi
 fi
 
-if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && id "$RUNTIME_USER" >/dev/null 2>&1 && [ -n "${HOST_UID:-}" ]; then
+if id "$RUNTIME_USER" >/dev/null 2>&1 && [ -n "${HOST_UID:-}" ]; then
     current_uid=$(id -u "$RUNTIME_USER")
     if [ "$current_uid" != "$HOST_UID" ]; then
         usermod -u "$HOST_UID" "$RUNTIME_USER" || true
@@ -89,38 +52,12 @@ fi
 RUNTIME_GROUP=$(id -gn "$RUNTIME_USER")
 
 # Keep legacy path references working.
-if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && [ "$USER_HOME" != "/home/dev" ] && [ ! -e /home/dev ]; then
+if [ "$USER_HOME" != "/home/dev" ] && [ ! -e /home/dev ]; then
     ln -s "$USER_HOME" /home/dev
 fi
 
-# Ensure Codex state directory is writable by runtime user.
-# File mounts like $HOME/.codex/config.toml can cause Docker to create the
-# parent directory as root-owned if it doesn't already exist.
-if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
-    mkdir -p "$USER_HOME/.codex/tmp"
-else
-    # File mounts like $HOME/.local/bin/claude can leave parent directories
-    # root-owned, which breaks tools that write XDG state during shell startup.
-    ensure_dir "$USER_HOME/.local" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-    ensure_dir "$USER_HOME/.local/share" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-    ensure_dir "$USER_HOME/.codex" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-    ensure_dir "$USER_HOME/.codex/tmp" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-fi
-
-# Ensure uv cache is writable inside sandboxed sessions.
-if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
-    mkdir -p /tmp/uv-cache
-else
-    ensure_dir /tmp/uv-cache -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-fi
-
-# Mirror mapped workspace path while preserving /workspace compatibility.
-if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && [ -n "${TARGET_DIR:-}" ] && [ ! -e /workspace ]; then
-    mkdir -p "$(dirname "$TARGET_DIR")"
-    ln -s "$TARGET_DIR" /workspace
-fi
-
-# Restore config files if missing or empty
+# Restore config defaults if missing (from /opt/dev_config baked into the image).
+# On first boot the .sb mount is empty; these ensure a usable shell environment.
 for file in .zshrc .vimrc .tmux.conf; do
     target="$USER_HOME/$file"
     if [ ! -s "$target" ]; then
@@ -128,6 +65,18 @@ for file in .zshrc .vimrc .tmux.conf; do
         chown "${RUNTIME_USER}:${RUNTIME_GROUP}" "$target"
     fi
 done
+
+# Ensure standard home directories exist (creates them in .sb on first boot).
+for dir in .claude .codex .codex/tmp .local .local/bin .local/share; do
+    if [ ! -d "$USER_HOME/$dir" ]; then
+        mkdir -p "$USER_HOME/$dir"
+        chown "${RUNTIME_USER}:${RUNTIME_GROUP}" "$USER_HOME/$dir"
+    fi
+done
+
+# Ensure uv cache is writable.
+mkdir -p /tmp/uv-cache
+chown "${RUNTIME_USER}:${RUNTIME_GROUP}" /tmp/uv-cache
 
 # Default hardened mode disables passwordless sudo. Compatibility mode
 # restores it explicitly when requested.

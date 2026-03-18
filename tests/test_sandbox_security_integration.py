@@ -157,34 +157,7 @@ def _wait_for_not_running(container_name, timeout=15, interval=0.2):
 
 def _prepare_fake_home(home_dir):
     home_dir.mkdir(parents=True, exist_ok=True)
-    (home_dir / ".claude").mkdir(parents=True, exist_ok=True)
-    (home_dir / ".codex").mkdir(parents=True, exist_ok=True)
-    (home_dir / ".ssh").mkdir(parents=True, exist_ok=True)
-    (home_dir / ".claude.json").write_text('{"test": true}\n')
-    (home_dir / ".codex" / "config.toml").write_text("[default]\nmodel = 'test'\n")
-    (home_dir / ".codex" / "auth.json").write_text('{"token": "test"}\n')
-    (home_dir / ".ssh" / "config").write_text("Host *\n  StrictHostKeyChecking no\n")
-    (home_dir / ".gitconfig").write_text("[user]\n\tname = Test User\n")
-    (home_dir / ".zshrc").write_text("export TEST_ZSHRC=1\n")
-    (home_dir / ".vimrc").write_text("set number\n")
-    (home_dir / ".tmux.conf").write_text("set -g mouse on\n")
     return home_dir
-
-
-def _prepare_fake_native_claude_install(home_dir, version="2.1.63"):
-    versions_dir = home_dir / ".local" / "share" / "claude" / "versions"
-    versions_dir.mkdir(parents=True, exist_ok=True)
-    binary_path = versions_dir / version
-    binary_path.write_text("#!/bin/sh\nexit 0\n")
-    binary_path.chmod(0o755)
-
-    bin_dir = home_dir / ".local" / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    claude_link = bin_dir / "claude"
-    if claude_link.exists() or claude_link.is_symlink():
-        claude_link.unlink()
-    claude_link.symlink_to(binary_path)
-    return claude_link, versions_dir
 
 
 @pytest.fixture
@@ -354,12 +327,12 @@ def test_s003_unsafe_mode_downgrade_is_explicit(sandbox_context):
 @pytest.mark.integration
 @pytest.mark.docker
 @pytest.mark.security
-def test_s004_sensitive_mount_modes_enforced(sandbox_context, fake_home):
+def test_s004_mount_scheme_is_two_rw_mounts(sandbox_context, fake_home):
+    """The sandbox uses exactly 2 data mounts: .sb as ~ (rw) and workspace as ~/workspace (rw)."""
     env = sandbox_context["env"].copy()
     env["HOME"] = str(fake_home)
-    env["SB_HOME"] = str(fake_home / ".sb")
-    fake_home.joinpath(".claude.json").write_text('{"installMethod": "native"}\n')
-    _prepare_fake_native_claude_install(fake_home)
+    sb_home = fake_home / ".sb"
+    env["SB_HOME"] = str(sb_home)
 
     session_name = sandbox_context["session_name"]
     target_dir = sandbox_context["target_dir"]
@@ -373,112 +346,45 @@ def test_s004_sensitive_mount_modes_enforced(sandbox_context, fake_home):
     _wait_for_running(container_name, timeout=45)
     inspect = _inspect(container_name)
 
-    ro_destinations = [
-        f"{fake_home}/.codex/auth.json",
-        f"{fake_home}/.ssh",
-        f"{fake_home}/.gitconfig",
-        f"{fake_home}/.zshrc",
-        f"{fake_home}/.vimrc",
-        f"{fake_home}/.tmux.conf",
-    ]
-    for destination in ro_destinations:
-        assert _container_mount(inspect, destination)["RW"] is False
+    # Home (.sb) is mounted rw at $HOME inside the container
+    home_mount = _container_mount(inspect, str(fake_home))
+    assert home_mount["RW"] is True
+    assert pathlib.Path(home_mount["Source"]) == sb_home
 
-    assert _container_mount(inspect, f"{fake_home}/.claude.json")["RW"] is True
-    assert _container_mount(inspect, f"{fake_home}/.claude")["RW"] is True
-    assert _container_mount(inspect, f"{fake_home}/.local/bin/claude")["RW"] is False
-    assert (
-        _container_mount(inspect, f"{fake_home}/.local/share/claude/versions")["RW"] is False
-    )
-    assert _container_mount(inspect, f"{fake_home}/.codex/config.toml")["RW"] is True
+    # Workspace is mounted rw at ~/workspace
+    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace")
+    assert workspace_mount["RW"] is True
+    assert pathlib.Path(workspace_mount["Source"]) == target_dir
 
-    ro_write_attempts = {
-        "codex_auth": f"echo nope >> '{fake_home}/.codex/auth.json'",
-        "ssh_dir": f"touch '{fake_home}/.ssh/blocked'",
-        "gitconfig": f"echo nope >> '{fake_home}/.gitconfig'",
-        "native_claude_bin": f"echo nope >> '{fake_home}/.local/bin/claude'",
-    }
-    for label, shell_cmd in ro_write_attempts.items():
-        result = _run(
-            ["docker", "exec", container_name, "sh", "-lc", shell_cmd],
-            check=False,
-            timeout=60,
-        )
-        assert result.returncode != 0, f"{label} unexpectedly allowed writes"
-
-    rw_write_attempts = {
-        "claude_json": f"echo '{{\"test\": false}}' > '{fake_home}/.claude.json'",
-        "claude_dir": f"touch '{fake_home}/.claude/allowed'",
-        "codex_config": f"echo '# test' >> '{fake_home}/.codex/config.toml'",
-    }
-    for label, shell_cmd in rw_write_attempts.items():
-        result = _run(
-            ["docker", "exec", container_name, "sh", "-lc", shell_cmd],
-            check=False,
-            timeout=60,
-        )
-        assert result.returncode == 0, f"{label} unexpectedly rejected writes"
-
-
-@pytest.mark.integration
-@pytest.mark.docker
-@pytest.mark.security
-def test_s005_read_only_rootfs_mode_enforced(sandbox_context):
-    env = sandbox_context["env"].copy()
-    env["SB_READ_ONLY_ROOTFS"] = "1"
-    env["SB_ENABLE_TAILSCALE"] = "0"
-    session_name = sandbox_context["session_name"]
-    target_dir = sandbox_context["target_dir"]
-
-    _run_sandbox_function(
-        f"sandbox_start '{session_name}' '{target_dir}'",
-        env=env,
-        check=True,
-    )
-    container_name = _find_container(session_name)
-    _wait_for_running(container_name, timeout=45)
-
-    inspect = _inspect(container_name)
-    assert inspect["HostConfig"].get("ReadonlyRootfs") is True
-
-    write_attempt = _run(
-        ["docker", "exec", container_name, "sh", "-lc", "echo test > /sb-rootfs-write-check"],
+    # Writes to home (i.e. .sb) succeed
+    result = _run(
+        ["docker", "exec", container_name, "sh", "-lc", f"touch '{fake_home}/.rw-check'"],
         check=False,
         timeout=60,
     )
-    assert write_attempt.returncode != 0, "Unexpectedly wrote to read-only rootfs"
+    assert result.returncode == 0, "home mount unexpectedly rejected writes"
 
-    tmp_write = _run(
-        ["docker", "exec", container_name, "sh", "-lc", "echo ok > /tmp/sb-tmp-write-check"],
+    # Writes to workspace succeed
+    result = _run(
+        ["docker", "exec", container_name, "sh", "-lc", f"touch '{fake_home}/workspace/.rw-check'"],
         check=False,
         timeout=60,
     )
-    assert tmp_write.returncode == 0, tmp_write.stderr
+    assert result.returncode == 0, "workspace mount unexpectedly rejected writes"
 
 
 @pytest.mark.integration
 @pytest.mark.docker
 @pytest.mark.security
 def test_s006_stale_runtime_settings_trigger_recreate(sandbox_context, fake_home):
+    """Container missing the expected 2-mount scheme gets recreated by sandbox_start."""
     env = sandbox_context["env"].copy()
     env["HOME"] = str(fake_home)
-    env["SB_HOME"] = str(fake_home / ".sb")
-    fake_home.joinpath(".claude.json").write_text('{"installMethod": "native"}\n')
-    _prepare_fake_native_claude_install(fake_home)
+    sb_home = fake_home / ".sb"
+    env["SB_HOME"] = str(sb_home)
 
     session_name = sandbox_context["session_name"]
     target_dir = sandbox_context["target_dir"]
-    _run_sandbox_function(
-        f"sandbox_start '{session_name}' '{target_dir}'",
-        env=env,
-        check=True,
-    )
-    _run_sandbox_function(
-        f"sandbox_remove '{session_name}'",
-        env=env,
-        check=False,
-        timeout=120,
-    )
 
     host_user = subprocess.run(
         ["id", "-un"], text=True, capture_output=True, check=True
@@ -490,53 +396,23 @@ def test_s006_stale_runtime_settings_trigger_recreate(sandbox_context, fake_home
         ["id", "-g"], text=True, capture_output=True, check=True
     ).stdout.strip()
 
+    # Start a container with old-style mounts (workspace at its original path, no home mount)
     _run(
         [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            session_name,
-            "--hostname",
-            session_name,
-            "--label",
-            "agent-sandbox=true",
-            "--label",
-            f"agent-sandbox.session={session_name}",
-            "--label",
-            f"agent-sandbox.dir={target_dir}",
-            "--restart",
-            "unless-stopped",
-            "-v",
-            f"{target_dir}:{target_dir}",
-            "-v",
-            f"{fake_home}/.claude.json:{fake_home}/.claude.json:ro",
-            "-v",
-            f"{fake_home}/.claude:{fake_home}/.claude:ro",
-            "-v",
-            f"{fake_home}/.codex/config.toml:{fake_home}/.codex/config.toml",
-            "-v",
-            f"{fake_home}/.codex/auth.json:{fake_home}/.codex/auth.json:ro",
-            "-e",
-            f"HOST_USER={host_user}",
-            "-e",
-            f"HOST_UID={host_uid}",
-            "-e",
-            f"HOST_GID={host_gid}",
-            "-e",
-            f"HOST_HOME={fake_home}",
-            "-e",
-            f"TARGET_DIR={target_dir}",
-            "-e",
-            "SB_ENABLE_TAILSCALE=0",
-            "-e",
-            "ENABLE_SSH=0",
-            "-e",
-            "TS_ENABLE_SSH=0",
-            "-e",
-            "SB_UNSAFE_ROOT=0",
-            "-e",
-            "SB_READ_ONLY_ROOTFS=0",
+            "docker", "run", "-d",
+            "--name", session_name,
+            "--hostname", session_name,
+            "--label", "agent-sandbox=true",
+            "--label", f"agent-sandbox.session={session_name}",
+            "--label", f"agent-sandbox.dir={target_dir}",
+            "--restart", "unless-stopped",
+            "--cap-add=CHOWN", "--cap-add=DAC_OVERRIDE", "--cap-add=FOWNER",
+            "-v", f"{target_dir}:{target_dir}",
+            "-e", f"HOST_USER={host_user}",
+            "-e", f"HOST_UID={host_uid}",
+            "-e", f"HOST_GID={host_gid}",
+            "-e", f"HOST_HOME={fake_home}",
+            "-e", "SB_ENABLE_TAILSCALE=0",
             "agent-sandbox:persistent",
         ],
         check=True,
@@ -544,6 +420,7 @@ def test_s006_stale_runtime_settings_trigger_recreate(sandbox_context, fake_home
     )
     _wait_for_running(session_name, timeout=45)
 
+    # sandbox_start should detect missing ~/workspace mount and recreate
     result = _run_sandbox_function(
         f"sandbox_start '{session_name}' '{target_dir}'",
         env=env,
@@ -552,13 +429,14 @@ def test_s006_stale_runtime_settings_trigger_recreate(sandbox_context, fake_home
     output = f"{result.stdout}\n{result.stderr}"
     assert "Recreating sandbox" in output
 
+    # New container should have both expected mounts
     inspect = _inspect(session_name)
-    assert _container_mount(inspect, f"{fake_home}/.claude.json")["RW"] is True
-    assert _container_mount(inspect, f"{fake_home}/.claude")["RW"] is True
-    assert _container_mount(inspect, f"{fake_home}/.local/bin/claude")["RW"] is False
-    assert (
-        _container_mount(inspect, f"{fake_home}/.local/share/claude/versions")["RW"] is False
-    )
+    home_mount = _container_mount(inspect, str(fake_home))
+    assert home_mount["RW"] is True
+    assert pathlib.Path(home_mount["Source"]) == sb_home
+
+    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace")
+    assert workspace_mount["RW"] is True
 
     cap_add = _normalize_caps(inspect["HostConfig"].get("CapAdd") or [])
     assert {"CHOWN", "DAC_OVERRIDE", "FOWNER"}.issubset(cap_add)
@@ -578,6 +456,7 @@ def test_s007_ssh_agent_forwarding_gated_by_socket_presence(
     env_missing["SB_HOME"] = str(fake_home / ".sb")
     env_missing["SB_FORWARD_SSH_AGENT"] = "1"
     env_missing["SSH_AUTH_SOCK"] = str(fake_home / "missing-agent.sock")
+
 
     missing_result = _run_sandbox_function(
         f"sandbox_start '{session_name}' '{target_dir}'",
@@ -634,10 +513,8 @@ def test_u001_start_auto_inits_sandbox_identity_when_missing(sandbox_context, fa
     )
     output = f"{result.stdout}\n{result.stderr}"
 
-    assert "Sandbox identity not found. Initializing ~/.sb/..." in output
-    assert f"Using sandbox Claude JSON: {fake_home}/.sb/claude.json" in output
-    assert f"Using sandbox Claude directory: {fake_home}/.sb/claude" in output
-    assert f"Using sandbox SSH identity: {fake_home}/.sb/ssh" in output
+    assert "Sandbox home not found. Initializing" in output
+    assert "workspace" in output  # mount log line mentions workspace
 
 
 @pytest.mark.integration
@@ -658,11 +535,9 @@ def test_u002_start_output_shows_sandbox_identity_sources(sandbox_context, fake_
     )
     output = f"{result.stdout}\n{result.stderr}"
 
-    assert f"Using sandbox Claude JSON: {fake_home}/.sb/claude.json" in output
-    assert f"Using sandbox Claude directory: {fake_home}/.sb/claude" in output
-    assert f"Using sandbox Codex config: {fake_home}/.sb/codex/config.toml" in output
-    assert f"Using sandbox Codex auth: {fake_home}/.sb/codex/auth.json" in output
-    assert f"Using sandbox SSH identity: {fake_home}/.sb/ssh" in output
+    sb_home = fake_home / ".sb"
+    assert f"workspace={target_dir}" in output
+    assert f"home={sb_home}" in output
 
 
 @pytest.mark.integration
@@ -1095,9 +970,9 @@ def test_s007_environment_secret_leakage(sandbox_context):
     container_env = result.stdout
 
     # Intended vars should be present
-    intended_prefixes = ("HOST_USER=", "HOST_UID=", "HOST_GID=", "HOST_HOME=", "TARGET_DIR=",
+    intended_prefixes = ("HOST_USER=", "HOST_UID=", "HOST_GID=", "HOST_HOME=",
                          "SB_ENABLE_TAILSCALE=", "ENABLE_SSH=", "TS_ENABLE_SSH=",
-                         "SB_UNSAFE_ROOT=", "SB_READ_ONLY_ROOTFS=", "SANDBOX_NAME=", "TERM=")
+                         "SB_UNSAFE_ROOT=", "SANDBOX_NAME=", "TERM=")
     for prefix in intended_prefixes:
         assert any(line.startswith(prefix) for line in container_env.splitlines()), \
             f"Expected env var starting with {prefix!r} not found"
@@ -1197,8 +1072,12 @@ def test_f011_sandbox_identity_init_quality(tmp_path, isolated_am_dir, fake_home
 
     _run_sandbox_function("sandbox_identity_init", env=env, check=True)
 
+    # .sb home dir exists
+    assert sb_home.is_dir()
+    assert oct(sb_home.stat().st_mode & 0o777) == oct(0o700)
+
     # SSH directory and key
-    ssh_dir = sb_home / "ssh"
+    ssh_dir = sb_home / ".ssh"
     assert ssh_dir.is_dir()
     assert oct(ssh_dir.stat().st_mode & 0o777) == oct(0o700)
 
@@ -1212,16 +1091,6 @@ def test_f011_sandbox_identity_init_quality(tmp_path, isolated_am_dir, fake_home
 
     ssh_config = ssh_dir / "config"
     assert ssh_config.is_file()
-
-    # Claude directory and JSON
-    assert (sb_home / "claude").is_dir()
-    assert (sb_home / "claude.json").is_file()
-
-    # Codex directory
-    codex_dir = sb_home / "codex"
-    assert codex_dir.is_dir()
-    assert (codex_dir / "config.toml").is_file()
-    assert (codex_dir / "auth.json").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -1309,21 +1178,23 @@ def test_s008_multi_tenant_separation(tmp_path, isolated_am_dir):
         _wait_for_running(session_a, timeout=45)
         _wait_for_running(session_b, timeout=45)
 
-        # Container A should NOT see project B's directory
-        result_a = _run(
-            ["docker", "exec", session_a, "ls", str(dir_b)],
-            check=False,
-            timeout=30,
-        )
-        assert result_a.returncode != 0 or "secret_b.txt" not in result_a.stdout
+        # Each container only has its own workspace at ~/workspace; the other's
+        # original host path is not mounted anywhere in the container.
+        host_home = os.environ.get("HOME", "/root")
 
-        # Container B should NOT see project A's directory
-        result_b = _run(
-            ["docker", "exec", session_b, "ls", str(dir_a)],
+        result_a = _run(
+            ["docker", "exec", session_a, "find", f"{host_home}/workspace", "-name", "secret_b.txt"],
             check=False,
             timeout=30,
         )
-        assert result_b.returncode != 0 or "secret_a.txt" not in result_b.stdout
+        assert "secret_b.txt" not in result_a.stdout
+
+        result_b = _run(
+            ["docker", "exec", session_b, "find", f"{host_home}/workspace", "-name", "secret_a.txt"],
+            check=False,
+            timeout=30,
+        )
+        assert "secret_a.txt" not in result_b.stdout
 
         # Each sees only its own directory
         inspect_a = _inspect(session_a)
