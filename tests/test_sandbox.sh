@@ -15,8 +15,7 @@ test_sandbox() {
     cmd=$(sandbox_attach_cmd "am-abc123" "/home/user/project")
     assert_contains "$cmd" "docker exec" "sandbox_attach_cmd: contains docker exec"
     assert_contains "$cmd" "am-abc123" "sandbox_attach_cmd: contains session name"
-    # Directory is mapped to ~/workspace/<dirname> in the container
-    assert_contains "$cmd" "workspace/project" "sandbox_attach_cmd: maps directory to workspace/project"
+    assert_contains "$cmd" "/project" "sandbox_attach_cmd: working dir is ~/project"
     assert_contains "$cmd" "docker inspect" "sandbox_attach_cmd: checks container state after exit"
     assert_contains "$cmd" "reconnecting..." "sandbox_attach_cmd: auto-reconnects after shell exit"
     assert_contains "$cmd" "exit 42" "sandbox_attach_cmd: documents explicit host-shell escape"
@@ -24,17 +23,13 @@ test_sandbox() {
     assert_contains "$cmd" "is gone; you are now on the host shell" "sandbox_attach_cmd: prints host-shell fallback message"
     assert_contains "$cmd" "$AM_DIR/logs/am-abc123/sandbox.log" "sandbox_attach_cmd: references session sandbox event log"
 
-    # --- Test 1b: sandbox_enter_cmd output format ---
-    cmd=$(sandbox_enter_cmd "am-abc123" "/home/user/project")
+    # --- Test 1b: sandbox_enter_cmd always uses ~/project ---
+    cmd=$(sandbox_enter_cmd "am-abc123")
     assert_contains "$cmd" "docker exec" "sandbox_enter_cmd: contains docker exec"
-    assert_contains "$cmd" "workspace/project" "sandbox_enter_cmd: maps directory to workspace/project"
+    assert_contains "$cmd" "/project" "sandbox_enter_cmd: working dir is ~/project"
     assert_contains "$cmd" "./am sandbox enter am-abc123" "sandbox_enter_cmd: contains am re-entry command"
     assert_contains "$cmd" "reconnecting..." "sandbox_enter_cmd: contains auto-reconnect message"
     assert_contains "$cmd" "exit 42" "sandbox_enter_cmd: contains explicit host-shell escape"
-
-    # --- Test 1c: sandbox_enter_cmd defaults to ~/workspace ---
-    cmd=$(sandbox_enter_cmd "am-abc123")
-    assert_contains "$cmd" "workspace" "sandbox_enter_cmd: defaults working dir to workspace"
 
     # --- Test 2: SB_HOME is set correctly ---
     assert_contains "$SB_HOME" ".sb" "SB_HOME: contains '.sb'"

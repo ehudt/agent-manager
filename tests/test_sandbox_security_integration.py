@@ -351,11 +351,10 @@ def test_s004_mount_scheme_is_two_rw_mounts(sandbox_context, fake_home):
     assert home_mount["RW"] is True
     assert pathlib.Path(home_mount["Source"]) == sb_home
 
-    # Workspace is mounted rw at ~/workspace/<dirname>
-    workspace_name = target_dir.name
-    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace/{workspace_name}")
-    assert workspace_mount["RW"] is True
-    assert pathlib.Path(workspace_mount["Source"]) == target_dir
+    # Workspace is mounted rw at ~/project
+    project_mount = _container_mount(inspect, f"{fake_home}/project")
+    assert project_mount["RW"] is True
+    assert pathlib.Path(project_mount["Source"]) == target_dir
 
     # Writes to home (i.e. .sb) succeed
     result = _run(
@@ -365,14 +364,13 @@ def test_s004_mount_scheme_is_two_rw_mounts(sandbox_context, fake_home):
     )
     assert result.returncode == 0, "home mount unexpectedly rejected writes"
 
-    # Writes to workspace succeed
+    # Writes to project succeed
     result = _run(
-        ["docker", "exec", container_name, "sh", "-lc",
-         f"touch '{fake_home}/workspace/{workspace_name}/.rw-check'"],
+        ["docker", "exec", container_name, "sh", "-lc", f"touch '{fake_home}/project/.rw-check'"],
         check=False,
         timeout=60,
     )
-    assert result.returncode == 0, "workspace mount unexpectedly rejected writes"
+    assert result.returncode == 0, "project mount unexpectedly rejected writes"
 
 
 @pytest.mark.integration
@@ -437,9 +435,8 @@ def test_s006_stale_runtime_settings_trigger_recreate(sandbox_context, fake_home
     assert home_mount["RW"] is True
     assert pathlib.Path(home_mount["Source"]) == sb_home
 
-    workspace_name = target_dir.name
-    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace/{workspace_name}")
-    assert workspace_mount["RW"] is True
+    project_mount = _container_mount(inspect, f"{fake_home}/project")
+    assert project_mount["RW"] is True
 
     cap_add = _normalize_caps(inspect["HostConfig"].get("CapAdd") or [])
     assert {"CHOWN", "DAC_OVERRIDE", "FOWNER"}.issubset(cap_add)
@@ -539,8 +536,7 @@ def test_u002_start_output_shows_sandbox_identity_sources(sandbox_context, fake_
     output = f"{result.stdout}\n{result.stderr}"
 
     sb_home = fake_home / ".sb"
-    workspace_name = target_dir.name
-    assert f"workspace={target_dir} -> ~/workspace/{workspace_name}" in output
+    assert f"project={target_dir} -> ~/project" in output
     assert f"home={sb_home}" in output
 
 
@@ -1182,19 +1178,18 @@ def test_s008_multi_tenant_separation(tmp_path, isolated_am_dir):
         _wait_for_running(session_a, timeout=45)
         _wait_for_running(session_b, timeout=45)
 
-        # Each container only has its own workspace at ~/workspace; the other's
-        # original host path is not mounted anywhere in the container.
+        # Each container only has its own project at ~/project; the other's files are not visible.
         host_home = os.environ.get("HOME", "/root")
 
         result_a = _run(
-            ["docker", "exec", session_a, "find", f"{host_home}/workspace", "-name", "secret_b.txt"],
+            ["docker", "exec", session_a, "find", f"{host_home}/project", "-name", "secret_b.txt"],
             check=False,
             timeout=30,
         )
         assert "secret_b.txt" not in result_a.stdout
 
         result_b = _run(
-            ["docker", "exec", session_b, "find", f"{host_home}/workspace", "-name", "secret_a.txt"],
+            ["docker", "exec", session_b, "find", f"{host_home}/project", "-name", "secret_a.txt"],
             check=False,
             timeout=30,
         )
