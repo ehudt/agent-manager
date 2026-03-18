@@ -351,8 +351,9 @@ def test_s004_mount_scheme_is_two_rw_mounts(sandbox_context, fake_home):
     assert home_mount["RW"] is True
     assert pathlib.Path(home_mount["Source"]) == sb_home
 
-    # Workspace is mounted rw at ~/workspace
-    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace")
+    # Workspace is mounted rw at ~/workspace/<dirname>
+    workspace_name = target_dir.name
+    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace/{workspace_name}")
     assert workspace_mount["RW"] is True
     assert pathlib.Path(workspace_mount["Source"]) == target_dir
 
@@ -366,7 +367,8 @@ def test_s004_mount_scheme_is_two_rw_mounts(sandbox_context, fake_home):
 
     # Writes to workspace succeed
     result = _run(
-        ["docker", "exec", container_name, "sh", "-lc", f"touch '{fake_home}/workspace/.rw-check'"],
+        ["docker", "exec", container_name, "sh", "-lc",
+         f"touch '{fake_home}/workspace/{workspace_name}/.rw-check'"],
         check=False,
         timeout=60,
     )
@@ -435,7 +437,8 @@ def test_s006_stale_runtime_settings_trigger_recreate(sandbox_context, fake_home
     assert home_mount["RW"] is True
     assert pathlib.Path(home_mount["Source"]) == sb_home
 
-    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace")
+    workspace_name = target_dir.name
+    workspace_mount = _container_mount(inspect, f"{fake_home}/workspace/{workspace_name}")
     assert workspace_mount["RW"] is True
 
     cap_add = _normalize_caps(inspect["HostConfig"].get("CapAdd") or [])
@@ -536,7 +539,8 @@ def test_u002_start_output_shows_sandbox_identity_sources(sandbox_context, fake_
     output = f"{result.stdout}\n{result.stderr}"
 
     sb_home = fake_home / ".sb"
-    assert f"workspace={target_dir}" in output
+    workspace_name = target_dir.name
+    assert f"workspace={target_dir} -> ~/workspace/{workspace_name}" in output
     assert f"home={sb_home}" in output
 
 

@@ -39,6 +39,13 @@ _sandbox_container_has_mount() {
     [[ "$mount_present" == "present" ]]
 }
 
+_sandbox_container_has_mount_prefix() {
+    local container_name="$1"
+    local prefix="$2"
+    docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\n"}}{{end}}' "$container_name" 2>/dev/null | \
+        grep -q "^${prefix}"
+}
+
 _sandbox_list_containers() {
     docker ps -a --filter "label=agent-sandbox" --format '{{.Names}}'
 }
@@ -147,8 +154,8 @@ _sandbox_needs_refresh() {
         return 0
     fi
 
-    if ! _sandbox_container_has_mount "$container_name" "$HOME/workspace"; then
-        log_info "Refreshing sandbox '$container_name': missing workspace mount at $HOME/workspace."
+    if ! _sandbox_container_has_mount_prefix "$container_name" "$HOME/workspace/"; then
+        log_info "Refreshing sandbox '$container_name': missing workspace mount under $HOME/workspace/."
         return 0
     fi
 
@@ -242,10 +249,12 @@ sandbox_start() {
         _sandbox_start_proxy "$session_name"
     fi
 
-    # Two mounts: workspace at ~/workspace, and .sb as home (shared credentials/config)
+    # Two mounts: .sb as home (shared credentials/config) and workspace at ~/workspace/<dirname>
+    local workspace_name
+    workspace_name=$(basename "$directory")
     local MOUNTS=(
-        -v "$directory:$HOME/workspace"
         -v "$SB_HOME:$HOME"
+        -v "$directory:$HOME/workspace/$workspace_name"
     )
 
     local ENV_VARS=(
@@ -271,7 +280,7 @@ sandbox_start() {
         fi
     fi
 
-    log_info "Mounts: workspace=$directory -> ~/workspace, home=$SB_HOME -> ~"
+    log_info "Mounts: workspace=$directory -> ~/workspace/$workspace_name, home=$SB_HOME -> ~"
 
     local RUN_OPTS=(
         # Ensure orphaned docker exec descendants are reaped instead of
@@ -354,8 +363,12 @@ sandbox_enter_cmd() {
     _sandbox_ensure_host_identity
     local event_log enter_cmd target_dir host_exit_code
     event_log="$(_sandbox_event_log_path "$session_name")"
-    # Workspace is always at ~/workspace in the container; fall back to $PWD for custom enters
-    target_dir="${directory:-$HOME/workspace}"
+    # Map host directory to its container path: ~/workspace/<dirname>
+    if [[ -n "$directory" ]]; then
+        target_dir="$HOME/workspace/$(basename "$directory")"
+    else
+        target_dir="$HOME/workspace"
+    fi
     host_exit_code="${SANDBOX_HOST_EXIT_CODE}"
     enter_cmd="docker exec -it -u '$_SB_HOST_USER' -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh"
     printf "%s" "_am_sandbox_enter() { $enter_cmd; }; while true; do _am_sandbox_enter; _am_rc=\$?; if ! docker inspect '$session_name' >/dev/null 2>&1; then printf '\\n[am] sandbox %s is gone; you are now on the host shell.\\n[am] inspect: ./am sandbox status %s\\n[am] events: %s\\n' '$session_name' '$session_name' '$event_log'; break; fi; if [[ \$_am_rc -eq $host_exit_code ]]; then printf '\\n[am] leaving sandbox %s and staying on the host shell.\\n' '$session_name'; printf '[am] re-enter later: ./am sandbox enter $session_name\\n'; break; fi; if [[ \$_am_rc -eq 0 ]]; then printf '\\n[am] sandbox shell exited for %s; reconnecting...\\n' '$session_name'; else printf '\\n[am] sandbox shell exited (status %s) for %s; reconnecting...\\n' \"\$_am_rc\" '$session_name'; fi; printf '[am] to stay on the host shell, run: exit $host_exit_code\\n'; printf '[am] re-enter manually: ./am sandbox enter $session_name\\n'; sleep 1; done"
@@ -511,9 +524,17 @@ EOF
         chmod 600 "$ssh_dir/config"
     fi
 
+    # Seed default shell/editor config from the sandbox image defaults.
+    # These land in .sb/ so the user can customize them freely.
+    for f in .zshrc .vimrc .tmux.conf; do
+        [[ ! -f "$SB_HOME/$f" && -f "$SANDBOX_DIR/config_context/$f" ]] && \
+            cp "$SANDBOX_DIR/config_context/$f" "$SB_HOME/$f"
+    done
+
     log_success "Sandbox home ready at $SB_HOME"
     log_info "Public key: $ssh_dir/id_ed25519.pub"
     log_info "Next steps:"
     log_info "  1) Add this key where needed (GitHub/GitLab as deploy or user key)."
-    log_info "  2) Run am as usual; sandboxes share this identity and any credentials in $SB_HOME."
+    log_info "  2) Edit $SB_HOME/.zshrc and other dotfiles to customize your sandbox environment."
+    log_info "  3) Run am as usual; all sandboxes share this home."
 }

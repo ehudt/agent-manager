@@ -15,7 +15,8 @@ test_sandbox() {
     cmd=$(sandbox_attach_cmd "am-abc123" "/home/user/project")
     assert_contains "$cmd" "docker exec" "sandbox_attach_cmd: contains docker exec"
     assert_contains "$cmd" "am-abc123" "sandbox_attach_cmd: contains session name"
-    assert_contains "$cmd" "/home/user/project" "sandbox_attach_cmd: contains directory"
+    # Directory is mapped to ~/workspace/<dirname> in the container
+    assert_contains "$cmd" "workspace/project" "sandbox_attach_cmd: maps directory to workspace/project"
     assert_contains "$cmd" "docker inspect" "sandbox_attach_cmd: checks container state after exit"
     assert_contains "$cmd" "reconnecting..." "sandbox_attach_cmd: auto-reconnects after shell exit"
     assert_contains "$cmd" "exit 42" "sandbox_attach_cmd: documents explicit host-shell escape"
@@ -26,6 +27,7 @@ test_sandbox() {
     # --- Test 1b: sandbox_enter_cmd output format ---
     cmd=$(sandbox_enter_cmd "am-abc123" "/home/user/project")
     assert_contains "$cmd" "docker exec" "sandbox_enter_cmd: contains docker exec"
+    assert_contains "$cmd" "workspace/project" "sandbox_enter_cmd: maps directory to workspace/project"
     assert_contains "$cmd" "./am sandbox enter am-abc123" "sandbox_enter_cmd: contains am re-entry command"
     assert_contains "$cmd" "reconnecting..." "sandbox_enter_cmd: contains auto-reconnect message"
     assert_contains "$cmd" "exit 42" "sandbox_enter_cmd: contains explicit host-shell escape"
