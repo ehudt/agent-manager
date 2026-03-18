@@ -75,12 +75,20 @@ COPY config_context/.zshrc /opt/dev_config/.zshrc
 COPY config_context/.vimrc /opt/dev_config/.vimrc
 COPY config_context/.tmux.conf /opt/dev_config/.tmux.conf
 
+# Keep image-installed toolchains independent from the remapped runtime home.
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+ENV PATH="/opt/cargo/bin:/home/dev/.local/bin:${PATH}"
+
+RUN install -d -m 755 /opt/rustup /opt/cargo && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path --component rustfmt && \
+    chmod -R a+rX /opt/rustup /opt/cargo
+
 USER dev
 WORKDIR /home/dev
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --component rustfmt
-ENV PATH="/home/dev/.cargo/bin:/home/dev/.local/bin:${PATH}"
 ENV UV_CACHE_DIR=/tmp/uv-cache
 
 RUN uv python install
