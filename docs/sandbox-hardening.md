@@ -76,7 +76,6 @@ Optional environment flags in `~/.agent-manager/sandbox.env`:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `SB_UNSAFE_ROOT` | `0` | Allow passwordless sudo inside the container |
-| `SB_READ_ONLY_ROOTFS` | `0` | Mount the root filesystem read-only |
 
 Other runtime behavior that is part of the current design:
 

@@ -267,10 +267,9 @@ sandbox_start() {
         docker rm -f "$session_name" >/dev/null 2>&1 || true
     fi
 
-    local sb_unsafe_root sb_read_only_rootfs
+    local sb_unsafe_root
     local sb_pids_limit sb_memory_limit sb_cpus_limit sb_network_restrict
     sb_unsafe_root="${SB_UNSAFE_ROOT:-0}"
-    sb_read_only_rootfs="${SB_READ_ONLY_ROOTFS:-0}"
     sb_pids_limit="${SB_PIDS_LIMIT:-512}"
     sb_memory_limit="${SB_MEMORY_LIMIT:-4g}"
     sb_cpus_limit="${SB_CPUS_LIMIT:-2.0}"
@@ -298,9 +297,7 @@ sandbox_start() {
         -e "HOST_UID=$_SB_HOST_UID"
         -e "HOST_GID=$_SB_HOST_GID"
         -e "HOST_HOME=$HOME"
-        -e "TARGET_DIR=$directory"
         -e "SB_UNSAFE_ROOT=$sb_unsafe_root"
-        -e "SB_READ_ONLY_ROOTFS=$sb_read_only_rootfs"
     )
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_vars+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
 
@@ -316,15 +313,6 @@ sandbox_start() {
     )
     if [[ "$sb_unsafe_root" != "1" ]]; then
         run_opts+=(--security-opt no-new-privileges:true)
-    fi
-    if [[ "$sb_read_only_rootfs" == "1" ]]; then
-        run_opts+=(
-            --read-only
-            --tmpfs /tmp:rw,noexec,nosuid,nodev
-            --tmpfs /run:rw,nosuid,nodev
-            --tmpfs /var/run:rw,nosuid,nodev
-            -v "${session_name}-codex-home:/home/dev/.codex"
-        )
     fi
     if [[ "$sb_network_restrict" == "1" ]]; then
         local proxy_name

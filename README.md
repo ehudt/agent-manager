@@ -383,14 +383,12 @@ At runtime, the entrypoint still:
 
 - restores default `.zshrc` and `.vimrc` only when they are missing
 - hydrates `am sb map` targets from `~/.am-state`
-- creates `/workspace` as a compatibility symlink to the mapped project path when needed
 
 Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `SB_UNSAFE_ROOT` | `0` | `1` = enable passwordless sudo (for `apt install`, etc.) |
-| `SB_READ_ONLY_ROOTFS` | `0` | `1` = mount root filesystem read-only (`/tmp`, `/run` remain writable) |
 
 ### Worktree isolation
 

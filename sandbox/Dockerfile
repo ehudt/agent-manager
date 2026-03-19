@@ -71,5 +71,4 @@ USER root
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
-WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
