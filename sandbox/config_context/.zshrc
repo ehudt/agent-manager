@@ -118,8 +118,8 @@ bindkey '^[[A' history-search-backward  # Up arrow
 bindkey '^[[B' history-search-forward   # Down arrow
 
 # Arrow keys (simple cursor movement fallback)
-bindkey "${terminfo[kcub1]}" backward-char   # ←
-bindkey "${terminfo[kcuf1]}" forward-char    # →
+[[ -n "${terminfo[kcub1]:-}" ]] && bindkey "${terminfo[kcub1]}" backward-char   # ←
+[[ -n "${terminfo[kcuf1]:-}" ]] && bindkey "${terminfo[kcuf1]}" forward-char    # →
 
 # =============================================================================
 # Colors
