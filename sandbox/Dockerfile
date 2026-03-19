@@ -31,11 +31,8 @@ RUN apt-get update && apt-get install -y \
     zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# Rename the default ubuntu user to dev
-RUN usermod -l dev ubuntu && \
-    groupmod -n dev ubuntu && \
-    usermod -d /home/dev -m dev && \
-    chsh -s /bin/zsh dev
+# Set default shell for the ubuntu user
+RUN chsh -s /bin/zsh ubuntu
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
@@ -49,12 +46,11 @@ RUN npx -y playwright install-deps chromium && \
 
 RUN npm install -g @openai/codex
 
-# Config defaults restored by entrypoint on first boot
-RUN mkdir -p /opt/dev_config
-COPY config_context/.zshrc /opt/dev_config/.zshrc
-COPY config_context/.vimrc /opt/dev_config/.vimrc
+COPY --chown=ubuntu:ubuntu config_context/.zshrc /home/ubuntu/.zshrc
+COPY --chown=ubuntu:ubuntu config_context/.vimrc /home/ubuntu/.vimrc
 
-USER dev
+USER ubuntu
+ENV PATH="/home/ubuntu/.cargo/bin:/home/ubuntu/.local/bin:${PATH}"
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -64,8 +60,7 @@ RUN uv tool install ipython
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y && ~/.cargo/bin/rustup component add rustfmt
-ENV PATH="/home/dev/.cargo/bin:/home/dev/.local/bin:${PATH}"
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y && rustup component add rustfmt
 
 USER root
 
