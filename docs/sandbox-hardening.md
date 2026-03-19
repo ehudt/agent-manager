@@ -63,8 +63,6 @@ Config:
 - `am config set sb-network-restrict false` to disable the proxy and allow direct internet access
 - `am config set sb-allowed-hosts "extra.example.com,another.com"` to extend the allowlist
 
-Network restriction disables direct Tailscale networking for that container.
-
 ## 5. Runtime hardening
 
 By default, sandbox containers run with:
@@ -79,6 +77,13 @@ Optional environment flags in `~/.agent-manager/sandbox.env`:
 |----------|---------|---------|
 | `SB_UNSAFE_ROOT` | `0` | Allow passwordless sudo inside the container |
 | `SB_READ_ONLY_ROOTFS` | `0` | Mount the root filesystem read-only |
+
+Other runtime behavior that is part of the current design:
+
+- The image has a single built-in user, `dev`.
+- The entrypoint restores default `.zshrc` and `.vimrc` only if they do not already exist.
+- Rust is installed under `/home/dev/.cargo`, and the Dockerfile adds that path to `PATH`.
+- The image includes Node.js, Codex CLI, Claude Code, `uv`, one managed Python, `ipython`, and Playwright Chromium.
 
 ## 6. Remaining limits
 

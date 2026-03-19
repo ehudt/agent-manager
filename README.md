@@ -295,6 +295,18 @@ The volume layout is:
 
 `mappings.json` drives entrypoint hydration. On container startup, each mapping becomes a symlink from its configured `target` path to `~/.am-state/data/<source>`.
 
+### Sandbox image contents
+
+The sandbox image is intentionally simple and currently includes:
+
+- a single in-image user, `dev`, with `zsh` as the login shell
+- Node.js plus the `codex` CLI and Claude Code
+- Rust installed for `dev` via `rustup`, including `rustfmt`
+- `uv`, one managed Python, and `ipython`
+- Playwright's Chromium runtime for UI tests
+
+The image does not include SSH or Tailscale support.
+
 ### Presets
 
 `am` ships with preset bundles in `config/presets.json` and merges optional user overrides from `~/.agent-manager/presets.json`.
@@ -366,6 +378,12 @@ By default, the container runs with:
 - **`--cap-drop=ALL`** — all Linux capabilities dropped, then only `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` are added back (required by the entrypoint for user alignment)
 - **`--security-opt no-new-privileges:true`** — prevents privilege escalation inside the container
 - **No passwordless sudo** — `sudo` is blocked unless you explicitly set `SB_UNSAFE_ROOT=1`
+
+At runtime, the entrypoint still:
+
+- restores default `.zshrc` and `.vimrc` only when they are missing
+- hydrates `am sb map` targets from `~/.am-state`
+- creates `/workspace` as a compatibility symlink to the mapped project path when needed
 
 Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
 
