@@ -64,7 +64,7 @@ run_worker() {
             _basename="$(basename "$_test_file")"
             case "$_basename" in
                 test_all.sh|test_helpers.sh) continue ;;
-                test_cap_chown.sh|test_claude_mount.sh|test_codex_permissions.sh) continue ;;
+                test_cap_chown.sh) continue ;;
             esac
             source "$_test_file"
         done

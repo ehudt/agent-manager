@@ -7,7 +7,6 @@ USER_HOME="${HOST_HOME:-/home/${RUNTIME_USER}}"
 CONFIG_BACKUP="/opt/dev_config"
 SUDOERS_UNSAFE_DROPIN="/etc/sudoers.d/90-sb-unsafe-root"
 SB_UNSAFE_ROOT="${SB_UNSAFE_ROOT:-0}"
-ENABLE_SSH="${ENABLE_SSH:-0}"
 SB_READ_ONLY_ROOTFS="${SB_READ_ONLY_ROOTFS:-0}"
 
 if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
@@ -16,35 +15,6 @@ if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
     RUNTIME_USER="$BASE_USER"
     USER_HOME="$(getent passwd "$RUNTIME_USER" | cut -d: -f6)"
 fi
-
-ensure_dir() {
-    local path="$1"
-    shift
-
-    # Parse -o and -g flags for ownership fallback
-    local owner="" group="" mode=""
-    local args=()
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            -o) owner="$2"; args+=("$1" "$2"); shift 2 ;;
-            -g) group="$2"; args+=("$1" "$2"); shift 2 ;;
-            -m) mode="$2"; args+=("$1" "$2"); shift 2 ;;
-            *)  args+=("$1"); shift ;;
-        esac
-    done
-
-    if ! install -d "${args[@]}" "$path" 2>/dev/null; then
-        mkdir -p "$path" 2>/dev/null || true
-        # Explicit chown/chmod fallback
-        if [ -n "$owner" ] && [ -n "$group" ]; then
-            chown "$owner:$group" "$path" 2>/dev/null ||
-                echo "Warning: cannot chown $path to $owner:$group" >&2
-        fi
-        if [ -n "$mode" ]; then
-            chmod "$mode" "$path" 2>/dev/null || true
-        fi
-    fi
-}
 
 # Align the container identity with the host username/home.
 if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && id "$BASE_USER" >/dev/null 2>&1 && [ "$RUNTIME_USER" != "$BASE_USER" ] && ! id "$RUNTIME_USER" >/dev/null 2>&1; then
@@ -89,27 +59,6 @@ RUNTIME_GROUP=$(id -gn "$RUNTIME_USER")
 # Keep legacy path references working.
 if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && [ "$USER_HOME" != "/home/dev" ] && [ ! -e /home/dev ]; then
     ln -s "$USER_HOME" /home/dev
-fi
-
-# Ensure Codex state directory is writable by runtime user.
-# File mounts like $HOME/.codex/config.toml can cause Docker to create the
-# parent directory as root-owned if it doesn't already exist.
-if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
-    mkdir -p "$USER_HOME/.codex/tmp"
-else
-    # File mounts like $HOME/.local/bin/claude can leave parent directories
-    # root-owned, which breaks tools that write XDG state during shell startup.
-    ensure_dir "$USER_HOME/.local" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-    ensure_dir "$USER_HOME/.local/share" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-    ensure_dir "$USER_HOME/.codex" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-    ensure_dir "$USER_HOME/.codex/tmp" -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
-fi
-
-# Ensure uv cache is writable inside sandboxed sessions.
-if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
-    mkdir -p /tmp/uv-cache
-else
-    ensure_dir /tmp/uv-cache -m 755 -o "${RUNTIME_USER}" -g "${RUNTIME_GROUP}"
 fi
 
 # Mirror mapped workspace path while preserving /workspace compatibility.
@@ -164,23 +113,6 @@ else
     if [ -w /etc/sudoers.d ]; then
         rm -f "$SUDOERS_UNSAFE_DROPIN"
     fi
-fi
-
-if [ "$ENABLE_SSH" = "1" ]; then
-    # Copy authorized_keys to a writable location (host ~/.ssh is mounted read-only)
-    if [ -f "$USER_HOME/.ssh/authorized_keys" ]; then
-        mkdir -p "$USER_HOME/.ssh_writable"
-        cp "$USER_HOME/.ssh/authorized_keys" "$USER_HOME/.ssh_writable/authorized_keys"
-        chmod 700 "$USER_HOME/.ssh_writable"
-        chmod 600 "$USER_HOME/.ssh_writable/authorized_keys"
-        chown -R "${RUNTIME_USER}:${RUNTIME_GROUP}" "$USER_HOME/.ssh_writable"
-        if [ -w /etc/ssh/sshd_config ]; then
-            sed -i "s|AuthorizedKeysFile .ssh/authorized_keys|AuthorizedKeysFile ${USER_HOME}/.ssh_writable/authorized_keys|" /etc/ssh/sshd_config
-        else
-            echo "Warning: /etc/ssh/sshd_config is not writable; using default AuthorizedKeysFile."
-        fi
-    fi
-    service ssh start
 fi
 
 touch /tmp/am-entrypoint-ready

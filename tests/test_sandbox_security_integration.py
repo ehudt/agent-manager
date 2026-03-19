@@ -48,7 +48,6 @@ def sandbox_env(tmp_path):
     env["AM_DIR"] = str(am_dir)
     env["AM_CONFIG"] = str(am_dir / "config.json")
     env["SB_STATE_VOLUME"] = f"am-test-state-{uuid.uuid4().hex[:8]}"
-    env["ENABLE_SSH"] = "0"
     env["SB_UNSAFE_ROOT"] = "0"
     env["SB_PIDS_LIMIT"] = "128"
     env["SB_MEMORY_LIMIT"] = "1g"

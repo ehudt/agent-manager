@@ -373,7 +373,6 @@ Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
 |----------|---------|--------|
 | `SB_UNSAFE_ROOT` | `0` | `1` = enable passwordless sudo (for `apt install`, etc.) |
 | `SB_READ_ONLY_ROOTFS` | `0` | `1` = mount root filesystem read-only (`/tmp`, `/run` remain writable) |
-| `ENABLE_SSH` | `0` | `1` = start sshd inside the container |
 
 ### Worktree isolation
 

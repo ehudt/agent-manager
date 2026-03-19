@@ -267,9 +267,8 @@ sandbox_start() {
         docker rm -f "$session_name" >/dev/null 2>&1 || true
     fi
 
-    local enable_ssh sb_unsafe_root sb_read_only_rootfs
+    local sb_unsafe_root sb_read_only_rootfs
     local sb_pids_limit sb_memory_limit sb_cpus_limit sb_network_restrict
-    enable_ssh="${ENABLE_SSH:-0}"
     sb_unsafe_root="${SB_UNSAFE_ROOT:-0}"
     sb_read_only_rootfs="${SB_READ_ONLY_ROOTFS:-0}"
     sb_pids_limit="${SB_PIDS_LIMIT:-512}"
@@ -300,7 +299,6 @@ sandbox_start() {
         -e "HOST_GID=$_SB_HOST_GID"
         -e "HOST_HOME=$HOME"
         -e "TARGET_DIR=$directory"
-        -e "ENABLE_SSH=$enable_ssh"
         -e "SB_UNSAFE_ROOT=$sb_unsafe_root"
         -e "SB_READ_ONLY_ROOTFS=$sb_read_only_rootfs"
     )
