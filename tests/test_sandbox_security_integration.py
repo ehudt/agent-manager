@@ -62,12 +62,13 @@ def sandbox_env(tmp_path):
         _run(["docker", "volume", "rm", "-f", env["SB_STATE_VOLUME"]], env=env, check=False)
 
 
-def _shell(command, env):
+def _shell(command, env, check=True):
     prelude = (
         f"export AM_SCRIPT_DIR='{REPO_ROOT}'; "
         f"export AM_DIR='{env['AM_DIR']}'; "
         f"export AM_CONFIG='{env['AM_CONFIG']}'; "
         f"export SB_STATE_VOLUME='{env['SB_STATE_VOLUME']}'; "
+        f"export HOME='{env['HOME']}'; "
         f"source '{LIB_DIR / 'utils.sh'}'; "
         f"source '{LIB_DIR / 'config.sh'}'; "
         f"source '{LIB_DIR / 'tmux.sh'}'; "
@@ -75,7 +76,7 @@ def _shell(command, env):
         f"source '{LIB_DIR / 'sandbox.sh'}'; "
         f"am_config_init; "
     )
-    return _run(["bash", "-lc", prelude + command], env=env)
+    return _run(["bash", "-c", prelude + command], env=env, check=check)
 
 
 def _inspect(name):
@@ -156,7 +157,9 @@ def test_sandbox_start_uses_state_volume_and_project_mount_only_by_default(sandb
     assert mounts[state_dest]["Type"] == "volume"
     assert len(mounts) == 2
 
-    caps = set(inspect["HostConfig"].get("CapAdd") or [])
+    caps = {
+        cap.removeprefix("CAP_") for cap in (inspect["HostConfig"].get("CapAdd") or [])
+    }
     assert caps == {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
     assert inspect["HostConfig"]["SecurityOpt"] == ["no-new-privileges:true"]
 
@@ -173,14 +176,16 @@ def test_entrypoint_hydration_and_share_mounts(sandbox_env, tmp_path):
     _shell(f"sb_map '{mapped}' --to ~/.mapped-file", sandbox_env)
     _shell(f"sandbox_start am-test-sb '{project_dir}' '{shared}:~/.shared-file:rw'", sandbox_env)
 
-    container_home = _run(["docker", "exec", "am-test-sb", "sh", "-lc", "printf %s \"$HOME\""]).stdout
+    container_home = str(pathlib.Path.home())
     hydrated_path = _run([
         "docker",
         "exec",
         "am-test-sb",
         "sh",
         "-lc",
-        "readlink -f ~/.mapped-file && cat ~/.mapped-file && cat ~/.shared-file",
+        f"readlink -f {container_home}/.mapped-file && "
+        f"cat {container_home}/.mapped-file && "
+        f"cat {container_home}/.shared-file",
     ]).stdout.splitlines()
 
     assert hydrated_path[0] == f"{container_home}/.am-state/data/mapped-file"

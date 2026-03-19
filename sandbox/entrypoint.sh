@@ -121,13 +121,17 @@ if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && [ -n "${TARGET_DIR:-}" ] && [ ! -e /work
 fi
 
 # Phase 2: manifest-driven state hydration
-STATE_DIR="$USER_HOME/.am-state"
+# The state volume is mounted at the host-home path selected by sandbox_start.
+# Hydration should follow that layout even if the runtime user's passwd home
+# diverges (for example, when account renaming/migration is partial).
+STATE_HOME="${HOST_HOME:-$USER_HOME}"
+STATE_DIR="$STATE_HOME/.am-state"
 MANIFEST="$STATE_DIR/mappings.json"
 if [ -f "$MANIFEST" ]; then
     jq -r '.mappings[]? | [.source, .target, (.mode // "")] | @tsv' "$MANIFEST" |
     while IFS=$'	' read -r source target mode; do
         [ -n "$source" ] || continue
-        target="${target/#\~/$USER_HOME}"
+        target="${target/#\~/$STATE_HOME}"
         full_source="$STATE_DIR/data/$source"
         [ -e "$full_source" ] || continue
 
@@ -197,4 +201,5 @@ elif [ "$SB_ENABLE_TAILSCALE" = "1" ] && [ -z "$TS_AUTHKEY" ]; then
     echo "Warning: SB_ENABLE_TAILSCALE=1 but TS_AUTHKEY is unset; skipping tailscale startup."
 fi
 
+touch /tmp/am-entrypoint-ready
 exec tail -f /dev/null

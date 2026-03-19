@@ -53,6 +53,26 @@ _sandbox_log_event() {
     fi
 }
 
+_sandbox_wait_ready() {
+    local session_name="$1"
+    local timeout="${2:-30}"
+    local waited=0
+
+    while (( waited < timeout )); do
+        if ! docker inspect "$session_name" >/dev/null 2>&1; then
+            return 1
+        fi
+        if docker exec "$session_name" test -f /tmp/am-entrypoint-ready >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    log_warn "Sandbox '$session_name' did not signal readiness within ${timeout}s."
+    return 1
+}
+
 _sandbox_list_containers() {
     docker ps -a --filter "label=agent-sandbox" --format '{{.Names}}'
 }
@@ -107,7 +127,7 @@ sb_expand_path() {
     local path="$1"
     case "$path" in
         "~") printf '%s\n' "$HOME" ;;
-        ~/*) printf '%s/%s\n' "$HOME" "${path#~/}" ;;
+        "~/"*) printf '%s/%s\n' "$HOME" "${path#"~/"}" ;;
         *) printf '%s\n' "$path" ;;
     esac
 }
@@ -345,6 +365,10 @@ sandbox_start() {
         "${env_vars[@]}" \
         "${mounts[@]}" \
         "$SANDBOX_IMAGE" >/dev/null; then
+        _sandbox_wait_ready "$session_name" || {
+            _sandbox_log_event "$session_name" "start_failed" "reason=not_ready image=$SANDBOX_IMAGE directory=$directory"
+            return 1
+        }
         _sandbox_log_event "$session_name" "started" "image=$SANDBOX_IMAGE directory=$directory"
         return 0
     fi
