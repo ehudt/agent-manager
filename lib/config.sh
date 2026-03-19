@@ -16,7 +16,8 @@ am_config_init() {
   "stream_logs": true,
   "sb_host_ssh": false,
   "sb_network_restrict": true,
-  "sb_allowed_hosts": ""
+  "sb_allowed_hosts": "",
+  "sandbox.shares": ""
 }
 EOF
     fi
@@ -186,6 +187,7 @@ am_config_key_alias() {
         sb-host-ssh|sb_host_ssh) echo "sb_host_ssh" ;;
         sb-network-restrict|sb_network_restrict) echo "sb_network_restrict" ;;
         sb-allowed-hosts|sb_allowed_hosts) echo "sb_allowed_hosts" ;;
+        sandbox-shares|sandbox_shares|sandbox.shares) echo "sandbox.shares" ;;
         *) return 1 ;;
     esac
 }
@@ -194,7 +196,7 @@ am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
         default_yolo|default_sandbox|stream_logs|new_form|sb_host_ssh|sb_network_restrict) echo "boolean" ;;
-        sb_allowed_hosts) echo "string" ;;
+        sb_allowed_hosts|sandbox.shares) echo "string" ;;
         *) return 1 ;;
     esac
 }
@@ -209,7 +211,7 @@ am_config_value_is_valid() {
         default_yolo|default_sandbox|stream_logs|new_form|sb_host_ssh|sb_network_restrict)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
-        sb_allowed_hosts)
+        sb_allowed_hosts|sandbox.shares)
             return 0
             ;;
         *)
@@ -255,8 +257,9 @@ am_config_print() {
     else
         sb_network_restrict_value=false
     fi
-    local sb_allowed_hosts_value
+    local sb_allowed_hosts_value sandbox_shares_value
     sb_allowed_hosts_value=$(am_config_get "sb_allowed_hosts")
+    sandbox_shares_value=$(am_config_get "sandbox.shares")
 
     cat <<EOF
 default_agent=$default_agent_value
@@ -267,6 +270,7 @@ new_form=$new_form_value
 sb_host_ssh=$sb_host_ssh_value
 sb_network_restrict=$sb_network_restrict_value
 sb_allowed_hosts=$sb_allowed_hosts_value
+sandbox.shares=$sandbox_shares_value
 config_file=$AM_CONFIG
 EOF
 }

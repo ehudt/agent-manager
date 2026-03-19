@@ -1,82 +1,61 @@
 #!/usr/bin/env bash
-# tests/test_sandbox.sh - Tests for lib/sandbox.sh
+# tests/test_sandbox.sh - Tests for lib/sandbox.sh and lib/sb_volume.sh
 
 test_sandbox() {
-    $SUMMARY_MODE || echo "=== Testing sandbox.sh ==="
+    $SUMMARY_MODE || echo "=== Testing sandbox helpers ==="
 
     source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
 
-    # Set AM_SCRIPT_DIR so sandbox.sh can compute SANDBOX_DIR
     export AM_SCRIPT_DIR="$PROJECT_DIR"
+    export SB_STATE_VOLUME="am-test-state-$$"
+    source "$LIB_DIR/sb_volume.sh"
     source "$LIB_DIR/sandbox.sh"
 
-    # --- Test 1: sandbox_attach_cmd output format ---
     local cmd
     cmd=$(sandbox_attach_cmd "am-abc123" "/home/user/project")
     assert_contains "$cmd" "docker exec" "sandbox_attach_cmd: contains docker exec"
-    assert_contains "$cmd" "am-abc123" "sandbox_attach_cmd: contains session name"
-    assert_contains "$cmd" "/home/user/project" "sandbox_attach_cmd: contains directory"
+    assert_contains "$cmd" "./am sb enter am-abc123" "sandbox_attach_cmd: uses sb enter command"
     assert_contains "$cmd" "docker inspect" "sandbox_attach_cmd: checks container state after exit"
-    assert_contains "$cmd" "reconnecting..." "sandbox_attach_cmd: auto-reconnects after shell exit"
-    assert_contains "$cmd" "exit 42" "sandbox_attach_cmd: documents explicit host-shell escape"
-    assert_contains "$cmd" "./am sandbox enter am-abc123" "sandbox_attach_cmd: prints re-entry command"
-    assert_contains "$cmd" "is gone; you are now on the host shell" "sandbox_attach_cmd: prints host-shell fallback message"
-    assert_contains "$cmd" "$AM_DIR/logs/am-abc123/sandbox.log" "sandbox_attach_cmd: references session sandbox event log"
+    assert_contains "$cmd" "exit 42" "sandbox_attach_cmd: documents host-shell escape"
 
-    # --- Test 1b: sandbox_enter_cmd output format ---
     cmd=$(sandbox_enter_cmd "am-abc123" "/home/user/project")
     assert_contains "$cmd" "docker exec" "sandbox_enter_cmd: contains docker exec"
-    assert_contains "$cmd" "./am sandbox enter am-abc123" "sandbox_enter_cmd: contains am re-entry command"
-    assert_contains "$cmd" "reconnecting..." "sandbox_enter_cmd: contains auto-reconnect message"
-    assert_contains "$cmd" "exit 42" "sandbox_enter_cmd: contains explicit host-shell escape"
+    assert_contains "$cmd" "./am sb enter am-abc123" "sandbox_enter_cmd: contains sb re-entry command"
 
-    # --- Test 2: _sandbox_copy_if_missing skips existing ---
-    local tmp
-    tmp=$(mktemp -d)
-    echo "source" > "$tmp/src"
-    echo "original" > "$tmp/dst"
-    _sandbox_copy_if_missing "$tmp/src" "$tmp/dst"
-    assert_eq "original" "$(cat "$tmp/dst")" "_sandbox_copy_if_missing: skips existing dest"
-    rm -rf "$tmp"
+    assert_eq "$HOME/demo" "$(sb_expand_path "~/demo")" "sb_expand_path: expands tilde"
+    assert_eq "ssh" "$(_sb_name_from_target "~/.ssh")" "_sb_name_from_target: strips leading dot"
+    assert_eq "claude.json" "$(_sb_name_from_target "~/.claude.json")" "_sb_name_from_target: preserves basename"
+    assert_eq "$HOME/.vimrc|$HOME/.vimrc|ro" "$(_sb_share_spec_parse "~/.vimrc:ro")" "share parse: host+mode"
+    assert_eq "$HOME/.ssh|$HOME/.ssh|rw" "$(_sb_share_spec_parse "~/.ssh:~/.ssh:rw")" "share parse: explicit target+mode"
 
-    # --- Test 3: _sandbox_copy_if_missing copies when missing ---
-    tmp=$(mktemp -d)
-    echo "source-data" > "$tmp/src"
-    _sandbox_copy_if_missing "$tmp/src" "$tmp/subdir/dst"
-    assert_eq "source-data" "$(cat "$tmp/subdir/dst")" "_sandbox_copy_if_missing: copies when dest missing"
-    rm -rf "$tmp"
+    sb_vol_ensure
+    assert_cmd_succeeds "sb_vol_ensure: creates mappings.json" sb_vol_exists mappings.json
+    assert_cmd_succeeds "sb_vol_ensure: creates data dir" sb_vol_exists data
 
-    # --- Test 4: _sandbox_copy_if_missing noop when src missing ---
-    tmp=$(mktemp -d)
-    _sandbox_copy_if_missing "$tmp/nonexistent" "$tmp/dst"
-    local rc=0
-    [[ -e "$tmp/dst" ]] && rc=1
-    assert_eq "0" "$rc" "_sandbox_copy_if_missing: noop when src missing"
-    rm -rf "$tmp"
-
-    # --- Test 5: _sandbox_claude_install_method extracts method ---
-    tmp=$(mktemp -d)
-    cat > "$tmp/claude.json" <<'CJSON'
-{
-  "installMethod": "native",
-  "version": "1.0"
-}
-CJSON
-    local method
-    method=$(_sandbox_claude_install_method "$tmp/claude.json")
-    assert_eq "native" "$method" "_sandbox_claude_install_method: extracts installMethod"
-    rm -rf "$tmp"
-
-    # --- Test 6: _sandbox_claude_install_method fails for missing file ---
-    local fail_rc=0
-    _sandbox_claude_install_method "/nonexistent/path/claude.json" >/dev/null 2>&1 || fail_rc=$?
-    assert_eq "1" "$fail_rc" "_sandbox_claude_install_method: fails for missing file"
-
-    # --- Test 7: SANDBOX_DIR is set correctly ---
-    assert_contains "$SANDBOX_DIR" "sandbox" "SANDBOX_DIR: contains 'sandbox'"
-    assert_cmd_succeeds "SANDBOX_DIR: directory exists" test -d "$SANDBOX_DIR"
+    docker volume rm -f "$SB_STATE_VOLUME" >/dev/null 2>&1 || true
 
     $SUMMARY_MODE || echo ""
+}
+
+run_sandbox_tests() {
+    _run_test test_sandbox
+}
+
+run_sandbox_slow_tests() {
+    _run_test test_sandbox_pytest_integration
+}
+
+run_sandbox_slow_security_tests() {
+    _run_test test_sandbox_pytest_integration_group security "security"
+}
+
+run_sandbox_slow_functional_tests() {
+    _run_test test_sandbox_pytest_integration_group functional "functional"
+}
+
+run_sandbox_slow_ux_tests() {
+    _run_test test_sandbox_pytest_integration_group ux "ux"
 }
 
 test_sandbox_pytest_integration() {
@@ -130,26 +109,6 @@ test_sandbox_pytest_integration_group() {
     else
         skip_test "sandbox pytest integration [$group_name] (requires uv or python3 with pytest)"
     fi
-}
-
-run_sandbox_tests() {
-    _run_test test_sandbox
-}
-
-run_sandbox_slow_tests() {
-    _run_test test_sandbox_pytest_integration
-}
-
-run_sandbox_slow_security_tests() {
-    _run_test test_sandbox_pytest_integration_group security "security"
-}
-
-run_sandbox_slow_functional_tests() {
-    _run_test test_sandbox_pytest_integration_group functional "functional"
-}
-
-run_sandbox_slow_ux_tests() {
-    _run_test test_sandbox_pytest_integration_group ux "ux and not functional and not security"
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

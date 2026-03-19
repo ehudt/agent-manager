@@ -114,6 +114,37 @@ fzf preview will show:
 └──────────────────────────────────────────────────────┘
 ```
 
+### 5. Sandbox state volume (`am-state`)
+
+Each sandbox mounts a single persistent Docker volume at `~/.am-state` inside the container.
+
+```text
+~/.am-state/
+├── mappings.json
+├── data/
+│   └── <mapping-name>
+└── meta.json
+```
+
+`mappings.json` is the manifest that drives runtime hydration:
+
+```json
+{
+  "version": 1,
+  "mappings": [
+    {
+      "name": "ssh",
+      "source": "ssh",
+      "target": "~/.ssh",
+      "host_source": "~/.ssh",
+      "mode": "0700"
+    }
+  ]
+}
+```
+
+At container startup, the entrypoint expands `~`, then creates symlinks from each `target` to `~/.am-state/data/<source>`. Extra live `--share` bind mounts land on the same target paths and naturally override those symlinks.
+
 ## CLI Interface
 
 ### Commands
@@ -131,6 +162,7 @@ am new -t gemini        # Start gemini instead of claude
 am new --name "my-task" # Custom display name
 am new --yolo           # Enable yolo mode (agent permissive flags)
 am new --sandbox        # Run in Docker sandbox container
+am new --share ~/.ssh:~/.ssh:ro  # Extra live bind mount for a sandbox session
 am new -w               # Git worktree isolation
 am new --detach         # Create without attaching
 am new --print-session  # Print session name to stdout
@@ -165,10 +197,13 @@ am config set <key> <value>  # Set config value
 am config get <key>          # Get config value
 
 # Sandbox management
-am sandbox build        # Build sandbox Docker image
-am sandbox list         # List sandbox containers
-am sandbox prune        # Remove stopped containers
-am sandbox identity init  # Initialize sandbox credentials
+am sb map ~/.ssh --to ~/.ssh --mode 0700   # Copy host data into sandbox state volume
+am sb maps                                 # List manifest-driven mappings
+am sb sync ssh                             # Refresh one mapping from host_source
+am sb ps                                   # List sandbox containers
+am sb prune                                # Remove stopped containers
+am sb build                                # Build sandbox Docker image
+am sb reset --confirm                      # Reset sandbox state volume
 ```
 
 ### fzf Keybindings
@@ -199,7 +234,8 @@ agent-manager/
 │   ├── dir-preview         # Standalone preview script for directory picker
 │   ├── title-upgrade       # Standalone script: fire-and-forget Haiku title upgrade
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
-│   ├── sandbox.sh          # Docker sandbox lifecycle: start, attach, stop, fleet ops
+│   ├── sandbox.sh          # Docker sandbox lifecycle, mapping commands, and fleet ops
+│   ├── sb_volume.sh        # Docker-volume helpers for sandbox state
 │   ├── state.sh            # Session state detection: JSONL + pane pattern matching
 │   ├── tmux.sh             # tmux wrapper functions
 │   └── utils.sh            # Common utilities

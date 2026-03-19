@@ -257,72 +257,99 @@ done
 
 ## Sandbox Mode (Experimental)
 
-> **Experimental feature — not a security boundary.** The sandbox reduces the blast radius of permissive (`--yolo`) agent runs by placing them inside a Docker container. It is **not** designed to contain a determined adversary. The project directory is bind-mounted read-write, host credentials are shared into the container, and Docker itself requires root-equivalent access on the host. Treat the sandbox as a safety net for accidental damage, not as isolation from malicious code. The sandbox API and defaults may change in future releases.
+> **Experimental feature — not a security boundary.** The sandbox reduces the blast radius of permissive (`--yolo`) agent runs by placing them inside a Docker container. It is **not** designed to contain a determined adversary. The project directory is still bind-mounted read-write, and Docker itself requires root-equivalent access on the host. Treat the sandbox as a safety net for accidental damage, not as isolation from malicious code. The sandbox API and defaults may change in future releases.
 
-### When it activates
+### Container model
 
-Sandbox mode is used when `--yolo` and `--sandbox` are both set (or when yolo + sandbox are the saved defaults). The container is created per-session and removed when the session is killed.
+Each sandbox now gets only two default mounts:
 
-```bash
-am new --yolo --sandbox ~/project      # Explicit sandbox
-am new --yolo ~/project                # Also sandboxed if `sandbox=true` in config
-am sandbox ls                          # List sandbox containers
-am sandbox prune                       # Remove stopped containers
-am sandbox rebuild --restart           # Rebuild image, restart running containers
-```
+| Mount | Mode | Purpose |
+|------|------|---------|
+| `am-state` Docker volume → `~/.am-state` | rw | Persistent sandbox-owned state and mapping manifest |
+| Project directory → same absolute path | rw | Working tree for the session |
 
-### Container architecture
+Everything else is opt-in.
 
-Each sandbox is a Docker container running **Ubuntu 24.04** with a long-lived init process (`tail -f /dev/null`). The agent and shell panes connect via `docker exec` — there is no SSH overhead for the default workflow.
+### Mapping host data into the state volume
 
-The entrypoint aligns the container's user identity (username, UID, GID, home directory) with the host user, so file ownership on bind-mounted directories is consistent.
-
-**Pre-installed packages:**
-
-| Category | Packages |
-|----------|----------|
-| Shell & editors | zsh (with Pure prompt), vim-nox, tmux |
-| Dev tools | git, build-essential, python3 + venv, Node.js 22, npm |
-| Python tooling | [uv](https://github.com/astral-sh/uv), ipython, shell-gpt |
-| Search & nav | ripgrep, fzf, zoxide, bat, eza |
-| Network | curl, wget, openssh-server, iproute2, dnsutils, iputils-ping |
-| Testing | Playwright + Chromium |
-| AI agents | Claude Code, Codex CLI |
-| Optional | Tailscale (for remote SSH access) |
-
-### Host file system mounts
-
-The container sees a mix of read-write and read-only bind mounts from the host:
-
-| Host path | Container path | Mode | Purpose |
-|-----------|---------------|------|---------|
-| Project directory | Same absolute path | **rw** | Working directory — agent reads and writes code here |
-| `~/.claude.json` | `~/.claude.json` | **rw** | Claude auth tokens and settings (needs write for token refresh) |
-| `~/.claude/` | `~/.claude/` | **rw** | Claude data directory |
-| `~/.codex/config.toml` | `~/.codex/config.toml` | **rw** | Codex configuration |
-| `~/.local/bin/claude` | Same path | ro | Claude native binary (only if native install detected) |
-| `~/.local/share/claude/versions/` | Same path | ro | Claude native version artifacts |
-| `~/.codex/auth.json` | `~/.codex/auth.json` | ro | Codex authentication |
-| `~/.ssh/` | `~/.ssh/` | ro | SSH keys for git operations |
-| `~/.gitconfig` | `~/.gitconfig` | ro | Git identity and aliases |
-| `~/.zshrc`, `~/.vimrc`, `~/.tmux.conf` | Same paths | ro | Shell, editor, and tmux preferences |
-| `~/code/tools/` | Same path | ro | Shared tools directory (only if it exists on host) |
-
-**Important:** The project directory is mounted **read-write**. Any changes the agent makes to files in that directory are immediately visible on the host and vice versa.
-
-### Sandbox identity (`~/.sb`)
-
-By default, the container shares your host credentials. For stronger isolation, initialize a dedicated sandbox identity:
+Use `am sb map` to copy files or directories into the persistent `am-state` volume and expose them inside future containers via `mappings.json`:
 
 ```bash
-am sandbox identity init
+am sb map ~/.ssh --to ~/.ssh --mode 0700
+am sb map ~/.claude.json --to ~/.claude.json --name claude-auth
+am sb maps
+am sb sync ssh
+am sb edit claude-auth
+am sb unmap claude-auth
 ```
 
-This creates `~/.sb/` with:
-- A dedicated SSH keypair (`~/.sb/ssh/id_ed25519`) — add to GitHub/GitLab as a deploy key
-- Copies of `~/.claude.json`, `~/.claude/`, and `~/.codex/` config/auth
+The volume layout is:
 
-When `~/.sb/` exists, am mounts sandbox-specific credentials instead of host-global ones. This lets you scope sandbox access (e.g., read-only deploy keys) without affecting your main development environment.
+```text
+~/.am-state/
+├── mappings.json
+├── data/
+│   └── <mapping-name>
+└── meta.json
+```
+
+`mappings.json` drives entrypoint hydration. On container startup, each mapping becomes a symlink from its configured `target` path to `~/.am-state/data/<source>`.
+
+### Presets
+
+`am` ships with preset bundles in `config/presets.json` and merges optional user overrides from `~/.agent-manager/presets.json`.
+
+```bash
+am sb map --list-presets
+am sb map --preset ssh
+am sb map --preset claude
+am sb map --preset dotfiles
+```
+
+Missing host paths inside a preset are skipped with a note instead of aborting the whole preset.
+
+### One-off live bind mounts with `--share`
+
+Use `--share` when you want a temporary bind mount without copying it into the state volume:
+
+```bash
+am new --sandbox --share ~/.ssh:~/.ssh:ro ~/project
+am new --sandbox --share ~/.env:~/.env:rw ~/project
+```
+
+Share syntax is:
+
+```text
+<host-path>[:container-path][:ro|rw]
+```
+
+- Omitted container path defaults to the host path.
+- Omitted mode defaults to `ro`.
+- Multiple `--share` flags are allowed.
+- `--share` only applies when sandbox mode is active.
+
+You can also configure sticky shares:
+
+```bash
+am config set sandbox-shares "~/.zshrc:ro,~/.vimrc:ro"
+```
+
+Those shares are merged with any per-command `--share` flags.
+
+### Sandbox management commands
+
+```bash
+am sb maps
+am sb ps
+am sb prune
+am sb build --no-cache
+am sb reset --confirm
+am sb export ~/sandbox-state.tgz
+am sb import ~/sandbox-state.tgz --confirm
+am sb shell
+```
+
+`am sandbox` and `am sb` are equivalent prefixes.
 
 ### Resource limits
 
@@ -347,7 +374,6 @@ Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
 | `SB_UNSAFE_ROOT` | `0` | `1` = enable passwordless sudo (for `apt install`, etc.) |
 | `SB_READ_ONLY_ROOTFS` | `0` | `1` = mount root filesystem read-only (`/tmp`, `/run` remain writable) |
 | `SB_ENABLE_TAILSCALE` | `1` | `0` = disable Tailscale networking |
-| `SB_FORWARD_SSH_AGENT` | `0` | `1` = forward host SSH agent socket into the container |
 | `ENABLE_SSH` | `0` | `1` = start sshd inside the container |
 | `TS_AUTHKEY` | (unset) | Tailscale auth key for automatic VPN join |
 
@@ -356,7 +382,7 @@ Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
 When `SB_ENABLE_TAILSCALE=1` and `TS_AUTHKEY` is set, each container joins your Tailscale network with its session name as the hostname. With `TS_ENABLE_SSH=1` (default), you can SSH directly into any sandbox:
 
 ```bash
-ssh youruser@am-abc123              # From any device on your tailnet
+ssh youruser@am-abc123
 ```
 
 This is useful for accessing sandbox sessions from a phone, tablet, or another machine.
@@ -419,7 +445,7 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 | `am status --json` | | Machine-readable session data |
 | `am list --json` | | All sessions as JSON |
 | `am config` | | Show or change saved defaults |
-| `am sandbox <cmd>` | `sb` | Manage sandbox containers |
+| `am sandbox <cmd>` | `sb` | Manage sandbox state, mappings, and containers |
 | `am <path>` | | Shortcut for `am new <path>` |
 | `am help` | `-h` | Show help |
 | `am version` | `-v` | Show version |

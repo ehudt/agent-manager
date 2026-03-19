@@ -49,7 +49,7 @@ COMMANDS:
     wait                Block until a session reaches a target state
     events              Stream state-change events as JSONL
     interrupt           Send Ctrl-C to an agent pane
-    sandbox, sb         Manage sandbox containers and image
+    sandbox, sb         Manage sandbox state, mappings, and containers
     install             First-time setup (deps, config, skills, PATH)
     help                Show this help message
 
@@ -65,6 +65,7 @@ OPTIONS FOR 'new':
     --yolo          Enable yolo mode (agent permissive flags)
     --no-yolo       Disable yolo mode even if enabled by default
     --sandbox       Run session in Docker sandbox container
+    --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])
     --no-sandbox    Disable sandbox even if enabled by default
     --detach        Create the session without attaching
     --print-session Print the created session name to stdout
@@ -124,11 +125,11 @@ EXAMPLES:
     am peek --pane shell --follow am-abc123
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
-    am sandbox ls                   # List sandbox containers
-    am sandbox enter am-abc123      # Re-enter a running sandbox shell
-    am sandbox status am-abc123     # Show sandbox details for a session
-    am sandbox rebuild --restart    # Rebuild image and restart sandboxes
-    am sandbox identity init        # Initialize ~/.sb sandbox identity
+    am sb maps                     # List manifest-driven sandbox mappings
+    am sb map ~/.ssh --to ~/.ssh    # Copy host data into sandbox state volume
+    am sb ps                        # List sandbox containers
+    am sb build --no-cache          # Rebuild sandbox image
+    am sb enter am-abc123           # Re-enter a running sandbox shell
 
 DEPENDENCIES:
     tmux >= 3.0, fzf >= 0.40, jq, git
@@ -155,6 +156,7 @@ esac
 # Now source all library files (they check dependencies)
 source "$AM_LIB_DIR/utils.sh"
 source "$AM_LIB_DIR/config.sh"
+source "$AM_LIB_DIR/sb_volume.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
 source "$AM_LIB_DIR/agents.sh"
@@ -237,6 +239,7 @@ cmd_new() {
     local task=""
     local worktree_name=""
     local agent_args=()
+    local sandbox_share_specs=()
     local yolo_override=""
     local sandbox_override=""
     # shellcheck disable=SC2034
@@ -284,6 +287,10 @@ cmd_new() {
                 sandbox_override="true"
                 shift
                 ;;
+            --share)
+                sandbox_share_specs+=("$2")
+                shift 2
+                ;;
             --no-sandbox)
                 sandbox_override="false"
                 shift
@@ -320,6 +327,7 @@ cmd_new() {
                 echo "  --yolo        Enable yolo mode (implies sandbox + worktree)"
                 echo "  --no-yolo     Disable yolo mode even if enabled by default"
                 echo "  --sandbox     Run session in Docker sandbox container"
+                echo "  --share       Extra sandbox bind mount (<host>[:container][:ro|rw])"
                 echo "  --no-sandbox  Disable sandbox even if enabled by default"
                 echo "  --no-worktree Disable worktree even when implied by --yolo"
                 echo "  --detach      Create the session without attaching"
@@ -402,8 +410,10 @@ cmd_new() {
     # Launch agent (prompt passed via _AM_LAUNCH_PROMPT to avoid tty buffer overflow
     # when piping long prompts through tmux send-keys)
     _AM_LAUNCH_PROMPT="$initial_prompt"
+    AM_SANDBOX_SHARES=("${sandbox_share_specs[@]}")
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
+    AM_SANDBOX_SHARES=()
 
     if [[ -n "$session_name" ]]; then
         if $print_session || ! $attach_session; then
@@ -779,6 +789,9 @@ cmd_config() {
                 new_form)
                     am_new_form_enabled && echo true || echo false
                     ;;
+                sb_host_ssh|sb_network_restrict|sb_allowed_hosts|sandbox.shares)
+                    am_config_get "$key"
+                    ;;
             esac
             ;;
         set)
@@ -827,8 +840,9 @@ Keys:
   agent    Default agent type
   yolo     Default yolo mode (true/false)
   sandbox  Default sandbox mode (true/false)
-  logs     Default pane log streaming (true/false)
-  new-form Use new tput-based session form (true/false)
+  logs            Default pane log streaming (true/false)
+  new-form        Use new tput-based session form (true/false)
+  sandbox-shares  Sticky sandbox bind mounts (<host>[:container][:ro|rw], comma-separated)
 
 Precedence:
   CLI flag > environment variable > saved config > built-in default
@@ -1179,67 +1193,99 @@ cmd_interrupt() {
 # Command: sandbox
 cmd_sandbox() {
     local action="${1:-}"
-    shift 2>/dev/null || true
+    shift || true
 
     case "$action" in
-        ls|list|ps)
-            sandbox_list
+        map)
+            sb_map "$@"
+            ;;
+        unmap)
+            local keep_data=0
+            local name="${1:-}"
+            [[ -z "$name" ]] && { log_error "Usage: am sb unmap <name> [--keep-data]"; return 1; }
+            shift || true
+            [[ "${1:-}" == "--keep-data" ]] && keep_data=1
+            sb_unmap "$name" "$keep_data"
+            ;;
+        maps)
+            sb_maps
+            ;;
+        sync)
+            sb_sync "$@"
+            ;;
+        edit)
+            local name="${1:-}"
+            [[ -z "$name" ]] && { log_error "Usage: am sb edit <name>"; return 1; }
+            sb_edit "$name"
+            ;;
+        ps)
+            sb_ps
             ;;
         prune)
-            sandbox_prune
+            sb_prune
             ;;
-        rebuild)
+        build)
             local no_cache=0
-            local restart=0
-            while [[ $# -gt 0 ]]; do
-                case "$1" in
-                    --no-cache) no_cache=1 ;;
-                    --restart|--restart-running) restart=1 ;;
-                    *) log_error "Unknown option: $1"; return 1 ;;
-                esac
-                shift
-            done
-            if [[ "$restart" == "1" ]]; then
-                sandbox_rebuild_and_restart "$no_cache"
-            else
-                sandbox_build_image "$no_cache"
-            fi
+            [[ "${1:-}" == "--no-cache" ]] && no_cache=1
+            sb_build "$no_cache"
             ;;
-        identity)
-            local sub="${1:-}"
-            case "$sub" in
-                init|init-home) sandbox_identity_init ;;
-                *) log_error "Usage: am sandbox identity init"; return 1 ;;
-            esac
+        reset)
+            local confirm=0
+            [[ "${1:-}" == "--confirm" ]] && confirm=1
+            sb_reset "$confirm"
+            ;;
+        export)
+            local path="${1:-}"
+            [[ -z "$path" ]] && { log_error "Usage: am sb export <path>"; return 1; }
+            sb_export "$path"
+            ;;
+        import)
+            local path="${1:-}"
+            local confirm=0
+            shift || true
+            [[ "${1:-}" == "--confirm" ]] && confirm=1
+            [[ -z "$path" ]] && { log_error "Usage: am sb import <path> --confirm"; return 1; }
+            sb_import "$path" "$confirm"
+            ;;
+        shell)
+            sb_shell
             ;;
         status)
             local session="${1:-}"
-            if [[ -z "$session" ]]; then
-                log_error "Usage: am sandbox status <session>"
-                return 1
-            fi
+            [[ -z "$session" ]] && { log_error "Usage: am sb status <session>"; return 1; }
             sandbox_status "$session"
             ;;
         enter)
             local session="${1:-}"
-            if [[ -z "$session" ]]; then
-                log_error "Usage: am sandbox enter <session>"
-                return 1
-            fi
+            [[ -z "$session" ]] && { log_error "Usage: am sb enter <session>"; return 1; }
             sandbox_enter "$session"
             ;;
         ""|help|--help|-h)
             cat <<'EOF'
-Usage: am sandbox <subcommand>
+Usage: am sb <subcommand>
 
 Subcommands:
-  ls                              List all sandbox containers
-  prune                           Remove stopped sandbox containers
-  rebuild [--no-cache] [--restart] Rebuild sandbox Docker image
-  identity init                   Initialize ~/.sb/ sandbox identity
-  enter <session>                 Re-enter a running sandbox shell (exit 42 to stay on host)
-  status <session>                Show sandbox status for a session
+  map <host> --to <target> [--name <id>] [--mode 0700]
+  map --preset <name>
+  map --list-presets
+  unmap <name> [--keep-data]
+  maps
+  sync <name> | sync --all
+  edit <name>
+  ps
+  prune
+  build [--no-cache]
+  reset --confirm
+  export <path>
+  import <path> --confirm
+  shell
+  enter <session>
+  status <session>
 EOF
+            ;;
+        list|ls|rebuild|identity)
+            log_error "Legacy sandbox subcommand removed: $action"
+            return 1
             ;;
         *)
             log_error "Unknown sandbox subcommand: $action"

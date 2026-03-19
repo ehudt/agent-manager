@@ -120,10 +120,29 @@ if [ "$SB_READ_ONLY_ROOTFS" != "1" ] && [ -n "${TARGET_DIR:-}" ] && [ ! -e /work
     ln -s "$TARGET_DIR" /workspace
 fi
 
+# Phase 2: manifest-driven state hydration
+STATE_DIR="$USER_HOME/.am-state"
+MANIFEST="$STATE_DIR/mappings.json"
+if [ -f "$MANIFEST" ]; then
+    jq -r '.mappings[]? | [.source, .target, (.mode // "")] | @tsv' "$MANIFEST" |
+    while IFS=$'	' read -r source target mode; do
+        [ -n "$source" ] || continue
+        target="${target/#\~/$USER_HOME}"
+        full_source="$STATE_DIR/data/$source"
+        [ -e "$full_source" ] || continue
+
+        mkdir -p "$(dirname "$target")"
+        rm -rf "$target"
+        ln -sfn "$full_source" "$target"
+        [ -n "$mode" ] && chmod "$mode" "$full_source" 2>/dev/null || true
+        chown -h "${RUNTIME_USER}:${RUNTIME_GROUP}" "$target" 2>/dev/null || true
+    done
+fi
+
 # Restore config files if missing or empty
 for file in .zshrc .vimrc .tmux.conf; do
     target="$USER_HOME/$file"
-    if [ ! -s "$target" ]; then
+    if [ ! -e "$target" ]; then
         cp "$CONFIG_BACKUP/$file" "$target"
         chown "${RUNTIME_USER}:${RUNTIME_GROUP}" "$target"
     fi

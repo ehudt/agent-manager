@@ -328,7 +328,11 @@ agent_launch() {
             registry_remove "$session_name"
             return 1
         fi
-        sandbox_start "$session_name" "$sandbox_directory"
+        local sandbox_shares=()
+        if declare -p AM_SANDBOX_SHARES >/dev/null 2>&1; then
+            sandbox_shares=("${AM_SANDBOX_SHARES[@]}")
+        fi
+        sandbox_start "$session_name" "$sandbox_directory" "${sandbox_shares[@]}"
         registry_update "$session_name" "container_name" "$session_name"
         agent_refresh_tmux_status "$session_name"
         local attach_cmd

@@ -67,7 +67,7 @@ RUN npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium && \
     npx -y playwright@${PLAYWRIGHT_VERSION} install chromium && \
     chmod -R 755 /ms-playwright
 
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex @google/gemini-cli @anthropic-ai/claude-code
 
 # Config defaults restored by entrypoint on first boot
 RUN mkdir -p /opt/dev_config
@@ -96,7 +96,6 @@ RUN uv python install
 RUN uv tool install ipython && \
     uv tool install shell-gpt
 
-RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Re-lay config files after installers that may clobber .zshrc
 COPY --chown=dev:dev config_context/.zshrc /home/dev/.zshrc
