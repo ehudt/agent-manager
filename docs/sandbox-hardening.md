@@ -1,54 +1,94 @@
 # Sandbox Hardening
 
-Security audit and mitigations for the agent sandbox.
+Security notes and mitigations for the current sandbox design.
 
-## 1. SSH key isolation
+## 1. Default credential isolation
 
-**Problem:** `~/.ssh/` was mounted read-only, exposing all host private keys.
+**Problem:** older sandbox revisions bind-mounted host credentials directly into the container.
 
-**Solution:** `sandbox_identity_init` auto-runs on first sandbox launch if `~/.sb/ssh/` is missing. Generates a dedicated ed25519 keypair with `IdentitiesOnly yes`. Host `~/.ssh/` is never mounted.
+**Current design:** a sandbox starts with only two default mounts:
 
-- Config: `am config set sb_host_ssh true` to opt out (mounts host `~/.ssh/:ro` with a warning)
-- The public key is printed on init — add it as a deploy key to relevant repos
+- The project directory, bind-mounted at the same absolute path
+- The persistent `am-state` Docker volume, mounted at `~/.am-state`
 
-## 2. Claude credential isolation
+Host credentials are not mounted by default. If a sandbox needs access to secrets or dotfiles, they must be added explicitly with either:
 
-**Problem:** `~/.claude.json` and `~/.claude/` were mounted read-write, exposing auth tokens.
+- `am sb map ...` to copy data into the persistent sandbox-owned state volume
+- `am new --share ...` for a one-off live bind mount
 
-**Solution:** `sandbox_identity_init` copies these to `~/.sb/claude.json` and `~/.sb/claude/`. The sandbox mounts the `~/.sb/` copies (read-write for Claude to function). Host-global files are never exposed.
+That makes credential exposure opt-in instead of automatic.
 
-- Token refresh writes go to the sandbox copy. If the snapshot token expires, re-run `am sandbox init-identity` to re-copy from host.
-- Sensitive mount sources log a warning when falling back to host-global.
+## 2. Manifest-driven state hydration
 
-## 3. Codex credential isolation
+**Problem:** ad hoc bind mounts are brittle, hard to audit, and can overexpose the host.
 
-**Problem:** `~/.codex/config.toml` mounted read-write, `~/.codex/auth.json` readable.
+**Current design:** `am sb map` writes selected host files or directories into `~/.am-state/data/<mapping-name>` and records metadata in `~/.am-state/mappings.json`.
 
-**Solution:** Same `~/.sb/` pattern. Copies live at `~/.sb/codex/config.toml` and `~/.sb/codex/auth.json`.
+At container startup, the entrypoint:
+
+- reads `mappings.json`
+- expands `~` in each target path
+- replaces the target with a symlink to `~/.am-state/data/<source>`
+- applies an optional mode such as `0700`
+
+This keeps the mounted surface small while preserving stable in-container paths like `~/.ssh` or `~/.claude.json`.
+
+## 3. Explicit live sharing
+
+**Problem:** some workflows still need direct access to a host path.
+
+**Current design:** `--share` allows a narrow, session-scoped bind mount:
+
+```bash
+am new --sandbox --share ~/.ssh:~/.ssh:ro ~/project
+```
+
+Share syntax is `<host-path>[:container-path][:ro|rw]`. Omitted mode defaults to `ro`.
+
+For persistent-but-reviewed access, prefer `am sb map` over `--share`.
 
 ## 4. Network egress restriction
 
-**Problem:** Containers had full outbound internet access — any mounted credential could be exfiltrated.
+**Problem:** unrestricted outbound networking increases exfiltration risk if credentials are present.
 
-**Solution:** Per-session tinyproxy sidecar with domain allowlist.
+**Current design:** when `sb_network_restrict=true` (default), each sandbox gets:
 
-- A Docker network `<session>-net` isolates the sandbox container
-- A tinyproxy container (`<session>-proxy`) is the only outbound path, connected to both the session network and bridge
-- `HTTP_PROXY`/`HTTPS_PROXY` env vars route all traffic through the proxy
-- Proxy enforces `FilterDefaultDeny` with a regex allowlist (`sandbox/tinyproxy-filter.txt`)
-
-Default allowed domains: `api.anthropic.com`, `api.openai.com`, `github.com`, `*.githubusercontent.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `crates.io`, `static.crates.io`
+- a per-session Docker network
+- a tinyproxy sidecar as the only outbound path
+- `HTTP_PROXY` / `HTTPS_PROXY` environment variables pointing at that proxy
+- a default-deny allowlist from `sandbox/tinyproxy-filter.txt`, plus `sb_allowed_hosts`
 
 Config:
-- `am config set sb_network_restrict false` — disable (full internet access)
-- `am config set sb_allowed_hosts "extra.example.com,another.com"` — add domains to allowlist
 
-Note: network restriction disables Tailscale (logged as warning). Proxy + network are cleaned up on `sandbox_remove`.
+- `am config set sb-network-restrict false` to disable the proxy and allow direct internet access
+- `am config set sb-allowed-hosts "extra.example.com,another.com"` to extend the allowlist
 
-## Config summary
+Network restriction disables direct Tailscale networking for that container.
 
-| Key | Default | Purpose |
-|-----|---------|---------|
-| `sb_host_ssh` | `false` | Mount host `~/.ssh/` instead of sandbox keys |
-| `sb_network_restrict` | `true` | Restrict outbound via tinyproxy allowlist |
-| `sb_allowed_hosts` | `""` | Extra domains to allow (comma-separated) |
+## 5. Runtime hardening
+
+By default, sandbox containers run with:
+
+- `--cap-drop=ALL`, then only `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` added back
+- `--security-opt no-new-privileges:true` unless `SB_UNSAFE_ROOT=1`
+- resource limits from `SB_PIDS_LIMIT`, `SB_MEMORY_LIMIT`, and `SB_CPUS_LIMIT`
+
+Optional environment flags in `~/.agent-manager/sandbox.env`:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SB_UNSAFE_ROOT` | `0` | Allow passwordless sudo inside the container |
+| `SB_READ_ONLY_ROOTFS` | `0` | Mount the root filesystem read-only |
+| `SB_ENABLE_TAILSCALE` | `1` | Enable or disable Tailscale integration |
+| `ENABLE_SSH` | `0` | Start `sshd` inside the container |
+| `TS_AUTHKEY` | unset | Join the container to your tailnet automatically |
+
+## 6. Remaining limits
+
+This sandbox is still not a security boundary.
+
+- The project directory is bind-mounted read-write.
+- Docker access remains root-equivalent on the host.
+- A deliberate attacker inside the container should be treated as potentially able to escape.
+
+Use the sandbox to reduce accidental damage and narrow secret exposure, not to contain malicious code.

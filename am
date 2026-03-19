@@ -789,7 +789,7 @@ cmd_config() {
                 new_form)
                     am_new_form_enabled && echo true || echo false
                     ;;
-                sb_host_ssh|sb_network_restrict|sb_allowed_hosts|sandbox.shares)
+                sb_network_restrict|sb_allowed_hosts|sandbox.shares)
                     am_config_get "$key"
                     ;;
             esac

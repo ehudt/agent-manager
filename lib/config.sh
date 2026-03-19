@@ -14,7 +14,6 @@ am_config_init() {
   "default_yolo": false,
   "default_sandbox": false,
   "stream_logs": true,
-  "sb_host_ssh": false,
   "sb_network_restrict": true,
   "sb_allowed_hosts": "",
   "sandbox.shares": ""
@@ -184,7 +183,6 @@ am_config_key_alias() {
         sandbox|default-sandbox|default_sandbox) echo "default_sandbox" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         new-form|new_form) echo "new_form" ;;
-        sb-host-ssh|sb_host_ssh) echo "sb_host_ssh" ;;
         sb-network-restrict|sb_network_restrict) echo "sb_network_restrict" ;;
         sb-allowed-hosts|sb_allowed_hosts) echo "sb_allowed_hosts" ;;
         sandbox-shares|sandbox_shares|sandbox.shares) echo "sandbox.shares" ;;
@@ -195,7 +193,7 @@ am_config_key_alias() {
 am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
-        default_yolo|default_sandbox|stream_logs|new_form|sb_host_ssh|sb_network_restrict) echo "boolean" ;;
+        default_yolo|default_sandbox|stream_logs|new_form|sb_network_restrict) echo "boolean" ;;
         sb_allowed_hosts|sandbox.shares) echo "string" ;;
         *) return 1 ;;
     esac
@@ -208,7 +206,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        default_yolo|default_sandbox|stream_logs|new_form|sb_host_ssh|sb_network_restrict)
+        default_yolo|default_sandbox|stream_logs|new_form|sb_network_restrict)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         sb_allowed_hosts|sandbox.shares)
@@ -244,13 +242,6 @@ am_config_print() {
     else
         new_form_value=false
     fi
-    local sb_host_ssh_value
-    sb_host_ssh_value=$(am_config_get "sb_host_ssh")
-    if am_bool_is_true "${sb_host_ssh_value,,}"; then
-        sb_host_ssh_value=true
-    else
-        sb_host_ssh_value=false
-    fi
     local sb_network_restrict_value
     if am_sb_network_restrict_enabled; then
         sb_network_restrict_value=true
@@ -267,7 +258,6 @@ default_yolo=$default_yolo_value
 default_sandbox=$default_sandbox_value
 stream_logs=$stream_logs_value
 new_form=$new_form_value
-sb_host_ssh=$sb_host_ssh_value
 sb_network_restrict=$sb_network_restrict_value
 sb_allowed_hosts=$sb_allowed_hosts_value
 sandbox.shares=$sandbox_shares_value

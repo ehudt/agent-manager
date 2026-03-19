@@ -39,7 +39,8 @@ Architecture reference for AI agents working with this codebase.
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: JSONL parsing, pane pattern matching, wait/poll |
 | `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
-| `lib/sandbox.sh` | Docker sandbox lifecycle: start, attach, stop, remove, fleet ops |
+| `lib/sandbox.sh` | Docker sandbox lifecycle, state mappings, and fleet ops |
+| `lib/sb_volume.sh` | Docker-volume helpers for sandbox state persistence |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
 | `sandbox/entrypoint.sh` | Container init: user alignment, Tailscale, SSH |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
@@ -53,6 +54,7 @@ am new ~/project → agent_launch() → tmux_create_session() → registry_add()
 fzf_list_sessions() / fzf_list_json() → auto_title_scan() → _title_fallback() → registry_update() + history_append()
 Ctrl-N in fzf → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
 am new --yolo ~/project → agent_launch() → sandbox_start() → tmux panes attach → agent runs in container
+am sb map ~/.ssh --to ~/.ssh → sb_vol_copy_in() + manifest update → sandbox entrypoint hydrates ~/.am-state into target paths
 agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
 ```
 
@@ -169,6 +171,7 @@ For agent orchestration, prefer this sequence:
 **Sandbox:**
 - `sandbox_start(session_name, dir)` - Create and start per-session Docker container
 - `sandbox_attach_cmd(session_name, dir)` - Return docker exec command string for tmux
+- `sandbox_enter_cmd(session_name, dir)` - Build reconnecting shell-entry command for a running sandbox
 - `sandbox_stop(session_name)` - Stop container without removing
 - `sandbox_remove(session_name)` - Force-remove container
 - `sandbox_status(session_name)` - Show container state and event log
@@ -177,7 +180,13 @@ For agent orchestration, prefer this sequence:
 - `sandbox_gc_orphans()` - Remove containers whose tmux session no longer exists
 - `sandbox_build_image([no_cache])` - Build Docker image from sandbox directory
 - `sandbox_rebuild_and_restart([no_cache])` - Rebuild image, recreate running containers
-- `sandbox_identity_init()` - Initialize `~/.sb/` with dedicated sandbox credentials
+- `sb_map()` / `sb_unmap()` / `sb_maps()` / `sb_sync()` / `sb_edit()` - Manage manifest-driven state mappings in the sandbox volume
+- `sb_ps()` / `sb_prune()` / `sb_reset()` / `sb_export()` / `sb_import()` / `sb_shell()` - Manage sandbox containers and the shared state volume
+
+**Sandbox volume (`lib/sb_volume.sh`):**
+- `sb_vol_ensure()` - Create the state volume and seed `meta.json` / `mappings.json`
+- `sb_vol_read/write/rm/ls/mkdir()` - Low-level volume file operations
+- `sb_vol_copy_in()` / `sb_vol_copy_out()` - Copy files between host paths and the sandbox state volume
 
 **Form (lib/form.sh):**
 - `am_new_session_form(...)` - Dispatch: picks tput form or legacy fzf form based on the new_form config flag
@@ -200,6 +209,7 @@ For agent orchestration, prefer this sequence:
 - `am_config_get(key)` / `am_config_set(key, value)` - Read/write config
 - `am_default_agent()` - Get default agent type
 - `am_stream_logs_enabled()` - Check if log streaming is enabled
+- `am_config_key_alias()` / `am_config_key_type()` / `am_config_value_is_valid()` - Normalize and validate config keys and values, including `sandbox-shares`
 
 ## Session Naming
 
@@ -220,7 +230,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Change title upgrade | `lib/title-upgrade` (standalone script) |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Add history integration | `lib/registry.sh` → `history_append()` |
-| Change sandbox config | `lib/sandbox.sh` → globals, `sandbox/Dockerfile` |
+| Change sandbox config | `lib/sandbox.sh`, `lib/sb_volume.sh`, `sandbox/Dockerfile`, `config/presets.json` |
 | Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
