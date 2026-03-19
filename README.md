@@ -373,19 +373,7 @@ Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
 |----------|---------|--------|
 | `SB_UNSAFE_ROOT` | `0` | `1` = enable passwordless sudo (for `apt install`, etc.) |
 | `SB_READ_ONLY_ROOTFS` | `0` | `1` = mount root filesystem read-only (`/tmp`, `/run` remain writable) |
-| `SB_ENABLE_TAILSCALE` | `1` | `0` = disable Tailscale networking |
 | `ENABLE_SSH` | `0` | `1` = start sshd inside the container |
-| `TS_AUTHKEY` | (unset) | Tailscale auth key for automatic VPN join |
-
-### Remote access via Tailscale
-
-When `SB_ENABLE_TAILSCALE=1` and `TS_AUTHKEY` is set, each container joins your Tailscale network with its session name as the hostname. With `TS_ENABLE_SSH=1` (default), you can SSH directly into any sandbox:
-
-```bash
-ssh youruser@am-abc123
-```
-
-This is useful for accessing sandbox sessions from a phone, tablet, or another machine.
 
 ### Worktree isolation
 

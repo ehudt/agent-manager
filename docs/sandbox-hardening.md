@@ -79,9 +79,7 @@ Optional environment flags in `~/.agent-manager/sandbox.env`:
 |----------|---------|---------|
 | `SB_UNSAFE_ROOT` | `0` | Allow passwordless sudo inside the container |
 | `SB_READ_ONLY_ROOTFS` | `0` | Mount the root filesystem read-only |
-| `SB_ENABLE_TAILSCALE` | `1` | Enable or disable Tailscale integration |
 | `ENABLE_SSH` | `0` | Start `sshd` inside the container |
-| `TS_AUTHKEY` | unset | Join the container to your tailnet automatically |
 
 ## 6. Remaining limits
 

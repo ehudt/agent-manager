@@ -7,9 +7,7 @@ USER_HOME="${HOST_HOME:-/home/${RUNTIME_USER}}"
 CONFIG_BACKUP="/opt/dev_config"
 SUDOERS_UNSAFE_DROPIN="/etc/sudoers.d/90-sb-unsafe-root"
 SB_UNSAFE_ROOT="${SB_UNSAFE_ROOT:-0}"
-SB_ENABLE_TAILSCALE="${SB_ENABLE_TAILSCALE:-1}"
 ENABLE_SSH="${ENABLE_SSH:-0}"
-TS_ENABLE_SSH="${TS_ENABLE_SSH:-1}"
 SB_READ_ONLY_ROOTFS="${SB_READ_ONLY_ROOTFS:-0}"
 
 if [ "$SB_READ_ONLY_ROOTFS" = "1" ]; then
@@ -144,7 +142,7 @@ if [ -f "$MANIFEST" ]; then
 fi
 
 # Restore config files if missing or empty
-for file in .zshrc .vimrc .tmux.conf; do
+for file in .zshrc .vimrc; do
     target="$USER_HOME/$file"
     if [ ! -e "$target" ]; then
         cp "$CONFIG_BACKUP/$file" "$target"
@@ -183,22 +181,6 @@ if [ "$ENABLE_SSH" = "1" ]; then
         fi
     fi
     service ssh start
-fi
-
-if [ "$TS_ENABLE_SSH" = "1" ] && [ "$SB_ENABLE_TAILSCALE" != "1" ]; then
-    echo "Warning: TS_ENABLE_SSH=1 ignored because SB_ENABLE_TAILSCALE=0."
-fi
-
-if [ "$SB_ENABLE_TAILSCALE" = "1" ] && [ -n "$TS_AUTHKEY" ]; then
-    tailscaled --state=/var/lib/tailscale/tailscaled.state &
-    sleep 2
-    if [ "$TS_ENABLE_SSH" = "1" ]; then
-        tailscale up --authkey="$TS_AUTHKEY" --hostname="${HOSTNAME}" --ssh
-    else
-        tailscale up --authkey="$TS_AUTHKEY" --hostname="${HOSTNAME}"
-    fi
-elif [ "$SB_ENABLE_TAILSCALE" = "1" ] && [ -z "$TS_AUTHKEY" ]; then
-    echo "Warning: SB_ENABLE_TAILSCALE=1 but TS_AUTHKEY is unset; skipping tailscale startup."
 fi
 
 touch /tmp/am-entrypoint-ready

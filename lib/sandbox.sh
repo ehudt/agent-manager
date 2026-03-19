@@ -267,11 +267,9 @@ sandbox_start() {
         docker rm -f "$session_name" >/dev/null 2>&1 || true
     fi
 
-    local sb_enable_tailscale enable_ssh ts_enable_ssh sb_unsafe_root sb_read_only_rootfs
+    local enable_ssh sb_unsafe_root sb_read_only_rootfs
     local sb_pids_limit sb_memory_limit sb_cpus_limit sb_network_restrict
-    sb_enable_tailscale="${SB_ENABLE_TAILSCALE:-1}"
     enable_ssh="${ENABLE_SSH:-0}"
-    ts_enable_ssh="${TS_ENABLE_SSH:-1}"
     sb_unsafe_root="${SB_UNSAFE_ROOT:-0}"
     sb_read_only_rootfs="${SB_READ_ONLY_ROOTFS:-0}"
     sb_pids_limit="${SB_PIDS_LIMIT:-512}"
@@ -279,10 +277,6 @@ sandbox_start() {
     sb_cpus_limit="${SB_CPUS_LIMIT:-2.0}"
     if am_sb_network_restrict_enabled; then sb_network_restrict=1; else sb_network_restrict=0; fi
 
-    if [[ "$sb_network_restrict" == "1" && "$sb_enable_tailscale" == "1" ]]; then
-        log_warn "sb_network_restrict=true disables Tailscale (container has no direct network). Set 'am config set sb_network_restrict false' to use Tailscale."
-        sb_enable_tailscale=0
-    fi
     if [[ "$sb_network_restrict" == "1" ]]; then
         _sandbox_start_proxy "$session_name"
     fi
@@ -306,14 +300,11 @@ sandbox_start() {
         -e "HOST_GID=$_SB_HOST_GID"
         -e "HOST_HOME=$HOME"
         -e "TARGET_DIR=$directory"
-        -e "SB_ENABLE_TAILSCALE=$sb_enable_tailscale"
         -e "ENABLE_SSH=$enable_ssh"
-        -e "TS_ENABLE_SSH=$ts_enable_ssh"
         -e "SB_UNSAFE_ROOT=$sb_unsafe_root"
         -e "SB_READ_ONLY_ROOTFS=$sb_read_only_rootfs"
     )
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_vars+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
-    [[ -n "${TS_AUTHKEY:-}" ]] && env_vars+=(-e "TS_AUTHKEY=$TS_AUTHKEY")
 
     local -a run_opts=(
         --init
@@ -328,9 +319,6 @@ sandbox_start() {
     if [[ "$sb_unsafe_root" != "1" ]]; then
         run_opts+=(--security-opt no-new-privileges:true)
     fi
-    if [[ "$sb_enable_tailscale" == "1" ]]; then
-        run_opts+=(--cap-add=NET_ADMIN --device /dev/net/tun)
-    fi
     if [[ "$sb_read_only_rootfs" == "1" ]]; then
         run_opts+=(
             --read-only
@@ -339,7 +327,6 @@ sandbox_start() {
             --tmpfs /var/run:rw,nosuid,nodev
             -v "${session_name}-codex-home:/home/dev/.codex"
         )
-        [[ "$sb_enable_tailscale" == "1" ]] && run_opts+=(-v "${session_name}-tailscale-state:/var/lib/tailscale")
     fi
     if [[ "$sb_network_restrict" == "1" ]]; then
         local proxy_name
@@ -422,23 +409,18 @@ sandbox_stop() {
 
 sandbox_status() {
     local session_name="$1"
-    local state dir event_log ts_ip
+    local state dir event_log
     event_log="$(_sandbox_event_log_path "$session_name")"
     if ! state=$(docker inspect -f '{{.State.Status}}' "$session_name" 2>/dev/null); then
         log_error "Sandbox not found: $session_name"
         return 1
     fi
     dir=$(docker inspect -f '{{index .Config.Labels "agent-sandbox.dir"}}' "$session_name" 2>/dev/null || echo "n/a")
-    ts_ip="n/a"
-    if [[ "${SB_ENABLE_TAILSCALE:-0}" == "1" ]]; then
-        ts_ip=$(docker exec "$session_name" tailscale ip -4 2>/dev/null || echo "n/a")
-    fi
     cat <<EOF2
 Sandbox: $session_name
 State: $state
 Directory: $dir
 State volume: $SB_STATE_VOLUME
-Tailscale IP: $ts_ip
 Event log: $event_log
 EOF2
 }
