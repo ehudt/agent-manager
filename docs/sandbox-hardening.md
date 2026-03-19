@@ -80,9 +80,9 @@ Optional environment flags in `~/.agent-manager/sandbox.env`:
 
 Other runtime behavior that is part of the current design:
 
-- The image has a single built-in user, `dev`.
+- The image has a single built-in user, `dev`, which is not in the `sudo` group by default.
 - The entrypoint restores default `.zshrc` and `.vimrc` only if they do not already exist.
-- Rust is installed under `/home/dev/.cargo`, and the Dockerfile adds that path to `PATH`.
+- User-space tools (Claude Code, Rust/cargo, `uv`, `ipython`) are installed as `dev`, not root.
 - The image includes Node.js, Codex CLI, Claude Code, `uv`, one managed Python, `ipython`, and Playwright Chromium.
 
 ## 6. Remaining limits
