@@ -46,7 +46,7 @@ RUN npx -y playwright install-deps chromium && \
 
 RUN npm install -g @openai/codex
 
-COPY --chown=ubuntu:ubuntu config_context/.zshrc /home/ubuntu/.zshrc
+COPY config_context/.zshrc /etc/zsh/zshrc
 COPY --chown=ubuntu:ubuntu config_context/.vimrc /home/ubuntu/.vimrc
 
 USER ubuntu
