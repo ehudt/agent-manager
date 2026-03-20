@@ -265,35 +265,27 @@ Each sandbox now gets only two default mounts:
 
 | Mount | Mode | Purpose |
 |------|------|---------|
-| `am-state` Docker volume → `~/.am-state` | rw | Persistent sandbox-owned state and mapping manifest |
+| `~/.agent-manager/sandbox-home/` → `/home/ubuntu` | rw | Persistent sandbox home directory |
 | Project directory → same absolute path | rw | Working tree for the session |
 
 Everything else is opt-in.
 
-### Mapping host data into the state volume
+### Persistent home directory
 
-Use `am sb map` to copy files or directories into the persistent `am-state` volume and expose them inside future containers via `mappings.json`:
+All sandbox containers share a single host directory bind-mounted as `/home/ubuntu`:
+
+```
+~/.agent-manager/sandbox-home/
+```
+
+Every file written to `$HOME` inside a container persists automatically on the host -- no mapping or syncing required. Claude credentials, SSH keys, git config, and any other home-dir state survive container restarts.
+
+To pre-populate the sandbox home, simply copy files into `~/.agent-manager/sandbox-home/` on the host:
 
 ```bash
-am sb map ~/.ssh --to ~/.ssh --mode 0700
-am sb map ~/.claude.json --to ~/.claude.json --name claude-auth
-am sb maps
-am sb sync ssh
-am sb edit claude-auth
-am sb unmap claude-auth
+cp -r ~/.ssh ~/.agent-manager/sandbox-home/.ssh
+cp ~/.gitconfig ~/.agent-manager/sandbox-home/.gitconfig
 ```
-
-The volume layout is:
-
-```text
-~/.am-state/
-├── mappings.json
-├── data/
-│   └── <mapping-name>
-└── meta.json
-```
-
-`mappings.json` drives entrypoint hydration. On container startup, each mapping becomes a symlink from its configured `target` path to `~/.am-state/data/<source>`.
 
 ### Sandbox image contents
 
@@ -307,22 +299,9 @@ The sandbox image is intentionally simple and currently includes:
 
 The image does not include SSH or Tailscale support.
 
-### Presets
-
-`am` ships with preset bundles in `config/presets.json` and merges optional user overrides from `~/.agent-manager/presets.json`.
-
-```bash
-am sb map --list-presets
-am sb map --preset ssh
-am sb map --preset claude
-am sb map --preset dotfiles
-```
-
-Missing host paths inside a preset are skipped with a note instead of aborting the whole preset.
-
 ### One-off live bind mounts with `--share`
 
-Use `--share` when you want a temporary bind mount without copying it into the state volume:
+Use `--share` for extra bind mounts alongside the persistent home directory:
 
 ```bash
 am new --sandbox --share ~/.ssh:~/.ssh:ro ~/project
@@ -351,14 +330,12 @@ Those shares are merged with any per-command `--share` flags.
 ### Sandbox management commands
 
 ```bash
-am sb maps
 am sb ps
 am sb prune
 am sb build --no-cache
 am sb reset --confirm
 am sb export ~/sandbox-state.tgz
 am sb import ~/sandbox-state.tgz --confirm
-am sb shell
 ```
 
 `am sandbox` and `am sb` are equivalent prefixes.
@@ -382,7 +359,7 @@ By default, the container runs with:
 At runtime, the entrypoint still:
 
 - restores default `.zshrc` and `.vimrc` only when they are missing
-- hydrates `am sb map` targets from `~/.am-state`
+- seeds skeleton files into `/home/ubuntu` from `/etc/skel`
 
 Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
 
@@ -448,7 +425,7 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 | `am status --json` | | Machine-readable session data |
 | `am list --json` | | All sessions as JSON |
 | `am config` | | Show or change saved defaults |
-| `am sandbox <cmd>` | `sb` | Manage sandbox state, mappings, and containers |
+| `am sandbox <cmd>` | `sb` | Manage sandbox containers and home directory |
 | `am <path>` | | Shortcut for `am new <path>` |
 | `am help` | `-h` | Show help |
 | `am version` | `-v` | Show version |

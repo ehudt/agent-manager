@@ -49,7 +49,7 @@ COMMANDS:
     wait                Block until a session reaches a target state
     events              Stream state-change events as JSONL
     interrupt           Send Ctrl-C to an agent pane
-    sandbox, sb         Manage sandbox state, mappings, and containers
+    sandbox, sb         Manage sandbox containers and home directory
     install             First-time setup (deps, config, skills, PATH)
     help                Show this help message
 
@@ -125,8 +125,6 @@ EXAMPLES:
     am peek --pane shell --follow am-abc123
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
-    am sb maps                     # List manifest-driven sandbox mappings
-    am sb map ~/.ssh --to ~/.ssh    # Copy host data into sandbox state volume
     am sb ps                        # List sandbox containers
     am sb build --no-cache          # Rebuild sandbox image
     am sb enter am-abc123           # Re-enter a running sandbox shell
@@ -156,7 +154,6 @@ esac
 # Now source all library files (they check dependencies)
 source "$AM_LIB_DIR/utils.sh"
 source "$AM_LIB_DIR/config.sh"
-source "$AM_LIB_DIR/sb_volume.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
 source "$AM_LIB_DIR/agents.sh"
@@ -1198,28 +1195,6 @@ cmd_sandbox() {
     shift || true
 
     case "$action" in
-        map)
-            sb_map "$@"
-            ;;
-        unmap)
-            local keep_data=0
-            local name="${1:-}"
-            [[ -z "$name" ]] && { log_error "Usage: am sb unmap <name> [--keep-data]"; return 1; }
-            shift || true
-            [[ "${1:-}" == "--keep-data" ]] && keep_data=1
-            sb_unmap "$name" "$keep_data"
-            ;;
-        maps)
-            sb_maps
-            ;;
-        sync)
-            sb_sync "$@"
-            ;;
-        edit)
-            local name="${1:-}"
-            [[ -z "$name" ]] && { log_error "Usage: am sb edit <name>"; return 1; }
-            sb_edit "$name"
-            ;;
         ps)
             sb_ps
             ;;
@@ -1249,9 +1224,6 @@ cmd_sandbox() {
             [[ -z "$path" ]] && { log_error "Usage: am sb import <path> --confirm"; return 1; }
             sb_import "$path" "$confirm"
             ;;
-        shell)
-            sb_shell
-            ;;
         status)
             local session="${1:-}"
             [[ -z "$session" ]] && { log_error "Usage: am sb status <session>"; return 1; }
@@ -1267,23 +1239,19 @@ cmd_sandbox() {
 Usage: am sb <subcommand>
 
 Subcommands:
-  map <host> --to <target> [--name <id>] [--mode 0700]
-  map --preset <name>
-  map --list-presets
-  unmap <name> [--keep-data]
-  maps
-  sync <name> | sync --all
-  edit <name>
   ps
   prune
   build [--no-cache]
   reset --confirm
   export <path>
   import <path> --confirm
-  shell
   enter <session>
   status <session>
 EOF
+            ;;
+        map|unmap|maps|sync|edit|shell)
+            log_error "Removed subcommand: $action (sandbox now uses a bind-mounted home directory)"
+            return 1
             ;;
         list|ls|rebuild|identity)
             log_error "Legacy sandbox subcommand removed: $action"

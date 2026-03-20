@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test_sandbox.sh - Tests for lib/sandbox.sh and lib/sb_volume.sh
+# tests/test_sandbox.sh - Tests for lib/sandbox.sh
 
 test_sandbox() {
     $SUMMARY_MODE || echo "=== Testing sandbox helpers ==="
@@ -8,8 +8,7 @@ test_sandbox() {
     source "$LIB_DIR/config.sh"
 
     export AM_SCRIPT_DIR="$PROJECT_DIR"
-    export SB_STATE_VOLUME="am-test-state-$$"
-    source "$LIB_DIR/sb_volume.sh"
+    export SB_HOME_DIR="$TMPDIR/sb-home-$$"
     source "$LIB_DIR/sandbox.sh"
 
     local cmd
@@ -20,19 +19,14 @@ test_sandbox() {
     # shellcheck disable=SC2088 # Tildes in quotes are intentional — testing tilde expansion
     assert_eq "$HOME/demo" "$(sb_expand_path "~/demo")" "sb_expand_path: expands tilde"
     # shellcheck disable=SC2088
-    assert_eq "ssh" "$(_sb_name_from_target "~/.ssh")" "_sb_name_from_target: strips leading dot"
-    # shellcheck disable=SC2088
-    assert_eq "claude.json" "$(_sb_name_from_target "~/.claude.json")" "_sb_name_from_target: preserves basename"
-    # shellcheck disable=SC2088
     assert_eq "$HOME/.vimrc|$HOME/.vimrc|ro" "$(_sb_share_spec_parse "~/.vimrc:ro")" "share parse: host+mode"
     # shellcheck disable=SC2088
     assert_eq "$HOME/.ssh|$SB_CONTAINER_HOME/.ssh|rw" "$(_sb_share_spec_parse "~/.ssh:~/.ssh:rw")" "share parse: explicit target+mode"
 
-    sb_vol_ensure
-    assert_cmd_succeeds "sb_vol_ensure: creates mappings.json" sb_vol_exists mappings.json
-    assert_cmd_succeeds "sb_vol_ensure: creates data dir" sb_vol_exists data
+    _sb_home_ensure
+    assert_cmd_succeeds "_sb_home_ensure: creates home dir" test -d "$SB_HOME_DIR"
 
-    docker volume rm -f "$SB_STATE_VOLUME" >/dev/null 2>&1 || true
+    rm -rf "$SB_HOME_DIR"
 
     $SUMMARY_MODE || echo ""
 }

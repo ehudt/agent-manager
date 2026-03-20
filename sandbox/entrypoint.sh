@@ -8,7 +8,6 @@ SUDOERS_UNSAFE_DROPIN="/etc/sudoers.d/90-sb-unsafe-root"
 SB_UNSAFE_ROOT="${SB_UNSAFE_ROOT:-0}"
 
 # Align UID/GID with the host so bind-mounted files have correct ownership.
-uid_changed=0
 if [ -n "${HOST_GID:-}" ]; then
     current_gid=$(id -g "$USER")
     if [ "$current_gid" != "$HOST_GID" ]; then
@@ -18,40 +17,26 @@ if [ -n "${HOST_GID:-}" ]; then
             groupmod -g "$HOST_GID" "$USER"
             usermod -g "$HOST_GID" "$USER"
         fi
-        uid_changed=1
     fi
 fi
 if [ -n "${HOST_UID:-}" ]; then
     current_uid=$(id -u "$USER")
     if [ "$current_uid" != "$HOST_UID" ]; then
         usermod -u "$HOST_UID" "$USER"
-        uid_changed=1
     fi
 fi
 
 GROUP=$(id -gn "$USER")
 
-# Only chown home if UID/GID actually changed.
-if [ "$uid_changed" = "1" ]; then
-    chown -R "${USER}:${GROUP}" "$USER_HOME" 2>/dev/null || true
-fi
+# Always chown home — it's a bind mount so ownership may differ.
+chown -R "${USER}:${GROUP}" "$USER_HOME" 2>/dev/null || true
 
-# Manifest-driven state hydration.
-STATE_DIR="$USER_HOME/.am-state"
-MANIFEST="$STATE_DIR/mappings.json"
-if [ -f "$MANIFEST" ]; then
-    jq -r '.mappings[]? | [.source, .target, (.mode // "")] | @tsv' "$MANIFEST" |
-    while IFS=$'\t' read -r source target mode; do
-        [ -n "$source" ] || continue
-        target="${target/#\~/$USER_HOME}"
-        full_source="$STATE_DIR/data/$source"
-        [ -e "$full_source" ] || continue
-
-        mkdir -p "$(dirname "$target")"
-        rm -rf "$target"
-        ln -sfn "$full_source" "$target"
-        [ -n "$mode" ] && chmod "$mode" "$full_source" 2>/dev/null || true
-        chown -h "${USER}:${GROUP}" "$target" 2>/dev/null || true
+# Seed skeleton files into home if missing (first run with empty bind mount).
+if [ -d /etc/skel ]; then
+    for f in /etc/skel/.*; do
+        base="$(basename "$f")"
+        [ "$base" = "." ] || [ "$base" = ".." ] && continue
+        [ -e "$USER_HOME/$base" ] || cp -a "$f" "$USER_HOME/$base"
     done
 fi
 

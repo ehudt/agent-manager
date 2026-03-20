@@ -14,7 +14,7 @@ test_cli() {
     assert_contains "$help_output" "peek" "am help: mentions peek command"
     assert_contains "$help_output" "--detach" "am help: mentions detach flag"
     assert_contains "$help_output" "--sandbox" "am help: mentions sandbox flag"
-    assert_contains "$help_output" "am sb maps" "am help: mentions new sandbox mappings command"
+    assert_contains "$help_output" "am sb ps" "am help: mentions sandbox ps command"
 
     # Test version
     local version_output

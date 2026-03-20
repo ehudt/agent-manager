@@ -38,22 +38,33 @@ RUN npx -y playwright install-deps chromium && \
 RUN npm install -g @openai/codex
 
 COPY config_context/.zshrc /etc/zsh/zshrc
-COPY --chown=ubuntu:ubuntu config_context/.vimrc /home/ubuntu/.vimrc
+COPY config_context/.vimrc /etc/skel/.vimrc
 
-USER ubuntu
-ENV PATH="/home/ubuntu/.cargo/bin:/home/ubuntu/.local/bin:${PATH}"
-
+# Install uv to /usr/local/bin so it survives a bind-mount over /home/ubuntu
+ENV UV_INSTALL_DIR=/usr/local/bin
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
+# Install uv-managed Python and tools to system paths
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+ENV UV_TOOL_DIR=/opt/uv-tools
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
 RUN uv python install
-
 RUN uv tool install ipython
 
+# Install Rust toolchain to system paths
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y && \
+    /opt/cargo/bin/rustup component add rustfmt
+
+# Install Claude CLI: install as ubuntu, then copy binary to system path
+USER ubuntu
 RUN curl -fsSL https://claude.ai/install.sh | bash
-
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y && rustup component add rustfmt
-
 USER root
+RUN cp "$(readlink -f /home/ubuntu/.local/bin/claude)" /usr/local/bin/claude && \
+    rm -rf /home/ubuntu/.local/share/claude /home/ubuntu/.local/bin/claude /home/ubuntu/.claude
+
+ENV PATH="/opt/cargo/bin:${PATH}"
 
 RUN ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts 2>/dev/null; \
     chmod 644 /etc/ssh/ssh_known_hosts

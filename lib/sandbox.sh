@@ -5,14 +5,14 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 [[ -z "$AM_DIR" ]] && source "$SCRIPT_DIR/utils.sh"
 [[ "$(type -t am_config_get)" != "function" ]] && source "$SCRIPT_DIR/config.sh"
 [[ "$(type -t tmux_session_exists)" != "function" ]] && source "$SCRIPT_DIR/tmux.sh"
-[[ "$(type -t sb_vol_ensure)" != "function" ]] && source "$SCRIPT_DIR/sb_volume.sh"
 
 SANDBOX_DIR="${AM_SCRIPT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}/sandbox"
 SANDBOX_IMAGE="agent-sandbox:persistent"
 SANDBOX_ENV_FILE="$AM_DIR/sandbox.env"
 SANDBOX_HOST_EXIT_CODE="${SANDBOX_HOST_EXIT_CODE:-42}"
-SB_PRESETS_DEFAULT="${AM_SCRIPT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}/config/presets.json"
-SB_PRESETS_USER="$AM_DIR/presets.json"
+
+SB_HOME_DIR="${SB_HOME_DIR:-$HOME/.agent-manager/sandbox-home}"
+SB_CONTAINER_HOME="/home/ubuntu"
 
 _SB_HOST_UID=""
 _SB_HOST_GID=""
@@ -24,6 +24,10 @@ _sandbox_ensure_host_identity() {
     [[ -n "$_SB_HOST_UID" ]] && return
     _SB_HOST_UID=$(id -u)
     _SB_HOST_GID=$(id -g)
+}
+
+_sb_home_ensure() {
+    mkdir -p "$SB_HOME_DIR"
 }
 
 _sandbox_log_dir() {
@@ -138,8 +142,6 @@ _sandbox_stop_proxy() {
     _sandbox_log_event "$session_name" "proxy_stopped"
 }
 
-SB_CONTAINER_HOME="/home/ubuntu"
-
 _sb_expand_container_path() {
     local path="$1"
     # shellcheck disable=SC2088
@@ -158,52 +160,6 @@ sb_expand_path() {
         "~/"*) printf '%s/%s\n' "$HOME" "${path#"~/"}" ;;
         *) printf '%s\n' "$path" ;;
     esac
-}
-
-_sb_name_from_target() {
-    local target="$1"
-    target="${target##*/}"
-    target="${target##.}"
-    target=$(printf '%s' "$target" | tr '[:upper:]' '[:lower:]')
-    target=$(printf '%s' "$target" | sed -E 's#[/[:space:]]+#-#g; s/^-+//; s/-+$//')
-    printf '%s\n' "$target"
-}
-
-_sb_manifest_json() {
-    sb_vol_read mappings.json
-}
-
-_sb_manifest_write() {
-    local json="$1"
-    printf '%s\n' "$json" | sb_vol_write mappings.json
-}
-
-_sb_mapping_get() {
-    local name="$1"
-    _sb_manifest_json | jq -c --arg name "$name" '.mappings[] | select(.name == $name)'
-}
-
-_sb_mapping_exists() {
-    local name="$1"
-    _sb_manifest_json | jq -e --arg name "$name" '.mappings[] | select(.name == $name)' >/dev/null
-}
-
-_sb_mapping_remove_data() {
-    local mapping_json="$1"
-    local source
-    source=$(jq -r '.source' <<< "$mapping_json")
-    [[ -n "$source" && "$source" != "null" ]] && sb_vol_rm "data/$source"
-}
-
-_sb_presets_json() {
-    local sources=()
-    [[ -f "$SB_PRESETS_DEFAULT" ]] && sources+=("$SB_PRESETS_DEFAULT")
-    [[ -f "$SB_PRESETS_USER" ]] && sources+=("$SB_PRESETS_USER")
-    if [[ ${#sources[@]} -eq 0 ]]; then
-        echo '{}'
-        return 0
-    fi
-    jq -s 'reduce .[] as $item ({}; . * $item)' "${sources[@]}"
 }
 
 _sb_share_spec_parse() {
@@ -283,7 +239,7 @@ sandbox_start() {
         sb_build 0 || return 1
     fi
 
-    sb_vol_ensure
+    _sb_home_ensure
 
     local state
     state=$(docker inspect -f '{{.State.Running}}' "$session_name" 2>/dev/null) || state=""
@@ -307,7 +263,7 @@ sandbox_start() {
     fi
 
     local -a mounts
-    mounts=(-v "$SB_STATE_VOLUME:/home/ubuntu/.am-state" -v "$directory:$directory")
+    mounts=(-v "$SB_HOME_DIR:/home/ubuntu" -v "$directory:$directory")
 
     local parsed share_host share_target share_mode
     while IFS= read -r parsed; do
@@ -417,7 +373,7 @@ sandbox_status() {
 Sandbox: $session_name
 State: $state
 Directory: $dir
-State volume: $SB_STATE_VOLUME
+Home dir: $SB_HOME_DIR
 Event log: $event_log
 EOF2
 }
@@ -457,329 +413,30 @@ sb_prune() {
 sb_reset() {
     local confirm="${1:-0}"
     if [[ "$confirm" != "1" ]]; then
-        log_error "Refusing to reset state volume without confirmation. Use: am sb reset --confirm"
+        log_error "Refusing to reset sandbox home without confirmation. Use: am sb reset --confirm"
         return 1
     fi
-    docker volume rm -f "$SB_STATE_VOLUME" >/dev/null 2>&1 || true
-    sb_vol_ensure
-    log_success "Reset sandbox state volume '$SB_STATE_VOLUME'."
+    rm -rf "${SB_HOME_DIR:?}"/*  "${SB_HOME_DIR}"/.[!.]* "${SB_HOME_DIR}"/..?* 2>/dev/null || true
+    _sb_home_ensure
+    log_success "Reset sandbox home directory '$SB_HOME_DIR'."
 }
 
 sb_export() {
     local output_path="$1"
-    local out_dir out_name
-    out_dir=$(dirname "$output_path")
-    out_name=$(basename "$output_path")
-    mkdir -p "$out_dir"
-    sb_vol_ensure
-    docker run --rm -v "${SB_STATE_VOLUME}:/state" -v "$out_dir:/out" alpine sh -lc "tar czf /out/$out_name -C /state ."
+    mkdir -p "$(dirname "$output_path")"
+    _sb_home_ensure
+    tar czf "$output_path" -C "$SB_HOME_DIR" .
 }
 
 sb_import() {
     local input_path="$1"
     local confirm="${2:-0}"
-    local in_dir in_name
     [[ -f "$input_path" ]] || { log_error "Import archive not found: $input_path"; return 1; }
     if [[ "$confirm" != "1" ]]; then
         log_error "Refusing to import without confirmation. Use: am sb import <path> --confirm"
         return 1
     fi
-    in_dir=$(dirname "$input_path")
-    in_name=$(basename "$input_path")
-    docker volume rm -f "$SB_STATE_VOLUME" >/dev/null 2>&1 || true
-    sb_vol_ensure
-    docker run --rm -v "${SB_STATE_VOLUME}:/state" -v "$in_dir:/in" alpine sh -lc "rm -rf /state/* /state/.[!.]* /state/..?* 2>/dev/null || true; tar xzf /in/$in_name -C /state"
-}
-
-sb_shell() {
-    local mount_args=(-v "${SB_STATE_VOLUME}:/state")
-    local repo_root
-    if repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
-        mount_args+=(-v "$repo_root:$repo_root" -w "$repo_root")
-    fi
-    exec docker run --rm -it "${mount_args[@]}" alpine sh
-}
-
-sb_unmap() {
-    local name="$1"
-    local keep_data="${2:-0}"
-    sb_vol_ensure
-    local mapping_json
-    mapping_json=$(_sb_mapping_get "$name")
-    if [[ -z "$mapping_json" ]]; then
-        log_error "Mapping not found: $name"
-        return 1
-    fi
-
-    local manifest
-    manifest=$(_sb_manifest_json | jq --arg name "$name" 'del(.mappings[] | select(.name == $name))')
-    _sb_manifest_write "$manifest"
-    if [[ "$keep_data" != "1" ]]; then
-        _sb_mapping_remove_data "$mapping_json"
-    fi
-    log_success "Unmapped '$name'."
-}
-
-_sb_map_empty() {
-    local target_path="$1"
-    local name="$2"
-    local mode="$3"
-    local description="$4"
-    local manifest entry src_path
-
-    # Normalize target to ~/... so the entrypoint resolves it to the container home.
-    # shellcheck disable=SC2088
-    if [[ "$target_path" == "$HOME/"* ]]; then
-        target_path="~/${target_path#"$HOME/"}"
-    elif [[ "$target_path" == "$HOME" ]]; then
-        target_path="~"
-    fi
-
-    sb_vol_ensure
-    if _sb_mapping_exists "$name"; then
-        log_error "Mapping '$name' already exists. Use 'am sb unmap $name' first."
-        return 1
-    fi
-
-    src_path="$name"
-    sb_vol_mkdir "data/$src_path"
-
-    entry=$(jq -n \
-        --arg name "$name" \
-        --arg source "$src_path" \
-        --arg target "$target_path" \
-        --arg mode "$mode" \
-        --arg description "$description" \
-        '{name: $name, source: $source, target: $target}
-         + (if $mode != "" then {mode: $mode} else {} end)
-         + (if $description != "" then {description: $description} else {} end)')
-    manifest=$(_sb_manifest_json | jq --argjson entry "$entry" '.mappings += [$entry]')
-    _sb_manifest_write "$manifest"
-    printf 'Mapped (empty) → %s (as '\''%s'\'')\n' "$target_path" "$name"
-}
-
-_sb_map_single() {
-    local host_path="$1"
-    local target_path="$2"
-    local name="$3"
-    local mode="$4"
-    local description="$5"
-    local expanded_host manifest entry src_path
-
-    # Normalize target to ~/... so the entrypoint resolves it to the container home.
-    # shellcheck disable=SC2088
-    if [[ "$target_path" == "$HOME/"* ]]; then
-        target_path="~/${target_path#"$HOME/"}"
-    elif [[ "$target_path" == "$HOME" ]]; then
-        target_path="~"
-    fi
-
-    expanded_host=$(sb_expand_path "$host_path")
-    [[ -e "$expanded_host" ]] || { log_error "Host path not found: $expanded_host"; return 1; }
-
-    sb_vol_ensure
-    if _sb_mapping_exists "$name"; then
-        log_error "Mapping '$name' already exists. Use 'am sb sync $name' or 'am sb unmap $name' first."
-        return 1
-    fi
-
-    src_path="$name"
-    sb_vol_copy_in "$expanded_host" "data/$src_path"
-
-    entry=$(jq -n \
-        --arg name "$name" \
-        --arg source "$src_path" \
-        --arg target "$target_path" \
-        --arg host_source "$host_path" \
-        --arg mode "$mode" \
-        --arg description "$description" \
-        '{name: $name, source: $source, target: $target, host_source: $host_source}
-         + (if $mode != "" then {mode: $mode} else {} end)
-         + (if $description != "" then {description: $description} else {} end)')
-    manifest=$(_sb_manifest_json | jq --argjson entry "$entry" '.mappings += [$entry]')
-    _sb_manifest_write "$manifest"
-    printf 'Mapped %s → %s (as '\''%s'\'')\n' "$host_path" "$target_path" "$name"
-}
-
-sb_map() {
-    local host_path=""
-    local target_path=""
-    local name=""
-    local mode=""
-    local preset=""
-    local list_presets=0
-    local description=""
-    local empty=0
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --to)
-                target_path="$2"
-                shift 2
-                ;;
-            --name)
-                name="$2"
-                shift 2
-                ;;
-            --mode)
-                mode="$2"
-                shift 2
-                ;;
-            --description)
-                description="$2"
-                shift 2
-                ;;
-            --preset)
-                preset="$2"
-                shift 2
-                ;;
-            --empty)
-                empty=1
-                shift
-                ;;
-            --list-presets)
-                list_presets=1
-                shift
-                ;;
-            -h|--help)
-                echo "Usage: am sb map <host-path> --to <container-path> [--name <id>] [--mode 0700]"
-                echo "       am sb map --empty --to <container-path> [--name <id>]"
-                echo "       am sb map --preset <preset-name>"
-                echo "       am sb map --list-presets"
-                return 0
-                ;;
-            -*)
-                log_error "Unknown option: $1"
-                return 1
-                ;;
-            *)
-                if [[ -z "$host_path" ]]; then
-                    host_path="$1"
-                    shift
-                else
-                    log_error "Unexpected argument: $1"
-                    return 1
-                fi
-                ;;
-        esac
-    done
-
-    if [[ "$list_presets" == "1" ]]; then
-        _sb_presets_json | jq -r 'to_entries[] | .key as $name | "PRESET\t\($name)", (.value[] | "  - \(.host) -> \(.target) [\(.name)]")'
-        return 0
-    fi
-
-    if [[ -n "$preset" ]]; then
-        local preset_json
-        preset_json=$(_sb_presets_json | jq -c --arg preset "$preset" '.[$preset] // empty')
-        if [[ -z "$preset_json" ]]; then
-            log_error "Unknown preset: $preset"
-            return 1
-        fi
-        local item item_host item_target item_name item_mode item_description
-        while IFS= read -r item; do
-            item_host=$(jq -r '.host' <<< "$item")
-            item_target=$(jq -r '.target' <<< "$item")
-            item_name=$(jq -r '.name // empty' <<< "$item")
-            item_mode=$(jq -r '.mode // empty' <<< "$item")
-            item_description=$(jq -r '.description // empty' <<< "$item")
-            [[ -n "$item_name" ]] || item_name=$(_sb_name_from_target "$item_target")
-            if [[ ! -e "$(sb_expand_path "$item_host")" ]]; then
-                log_info "Skipping missing preset mapping: $item_host"
-                continue
-            fi
-            _sb_map_single "$item_host" "$item_target" "$item_name" "$item_mode" "$item_description"
-        done < <(jq -c '.[]' <<< "$preset_json")
-        return 0
-    fi
-
-    if [[ "$empty" == "1" ]]; then
-        [[ -n "$target_path" ]] || { log_error "Container target required (use --to)"; return 1; }
-        [[ -n "$name" ]] || name=$(_sb_name_from_target "$target_path")
-        _sb_map_empty "$target_path" "$name" "$mode" "$description"
-    else
-        [[ -n "$host_path" ]] || { log_error "Host path required"; return 1; }
-        [[ -n "$target_path" ]] || { log_error "Container target required (use --to)"; return 1; }
-        [[ -n "$name" ]] || name=$(_sb_name_from_target "$target_path")
-        _sb_map_single "$host_path" "$target_path" "$name" "$mode" "$description"
-    fi
-}
-
-sb_maps() {
-    sb_vol_ensure
-    local rows
-    rows=$(_sb_manifest_json | jq -r '.mappings[]? | [(.name // ""), (.target // ""), (.host_source // ""), (.description // "")] | @tsv')
-    if [[ -z "$rows" ]]; then
-        echo "No mappings configured. Use 'am sb map <path> --to <target>' to add one."
-        return 0
-    fi
-    printf '%-15s %-22s %-22s %s\n' "NAME" "TARGET" "HOST SOURCE" "DESCRIPTION"
-    while IFS=$'\t' read -r name target host_source description; do
-        printf '%-15s %-22s %-22s %s\n' "$name" "$target" "$host_source" "$description"
-    done <<< "$rows"
-}
-
-sb_sync() {
-    local name=""
-    local sync_all=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --all)
-                sync_all=1
-                shift
-                ;;
-            -h|--help)
-                echo "Usage: am sb sync <name> | am sb sync --all"
-                return 0
-                ;;
-            *)
-                name="$1"
-                shift
-                ;;
-        esac
-    done
-
-    sb_vol_ensure
-    local item host_source source entry_name count=0
-    while IFS= read -r item; do
-        [[ -z "$item" ]] && continue
-        entry_name=$(jq -r '.name' <<< "$item")
-        if [[ "$sync_all" != "1" && "$entry_name" != "$name" ]]; then
-            continue
-        fi
-        host_source=$(jq -r '.host_source // empty' <<< "$item")
-        source=$(jq -r '.source' <<< "$item")
-        if [[ -z "$host_source" ]]; then
-            log_error "Mapping '$entry_name' has no host_source; cannot sync."
-            [[ "$sync_all" == "1" ]] && continue || return 1
-        fi
-        host_source=$(sb_expand_path "$host_source")
-        [[ -e "$host_source" ]] || { log_error "Host source missing for '$entry_name': $host_source"; [[ "$sync_all" == "1" ]] && continue || return 1; }
-        sb_vol_copy_in "$host_source" "data/$source"
-        printf 'Synced %s from %s\n' "$entry_name" "$host_source"
-        count=$((count + 1))
-    done < <(_sb_manifest_json | jq -c '.mappings[]?')
-
-    if [[ "$sync_all" != "1" && $count -eq 0 ]]; then
-        log_error "Mapping not found: $name"
-        return 1
-    fi
-}
-
-sb_edit() {
-    local name="$1"
-    local editor="${EDITOR:-vi}"
-    sb_vol_ensure
-    local mapping_json source tmp_path
-    mapping_json=$(_sb_mapping_get "$name")
-    if [[ -z "$mapping_json" ]]; then
-        log_error "Mapping not found: $name"
-        return 1
-    fi
-    source=$(jq -r '.source' <<< "$mapping_json")
-    tmp_path=$(mktemp -d)
-    docker run --rm -v "${SB_STATE_VOLUME}:/state" -v "$tmp_path:/tmp-edit" alpine sh -lc "cp -a /state/data/$source /tmp-edit/item"
-    "$editor" "$tmp_path/item"
-    docker run --rm -v "${SB_STATE_VOLUME}:/state" -v "$tmp_path:/tmp-edit" alpine sh -lc "rm -rf /state/data/$source && cp -a /tmp-edit/item /state/data/$source"
-    rm -rf "$tmp_path"
+    rm -rf "${SB_HOME_DIR:?}"/*  "${SB_HOME_DIR}"/.[!.]* "${SB_HOME_DIR}"/..?* 2>/dev/null || true
+    _sb_home_ensure
+    tar xzf "$input_path" -C "$SB_HOME_DIR"
 }
