@@ -13,12 +13,6 @@ test_sandbox() {
     source "$LIB_DIR/sandbox.sh"
 
     local cmd
-    cmd=$(sandbox_attach_cmd "am-abc123" "/home/user/project")
-    assert_contains "$cmd" "docker exec" "sandbox_attach_cmd: contains docker exec"
-    assert_contains "$cmd" "./am sb enter am-abc123" "sandbox_attach_cmd: uses sb enter command"
-    assert_contains "$cmd" "docker inspect" "sandbox_attach_cmd: checks container state after exit"
-    assert_contains "$cmd" "exit 42" "sandbox_attach_cmd: documents host-shell escape"
-
     cmd=$(sandbox_enter_cmd "am-abc123" "/home/user/project")
     assert_contains "$cmd" "docker exec" "sandbox_enter_cmd: contains docker exec"
     assert_contains "$cmd" "./am sb enter am-abc123" "sandbox_enter_cmd: contains sb re-entry command"

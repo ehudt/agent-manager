@@ -233,10 +233,6 @@ sb_build() {
     fi
 }
 
-sandbox_build_image() {
-    sb_build "$@"
-}
-
 sandbox_start() {
     local session_name="$1"
     local directory="$2"
@@ -351,10 +347,6 @@ sandbox_start() {
     return 1
 }
 
-sandbox_attach_cmd() {
-    sandbox_enter_cmd "$@"
-}
-
 sandbox_enter_cmd() {
     local session_name="$1"
     local directory="$2"
@@ -385,12 +377,6 @@ sandbox_gc_orphans() {
         fi
     done < <(_sandbox_list_containers)
     printf '%s\n' "${removed[@]}"
-}
-
-sandbox_stop() {
-    local session_name="$1"
-    docker stop "$session_name" >/dev/null 2>&1 || true
-    _sandbox_log_event "$session_name" "stop" "reason=explicit_stop"
 }
 
 sandbox_status() {
@@ -427,10 +413,6 @@ sb_ps() {
     docker ps -a --filter "label=agent-sandbox" --format 'table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}\t{{.Label "agent-sandbox.dir"}}'
 }
 
-sandbox_list() {
-    sb_ps
-}
-
 sb_prune() {
     local container_name
     while IFS= read -r container_name; do
@@ -438,10 +420,6 @@ sb_prune() {
         _sandbox_log_event "$container_name" "prune_stopped" "reason=sb_prune"
     done < <(docker ps -a --filter "label=agent-sandbox" --filter "status=exited" --format '{{.Names}}')
     docker container prune -f --filter "label=agent-sandbox" >/dev/null
-}
-
-sandbox_prune() {
-    sb_prune
 }
 
 sb_reset() {
@@ -717,20 +695,4 @@ sb_edit() {
     "$editor" "$tmp_path/item"
     docker run --rm -v "${SB_STATE_VOLUME}:/state" -v "$tmp_path:/tmp-edit" alpine sh -lc "rm -rf /state/data/$source && cp -a /tmp-edit/item /state/data/$source"
     rm -rf "$tmp_path"
-}
-
-# Compatibility wrappers
-sandbox_rebuild_and_restart() {
-    local no_cache="${1:-0}"
-    local running_info
-    running_info=$(docker ps --filter "label=agent-sandbox" --format '{{.Names}}\t{{.Label "agent-sandbox.dir"}}')
-    while IFS=$'\t' read -r container_name dir; do
-        [[ -z "$container_name" ]] && continue
-        docker rm -f "$container_name" >/dev/null 2>&1 || true
-    done <<< "$running_info"
-    sb_build "$no_cache"
-    while IFS=$'\t' read -r container_name dir; do
-        [[ -z "$container_name" ]] && continue
-        sandbox_start "$container_name" "$dir"
-    done <<< "$running_info"
 }

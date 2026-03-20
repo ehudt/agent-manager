@@ -336,7 +336,7 @@ agent_launch() {
         registry_update "$session_name" "container_name" "$session_name"
         agent_refresh_tmux_status "$session_name"
         local attach_cmd
-        attach_cmd=$(sandbox_attach_cmd "$session_name" "$session_directory")
+        attach_cmd=$(sandbox_enter_cmd "$session_name" "$session_directory")
         tmux_send_keys "$session_name:.{bottom}" "$attach_cmd" Enter
         tmux_send_keys "$session_name:.{top}" "$attach_cmd" Enter
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter

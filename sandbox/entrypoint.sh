@@ -15,9 +15,14 @@ fi
 
 current_home=$(getent passwd "$RUNTIME_USER" | cut -d: -f6)
 if [ -n "$current_home" ] && [ "$current_home" != "$USER_HOME" ]; then
-    usermod -d "$USER_HOME" -m "$RUNTIME_USER"
+    if [ -d "$USER_HOME" ]; then
+        # Target exists (e.g. created by a volume mount); update record only.
+        usermod -d "$USER_HOME" "$RUNTIME_USER"
+    else
+        usermod -d "$USER_HOME" -m "$RUNTIME_USER"
+    fi
 fi
-[ -n "${HOST_GID:-}" ] && {
+if [ -n "${HOST_GID:-}" ]; then
     current_gid=$(id -g "$RUNTIME_USER")
     if [ "$current_gid" != "$HOST_GID" ]; then
         if getent group "$HOST_GID" >/dev/null 2>&1; then
@@ -27,11 +32,13 @@ fi
             usermod -g "$HOST_GID" "$RUNTIME_USER"
         fi
     fi
-}
-[ -n "${HOST_UID:-}" ] && {
+fi
+if [ -n "${HOST_UID:-}" ]; then
     current_uid=$(id -u "$RUNTIME_USER")
-    [ "$current_uid" != "$HOST_UID" ] && usermod -u "$HOST_UID" "$RUNTIME_USER"
-}
+    if [ "$current_uid" != "$HOST_UID" ]; then
+        usermod -u "$HOST_UID" "$RUNTIME_USER"
+    fi
+fi
 
 RUNTIME_GROUP=$(id -gn "$RUNTIME_USER")
 
