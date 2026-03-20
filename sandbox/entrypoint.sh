@@ -4,6 +4,7 @@ set -e
 BASE_USER="ubuntu"
 RUNTIME_USER="${HOST_USER:-$BASE_USER}"
 USER_HOME="${HOST_HOME:-/home/${RUNTIME_USER}}"
+SUDOERS_APT_DROPIN="/etc/sudoers.d/80-sb-apt"
 SUDOERS_UNSAFE_DROPIN="/etc/sudoers.d/90-sb-unsafe-root"
 SB_UNSAFE_ROOT="${SB_UNSAFE_ROOT:-0}"
 
@@ -63,7 +64,14 @@ fi
 
 chown -R "${RUNTIME_USER}:${RUNTIME_GROUP}" "$USER_HOME" 2>/dev/null || true
 
-# Passwordless sudo: disabled by default, opt-in via SB_UNSAFE_ROOT=1.
+# Always allow passwordless apt-get/apt so agents can install packages.
+if [ -w /etc/sudoers.d ]; then
+    printf '%s ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt\n' "$RUNTIME_USER" \
+        > "$SUDOERS_APT_DROPIN"
+    chmod 440 "$SUDOERS_APT_DROPIN"
+fi
+
+# Full passwordless sudo: disabled by default, opt-in via SB_UNSAFE_ROOT=1.
 if [ "$SB_UNSAFE_ROOT" = "1" ] && [ -w /etc/sudoers.d ]; then
     echo "${RUNTIME_USER} ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_UNSAFE_DROPIN"
     chmod 440 "$SUDOERS_UNSAFE_DROPIN"

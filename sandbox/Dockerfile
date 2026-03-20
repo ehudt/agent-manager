@@ -3,30 +3,21 @@ FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
-    bat \
     build-essential \
     curl \
     dnsutils \
-    eza \
-    fzf \
     git \
-    gnuplot \
     iproute2 \
     iputils-ping \
     jq \
-    libzstd-dev \
     python3 \
     python3-pip \
     python3-venv \
     ripgrep \
-    sharutils \
     sudo \
-    tmux \
     unzip \
     vim-nox \
     wget \
-    xdg-utils \
-    zoxide \
     zsh \
     zstd \
     && rm -rf /var/lib/apt/lists/*
