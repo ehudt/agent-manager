@@ -60,13 +60,12 @@ RUN uv tool install ipython
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-RUN mkdir -p /home/ubuntu/.ssh && \
-    ssh-keyscan github.com >> /home/ubuntu/.ssh/known_hosts 2>/dev/null && \
-    chmod 700 /home/ubuntu/.ssh && chmod 644 /home/ubuntu/.ssh/known_hosts
-
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y && rustup component add rustfmt
 
 USER root
+
+RUN ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts 2>/dev/null; \
+    chmod 644 /etc/ssh/ssh_known_hosts
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
