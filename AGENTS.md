@@ -20,6 +20,8 @@ Architecture reference for AI agents working with this codebase.
 
 - `SCRIPT_DIR` is overwritten when sourcing `lib/agents.sh` — if you need a stable reference, save it before sourcing
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
+- Sandbox containers always run as the `ubuntu` user (UID/GID aligned to host). Use `SB_CONTAINER_HOME` for container-side path expansion, not `$HOME`
+- Agents in sandbox can `sudo apt-get install` without a password. Full sudo requires `SB_UNSAFE_ROOT=1`
 
 ## Key Files
 
@@ -42,7 +44,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/sandbox.sh` | Docker sandbox lifecycle, state mappings, and fleet ops |
 | `lib/sb_volume.sh` | Docker-volume helpers for sandbox state persistence |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
-| `sandbox/entrypoint.sh` | Container init: user alignment, Tailscale, SSH |
+| `sandbox/entrypoint.sh` | Container init: UID/GID alignment, state hydration, sudoers |
 | `bin/sandbox-shell` | Reconnecting shell loop for sandbox containers (used by shell pane) |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
@@ -54,7 +56,7 @@ am → fzf_main() → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
 fzf_list_sessions() / fzf_list_json() → auto_title_scan() → _title_fallback() → registry_update() + history_append()
 Ctrl-N in fzf → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
-am new --yolo ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
+am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am sb map ~/.ssh --to ~/.ssh → sb_vol_copy_in() + manifest update → sandbox entrypoint hydrates ~/.am-state into target paths
 agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
 ```

@@ -14,7 +14,6 @@ SANDBOX_HOST_EXIT_CODE="${SANDBOX_HOST_EXIT_CODE:-42}"
 SB_PRESETS_DEFAULT="${AM_SCRIPT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}/config/presets.json"
 SB_PRESETS_USER="$AM_DIR/presets.json"
 
-_SB_HOST_USER=""
 _SB_HOST_UID=""
 _SB_HOST_GID=""
 
@@ -22,8 +21,7 @@ _SB_HOST_GID=""
 [[ -f "$SANDBOX_ENV_FILE" ]] && source "$SANDBOX_ENV_FILE"
 
 _sandbox_ensure_host_identity() {
-    [[ -n "$_SB_HOST_USER" ]] && return
-    _SB_HOST_USER=$(id -un)
+    [[ -n "$_SB_HOST_UID" ]] && return
     _SB_HOST_UID=$(id -u)
     _SB_HOST_GID=$(id -g)
 }
@@ -87,7 +85,7 @@ sandbox_exec_cmd() {
     local target_dir="${directory:-$HOME}"
     local quoted_cmd
     printf -v quoted_cmd '%q' "$cmd"
-    printf "%s" "docker exec -it -u '$_SB_HOST_USER' -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh -lc $quoted_cmd"
+    printf "%s" "docker exec -it -u ubuntu -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh -lc $quoted_cmd"
 }
 
 _sandbox_list_containers() {
@@ -138,6 +136,18 @@ _sandbox_stop_proxy() {
     docker rm -f "$(_sandbox_proxy_name "$session_name")" >/dev/null 2>&1 || true
     docker network rm "$(_sandbox_net_name "$session_name")" >/dev/null 2>&1 || true
     _sandbox_log_event "$session_name" "proxy_stopped"
+}
+
+SB_CONTAINER_HOME="/home/ubuntu"
+
+_sb_expand_container_path() {
+    local path="$1"
+    # shellcheck disable=SC2088
+    case "$path" in
+        "~") printf '%s\n' "$SB_CONTAINER_HOME" ;;
+        "~/"*) printf '%s/%s\n' "$SB_CONTAINER_HOME" "${path#"~/"}" ;;
+        *) printf '%s\n' "$path" ;;
+    esac
 }
 
 sb_expand_path() {
@@ -217,9 +227,12 @@ _sb_share_spec_parse() {
         fi
     fi
 
-    [[ -z "$target" ]] && target="$host"
     host=$(sb_expand_path "$host")
-    target=$(sb_expand_path "$target")
+    if [[ -z "$target" ]]; then
+        target="$host"
+    else
+        target=$(_sb_expand_container_path "$target")
+    fi
     printf '%s|%s|%s\n' "$host" "$target" "$mode"
 }
 
@@ -294,7 +307,7 @@ sandbox_start() {
     fi
 
     local -a mounts
-    mounts=(-v "$SB_STATE_VOLUME:$HOME/.am-state" -v "$directory:$directory")
+    mounts=(-v "$SB_STATE_VOLUME:/home/ubuntu/.am-state" -v "$directory:$directory")
 
     local parsed share_host share_target share_mode
     while IFS= read -r parsed; do
@@ -307,10 +320,8 @@ sandbox_start() {
     local -a env_vars=(
         -e "TERM=${TERM:-xterm-256color}"
         -e "SANDBOX_NAME=$session_name"
-        -e "HOST_USER=$_SB_HOST_USER"
         -e "HOST_UID=$_SB_HOST_UID"
         -e "HOST_GID=$_SB_HOST_GID"
-        -e "HOST_HOME=$HOME"
         -e "SB_UNSAFE_ROOT=$sb_unsafe_root"
     )
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_vars+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
@@ -516,6 +527,14 @@ _sb_map_single() {
     local mode="$4"
     local description="$5"
     local expanded_host manifest entry src_path
+
+    # Normalize target to ~/... so the entrypoint resolves it to the container home.
+    # shellcheck disable=SC2088
+    if [[ "$target_path" == "$HOME/"* ]]; then
+        target_path="~/${target_path#"$HOME/"}"
+    elif [[ "$target_path" == "$HOME" ]]; then
+        target_path="~"
+    fi
 
     expanded_host=$(sb_expand_path "$host_path")
     [[ -e "$expanded_host" ]] || { log_error "Host path not found: $expanded_host"; return 1; }

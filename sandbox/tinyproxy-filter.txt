@@ -7,5 +7,4 @@
 ^registry\.npmjs\.org$
 ^pypi\.org$
 ^files\.pythonhosted\.org$
-^crates\.io$
-^static\.crates\.io$
+^(.+\.)?crates\.io$

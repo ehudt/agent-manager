@@ -26,7 +26,7 @@ test_sandbox() {
     # shellcheck disable=SC2088
     assert_eq "$HOME/.vimrc|$HOME/.vimrc|ro" "$(_sb_share_spec_parse "~/.vimrc:ro")" "share parse: host+mode"
     # shellcheck disable=SC2088
-    assert_eq "$HOME/.ssh|$HOME/.ssh|rw" "$(_sb_share_spec_parse "~/.ssh:~/.ssh:rw")" "share parse: explicit target+mode"
+    assert_eq "$HOME/.ssh|$SB_CONTAINER_HOME/.ssh|rw" "$(_sb_share_spec_parse "~/.ssh:~/.ssh:rw")" "share parse: explicit target+mode"
 
     sb_vol_ensure
     assert_cmd_succeeds "sb_vol_ensure: creates mappings.json" sb_vol_exists mappings.json

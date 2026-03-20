@@ -1,47 +1,40 @@
 #!/bin/bash
 set -e
 
-BASE_USER="ubuntu"
-RUNTIME_USER="${HOST_USER:-$BASE_USER}"
-USER_HOME="${HOST_HOME:-/home/${RUNTIME_USER}}"
+USER="ubuntu"
+USER_HOME="/home/ubuntu"
 SUDOERS_APT_DROPIN="/etc/sudoers.d/80-sb-apt"
 SUDOERS_UNSAFE_DROPIN="/etc/sudoers.d/90-sb-unsafe-root"
 SB_UNSAFE_ROOT="${SB_UNSAFE_ROOT:-0}"
 
-# Align the container identity with the host username/home.
-if [ "$RUNTIME_USER" != "$BASE_USER" ] && ! id "$RUNTIME_USER" >/dev/null 2>&1; then
-    groupmod -n "$RUNTIME_USER" "$BASE_USER"
-    usermod -l "$RUNTIME_USER" "$BASE_USER"
-fi
-
-current_home=$(getent passwd "$RUNTIME_USER" | cut -d: -f6)
-if [ -n "$current_home" ] && [ "$current_home" != "$USER_HOME" ]; then
-    if [ -d "$USER_HOME" ]; then
-        # Target exists (e.g. created by a volume mount); update record only.
-        usermod -d "$USER_HOME" "$RUNTIME_USER"
-    else
-        usermod -d "$USER_HOME" -m "$RUNTIME_USER"
-    fi
-fi
+# Align UID/GID with the host so bind-mounted files have correct ownership.
+uid_changed=0
 if [ -n "${HOST_GID:-}" ]; then
-    current_gid=$(id -g "$RUNTIME_USER")
+    current_gid=$(id -g "$USER")
     if [ "$current_gid" != "$HOST_GID" ]; then
         if getent group "$HOST_GID" >/dev/null 2>&1; then
-            usermod -g "$(getent group "$HOST_GID" | cut -d: -f1)" "$RUNTIME_USER"
+            usermod -g "$(getent group "$HOST_GID" | cut -d: -f1)" "$USER"
         else
-            groupmod -g "$HOST_GID" "$RUNTIME_USER"
-            usermod -g "$HOST_GID" "$RUNTIME_USER"
+            groupmod -g "$HOST_GID" "$USER"
+            usermod -g "$HOST_GID" "$USER"
         fi
+        uid_changed=1
     fi
 fi
 if [ -n "${HOST_UID:-}" ]; then
-    current_uid=$(id -u "$RUNTIME_USER")
+    current_uid=$(id -u "$USER")
     if [ "$current_uid" != "$HOST_UID" ]; then
-        usermod -u "$HOST_UID" "$RUNTIME_USER"
+        usermod -u "$HOST_UID" "$USER"
+        uid_changed=1
     fi
 fi
 
-RUNTIME_GROUP=$(id -gn "$RUNTIME_USER")
+GROUP=$(id -gn "$USER")
+
+# Only chown home if UID/GID actually changed.
+if [ "$uid_changed" = "1" ]; then
+    chown -R "${USER}:${GROUP}" "$USER_HOME" 2>/dev/null || true
+fi
 
 # Manifest-driven state hydration.
 STATE_DIR="$USER_HOME/.am-state"
@@ -58,22 +51,20 @@ if [ -f "$MANIFEST" ]; then
         rm -rf "$target"
         ln -sfn "$full_source" "$target"
         [ -n "$mode" ] && chmod "$mode" "$full_source" 2>/dev/null || true
-        chown -h "${RUNTIME_USER}:${RUNTIME_GROUP}" "$target" 2>/dev/null || true
+        chown -h "${USER}:${GROUP}" "$target" 2>/dev/null || true
     done
 fi
 
-chown -R "${RUNTIME_USER}:${RUNTIME_GROUP}" "$USER_HOME" 2>/dev/null || true
-
 # Always allow passwordless apt-get/apt so agents can install packages.
 if [ -w /etc/sudoers.d ]; then
-    printf '%s ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt\n' "$RUNTIME_USER" \
+    printf '%s ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt\n' "$USER" \
         > "$SUDOERS_APT_DROPIN"
     chmod 440 "$SUDOERS_APT_DROPIN"
 fi
 
 # Full passwordless sudo: disabled by default, opt-in via SB_UNSAFE_ROOT=1.
 if [ "$SB_UNSAFE_ROOT" = "1" ] && [ -w /etc/sudoers.d ]; then
-    echo "${RUNTIME_USER} ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_UNSAFE_DROPIN"
+    echo "${USER} ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_UNSAFE_DROPIN"
     chmod 440 "$SUDOERS_UNSAFE_DROPIN"
 else
     rm -f "$SUDOERS_UNSAFE_DROPIN" 2>/dev/null || true

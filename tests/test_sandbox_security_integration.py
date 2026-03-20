@@ -156,7 +156,7 @@ def test_sandbox_start_uses_state_volume_and_project_mount_only_by_default(
 
     assert str(project_dir) in mounts
     assert mounts[str(project_dir)]["RW"] is True
-    state_dest = f"{pathlib.Path.home()}/.am-state"
+    state_dest = "/home/ubuntu/.am-state"
     assert state_dest in mounts
     assert mounts[state_dest]["Type"] == "volume"
     assert len(mounts) == 2
@@ -184,7 +184,7 @@ def test_entrypoint_hydration_and_share_mounts(sandbox_env, tmp_path):
         sandbox_env,
     )
 
-    container_home = str(pathlib.Path.home())
+    container_home = "/home/ubuntu"
     hydrated_path = _run([
         "docker",
         "exec",
