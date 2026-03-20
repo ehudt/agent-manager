@@ -520,6 +520,44 @@ sb_unmap() {
     log_success "Unmapped '$name'."
 }
 
+_sb_map_empty() {
+    local target_path="$1"
+    local name="$2"
+    local mode="$3"
+    local description="$4"
+    local manifest entry src_path
+
+    # Normalize target to ~/... so the entrypoint resolves it to the container home.
+    # shellcheck disable=SC2088
+    if [[ "$target_path" == "$HOME/"* ]]; then
+        target_path="~/${target_path#"$HOME/"}"
+    elif [[ "$target_path" == "$HOME" ]]; then
+        target_path="~"
+    fi
+
+    sb_vol_ensure
+    if _sb_mapping_exists "$name"; then
+        log_error "Mapping '$name' already exists. Use 'am sb unmap $name' first."
+        return 1
+    fi
+
+    src_path="$name"
+    sb_vol_mkdir "data/$src_path"
+
+    entry=$(jq -n \
+        --arg name "$name" \
+        --arg source "$src_path" \
+        --arg target "$target_path" \
+        --arg mode "$mode" \
+        --arg description "$description" \
+        '{name: $name, source: $source, target: $target}
+         + (if $mode != "" then {mode: $mode} else {} end)
+         + (if $description != "" then {description: $description} else {} end)')
+    manifest=$(_sb_manifest_json | jq --argjson entry "$entry" '.mappings += [$entry]')
+    _sb_manifest_write "$manifest"
+    printf 'Mapped (empty) → %s (as '\''%s'\'')\n' "$target_path" "$name"
+}
+
 _sb_map_single() {
     local host_path="$1"
     local target_path="$2"
@@ -571,6 +609,7 @@ sb_map() {
     local preset=""
     local list_presets=0
     local description=""
+    local empty=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -594,12 +633,17 @@ sb_map() {
                 preset="$2"
                 shift 2
                 ;;
+            --empty)
+                empty=1
+                shift
+                ;;
             --list-presets)
                 list_presets=1
                 shift
                 ;;
             -h|--help)
                 echo "Usage: am sb map <host-path> --to <container-path> [--name <id>] [--mode 0700]"
+                echo "       am sb map --empty --to <container-path> [--name <id>]"
                 echo "       am sb map --preset <preset-name>"
                 echo "       am sb map --list-presets"
                 return 0
@@ -649,10 +693,16 @@ sb_map() {
         return 0
     fi
 
-    [[ -n "$host_path" ]] || { log_error "Host path required"; return 1; }
-    [[ -n "$target_path" ]] || { log_error "Container target required (use --to)"; return 1; }
-    [[ -n "$name" ]] || name=$(_sb_name_from_target "$target_path")
-    _sb_map_single "$host_path" "$target_path" "$name" "$mode" "$description"
+    if [[ "$empty" == "1" ]]; then
+        [[ -n "$target_path" ]] || { log_error "Container target required (use --to)"; return 1; }
+        [[ -n "$name" ]] || name=$(_sb_name_from_target "$target_path")
+        _sb_map_empty "$target_path" "$name" "$mode" "$description"
+    else
+        [[ -n "$host_path" ]] || { log_error "Host path required"; return 1; }
+        [[ -n "$target_path" ]] || { log_error "Container target required (use --to)"; return 1; }
+        [[ -n "$name" ]] || name=$(_sb_name_from_target "$target_path")
+        _sb_map_single "$host_path" "$target_path" "$name" "$mode" "$description"
+    fi
 }
 
 sb_maps() {
