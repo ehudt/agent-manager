@@ -170,16 +170,11 @@ For agent orchestration, prefer this sequence:
 
 **Sandbox:**
 - `sandbox_start(session_name, dir)` - Create and start per-session Docker container
-- `sandbox_attach_cmd(session_name, dir)` - Return docker exec command string for tmux
 - `sandbox_enter_cmd(session_name, dir)` - Build reconnecting shell-entry command for a running sandbox
-- `sandbox_stop(session_name)` - Stop container without removing
 - `sandbox_remove(session_name)` - Force-remove container
 - `sandbox_status(session_name)` - Show container state and event log
-- `sandbox_list()` - List all agent-sandbox containers
-- `sandbox_prune()` - Remove stopped containers
 - `sandbox_gc_orphans()` - Remove containers whose tmux session no longer exists
-- `sandbox_build_image([no_cache])` - Build Docker image from sandbox directory
-- `sandbox_rebuild_and_restart([no_cache])` - Rebuild image, recreate running containers
+- `sb_build([no_cache])` - Build Docker image from sandbox directory
 - `sb_map()` / `sb_unmap()` / `sb_maps()` / `sb_sync()` / `sb_edit()` - Manage manifest-driven state mappings in the sandbox volume
 - `sb_ps()` / `sb_prune()` / `sb_reset()` / `sb_export()` / `sb_import()` / `sb_shell()` - Manage sandbox containers and the shared state volume
 
