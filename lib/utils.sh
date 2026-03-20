@@ -1,8 +1,10 @@
+# shellcheck shell=bash
 # utils.sh - Common utilities for agent-manager
 
 # Configuration
 AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
 AM_REGISTRY="$AM_DIR/sessions.json"
+# shellcheck disable=SC2034 # used by lib/registry.sh
 AM_HISTORY="$AM_DIR/history.jsonl"
 AM_SESSION_PREFIX="${AM_SESSION_PREFIX:-am-}"
 AM_TMUX_SOCKET="${AM_TMUX_SOCKET:-agent-manager}"
@@ -18,6 +20,7 @@ if [[ -t 1 ]]; then
     BOLD='\033[1m'
     RESET='\033[0m'
 else
+    # shellcheck disable=SC2034
     RED='' GREEN='' YELLOW='' BLUE='' BOLD='' RESET=''
 fi
 
@@ -116,8 +119,10 @@ abspath() {
     if [[ -d "$path" ]]; then
         (cd "$path" && pwd)
     elif [[ -f "$path" ]]; then
-        local dir=$(dirname "$path")
-        local file=$(basename "$path")
+        local dir
+        dir=$(dirname "$path")
+        local file
+        file=$(basename "$path")
         echo "$(cd "$dir" && pwd)/$file"
     else
         # Path doesn't exist, try to resolve anyway

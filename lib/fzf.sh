@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # fzf.sh - fzf interface functions
 
 # Source dependencies if not already loaded
@@ -12,6 +13,7 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 require_cmd fzf
 
 # Helper: List directories for picker (frecent + git repos)
+# shellcheck disable=SC2120
 _list_directories() {
     local query="${1:-}"
 
@@ -23,8 +25,10 @@ _list_directories() {
             find "$base_path" -maxdepth 1 -type d 2>/dev/null | grep -v "^$base_path$" | sort
         else
             # Show parent directory contents that match
-            local parent_dir=$(dirname "$base_path")
-            local prefix=$(basename "$base_path")
+            local parent_dir
+            parent_dir=$(dirname "$base_path")
+            local prefix
+            prefix=$(basename "$base_path")
             if [[ -d "$parent_dir" ]]; then
                 find "$parent_dir" -maxdepth 1 -type d -name "${prefix}*" 2>/dev/null | sort
             fi
@@ -465,7 +469,6 @@ fzf_new_session_form() {
     local task="$prefill_task"
     local worktree_enabled="false"
     local worktree_name=""
-    local message=""
     local selection key selected_row selected_field
     local current_field="agent"
     local docker_available="true"

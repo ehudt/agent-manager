@@ -66,6 +66,7 @@ test_form_core() {
     assert_eq "false" "${FORM_VALUES[yolo]}" "form input: space toggles yolo off"
 
     # Disabled checkbox doesn't toggle
+    # shellcheck disable=SC2154  # sandbox comes from sourced _form_init
     FORM_DISABLED[sandbox]="true"
     FORM_CURSOR=5  # sandbox
     FORM_VALUES[sandbox]="false"
@@ -469,9 +470,9 @@ test_form_modes() {
     # Navigate mode: enter on disabled text field does not enter edit mode
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
     FORM_DISABLED[worktree_name]="true"
-    local wt_idx=-1 fi
-    for ((fi=0; fi<${#FORM_FIELDS[@]}; fi++)); do
-        [[ "${FORM_FIELDS[$fi]}" == "worktree_name" ]] && wt_idx=$fi
+    local wt_idx=-1 fi_idx
+    for ((fi_idx=0; fi_idx<${#FORM_FIELDS[@]}; fi_idx++)); do
+        [[ "${FORM_FIELDS[$fi_idx]}" == "worktree_name" ]] && wt_idx=$fi_idx
     done
     if [[ $wt_idx -ge 0 ]]; then
         FORM_CURSOR=$wt_idx

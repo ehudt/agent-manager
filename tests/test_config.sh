@@ -76,7 +76,9 @@ test_new_form_flag() {
     local original_am_dir="${AM_DIR:-}"
     local original_am_config="${AM_CONFIG:-}"
     local original_new_form="${AM_NEW_FORM:-}"
-    export AM_DIR=$(mktemp -d)
+    local _tmpdir
+    _tmpdir=$(mktemp -d)
+    export AM_DIR="$_tmpdir"
     export AM_CONFIG="$AM_DIR/config.json"
     unset AM_NEW_FORM
     am_config_init

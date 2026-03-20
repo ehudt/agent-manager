@@ -21,8 +21,10 @@ test_utils() {
     assert_eq "hello w..." "$(truncate 'hello world' 10)" "truncate: long string truncated"
 
     # Test generate_hash
-    local hash1=$(generate_hash "test")
-    local hash2=$(generate_hash "test")
+    local hash1
+    hash1=$(generate_hash "test")
+    local hash2
+    hash2=$(generate_hash "test")
     assert_eq "$hash1" "$hash2" "generate_hash: deterministic"
     assert_eq 6 "${#hash1}" "generate_hash: 6 chars"
 
@@ -54,9 +56,12 @@ test_utils_extended() {
     assert_eq "0123456789" "$(truncate '0123456789' 10)" "truncate: exact limit length"
 
     # generate_hash: consistency
-    local h1=$(generate_hash "same-input")
-    local h2=$(generate_hash "same-input")
-    local h3=$(generate_hash "different-input")
+    local h1
+    h1=$(generate_hash "same-input")
+    local h2
+    h2=$(generate_hash "same-input")
+    local h3
+    h3=$(generate_hash "different-input")
     assert_eq "$h1" "$h2" "generate_hash: same input same output"
     # Different inputs SHOULD produce different hashes (not guaranteed but overwhelmingly likely)
     if [[ "$h1" != "$h3" ]]; then
@@ -69,7 +74,8 @@ test_utils_extended() {
     fi
 
     # abspath: with real directories
-    local tmpd=$(mktemp -d)
+    local tmpd
+    tmpd=$(mktemp -d)
     assert_eq "$tmpd" "$(abspath "$tmpd")" "abspath: absolute path unchanged"
     rm -rf "$tmpd"
 

@@ -114,6 +114,10 @@ fzf preview will show:
 └──────────────────────────────────────────────────────┘
 ```
 
+### 5. Sandbox home directory
+
+Each sandbox bind-mounts `~/.agent-manager/sandbox-home/` as `/home/ubuntu` inside the container. All writes to `$HOME` inside the container persist automatically on the host — no mapping or syncing required. The entrypoint seeds skeleton files (e.g. `.vimrc`) on first run if the home directory is empty.
+
 ## CLI Interface
 
 ### Commands
@@ -131,6 +135,7 @@ am new -t gemini        # Start gemini instead of claude
 am new --name "my-task" # Custom display name
 am new --yolo           # Enable yolo mode (agent permissive flags)
 am new --sandbox        # Run in Docker sandbox container
+am new --share ~/.ssh:~/.ssh:ro  # Extra live bind mount for a sandbox session
 am new -w               # Git worktree isolation
 am new --detach         # Create without attaching
 am new --print-session  # Print session name to stdout
@@ -165,10 +170,10 @@ am config set <key> <value>  # Set config value
 am config get <key>          # Get config value
 
 # Sandbox management
-am sandbox build        # Build sandbox Docker image
-am sandbox list         # List sandbox containers
-am sandbox prune        # Remove stopped containers
-am sandbox identity init  # Initialize sandbox credentials
+am sb ps                                   # List sandbox containers
+am sb prune                                # Remove stopped containers
+am sb build                                # Build sandbox Docker image
+am sb reset --confirm                      # Clear sandbox home directory
 ```
 
 ### fzf Keybindings
@@ -199,7 +204,7 @@ agent-manager/
 │   ├── dir-preview         # Standalone preview script for directory picker
 │   ├── title-upgrade       # Standalone script: fire-and-forget Haiku title upgrade
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
-│   ├── sandbox.sh          # Docker sandbox lifecycle: start, attach, stop, fleet ops
+│   ├── sandbox.sh          # Docker sandbox lifecycle and fleet ops
 │   ├── state.sh            # Session state detection: JSONL + pane pattern matching
 │   ├── tmux.sh             # tmux wrapper functions
 │   └── utils.sh            # Common utilities

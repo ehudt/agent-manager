@@ -30,6 +30,7 @@ repo_dir="$(cd "$script_dir/.." && pwd -P)"
 source "$repo_dir/lib/utils.sh"
 source "$repo_dir/lib/tmux.sh"
 source "$repo_dir/lib/registry.sh"
+source "$repo_dir/lib/sandbox.sh"
 source "$repo_dir/lib/agents.sh"
 
 # Old bindings may still call this helper with only the target session. Fall back

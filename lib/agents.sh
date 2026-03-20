@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # agents.sh - Agent launcher functions
 
 # Source dependencies if not already loaded
@@ -328,14 +329,19 @@ agent_launch() {
             registry_remove "$session_name"
             return 1
         fi
-        sandbox_start "$session_name" "$sandbox_directory"
+        local sandbox_shares=()
+        if declare -p AM_SANDBOX_SHARES >/dev/null 2>&1; then
+            sandbox_shares=("${AM_SANDBOX_SHARES[@]}")
+        fi
+        sandbox_start "$session_name" "$sandbox_directory" "${sandbox_shares[@]}"
         registry_update "$session_name" "container_name" "$session_name"
         agent_refresh_tmux_status "$session_name"
         local attach_cmd
-        attach_cmd=$(sandbox_attach_cmd "$session_name" "$session_directory")
+        attach_cmd=$(sandbox_enter_cmd "$session_name" "$session_directory")
         tmux_send_keys "$session_name:.{bottom}" "$attach_cmd" Enter
-        tmux_send_keys "$session_name:.{top}" "$attach_cmd" Enter
-        tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+        local exec_cmd
+        exec_cmd=$(sandbox_exec_cmd "$session_name" "$session_directory" "$full_cmd")
+        tmux_send_keys "$session_name:.{top}" "$exec_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     fi
