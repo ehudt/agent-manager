@@ -390,7 +390,7 @@ sandbox_gc_orphans() {
             sandbox_remove "$container_name"
         fi
     done < <(_sandbox_list_containers)
-    printf '%s\n' "${removed[@]}"
+    echo "${#removed[@]}"
 }
 
 sandbox_status() {
