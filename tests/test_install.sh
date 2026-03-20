@@ -27,6 +27,7 @@ EOF
     "$PROJECT_DIR/scripts/install.sh" --prefix "$prefix" --shell-rc "$shell_rc" --tmux-conf "$tmux_conf" -y >/dev/null
 
     shell_contents=$(cat "$shell_rc")
+    # shellcheck disable=SC2034  # tmux_contents used by assertion helpers
     tmux_contents=$(cat "$tmux_conf")
 
     assert_contains "$shell_contents" "export PATH=\"$prefix:\$PATH\"" \
@@ -78,7 +79,8 @@ test_install() {
     $SUMMARY_MODE || echo "=== Testing am install ==="
 
     # Test help mentions install
-    local help_output=$("$PROJECT_DIR/am" help)
+    local help_output
+    help_output=$("$PROJECT_DIR/am" help)
     assert_contains "$help_output" "install" "am help: mentions install command"
 
     # Test install --help

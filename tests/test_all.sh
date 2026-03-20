@@ -66,10 +66,12 @@ run_worker() {
                 test_all.sh|test_helpers.sh) continue ;;
                 test_cap_chown.sh) continue ;;
             esac
+            # shellcheck source=/dev/null
             source "$_test_file"
         done
 
         # Always write worker results, even if the shell exits on an error like set -u.
+        # shellcheck disable=SC2154 # _worker_rc and detail are assigned inside the trap body
         trap '
             _worker_rc=$?
             _worker_end=$(date +%s)
@@ -250,9 +252,10 @@ main() {
     pids+=($!)
 
     # Wait for all workers
-    local any_failed=0
+    local _wait_rc
     for pid in "${pids[@]}"; do
-        wait "$pid" || any_failed=1
+        _wait_rc=0
+        wait "$pid" || _wait_rc=$?
     done
 
     # Replay output in worker order

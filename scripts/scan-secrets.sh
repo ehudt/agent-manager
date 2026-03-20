@@ -52,6 +52,7 @@ if $scan_history; then
     git rev-list --all > "$commits_file"
 
     echo "Scanning git history..."
+    # shellcheck disable=SC2046
     if git grep -n -I -E "$regex" $(cat "$commits_file") >/tmp/am_secret_hits.txt; then
         echo "Potential secrets found in history:" >&2
         cat /tmp/am_secret_hits.txt >&2

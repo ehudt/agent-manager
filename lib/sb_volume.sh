@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # sb_volume.sh - Docker volume helpers for sandbox state
 
 [[ -z "$AM_DIR" ]] && source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"

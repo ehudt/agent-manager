@@ -52,7 +52,8 @@ test_standalone_preview() {
     assert_eq "0" "$rc" "preview: exits 0 when directory missing from registry"
     assert_contains "$output" "Session:" "preview: still shows session header without directory"
 
-    local claude_dir="$HOME/.claude/projects/$(echo "$test_dir" | sed 's|/|-|g; s|\.|-|g')"
+    local claude_dir
+    claude_dir="$HOME/.claude/projects/$(echo "$test_dir" | sed 's|/|-|g; s|\.|-|g')"
     mkdir -p "$claude_dir"
     cat > "$claude_dir/session.jsonl" <<'EOF'
 {"type":"user","message":{"role":"user","content":"This is the first user message from the test"},"uuid":"test-uuid-1","timestamp":"2026-03-10T09:00:00.000Z"}
@@ -142,6 +143,7 @@ test_standalone_title_upgrade() {
     registry_add "test-session" "/tmp/test" "claude" "test task" ""
 
     local before_task
+    # shellcheck disable=SC2034
     before_task=$(registry_get_field "test-session" task)
 
     local has_claude=0
@@ -166,6 +168,7 @@ test_standalone_title_upgrade() {
     export AM_DIR="$TEST_AM_DIR"
 
     if [[ "$has_claude" -eq 1 ]]; then
+        # shellcheck disable=SC2034
         CLAUDECODE=""
         (sleep 10; kill -9 $$ 2>/dev/null) &
         local killer_pid=$!

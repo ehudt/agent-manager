@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # test_helpers.sh - Shared test infrastructure for agent-manager test suite
 # Sourced by test runners — no shebang, no set -euo pipefail
 
@@ -13,6 +14,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_DIR="$SCRIPT_DIR"  # Stable ref — SCRIPT_DIR gets overwritten by lib/agents.sh
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck disable=SC2034 # LIB_DIR is used by all test files that source this helper
 LIB_DIR="$PROJECT_DIR/lib"
 
 # Dedicated tmux socket so tests never touch the user's live sessions
@@ -215,8 +217,11 @@ setup_integration_env() {
     tmux -L "$AM_TMUX_SOCKET" set-environment -g ZDOTDIR "$TEST_ZDOTDIR" 2>/dev/null || true
 
     # Point agent commands to stub
+    # shellcheck disable=SC2034,SC2154 # AGENT_COMMANDS is an associative array declared in agents.sh; keys are not local vars
     AGENT_COMMANDS[claude]="$TEST_STUB_DIR/stub_agent"
+    # shellcheck disable=SC2034,SC2154
     AGENT_COMMANDS[codex]="$TEST_STUB_DIR/stub_agent"
+    # shellcheck disable=SC2034,SC2154
     AGENT_COMMANDS[gemini]="$TEST_STUB_DIR/stub_agent"
 }
 

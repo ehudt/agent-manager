@@ -14,7 +14,8 @@ test_registry() {
     source "$LIB_DIR/registry.sh"
 
     # Use temp directory for test registry
-    export AM_DIR=$(mktemp -d)
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
 
     # Test init
@@ -36,7 +37,8 @@ test_registry() {
 
     # Test list
     registry_add "test-session-2" "/tmp/test2" "dev" "gemini" ""
-    local count=$(registry_list | wc -l | tr -d ' ')
+    local count
+    count=$(registry_list | wc -l | tr -d ' ')
     assert_eq "2" "$count" "registry_list: returns all sessions"
 
     # Test count
@@ -71,7 +73,8 @@ test_registry_extended() {
     # Isolated registry
     local old_am_dir="$AM_DIR"
     local old_am_registry="$AM_REGISTRY"
-    export AM_DIR=$(mktemp -d)
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
     am_init
 
@@ -132,7 +135,8 @@ test_registry_get_fields() {
 
     local old_am_dir="$AM_DIR"
     local old_am_registry="$AM_REGISTRY"
-    export AM_DIR=$(mktemp -d)
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
     am_init
 
@@ -194,7 +198,8 @@ test_registry_gc() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # Create a live session
     local live_session
@@ -268,7 +273,8 @@ test_history() {
     local old_am_dir="$AM_DIR"
     local old_am_registry="$AM_REGISTRY"
     local old_am_history="${AM_HISTORY:-}"
-    export AM_DIR=$(mktemp -d)
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_HISTORY="$AM_DIR/history.jsonl"
     am_init
@@ -377,7 +383,8 @@ test_history_integration() {
     local old_am_dir="$AM_DIR"
     local old_am_registry="$AM_REGISTRY"
     local old_am_history="${AM_HISTORY:-}"
-    export AM_DIR=$(mktemp -d)
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_HISTORY="$AM_DIR/history.jsonl"
     am_init
@@ -444,7 +451,8 @@ test_auto_title_session() {
     local old_am_dir="$AM_DIR"
     local old_am_registry="$AM_REGISTRY"
     local old_am_history="${AM_HISTORY:-}"
-    export AM_DIR=$(mktemp -d)
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_HISTORY="$AM_DIR/history.jsonl"
     am_init
@@ -573,7 +581,8 @@ test_auto_title_scan() {
     local old_am_dir="$AM_DIR"
     local old_am_registry="$AM_REGISTRY"
     local old_am_history="${AM_HISTORY:-}"
-    export AM_DIR=$(mktemp -d)
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_HISTORY="$AM_DIR/history.jsonl"
     am_init

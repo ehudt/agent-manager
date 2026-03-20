@@ -4,6 +4,7 @@
 test_symlinked_kill_and_switch() {
     $SUMMARY_MODE || echo "=== Testing symlinked kill-and-switch ==="
 
+    # shellcheck disable=SC2034  # tmux_stub used by sourced code
     local temp_root bin_dir linked_bin tmux_stub am_dir
     temp_root=$(mktemp -d)
     bin_dir="$temp_root/bin"
@@ -362,7 +363,7 @@ test_standalone_switch_last_errors() {
         return
     fi
 
-    TMUX= am_tmux attach-session -t "$s1" </dev/null >/dev/null 2>&1 &
+    TMUX='' am_tmux attach-session -t "$s1" </dev/null >/dev/null 2>&1 &
     local attach_pid=$!
     sleep 0.3
 

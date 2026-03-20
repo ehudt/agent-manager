@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # state.sh - Session state detection
 #
 # Provides agent_get_state() and related helpers. State is derived on-demand

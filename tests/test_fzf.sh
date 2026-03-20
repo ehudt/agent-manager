@@ -81,7 +81,9 @@ test_annotated_directories() {
     set +u; source "$LIB_DIR/agents.sh"; set -u
     source "$LIB_DIR/fzf.sh"
 
-    export AM_DIR=$(mktemp -d)
+    local _tmpdir
+    _tmpdir=$(mktemp -d)
+    export AM_DIR="$_tmpdir"
     export AM_REGISTRY="$AM_DIR/sessions.json"
     am_init
 

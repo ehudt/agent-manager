@@ -5,7 +5,8 @@ test_cli() {
     $SUMMARY_MODE || echo "=== Testing am CLI ==="
 
     # Test help (no deps needed)
-    local help_output=$("$PROJECT_DIR/am" help)
+    local help_output
+    help_output=$("$PROJECT_DIR/am" help)
     assert_contains "$help_output" "Agent Manager" "am help: shows title"
     assert_contains "$help_output" "USAGE" "am help: shows usage"
     assert_contains "$help_output" "COMMANDS" "am help: shows commands"
@@ -16,7 +17,8 @@ test_cli() {
     assert_contains "$help_output" "am sb maps" "am help: mentions new sandbox mappings command"
 
     # Test version
-    local version_output=$("$PROJECT_DIR/am" version)
+    local version_output
+    version_output=$("$PROJECT_DIR/am" version)
     assert_contains "$version_output" "0.1.0" "am version: shows version"
 
     $SUMMARY_MODE || echo ""
@@ -38,7 +40,8 @@ test_cli_extended() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # Create a session for testing against
     local session_name
@@ -197,7 +200,8 @@ test_cli_yolo_sandbox_integration() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # --- Test: am new --yolo implies sandbox ---
     local session_name

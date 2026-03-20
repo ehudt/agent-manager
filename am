@@ -410,9 +410,11 @@ cmd_new() {
     # Launch agent (prompt passed via _AM_LAUNCH_PROMPT to avoid tty buffer overflow
     # when piping long prompts through tmux send-keys)
     _AM_LAUNCH_PROMPT="$initial_prompt"
+    # shellcheck disable=SC2034 # read by lib/agents.sh
     AM_SANDBOX_SHARES=("${sandbox_share_specs[@]}")
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
+    # shellcheck disable=SC2034
     AM_SANDBOX_SHARES=()
 
     if [[ -n "$session_name" ]]; then

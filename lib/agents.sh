@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # agents.sh - Agent launcher functions
 
 # Source dependencies if not already loaded

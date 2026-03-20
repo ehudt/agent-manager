@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # form.sh - tput-based new session form
 # Alternative to fzf_new_session_form(), gated by new_form config flag.
 

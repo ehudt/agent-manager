@@ -7,7 +7,6 @@ import uuid
 
 import pytest
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 LIB_DIR = REPO_ROOT / "lib"
 
@@ -55,8 +54,14 @@ def sandbox_env(tmp_path):
     try:
         yield env
     finally:
-        _run(["docker", "rm", "-f", "am-test-sb"], env=env, check=False)
-        _run(["docker", "volume", "rm", "-f", env["SB_STATE_VOLUME"]], env=env, check=False)
+        _run(
+            ["docker", "rm", "-f", "am-test-sb"],
+            env=env, check=False,
+        )
+        _run(
+            ["docker", "volume", "rm", "-f", env["SB_STATE_VOLUME"]],
+            env=env, check=False,
+        )
 
 
 def _shell(command, env, check=True):
@@ -139,7 +144,9 @@ def test_presets_merge_and_skip_missing_entries(sandbox_env, tmp_path):
 
 
 @pytest.mark.security
-def test_sandbox_start_uses_state_volume_and_project_mount_only_by_default(sandbox_env, tmp_path):
+def test_sandbox_start_uses_state_volume_and_project_mount_only_by_default(
+    sandbox_env, tmp_path,
+):
     project_dir = tmp_path / "project"
     project_dir.mkdir()
 
@@ -171,7 +178,11 @@ def test_entrypoint_hydration_and_share_mounts(sandbox_env, tmp_path):
     shared.write_text("shared-data\n")
 
     _shell(f"sb_map '{mapped}' --to ~/.mapped-file", sandbox_env)
-    _shell(f"sandbox_start am-test-sb '{project_dir}' '{shared}:~/.shared-file:rw'", sandbox_env)
+    _shell(
+        f"sandbox_start am-test-sb '{project_dir}'"
+        f" '{shared}:~/.shared-file:rw'",
+        sandbox_env,
+    )
 
     container_home = str(pathlib.Path.home())
     hydrated_path = _run([

@@ -25,12 +25,13 @@ test_agents() {
     set +u; source "$LIB_DIR/agents.sh"; set -u
 
     # Test detect_git_branch
-    local branch=$(detect_git_branch "$PROJECT_DIR")
-    # May or may not be in a git repo, just check it doesn't error
+    # Just check it doesn't error; value is unused
+    detect_git_branch "$PROJECT_DIR" >/dev/null
     assert_cmd_succeeds "detect_git_branch: runs without error" detect_git_branch "$PROJECT_DIR"
 
     # Test generate_session_name
-    local name=$(generate_session_name "/tmp/test")
+    local name
+    name=$(generate_session_name "/tmp/test")
     assert_contains "$name" "am-" "generate_session_name: has prefix"
     assert_eq 9 "${#name}" "generate_session_name: correct length (am- + 6 chars)"
 
@@ -79,8 +80,10 @@ test_agents_extended() {
         "agent_type_supported: bogus rejected"
 
     # Test generate_session_name: different dirs give different names
-    local name1=$(generate_session_name "/tmp/project-a")
-    local name2=$(generate_session_name "/tmp/project-b")
+    local name1
+    name1=$(generate_session_name "/tmp/project-a")
+    local name2
+    name2=$(generate_session_name "/tmp/project-b")
     if [[ "$name1" != "$name2" ]]; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
         $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: generate_session_name: different dirs different names"
@@ -91,7 +94,8 @@ test_agents_extended() {
     fi
 
     # Test generate_session_name format: am-XXXXXX
-    local name=$(generate_session_name "/tmp/test")
+    local name
+    name=$(generate_session_name "/tmp/test")
     assert_contains "$name" "am-" "generate_session_name: starts with am-"
     assert_eq 9 "${#name}" "generate_session_name: length is 9 (am- + 6)"
 
@@ -121,7 +125,8 @@ test_integration_lifecycle() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # --- Test: agent_launch creates session ---
     local session_name
@@ -200,15 +205,18 @@ test_worktree() {
     setup_integration_env
 
     # Create a temp git repo for worktree tests
-    local git_dir=$(mktemp -d)
+    local git_dir
+    git_dir=$(mktemp -d)
     git -C "$git_dir" init -q
     git -C "$git_dir" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
 
     # Also create a non-git temp dir
-    local nongit_dir=$(mktemp -d)
+    local nongit_dir
+    nongit_dir=$(mktemp -d)
 
     # --- Test: help text includes -w/--worktree ---
-    local help_output=$("$PROJECT_DIR/am" help)
+    local help_output
+    help_output=$("$PROJECT_DIR/am" help)
     assert_contains "$help_output" "--worktree" "help: mentions --worktree flag"
 
     # --- Test: agent_launch with worktree_name sets registry worktree_path ---
@@ -293,8 +301,8 @@ test_worktree() {
     fi
 
     # --- Test: unsupported agent type ignores worktree ---
-    local warn_output
-    warn_output=$(set +u; agent_launch "$git_dir" "gemini" "" "my-wt" 2>&1 >/dev/null)
+    # Capture stderr to verify warning is emitted (output intentionally unused)
+    set +u; agent_launch "$git_dir" "gemini" "" "my-wt" 2>/dev/null 1>/dev/null || true; set -u
     session_name=$(set +u; agent_launch "$git_dir" "gemini" "" "my-wt" 2>/dev/null)
     if [[ -n "$session_name" ]]; then
         wt_path=$(registry_get_field "$session_name" worktree_path)
@@ -370,7 +378,8 @@ test_sandbox_yolo_independence() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # Test: yolo without sandbox — no container_name in registry
     local session_name
@@ -421,7 +430,8 @@ test_resolve_session() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # Create a session
     local session_name
@@ -527,7 +537,8 @@ test_send_prompt_sandbox_delay() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # Create a real session so tmux_session_exists passes
     local session_name

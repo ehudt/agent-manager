@@ -17,10 +17,15 @@ test_sandbox() {
     assert_contains "$cmd" "docker exec" "sandbox_enter_cmd: contains docker exec"
     assert_contains "$cmd" "./am sb enter am-abc123" "sandbox_enter_cmd: contains sb re-entry command"
 
+    # shellcheck disable=SC2088 # Tildes in quotes are intentional — testing tilde expansion
     assert_eq "$HOME/demo" "$(sb_expand_path "~/demo")" "sb_expand_path: expands tilde"
+    # shellcheck disable=SC2088
     assert_eq "ssh" "$(_sb_name_from_target "~/.ssh")" "_sb_name_from_target: strips leading dot"
+    # shellcheck disable=SC2088
     assert_eq "claude.json" "$(_sb_name_from_target "~/.claude.json")" "_sb_name_from_target: preserves basename"
+    # shellcheck disable=SC2088
     assert_eq "$HOME/.vimrc|$HOME/.vimrc|ro" "$(_sb_share_spec_parse "~/.vimrc:ro")" "share parse: host+mode"
+    # shellcheck disable=SC2088
     assert_eq "$HOME/.ssh|$HOME/.ssh|rw" "$(_sb_share_spec_parse "~/.ssh:~/.ssh:rw")" "share parse: explicit target+mode"
 
     sb_vol_ensure

@@ -47,7 +47,8 @@ test_tmux_listing() {
 
     setup_integration_env
 
-    local test_dir=$(mktemp -d)
+    local test_dir
+    test_dir=$(mktemp -d)
 
     # Test: count is 0 before any sessions
     local count

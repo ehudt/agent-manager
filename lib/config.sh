@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # config.sh - Persistent user defaults and effective config resolution
 
 # Source utils if not already loaded

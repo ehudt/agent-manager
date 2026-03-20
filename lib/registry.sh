@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # registry.sh - Session metadata storage using JSON
 
 # Source utils if not already loaded

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # tmux.sh - tmux wrapper functions
 
 # Source utils if not already loaded
@@ -180,7 +181,7 @@ tmux_attach() {
     else
         # Attach to the dedicated agent-manager server. Clear TMUX so nesting
         # inside an unrelated tmux server attaches a new client instead.
-        TMUX= am_tmux attach-session -t "$name"
+        TMUX='' am_tmux attach-session -t "$name"
     fi
 }
 

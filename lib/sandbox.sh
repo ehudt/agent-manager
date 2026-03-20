@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # sandbox.sh - Container lifecycle functions for agent sandboxes
 
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
@@ -17,6 +18,7 @@ _SB_HOST_USER=""
 _SB_HOST_UID=""
 _SB_HOST_GID=""
 
+# shellcheck source=/dev/null
 [[ -f "$SANDBOX_ENV_FILE" ]] && source "$SANDBOX_ENV_FILE"
 
 _sandbox_ensure_host_identity() {
@@ -125,6 +127,7 @@ _sandbox_stop_proxy() {
 
 sb_expand_path() {
     local path="$1"
+    # shellcheck disable=SC2088
     case "$path" in
         "~") printf '%s\n' "$HOME" ;;
         "~/"*) printf '%s/%s\n' "$HOME" "${path#"~/"}" ;;
@@ -278,7 +281,7 @@ sandbox_start() {
     local -a mounts
     mounts=(-v "$SB_STATE_VOLUME:$HOME/.am-state" -v "$directory:$directory")
 
-    local share parsed share_host share_target share_mode
+    local parsed share_host share_target share_mode
     while IFS= read -r parsed; do
         [[ -z "$parsed" ]] && continue
         IFS='|' read -r share_host share_target share_mode <<< "$parsed"
@@ -494,10 +497,9 @@ _sb_map_single() {
     local name="$3"
     local mode="$4"
     local description="$5"
-    local expanded_host expanded_target manifest entry src_path kind
+    local expanded_host manifest entry src_path
 
     expanded_host=$(sb_expand_path "$host_path")
-    expanded_target=$(sb_expand_path "$target_path")
     [[ -e "$expanded_host" ]] || { log_error "Host path not found: $expanded_host"; return 1; }
 
     sb_vol_ensure
@@ -507,8 +509,6 @@ _sb_map_single() {
     fi
 
     src_path="$name"
-    kind="file"
-    [[ -d "$expanded_host" ]] && kind="dir"
     sb_vol_copy_in "$expanded_host" "data/$src_path"
 
     entry=$(jq -n \
