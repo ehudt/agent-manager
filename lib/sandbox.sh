@@ -75,6 +75,21 @@ _sandbox_wait_ready() {
     return 1
 }
 
+# Build a docker exec command that runs a command inside the container directly.
+# Unlike sandbox_enter_cmd (interactive shell + reconnect loop), this runs the
+# given command via zsh -lc, avoiding race conditions with tty buffering.
+# Usage: sandbox_exec_cmd <session-name> <directory> <command>
+sandbox_exec_cmd() {
+    local session_name="$1"
+    local directory="$2"
+    local cmd="$3"
+    _sandbox_ensure_host_identity
+    local target_dir="${directory:-$HOME}"
+    local quoted_cmd
+    printf -v quoted_cmd '%q' "$cmd"
+    printf "%s" "docker exec -it -u '$_SB_HOST_USER' -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh -lc $quoted_cmd"
+}
+
 _sandbox_list_containers() {
     docker ps -a --filter "label=agent-sandbox" --format '{{.Names}}'
 }
@@ -417,12 +432,19 @@ sb_ps() {
 }
 
 sb_prune() {
-    local container_name
+    local container_name count=0
     while IFS= read -r container_name; do
         [[ -z "$container_name" ]] && continue
-        _sandbox_log_event "$container_name" "prune_stopped" "reason=sb_prune"
-    done < <(docker ps -a --filter "label=agent-sandbox" --filter "status=exited" --format '{{.Names}}')
-    docker container prune -f --filter "label=agent-sandbox" >/dev/null
+        _sandbox_log_event "$container_name" "prune" "reason=sb_prune"
+        docker rm -f "$container_name" >/dev/null 2>&1 || true
+        _sandbox_stop_proxy "$container_name"
+        count=$((count + 1))
+    done < <(_sandbox_list_containers)
+    if (( count > 0 )); then
+        log_info "Removed $count sandbox container(s)"
+    else
+        log_info "No sandbox containers to remove"
+    fi
 }
 
 sb_reset() {

@@ -339,8 +339,9 @@ agent_launch() {
         local attach_cmd
         attach_cmd=$(sandbox_enter_cmd "$session_name" "$session_directory")
         tmux_send_keys "$session_name:.{bottom}" "$attach_cmd" Enter
-        tmux_send_keys "$session_name:.{top}" "$attach_cmd" Enter
-        tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+        local exec_cmd
+        exec_cmd=$(sandbox_exec_cmd "$session_name" "$session_directory" "$full_cmd")
+        tmux_send_keys "$session_name:.{top}" "$exec_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
     fi

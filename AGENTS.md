@@ -53,7 +53,7 @@ am → fzf_main() → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
 fzf_list_sessions() / fzf_list_json() → auto_title_scan() → _title_fallback() → registry_update() + history_append()
 Ctrl-N in fzf → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
-am new --yolo ~/project → agent_launch() → sandbox_start() → tmux panes attach → agent runs in container
+am new --yolo ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am sb map ~/.ssh --to ~/.ssh → sb_vol_copy_in() + manifest update → sandbox entrypoint hydrates ~/.am-state into target paths
 agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
 ```
@@ -171,12 +171,14 @@ For agent orchestration, prefer this sequence:
 **Sandbox:**
 - `sandbox_start(session_name, dir)` - Create and start per-session Docker container
 - `sandbox_enter_cmd(session_name, dir)` - Build reconnecting shell-entry command for a running sandbox
+- `sandbox_exec_cmd(session_name, dir, cmd)` - Build docker exec command that runs a command directly inside the container via `zsh -lc`
 - `sandbox_remove(session_name)` - Force-remove container
 - `sandbox_status(session_name)` - Show container state and event log
 - `sandbox_gc_orphans()` - Remove containers whose tmux session no longer exists
 - `sb_build([no_cache])` - Build Docker image from sandbox directory
 - `sb_map()` / `sb_unmap()` / `sb_maps()` / `sb_sync()` / `sb_edit()` - Manage manifest-driven state mappings in the sandbox volume
 - `sb_ps()` / `sb_prune()` / `sb_reset()` / `sb_export()` / `sb_import()` / `sb_shell()` - Manage sandbox containers and the shared state volume
+- `sb_prune()` - Force-remove all sandbox containers (running + stopped) and their proxies
 
 **Sandbox volume (`lib/sb_volume.sh`):**
 - `sb_vol_ensure()` - Create the state volume and seed `meta.json` / `mappings.json`
