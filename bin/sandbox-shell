@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Reconnecting shell loop for a sandbox container.
+# Enters the container via docker exec; re-enters on clean exit,
+# breaks out when the container is gone or the user exits with code 42.
+#
+# Usage: sandbox-shell <session-name> <directory> [host-exit-code]
+
+set -euo pipefail
+
+session_name="${1:?Usage: sandbox-shell <session-name> <directory> [host-exit-code]}"
+directory="${2:?Usage: sandbox-shell <session-name> <directory> [host-exit-code]}"
+host_exit_code="${3:-42}"
+
+# Resolve host identity
+host_user="$(id -un)"
+host_uid="$(id -u)"
+host_gid="$(id -g)"
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+    script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+    script_path="$(readlink "$script_path")"
+    [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
+done
+script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+repo_dir="$(cd "$script_dir/.." && pwd -P)"
+
+event_log="${HOME}/.agent-manager/logs/${session_name}/sandbox.log"
+
+while true; do
+    docker exec -it \
+        -u "$host_user" \
+        -w "$directory" \
+        -e "HOST_UID=$host_uid" \
+        -e "HOST_GID=$host_gid" \
+        -e "TERM=${TERM:-xterm-256color}" \
+        "$session_name" zsh || true
+    rc=$?
+
+    if ! docker inspect "$session_name" >/dev/null 2>&1; then
+        printf '\n[am] sandbox %s is gone; you are now on the host shell.\n' "$session_name"
+        printf '[am] inspect: %s/am sb status %s\n' "$repo_dir" "$session_name"
+        printf '[am] events: %s\n' "$event_log"
+        break
+    fi
+
+    if [[ $rc -eq $host_exit_code ]]; then
+        printf '\n[am] leaving sandbox %s and staying on the host shell.\n' "$session_name"
+        printf '[am] re-enter later: %s/am sb enter %s\n' "$repo_dir" "$session_name"
+        break
+    fi
+
+    if [[ $rc -eq 0 ]]; then
+        printf '\n[am] sandbox shell exited for %s; reconnecting...\n' "$session_name"
+    else
+        printf '\n[am] sandbox shell exited (status %s) for %s; reconnecting...\n' "$rc" "$session_name"
+    fi
+    printf '[am] to stay on the host shell, run: exit %s\n' "$host_exit_code"
+    printf '[am] re-enter manually: %s/am sb enter %s\n' "$repo_dir" "$session_name"
+    sleep 1
+done

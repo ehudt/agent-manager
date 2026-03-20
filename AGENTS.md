@@ -43,6 +43,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/sb_volume.sh` | Docker-volume helpers for sandbox state persistence |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
 | `sandbox/entrypoint.sh` | Container init: user alignment, Tailscale, SSH |
+| `bin/sandbox-shell` | Reconnecting shell loop for sandbox containers (used by shell pane) |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
 

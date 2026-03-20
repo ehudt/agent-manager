@@ -286,8 +286,8 @@ test_worktree() {
             wt_path=$(registry_get_field "$session_name" worktree_path)
             local attach_cmd
             attach_cmd=$(sandbox_enter_cmd "$session_name" "$wt_path")
-            assert_contains "$attach_cmd" "-w '$wt_path'" \
-                "codex sandbox worktree: attach command enters worktree cwd"
+            assert_contains "$attach_cmd" "$wt_path" \
+                "codex sandbox worktree: attach command includes worktree path"
             local container_name
             container_name=$(registry_get_field "$session_name" container_name)
             assert_eq "$session_name" "$container_name" \

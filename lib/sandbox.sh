@@ -367,15 +367,11 @@ sandbox_start() {
 
 sandbox_enter_cmd() {
     local session_name="$1"
-    local directory="$2"
-    _sandbox_ensure_host_identity
+    local directory="${2:-$HOME}"
     local host_exit_code="${SANDBOX_HOST_EXIT_CODE:-42}"
-    local target_dir="${directory:-$HOME}"
-    local event_log
-    event_log="$(_sandbox_event_log_path "$session_name")"
-    local enter_cmd
-    enter_cmd="docker exec -it -u '$_SB_HOST_USER' -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh"
-    printf "%s" "_am_sandbox_enter() { $enter_cmd; }; while true; do _am_sandbox_enter; _am_rc=\$?; if ! docker inspect '$session_name' >/dev/null 2>&1; then printf '\n[am] sandbox %s is gone; you are now on the host shell.\n[am] inspect: ./am sb status %s\n[am] events: %s\n' '$session_name' '$session_name' '$event_log'; break; fi; if [[ \$_am_rc -eq $host_exit_code ]]; then printf '\n[am] leaving sandbox %s and staying on the host shell.\n' '$session_name'; printf '[am] re-enter later: ./am sb enter $session_name\n'; break; fi; if [[ \$_am_rc -eq 0 ]]; then printf '\n[am] sandbox shell exited for %s; reconnecting...\n' '$session_name'; else printf '\n[am] sandbox shell exited (status %s) for %s; reconnecting...\n' \"\$_am_rc\" '$session_name'; fi; printf '[am] to stay on the host shell, run: exit $host_exit_code\n'; printf '[am] re-enter manually: ./am sb enter $session_name\n'; sleep 1; done"
+    local script_path
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/bin/sandbox-shell"
+    printf '%q %q %q %q' "$script_path" "$session_name" "$directory" "$host_exit_code"
 }
 
 sandbox_remove() {

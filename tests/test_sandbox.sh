@@ -14,8 +14,8 @@ test_sandbox() {
 
     local cmd
     cmd=$(sandbox_enter_cmd "am-abc123" "/home/user/project")
-    assert_contains "$cmd" "docker exec" "sandbox_enter_cmd: contains docker exec"
-    assert_contains "$cmd" "./am sb enter am-abc123" "sandbox_enter_cmd: contains sb re-entry command"
+    assert_contains "$cmd" "sandbox-shell" "sandbox_enter_cmd: invokes sandbox-shell script"
+    assert_contains "$cmd" "am-abc123" "sandbox_enter_cmd: contains session name"
 
     # shellcheck disable=SC2088 # Tildes in quotes are intentional — testing tilde expansion
     assert_eq "$HOME/demo" "$(sb_expand_path "~/demo")" "sb_expand_path: expands tilde"
