@@ -8,3 +8,4 @@
 ^pypi\.org$
 ^files\.pythonhosted\.org$
 ^(.+\.)?crates\.io$
+^sun\.aei\.polsl\.pl$

@@ -15,7 +15,7 @@ _counter = 0
 def _unique_name():
     global _counter  # noqa: PLW0603
     _counter += 1
-    return f"am-test-sb-{os.getpid()}-{_counter}"
+    return f"test-am-sb-{os.getpid()}-{_counter}"
 
 
 def _run(cmd, *, env=None, check=True, timeout=240):
@@ -65,10 +65,11 @@ def sandbox_env(tmp_path):
     try:
         yield env
     finally:
-        _run(
-            ["docker", "rm", "-f", container_name],
-            env=env, check=False,
-        )
+        proxy_name = f"{container_name}-proxy"
+        net_name = f"{container_name}-net"
+        _run(["docker", "rm", "-f", container_name], env=env, check=False)
+        _run(["docker", "rm", "-f", proxy_name], env=env, check=False)
+        _run(["docker", "network", "rm", net_name], env=env, check=False)
 
 
 def _shell(command, env, check=True):

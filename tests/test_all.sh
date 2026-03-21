@@ -39,8 +39,11 @@ run_worker() {
     local test_functions=("$@")
 
     (
-        local _worker_start
+        # Capture values the EXIT trap needs — local vars from the outer
+        # function are not reliably available inside subshell traps.
         _worker_start=$(date +%s)
+        _worker_results_file="$_WORK_DIR/results-$worker_id"
+        _worker_tmux_socket="$socket_name"
 
         # Isolated environment for this worker
         export _AM_PARALLEL_WORKER=1
@@ -85,8 +88,8 @@ run_worker() {
                 for detail in "${FAIL_DETAILS[@]+${FAIL_DETAILS[@]}}"; do
                     echo "FAIL_DETAIL=$detail"
                 done
-            } > "$_WORK_DIR/results-$worker_id"
-            tmux -L "$AM_TMUX_SOCKET" kill-server 2>/dev/null || true
+            } > "$_worker_results_file"
+            tmux -L "$_worker_tmux_socket" kill-server 2>/dev/null || true
             exit $_worker_rc
         ' EXIT
 
@@ -94,6 +97,7 @@ run_worker() {
         for func in "${test_functions[@]}"; do
             "$func"
         done
+        :  # ensure exit 0 — actual failures are tracked in TESTS_FAILED
     ) > "$_WORK_DIR/output-$worker_id" 2>&1
 }
 
@@ -215,10 +219,30 @@ worker7_tests() {
 }
 
 # ============================================
+# Docker cleanup — remove containers and networks left by sandbox tests
+# ============================================
+
+_cleanup_docker_test_resources() {
+    command -v docker &>/dev/null || return 0
+    # Remove test containers (main + proxy), then their networks.
+    # All test resources use the test-am- prefix.
+    local containers
+    containers=$(docker ps -a --filter 'name=test-am-' --format '{{.Names}}' 2>/dev/null) || return 0
+    [[ -n "$containers" ]] && echo "$containers" | xargs -r docker rm -f &>/dev/null || true
+    local networks
+    networks=$(docker network ls --filter 'name=test-am-' --format '{{.Name}}' 2>/dev/null) || return 0
+    [[ -n "$networks" ]] && echo "$networks" | xargs -r docker network rm &>/dev/null || true
+    docker network prune -f &>/dev/null || true
+}
+
+# ============================================
 # Main
 # ============================================
 
 main() {
+    # Clean up Docker resources on exit (normal, failure, or interruption)
+    trap '_cleanup_docker_test_resources' EXIT
+
     $SUMMARY_MODE || echo "========================================"
     $SUMMARY_MODE || echo "  Agent Manager Test Suite (parallel)"
     $SUMMARY_MODE || echo "========================================"

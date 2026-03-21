@@ -8,7 +8,7 @@ test_sandbox() {
     source "$LIB_DIR/config.sh"
 
     export AM_SCRIPT_DIR="$PROJECT_DIR"
-    export SB_HOME_DIR="$TMPDIR/sb-home-$$"
+    export SB_HOME_DIR="${TMPDIR:-/tmp}/sb-home-$$"
     source "$LIB_DIR/sandbox.sh"
 
     local cmd
