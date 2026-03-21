@@ -101,7 +101,7 @@ agent_prepare_managed_worktree() {
     fi
 
     mkdir -p "$worktree_root"
-    if ! git -C "$directory" worktree add --detach "$worktree_path" HEAD >/dev/null; then
+    if ! git -C "$directory" worktree add -b "$worktree_name" "$worktree_path" HEAD >/dev/null; then
         log_error "Failed to create git worktree: $worktree_path"
         return 1
     fi
