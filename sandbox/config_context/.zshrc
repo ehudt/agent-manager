@@ -1,5 +1,4 @@
-export PATH="$HOME/.local/bin:$PATH"
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 

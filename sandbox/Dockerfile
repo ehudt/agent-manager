@@ -45,6 +45,24 @@ COPY config_context/.vimrc /etc/skel/.vimrc
 ENV UV_INSTALL_DIR=/usr/local/bin
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
+# Install uv-managed Python and tools to system paths
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+ENV UV_TOOL_DIR=/opt/uv-tools
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
+RUN uv python install
+RUN uv tool install ipython
+
+# Install Rust toolchain to /usr/local (system-wide, read-only).
+# Don't export RUSTUP_HOME/CARGO_HOME — user cargo operations default to ~/.cargo (writable).
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path && \
+    /usr/local/cargo/bin/rustup component add rustfmt
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+# Clear CARGO_HOME so user cargo operations default to ~/.cargo (writable).
+# RUSTUP_HOME stays set — rustup needs it to find the system toolchain.
+ENV CARGO_HOME=
+
 # Install Claude CLI: install as ubuntu, then copy binary to system path
 USER ubuntu
 RUN curl -fsSL https://claude.ai/install.sh | bash

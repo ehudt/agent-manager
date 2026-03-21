@@ -56,30 +56,5 @@ else
     rm -f "$SUDOERS_UNSAFE_DROPIN" 2>/dev/null || true
 fi
 
-# Install user-level tools into bind-mounted home (idempotent, runs as ubuntu).
-_install_user_tools() {
-    # Rust toolchain (--no-modify-path: we source .cargo/env in .zshrc)
-    if [ ! -x "$USER_HOME/.cargo/bin/rustc" ]; then
-        su - "$USER" -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path' >&2
-        su - "$USER" -c '. "$HOME/.cargo/env" && rustup component add rustfmt' >&2
-    fi
-
-    # uv-managed Python
-    if ! su - "$USER" -c 'uv python list --only-installed 2>/dev/null' | grep -q cpython; then
-        su - "$USER" -c 'uv python install' >&2
-    fi
-
-    # ipython
-    if [ ! -x "$USER_HOME/.local/bin/ipython" ]; then
-        su - "$USER" -c 'uv tool install ipython' >&2
-    fi
-}
-# Signal readiness immediately — tool installs continue in the background.
 touch /tmp/am-entrypoint-ready
-
-_install_user_tools &
-
-# Wait for background installs, then idle. Cannot exec here — that would
-# replace PID 1 and orphan the background job.
-wait
 exec tail -f /dev/null
