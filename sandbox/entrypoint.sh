@@ -28,9 +28,6 @@ fi
 
 GROUP=$(id -gn "$USER")
 
-# Always chown home — it's a bind mount so ownership may differ.
-chown -R "${USER}:${GROUP}" "$USER_HOME" 2>/dev/null || true
-
 # Seed skeleton files into home if missing (first run with empty bind mount).
 if [ -d /etc/skel ]; then
     for f in /etc/skel/.*; do
@@ -39,6 +36,10 @@ if [ -d /etc/skel ]; then
         [ -e "$USER_HOME/$base" ] || cp -a "$f" "$USER_HOME/$base"
     done
 fi
+
+# Always chown home — it's a bind mount so ownership may differ.
+# Runs after skeleton seeding so copied files get correct ownership too.
+chown -R "${USER}:${GROUP}" "$USER_HOME" 2>/dev/null || true
 
 # Always allow passwordless apt-get/apt so agents can install packages.
 if [ -w /etc/sudoers.d ]; then
@@ -55,5 +56,30 @@ else
     rm -f "$SUDOERS_UNSAFE_DROPIN" 2>/dev/null || true
 fi
 
+# Install user-level tools into bind-mounted home (idempotent, runs as ubuntu).
+_install_user_tools() {
+    # Rust toolchain (--no-modify-path: we source .cargo/env in .zshrc)
+    if [ ! -x "$USER_HOME/.cargo/bin/rustc" ]; then
+        su - "$USER" -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path' >&2
+        su - "$USER" -c '. "$HOME/.cargo/env" && rustup component add rustfmt' >&2
+    fi
+
+    # uv-managed Python
+    if ! su - "$USER" -c 'uv python list --only-installed 2>/dev/null' | grep -q cpython; then
+        su - "$USER" -c 'uv python install' >&2
+    fi
+
+    # ipython
+    if [ ! -x "$USER_HOME/.local/bin/ipython" ]; then
+        su - "$USER" -c 'uv tool install ipython' >&2
+    fi
+}
+# Signal readiness immediately — tool installs continue in the background.
 touch /tmp/am-entrypoint-ready
+
+_install_user_tools &
+
+# Wait for background installs, then idle. Cannot exec here — that would
+# replace PID 1 and orphan the background job.
+wait
 exec tail -f /dev/null
