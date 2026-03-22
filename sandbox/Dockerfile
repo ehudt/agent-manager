@@ -36,7 +36,10 @@ RUN npx -y playwright install-deps chromium && \
     npx -y playwright install chromium && \
     chmod -R 755 /ms-playwright
 
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex pure-prompt
+
+# Install fzf from GitHub (apt version is outdated)
+RUN curl -fsSL https://github.com/junegunn/fzf/releases/latest/download/fzf-$(curl -fsSL https://api.github.com/repos/junegunn/fzf/releases/latest | jq -r .tag_name | tr -d v)-linux_amd64.tar.gz | tar -xz -C /usr/local/bin
 
 COPY config_context/.zshrc /etc/zsh/zshrc
 COPY config_context/.vimrc /etc/skel/.vimrc
