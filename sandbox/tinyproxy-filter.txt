@@ -1,4 +1,5 @@
 ^(.+\.)?anthropic\.com$
+^(.+\.)?claude\.com$
 ^(.+\.)?openai\.com$
 ^(.+\.)?chatgpt\.com$
 ^(.+\.)?oaistatic\.com$
