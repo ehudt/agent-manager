@@ -244,6 +244,13 @@ tmux_pane_current_command() {
     am_tmux display-message -p -t "$target" '#{pane_current_command}'
 }
 
+# Return the title of a pane (set by the application via escape sequences).
+# Usage: tmux_pane_title <target-pane>
+tmux_pane_title() {
+    local target="$1"
+    am_tmux display-message -p -t "$target" '#{pane_title}'
+}
+
 # Resolve a logical pane name to a tmux pane target.
 # Usage: tmux_session_pane_target <session_name> [agent|shell]
 tmux_session_pane_target() {

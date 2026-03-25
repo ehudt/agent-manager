@@ -119,93 +119,6 @@ test_standalone_dir_preview() {
     $SUMMARY_MODE || echo ""
 }
 
-test_standalone_title_upgrade() {
-    $SUMMARY_MODE || echo "=== Testing lib/title-upgrade (standalone) ==="
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/registry.sh"
-    set +u; source "$LIB_DIR/agents.sh"; set -u
-    setup_integration_env
-
-    local rc
-
-    rc=0
-    "$LIB_DIR/title-upgrade" "" "" 2>/dev/null || rc=$?
-    assert_eq "0" "$rc" "title-upgrade: exits 0 on missing arguments"
-
-    rc=0
-    "$LIB_DIR/title-upgrade" "session" "" 2>/dev/null || rc=$?
-    assert_eq "0" "$rc" "title-upgrade: exits 0 on missing message"
-
-    rc=0
-    "$LIB_DIR/title-upgrade" "" "message" 2>/dev/null || rc=$?
-    assert_eq "0" "$rc" "title-upgrade: exits 0 on missing session"
-
-    registry_add "test-session" "/tmp/test" "claude" "test task" ""
-
-    local before_task
-    # shellcheck disable=SC2034
-    before_task=$(registry_get_field "test-session" task)
-
-    local has_claude=0
-    command -v claude &>/dev/null && has_claude=1
-
-    if [[ "$has_claude" -eq 1 ]]; then
-        CLAUDECODE="" "$LIB_DIR/title-upgrade" "test-session" "Fix authentication bug in login handler" 2>/dev/null &
-        local upgrade_pid=$!
-        sleep 0.2
-
-        rc=0
-        rm -rf "$TEST_AM_DIR" || rc=$?
-        wait "$upgrade_pid" 2>/dev/null || true
-        assert_eq "0" "$rc" "title-upgrade: handles registry removal gracefully"
-    else
-        skip_test "title-upgrade: Haiku upgrade (claude CLI not available)"
-    fi
-
-    setup_integration_env
-    registry_add "test-session-2" "/tmp/test" "claude" "original task" ""
-
-    export AM_DIR="$TEST_AM_DIR"
-
-    if [[ "$has_claude" -eq 1 ]]; then
-        # shellcheck disable=SC2034
-        CLAUDECODE=""
-        (sleep 10; kill -9 $$ 2>/dev/null) &
-        local killer_pid=$!
-        "$LIB_DIR/title-upgrade" "test-session-2" "Implement user authentication with OAuth2" 2>/dev/null || true
-        kill "$killer_pid" 2>/dev/null || true
-        sleep 0.5
-
-        local updated_task
-        updated_task=$(registry_get_field "test-session-2" task 2>/dev/null || echo "original task")
-
-        if [[ "$updated_task" != "original task" ]]; then
-            $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title-upgrade: updates task in registry"
-            ((TESTS_PASSED++))
-            ((TESTS_RUN++))
-
-            ((TESTS_RUN++))
-            if [[ ${#updated_task} -le 60 ]]; then
-                $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title-upgrade: respects 60 char limit"
-                ((TESTS_PASSED++))
-            else
-                printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title-upgrade: respects 60 char limit"
-                FAIL_DETAILS+=("FAIL: title-upgrade: respects 60 char limit")
-                echo "  Task length: ${#updated_task}"
-                ((TESTS_FAILED++))
-            fi
-        else
-            skip_test "title-upgrade: Haiku upgrade (no update detected)"
-        fi
-    else
-        skip_test "title-upgrade: Haiku upgrade (claude CLI not available)"
-    fi
-
-    teardown_integration_env
-
-    $SUMMARY_MODE || echo ""
-}
-
 test_standalone_status_right() {
     $SUMMARY_MODE || echo "=== Testing lib/status-right (standalone) ==="
     source "$LIB_DIR/utils.sh"
@@ -320,7 +233,6 @@ test_strip_ansi() {
 run_standalone_scripts_tests() {
     _run_test test_standalone_preview
     _run_test test_standalone_dir_preview
-    _run_test test_standalone_title_upgrade
     _run_test test_standalone_status_right
     _run_test test_strip_ansi
 }

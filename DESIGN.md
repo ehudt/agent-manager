@@ -202,7 +202,6 @@ agent-manager/
 │   ├── fzf.sh              # fzf UI, directory picker with history annotations
 │   ├── preview             # Standalone preview script for fzf panel
 │   ├── dir-preview         # Standalone preview script for directory picker
-│   ├── title-upgrade       # Standalone script: fire-and-forget Haiku title upgrade
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
 │   ├── sandbox.sh          # Docker sandbox lifecycle and fleet ops
 │   ├── state.sh            # Session state detection: JSONL + pane pattern matching
@@ -272,15 +271,13 @@ tmux send-keys -t "$name" "claude" Enter
 Sessions are titled via `auto_title_scan()`, a piggyback scanner that runs during fzf touchpoints (list generation, reload):
 
 1. Throttled to once per 60s (unless `force=1`) via timestamp marker
-2. Iterates registry entries that have no `task` field yet
-3. Extracts first user message from Claude's session JSONL (truncated to 200 chars)
-4. Writes a fallback title immediately (`_title_fallback`: first sentence extraction)
-5. Spawns a fire-and-forget background subshell to upgrade via Claude Haiku (2-5 word title)
-6. Updates registry `task` field and appends to session history
+2. Iterates all registry entries
+3. Reads `#{pane_title}` from the agent (top) pane via `tmux_pane_title()`
+4. Trims leading non-alphanumeric characters and validates (≤60 chars, no newlines)
+5. Updates registry `task` field if changed; appends to history on first title
 
 Key implementation details:
-- Haiku subshell unsets `CLAUDECODE` env var to avoid "nested session" rejection
-- Haiku subshell disables `errexit`/`pipefail` inherited from parent shell
+- Agents set the terminal title via escape sequences; tmux exposes it as `#{pane_title}`
 - Rejects titles over 60 chars or multiline (`_title_valid`)
 - Logs to `~/.agent-manager/titler.log` for debugging
 

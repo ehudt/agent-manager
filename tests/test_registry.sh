@@ -459,44 +459,7 @@ test_auto_title_session() {
 
     # Use production title functions directly (sourced from lib/registry.sh)
 
-    # --- Test 1: Fallback title from first sentence ---
-    local fallback
-    fallback=$(_title_fallback "Fix the login bug in auth module. Also refactor utils.")
-    assert_contains "$fallback" "Fix the login bug" \
-        "title_gen: fallback extracts first sentence"
-
-    # --- Test 2: Fallback stops at punctuation ---
-    fallback=$(_title_fallback "Add user settings page? Not sure about design.")
-    assert_contains "$fallback" "Add user settings page" \
-        "title_gen: fallback stops at ?"
-
-    # --- Test 3: Fallback removes URLs ---
-    fallback=$(_title_fallback "See https://example.com/docs for details. Fix auth bug.")
-    assert_not_empty "$fallback" "title_gen: fallback handles URLs"
-    if [[ "$fallback" != *"https"* ]]; then
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: fallback removes URLs"
-    else
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: fallback should remove URLs"
-        FAIL_DETAILS+=("FAIL: title_gen: fallback should remove URLs")
-    fi
-
-    # --- Test 4: Haiku output markdown stripping ---
-    local stripped
-    stripped=$(_title_strip_haiku "# Fix Login Bug")
-    assert_eq "Fix Login Bug" "$stripped" \
-        "title_gen: strips leading markdown"
-
-    stripped=$(_title_strip_haiku "\`Refactor Database\`")
-    assert_eq "Refactor Database" "$stripped" \
-        "title_gen: strips backticks"
-
-    stripped=$(_title_strip_haiku "*Add Dark Mode*")
-    assert_eq "Add Dark Mode" "$stripped" \
-        "title_gen: strips asterisks"
-
-    # --- Test 5: Title validation - length check ---
+    # --- Test 1: Title validation - length check ---
     if _title_valid "Short title"; then
         ((TESTS_RUN++)); ((TESTS_PASSED++))
         $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: accepts valid short title"
@@ -515,7 +478,7 @@ test_auto_title_session() {
         $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: rejects title >60 chars"
     fi
 
-    # --- Test 6: Title validation - newline check ---
+    # --- Test 2: Title validation - newline check ---
     if _title_valid $'Multi\nline'; then
         ((TESTS_RUN++)); ((TESTS_FAILED++))
         printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: rejects multiline titles"
@@ -525,12 +488,7 @@ test_auto_title_session() {
         $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: rejects multiline titles"
     fi
 
-    # --- Test 7: Edge case - empty message produces empty fallback ---
-    fallback=$(_title_fallback "")
-    assert_eq "" "$fallback" \
-        "title_gen: empty message produces empty fallback"
-
-    # --- Test 8: Integration - registry update on successful title ---
+    # --- Test 3: Integration - registry update on successful title ---
     registry_add "test-title-reg" "/tmp/test" "main" "claude" ""
     registry_update "test-title-reg" "task" "Refactor API layer"
     local stored_task
@@ -538,14 +496,14 @@ test_auto_title_session() {
     assert_eq "Refactor API layer" "$stored_task" \
         "title_gen: registry_update persists title"
 
-    # --- Test 9: Integration - history append on title set ---
+    # --- Test 4: Integration - history append on title set ---
     history_append "/tmp/test" "Refactor API layer" "claude" "main"
     local hist_count=0
     [[ -f "$AM_HISTORY" ]] && hist_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
     assert_eq "1" "$hist_count" \
         "title_gen: history_append records task"
 
-    # --- Test 10: History is skipped for empty task ---
+    # --- Test 5: History is skipped for empty task ---
     history_append "/tmp/test" "" "claude" "main"
     local hist_count_after=0
     [[ -f "$AM_HISTORY" ]] && hist_count_after=$(wc -l < "$AM_HISTORY" | tr -d ' ')
@@ -587,102 +545,84 @@ test_auto_title_scan() {
     export AM_HISTORY="$AM_DIR/history.jsonl"
     am_init
 
-    # Stub claude_first_user_message
-    claude_first_user_message() {
-        case "$1" in
-            */has-msg) echo "Fix the login bug in auth. Also refactor." ;;
+    # Stub tmux_pane_title to return titles based on session name
+    tmux_pane_title() {
+        local target="$1"
+        case "$target" in
+            test-scan-1:*) echo "Fix the login bug in auth" ;;
+            test-scan-2:*) echo "Updated title from pane" ;;
+            test-scan-3:*) echo "" ;;
+            test-scan-4:*) echo "Throttle test title" ;;
+            test-scan-5:*) echo "First title for history" ;;
+            test-scan-6:*) echo "Existing Title" ;;
+            test-scan-7:*) echo ">>> Clean up the mess" ;;
             *) echo "" ;;
         esac
     }
 
-    # --- Test 1: Titles untitled session with fallback ---
-    registry_add "test-scan-1" "/tmp/has-msg" "main" "claude" ""
+    # --- Test 1: Updates session task from pane title ---
+    registry_add "test-scan-1" "/tmp/project" "main" "claude" ""
     auto_title_scan 1  # force
     local task
     task=$(registry_get_field "test-scan-1" "task")
-    assert_contains "$task" "Fix the login bug in auth" \
-        "scan: writes fallback title for untitled session"
+    assert_eq "Fix the login bug in auth" "$task" \
+        "scan: updates task from pane title"
 
-    # --- Test 2: Skips already-titled sessions ---
-    registry_add "test-scan-2" "/tmp/has-msg" "main" "claude" "Existing Title"
-    auto_title_scan 1
-    task=$(registry_get_field "test-scan-2" "task")
-    assert_eq "Existing Title" "$task" \
-        "scan: skips already-titled session"
-
-    # --- Test 3: Skips sessions with no user message ---
-    registry_add "test-scan-3" "/tmp/no-msg" "main" "claude" ""
+    # --- Test 2: Skips session with empty/invalid pane title ---
+    registry_add "test-scan-3" "/tmp/project" "main" "claude" ""
     auto_title_scan 1
     task=$(registry_get_field "test-scan-3" "task")
     assert_eq "" "$task" \
-        "scan: skips session with no user message"
+        "scan: skips session with empty pane title"
 
-    # --- Test 4: Throttling works ---
-    registry_add "test-scan-4" "/tmp/has-msg" "main" "claude" ""
+    # --- Test 3: Throttling works ---
+    registry_add "test-scan-4" "/tmp/project" "main" "claude" ""
     auto_title_scan  # throttled (ran <60s ago from test 1)
     task=$(registry_get_field "test-scan-4" "task")
     assert_eq "" "$task" \
         "scan: throttled within 60s"
 
-    # --- Test 5: Force bypasses throttle ---
+    # --- Test 4: Force bypasses throttle ---
     auto_title_scan 1
     task=$(registry_get_field "test-scan-4" "task")
-    assert_contains "$task" "Fix the login bug" \
+    assert_eq "Throttle test title" "$task" \
         "scan: force bypasses throttle"
 
-    # --- Test 6: History entry created ---
-    local hist_count=0
-    [[ -f "$AM_HISTORY" ]] && hist_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_not_empty "$hist_count" \
-        "scan: history entries created"
+    # --- Test 5: History entry created on first title ---
+    registry_add "test-scan-5" "/tmp/histproject" "dev" "gemini" ""
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-5" "task")
+    assert_eq "First title for history" "$task" \
+        "scan: sets first title"
+    local hist_entry
+    hist_entry=$(tail -1 "$AM_HISTORY")
+    assert_contains "$hist_entry" '"task":"First title for history"' \
+        "scan: history entry created on first title"
+    assert_contains "$hist_entry" '"directory":"/tmp/histproject"' \
+        "scan: history entry has correct directory"
 
-    # --- Test 7: title-upgrade uses non-persistent Claude print mode ---
-    local fake_bin args_log
-    fake_bin=$(mktemp -d)
-    args_log=$(mktemp)
-    cat > "$fake_bin/claude" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$*" > "$args_log"
-echo "Quiet Title"
-EOF
-    chmod +x "$fake_bin/claude"
+    # --- Test 6: Does not update if pane title unchanged ---
+    registry_add "test-scan-6" "/tmp/project" "main" "claude" "Existing Title"
+    local hist_count_before=0
+    [[ -f "$AM_HISTORY" ]] && hist_count_before=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-6" "task")
+    assert_eq "Existing Title" "$task" \
+        "scan: no update when pane title matches existing task"
+    local hist_count_after=0
+    [[ -f "$AM_HISTORY" ]] && hist_count_after=$(wc -l < "$AM_HISTORY" | tr -d ' ')
+    assert_eq "$hist_count_before" "$hist_count_after" \
+        "scan: no history entry when title unchanged"
 
-    local old_path="$PATH"
-    export PATH="$fake_bin:$PATH"
-    registry_add "test-scan-persist" "/tmp/has-msg" "main" "claude" ""
-    "$LIB_DIR/title-upgrade" "test-scan-persist" "Fix the login bug in auth"
-    assert_contains "$(cat "$args_log")" "--no-session-persistence" \
-        "scan: title-upgrade disables Claude session persistence"
-
-    export PATH="$old_path"
-    rm -rf "$fake_bin" "$args_log"
-
-    # --- Test 8: Background haiku upgrade exits quietly if AM_DIR is removed ---
-    fake_bin=$(mktemp -d)
-    cat > "$fake_bin/claude" <<'EOF'
-#!/usr/bin/env bash
-sleep 0.2
-echo "Quiet Title"
-EOF
-    chmod +x "$fake_bin/claude"
-
-    local old_path="$PATH"
-    export PATH="$fake_bin:$PATH"
-
-    local scan_err
-    scan_err=$(mktemp)
-    registry_add "test-scan-5" "/tmp/has-msg" "main" "claude" ""
-    auto_title_scan 1 >/dev/null 2>"$scan_err"
-    rm -rf "$AM_DIR"
-    sleep 0.4
-    assert_eq "" "$(cat "$scan_err")" \
-        "scan: background upgrade is quiet after AM_DIR removal"
-
-    export PATH="$old_path"
-    rm -rf "$fake_bin" "$scan_err"
+    # --- Test 7: Trims leading non-alphanumeric characters from pane title ---
+    registry_add "test-scan-7" "/tmp/project" "main" "claude" ""
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-7" "task")
+    assert_eq "Clean up the mess" "$task" \
+        "scan: trims leading non-alphanumeric chars from pane title"
 
     # --- Cleanup ---
-    unset -f claude_first_user_message
+    unset -f tmux_pane_title
     rm -rf "$AM_DIR"
     export AM_DIR="$old_am_dir"
     export AM_REGISTRY="$old_am_registry"

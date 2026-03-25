@@ -233,19 +233,6 @@ history_for_directory() {
 
 # --- Title Helpers ---
 
-# Generate a fallback title from a user message (first sentence, cleaned)
-# Usage: _title_fallback <message>
-_title_fallback() {
-    local msg="$1"
-    echo "$msg" | sed -E 's/https?:\/\/[^ ]*//g; s/  +/ /g; s/[.?!].*//' | head -c 60
-}
-
-# Strip markdown/quotes from Haiku output
-# Usage: _title_strip_haiku <raw_title>
-_title_strip_haiku() {
-    echo "$1" | sed 's/^[#*"`'\'']*//; s/[#*"`'\'']*$//' | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-}
-
 # Check if a title is valid (<=60 chars, no newlines)
 # Usage: _title_valid <title> && echo yes
 _title_valid() {
@@ -253,8 +240,8 @@ _title_valid() {
     [[ -n "$t" && ${#t} -le 60 && "$t" != *$'\n'* ]]
 }
 
-# Scan untitled active sessions and generate titles.
-# Writes fallback immediately, spawns fire-and-forget Haiku upgrade.
+# Scan active sessions and update task from agent pane title.
+# Agents set the terminal title via escape sequences; tmux exposes it as #{pane_title}.
 # Throttled to once per 60s unless force=1.
 # Logs to $AM_DIR/titler.log (tail -f ~/.agent-manager/titler.log)
 # Usage: auto_title_scan [force]
@@ -290,43 +277,31 @@ auto_title_scan() {
         reg_agent[$_rname]=$_ragent
     done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.branch // "", .value.agent_type // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
-    local name dir task first_msg fallback
-    local scanned=0 titled=0
+    local name title scanned=0 updated=0
     for name in "${!reg_task[@]}"; do
-        task="${reg_task[$name]}"
-        [[ -n "$task" ]] && continue  # already titled
-
         scanned=$((scanned + 1))
-        dir="${reg_dir[$name]}"
-        if [[ -z "$dir" ]]; then
-            _titler_log "  $name: skip (no directory)"
+
+        # Read the agent pane title (set by the agent via terminal escape sequences)
+        title=$(tmux_pane_title "${name}:.{top}" 2>/dev/null) || continue
+        # Trim leading non-alphanumeric characters (escape artifacts, symbols)
+        title=$(echo "$title" | sed -E 's/^[^[:alnum:]]*//')
+
+        if ! _title_valid "$title"; then
+            _titler_log "  $name: skip (invalid pane title: ${title:0:40})"
             continue
         fi
 
-        first_msg=$(claude_first_user_message "$dir" 2>/dev/null)
-        first_msg="${first_msg:0:200}"
-        if [[ -z "$first_msg" ]]; then
-            _titler_log "  $name: skip (no user message yet)"
-            continue
-        fi
+        # Skip if title hasn't changed
+        [[ "$title" == "${reg_task[$name]}" ]] && continue
 
-        # Write fallback title immediately
-        fallback=$(_title_fallback "$first_msg")
-        if [[ -z "$fallback" ]]; then
-            _titler_log "  $name: skip (fallback empty for: ${first_msg:0:60}...)"
-            continue
+        registry_update "$name" "task" "$title"
+        # Append to history on first title (was previously untitled)
+        if [[ -z "${reg_task[$name]}" ]]; then
+            history_append "${reg_dir[$name]}" "$title" "${reg_agent[$name]}" "${reg_branch[$name]}"
         fi
-
-        registry_update "$name" "task" "$fallback"
-        history_append "$dir" "$fallback" "${reg_agent[$name]}" "${reg_branch[$name]}"
-        titled=$((titled + 1))
-        _titler_log "  $name: fallback=\"$fallback\""
-
-        # Fire-and-forget Haiku upgrade via standalone script
-        if command -v claude &>/dev/null; then
-            "$(dirname "${BASH_SOURCE[0]}")/title-upgrade" "$name" "$first_msg" &
-        fi
+        updated=$((updated + 1))
+        _titler_log "  $name: title=\"$title\""
     done
 
-    _titler_log "scan done: $scanned untitled, $titled titled"
+    _titler_log "scan done: $scanned scanned, $updated updated"
 }

@@ -35,7 +35,6 @@ Architecture reference for AI agents working with this codebase.
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit), gated by `new_form` config flag |
 | `lib/fzf.sh` | fzf UI: list generation, directory picker with history annotations, main loop |
 | `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
-| `lib/title-upgrade` | Standalone script: fire-and-forget Haiku title upgrade for a session |
 | `lib/status-right` | Standalone script: tmux status-right showing sessions waiting for attention |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
@@ -53,7 +52,7 @@ Architecture reference for AI agents working with this codebase.
 ```
 am → fzf_main() → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
-fzf_list_sessions() / fzf_list_json() → auto_title_scan() → _title_fallback() → registry_update() + history_append()
+fzf_list_sessions() / fzf_list_json() → auto_title_scan() → tmux_pane_title() → registry_update() + history_append()
 Ctrl-N in fzf → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
@@ -131,11 +130,9 @@ For agent orchestration, prefer this sequence:
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
-- `auto_title_scan([force])` - Piggyback scanner: titles untitled sessions during fzf touchpoints (throttled 60s), writes fallback immediately, spawns `lib/title-upgrade` for Haiku upgrade
+- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s)
 
 **Title helpers:**
-- `_title_fallback(message)` - Generate fallback title from first sentence of user message
-- `_title_strip_haiku(raw_title)` - Strip markdown/quotes from Haiku output
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)
 
 **Registry (JSON metadata):**
@@ -168,6 +165,7 @@ For agent orchestration, prefer this sequence:
 - `tmux_list_am_sessions()` - List all am-* session names
 - `tmux_list_am_sessions_with_activity()` - List sessions with activity timestamps
 - `tmux_send_keys(session, keys)` - Send keys to a tmux pane
+- `tmux_pane_title(target)` - Read pane title set by the application
 - `tmux_count_am_sessions()` - Count active sessions
 
 **Sandbox:**
@@ -221,7 +219,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Modify session display | `lib/agents.sh` → `agent_display_name()` |
 | Add metadata field | `lib/registry.sh` → `registry_add()` |
 | Change preview content | `lib/preview` (session), `lib/dir-preview` (directory picker) |
-| Change title upgrade | `lib/title-upgrade` (standalone script) |
+| Change title source | `lib/registry.sh` → `auto_title_scan()` |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Add history integration | `lib/registry.sh` → `history_append()` |
 | Change sandbox config | `lib/sandbox.sh`, `sandbox/Dockerfile` |
