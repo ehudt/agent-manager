@@ -362,6 +362,8 @@ agent_wait_state() {
     local session="$1"
     local target_states="${2:-waiting_input,waiting_permission,waiting_custom,idle,dead}"
     local timeout_s="${3:-600}"
+    local stable_polls_required="${AM_WAIT_STABLE_POLLS:-3}"
+    local quiet_secs_required="${AM_WAIT_QUIET_SECS:-2}"
 
     if ! tmux_session_exists "$session"; then
         log_error "Session not found: $session" >&2
@@ -370,19 +372,52 @@ agent_wait_state() {
     fi
 
     local start elapsed state
+    local last_match_state="" last_match_activity="" stable_polls=0
     start=$(date +%s)
 
     while true; do
         state=$(agent_get_state "$session")
 
+        local matched=false
         local t
         local IFS=','
         for t in $target_states; do
             if [[ "$state" == "$t" ]]; then
-                echo "$state"
-                return 0
+                matched=true
+                case "$state" in
+                    waiting_input|waiting_permission|waiting_custom|idle)
+                        local activity now quiet_age
+                        activity=$(tmux_get_activity "$session")
+                        now=$(date +%s)
+                        quiet_age=0
+                        [[ -n "$activity" ]] && quiet_age=$(( now - activity ))
+
+                        if [[ "$state" == "$last_match_state" && "$activity" == "$last_match_activity" ]]; then
+                            stable_polls=$((stable_polls + 1))
+                        else
+                            stable_polls=1
+                            last_match_state="$state"
+                            last_match_activity="$activity"
+                        fi
+
+                        if (( quiet_age >= quiet_secs_required && stable_polls >= stable_polls_required )); then
+                            echo "$state"
+                            return 0
+                        fi
+                        ;;
+                    *)
+                        echo "$state"
+                        return 0
+                        ;;
+                esac
             fi
         done
+
+        if ! $matched; then
+            last_match_state=""
+            last_match_activity=""
+            stable_polls=0
+        fi
 
         elapsed=$(( $(date +%s) - start ))
         if (( elapsed >= timeout_s )); then

@@ -284,9 +284,62 @@ test_state_integration() {
     $SUMMARY_MODE || echo ""
 }
 
+test_agent_wait_state_stable_idle() {
+    local saved_get_state saved_tmux_exists saved_get_activity saved_sleep saved_date
+    saved_get_state="$(declare -f agent_get_state)"
+    saved_tmux_exists="$(declare -f tmux_session_exists)"
+    saved_get_activity="$(declare -f tmux_get_activity)"
+    saved_sleep="$(declare -f sleep 2>/dev/null || true)"
+    saved_date="$(declare -f date 2>/dev/null || true)"
+
+    local -a mock_states=("waiting_input" "waiting_input" "waiting_input")
+    local -a mock_activity=("100" "101" "101")
+    local mock_idx=0
+    local mock_now=103
+
+    agent_get_state() {
+        local idx=$mock_idx
+        (( idx >= ${#mock_states[@]} )) && idx=$((${#mock_states[@]} - 1))
+        printf '%s\n' "${mock_states[$idx]}"
+    }
+
+    tmux_get_activity() {
+        local idx=$mock_idx
+        (( idx >= ${#mock_activity[@]} )) && idx=$((${#mock_activity[@]} - 1))
+        printf '%s\n' "${mock_activity[$idx]}"
+    }
+
+    tmux_session_exists() { return 0; }
+
+    sleep() {
+        mock_idx=$((mock_idx + 1))
+        mock_now=$((mock_now + 1))
+    }
+
+    date() {
+        if [[ "${1:-}" == "+%s" ]]; then
+            printf '%s\n' "$mock_now"
+        else
+            command date "$@"
+        fi
+    }
+
+    local state
+    AM_WAIT_STABLE_POLLS=2 AM_WAIT_QUIET_SECS=2 \
+        state=$(agent_wait_state "fake-session" "waiting_input" 5)
+    assert_eq "waiting_input" "$state" "agent_wait_state: requires stable quiet waiting_input"
+
+    eval "$saved_get_state"
+    eval "$saved_tmux_exists"
+    eval "$saved_get_activity"
+    [[ -n "$saved_sleep" ]] && eval "$saved_sleep" || unset -f sleep
+    [[ -n "$saved_date" ]] && eval "$saved_date" || unset -f date
+}
+
 run_state_tests() {
     _run_test test_state
     _run_test test_state_integration
+    _run_test test_agent_wait_state_stable_idle
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
