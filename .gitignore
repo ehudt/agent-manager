@@ -22,6 +22,7 @@ sandbox/.env
 .a5c/runs/
 .a5c/logs/
 .a5c/cache/
+.a5c/processes/
 .a5c/node_modules/
 .a5c/package-lock.json
 .a5c/creds.env
