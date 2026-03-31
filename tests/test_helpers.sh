@@ -71,6 +71,23 @@ assert_contains() {
     fi
 }
 
+assert_not_contains() {
+    local haystack="$1"
+    local needle="$2"
+    local msg="${3:-}"
+    ((TESTS_RUN++))
+    if [[ "$haystack" != *"$needle"* ]]; then
+        ((TESTS_PASSED++))
+        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: $msg"
+    else
+        ((TESTS_FAILED++))
+        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: $msg"
+        echo "  String: '$haystack'"
+        echo "  Should not contain: '$needle'"
+        FAIL_DETAILS+=("FAIL: $msg|  String: '$haystack'|  Should not contain: '$needle'")
+    fi
+}
+
 assert_not_empty() {
     local value="$1"
     local msg="${2:-}"

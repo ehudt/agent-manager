@@ -520,10 +520,73 @@ test_form_modes() {
     $SUMMARY_MODE || echo ""
 }
 
+test_form_config_defaults() {
+    $SUMMARY_MODE || echo "=== Testing form config defaults ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/form.sh"
+    set -u
+
+    _parse_field() {
+        local output="$1" field="$2"
+        printf '%s' "$output" | cut -d$'\x1f' -f"$field"
+    }
+
+    # Mock _form_run to skip interactive loop, just emit output
+    _form_run() { _form_output; }
+
+    # Mock config functions
+    am_new_form_enabled() { return 0; }
+    am_docker_available() { return 0; }
+
+    # Test 1: default_yolo=true, default_sandbox=false
+    # sandbox should NOT be checked (config default respected, not overridden by yolo)
+    am_default_yolo_enabled() { return 0; }    # true
+    am_default_sandbox_enabled() { return 1; }  # false
+
+    local output flags
+    output=$(am_new_session_form "/tmp")
+    flags=$(_parse_field "$output" 5)
+    assert_contains "$flags" "--yolo" "config defaults: yolo flag present when default_yolo=true"
+    assert_not_contains "$flags" "--sandbox" "config defaults: sandbox NOT present when default_sandbox=false (even with yolo)"
+
+    # Test 2: explicit --yolo flag SHOULD imply sandbox
+    am_default_yolo_enabled() { return 1; }    # false (not from config)
+    am_default_sandbox_enabled() { return 1; }  # false
+    output=$(am_new_session_form "/tmp" "" "" "" "--yolo")
+    flags=$(_parse_field "$output" 5)
+    assert_contains "$flags" "--yolo" "config defaults: explicit --yolo flag present"
+    assert_contains "$flags" "--sandbox" "config defaults: explicit --yolo implies sandbox"
+
+    # Test 3: both defaults true
+    am_default_yolo_enabled() { return 0; }    # true
+    am_default_sandbox_enabled() { return 0; }  # true
+    output=$(am_new_session_form "/tmp")
+    flags=$(_parse_field "$output" 5)
+    assert_contains "$flags" "--yolo" "config defaults: both defaults - yolo present"
+    assert_contains "$flags" "--sandbox" "config defaults: both defaults - sandbox present"
+
+    # Test 4: default_yolo=false, default_sandbox=true
+    am_default_yolo_enabled() { return 1; }    # false
+    am_default_sandbox_enabled() { return 0; }  # true
+    output=$(am_new_session_form "/tmp")
+    flags=$(_parse_field "$output" 5)
+    assert_not_contains "$flags" "--yolo" "config defaults: yolo not present when default_yolo=false"
+    assert_contains "$flags" "--sandbox" "config defaults: sandbox present when default_sandbox=true"
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_form_tests() {
     _run_test test_form_core
     _run_test test_form_loop
     _run_test test_form_modes
+    _run_test test_form_config_defaults
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

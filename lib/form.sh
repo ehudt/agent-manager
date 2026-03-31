@@ -827,6 +827,7 @@ am_new_session_form() {
         local sandbox="false"
         local worktree_enabled="false"
         local worktree_name=""
+        local yolo_from_flag="false"
         local docker_available="true"
         am_docker_available || docker_available="false"
 
@@ -835,6 +836,7 @@ am_new_session_form() {
         [[ "$prefill_mode_flags" == *"--continue"* ]] && mode="continue"
         if [[ "$prefill_mode_flags" == *"--yolo"* ]]; then
             yolo="true"
+            yolo_from_flag="true"
         elif am_default_yolo_enabled; then
             yolo="true"
         fi
@@ -844,8 +846,8 @@ am_new_session_form() {
             sandbox="true"
         fi
 
-        # --yolo implies sandbox + worktree
-        if [[ "$yolo" == "true" ]]; then
+        # --yolo flag implies sandbox + worktree (config default doesn't override other defaults)
+        if [[ "$yolo_from_flag" == "true" ]]; then
             [[ "$docker_available" == "true" ]] && sandbox="true"
             worktree_enabled="true"
         fi
