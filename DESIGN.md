@@ -202,6 +202,8 @@ agent-manager/
 │   ├── fzf.sh              # fzf UI, directory picker with history annotations
 │   ├── preview             # Standalone preview script for fzf panel
 │   ├── dir-preview         # Standalone preview script for directory picker
+│   ├── status-right        # Standalone script: tmux status-right showing sessions waiting for attention
+│   ├── strip-ansi          # Standalone script: strips ANSI escape codes
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
 │   ├── sandbox.sh          # Docker sandbox lifecycle and fleet ops
 │   ├── state.sh            # Session state detection: JSONL + pane pattern matching
@@ -209,16 +211,31 @@ agent-manager/
 │   └── utils.sh            # Common utilities
 ├── bin/
 │   ├── kill-and-switch     # tmux helper: kill session + switch to next
+│   ├── sandbox-shell       # Reconnecting shell loop for sandbox containers
 │   └── switch-last         # tmux helper: switch to most recent am-* session
 ├── sandbox/
+│   ├── config_context/     # Build context directory for sandbox configuration
 │   ├── Dockerfile          # Docker image for sandbox containers
-│   └── entrypoint.sh       # Container init: user alignment, Tailscale, SSH
+│   ├── entrypoint.sh       # Container init: user alignment, Tailscale, SSH
+│   ├── tinyproxy.conf      # Tinyproxy network proxy configuration
+│   └── tinyproxy-filter.txt # Tinyproxy URL filter list
 ├── skills/
 │   └── am-orchestration/
 │       └── SKILL.md        # Claude Code skill for multi-session orchestration
 ├── scripts/
-│   └── install.sh          # Installer (symlinks, shell rc, tmux config)
+│   ├── check-docs.sh       # Documentation check script
+│   ├── clean-history.sh    # History cleanup script
+│   ├── install.sh          # Installer (symlinks, shell rc, tmux config)
+│   ├── precommit-checks.sh # Pre-commit checks
+│   ├── scan-secrets.sh     # Secret scanning
+│   └── setup-git-hooks.sh  # Git hooks setup
+├── docs/
+│   ├── backlog.md          # Feature backlog and ideas
+│   ├── perf-techniques.md  # Performance optimization techniques
+│   ├── sandbox-hardening.md # Sandbox security hardening notes
+│   └── test-speed-plan.md  # Test suite performance plan
 ├── tests/
+│   ├── perf_test.sh        # Standalone latency benchmark for am list-internal
 │   └── test_all.sh         # Test suite
 ```
 

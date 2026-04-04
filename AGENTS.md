@@ -36,6 +36,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/fzf.sh` | fzf UI: list generation, directory picker with history annotations, main loop |
 | `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
 | `lib/status-right` | Standalone script: tmux status-right showing sessions waiting for attention |
+| `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: JSONL parsing, pane pattern matching, wait/poll |
@@ -46,6 +47,7 @@ Architecture reference for AI agents working with this codebase.
 | `bin/sandbox-shell` | Reconnecting shell loop for sandbox containers (used by shell pane) |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
+| `docs/` | Architecture docs, backlog, perf notes, sandbox hardening notes |
 
 ## Data Flow
 
@@ -172,6 +174,7 @@ For agent orchestration, prefer this sequence:
 - `sandbox_start(session_name, dir)` - Create and start per-session Docker container
 - `sandbox_enter_cmd(session_name, dir)` - Build reconnecting shell-entry command for a running sandbox
 - `sandbox_exec_cmd(session_name, dir, cmd)` - Build docker exec command that runs a command directly inside the container via `zsh -lc`
+- `sandbox_enter(session_name)` - Enter running sandbox container interactively
 - `sandbox_remove(session_name)` - Force-remove container
 - `sandbox_status(session_name)` - Show container state and event log
 - `sandbox_gc_orphans()` - Remove containers whose tmux session no longer exists
@@ -191,6 +194,7 @@ For agent orchestration, prefer this sequence:
 
 **fzf:**
 - `fzf_list_sessions()` - Format: `session|display_name`
+- `fzf_list_json()` - JSON output of sessions for `am list --json`
 - `fzf_list_simple()` - Plain text session list for `am list`
 - `fzf_pick_directory()` - Directory picker with history annotations and path completion
 - `_annotate_directory(path)` - Annotate path with recent session history (agent, task, age)
