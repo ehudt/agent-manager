@@ -103,8 +103,9 @@ _state_from_jsonl() {
             esac
             ;;
         user)
-            # tool_result: tool ran, Claude is processing the result
-            if [[ "$content_has_tool_result" == "yes" ]]; then echo "running"; fi
+            # User entry as last meaningful line means Claude is processing:
+            # either a tool_result (tool ran) or new user input.
+            echo "running"
             ;;
         queue-operation)
             if [[ "$operation" == "enqueue" ]]; then echo "running"; fi
@@ -157,12 +158,26 @@ _state_pane_is_shell() {
         *) return 1 ;;
     esac
 
-    # Pane PID is a shell. If it has no child processes, the agent has exited.
-    if ! pgrep -P "$pane_pid" >/dev/null 2>&1; then
-        return 0
-    fi
+    # Pane PID is a shell. If it has no child processes (or only shell
+    # children), the agent has exited.  Background shell children (e.g.
+    # zsh sub-shells from initialization) must not mask an agent exit.
+    # NOTE: pgrep -P is unreliable on macOS (misses processes that set their
+    # own process group, e.g. claude/node). Use ps -eo instead.
+    local child_line child_pid child_proc has_non_shell=false has_any=false
+    while IFS= read -r child_line; do
+        child_pid="${child_line%% *}"
+        [[ -z "$child_pid" || "$child_pid" == "PID" ]] && continue
+        has_any=true
+        child_proc=$(ps -p "$child_pid" -o comm= 2>/dev/null || true)
+        case "${child_proc:-}" in
+            bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash|"") ;;
+            *) has_non_shell=true; break ;;
+        esac
+    done < <(ps -eo pid=,ppid= 2>/dev/null | awk -v ppid="$pane_pid" '$2==ppid {print $1}')
 
-    return 1
+    $has_any || return 0          # no children at all
+    $has_non_shell && return 1    # non-shell child alive → agent still running
+    return 0                      # only shell children → agent has exited
 }
 
 # Derive session state from tmux pane content.
@@ -242,10 +257,10 @@ _state_from_pane() {
 
     # Claude: detect input prompt as waiting_input (fallback when JSONL unavailable)
     if [[ "$agent_type" == "claude" ]]; then
-        # Claude shows ❯ (or >) at the start of a line when waiting for input,
-        # plus a status line with token counts like "░░░░" or "███".
-        # The (running) indicator means a tool is executing.
-        if printf '%s' "$content" | grep -qE '\(running\)'; then
+        # Positive running indicators: spinner or legacy (running) tag.
+        # The ❯ prompt is always visible in Claude Code's TUI, so check
+        # running indicators FIRST — they take priority.
+        if printf '%s' "$content" | grep -qE '\(running\)|·[[:space:]]+\S+…'; then
             echo "running"
         elif printf '%s' "$content" | grep -qE '(^|\s)❯\s*$'; then
             echo "waiting_input"

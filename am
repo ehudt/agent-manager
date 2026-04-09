@@ -162,7 +162,7 @@ source "$AM_LIB_DIR/sandbox.sh"
 source "$AM_LIB_DIR/fzf.sh"
 source "$AM_LIB_DIR/form.sh"
 
-# Command: list
+# Command: list (plain text or JSON)
 cmd_list() {
     local json=false
 
@@ -182,23 +182,27 @@ cmd_list() {
     if $json; then
         fzf_list_json
     else
-        # Interactive mode
-        local result
-        result=$(fzf_main)
+        fzf_list_simple
+    fi
+}
 
-        if [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
-            # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task<US>worktree_name
-            local directory agent_type flags task worktree_name
-            IFS=$'\x1f' read -r _tag directory agent_type flags task worktree_name <<< "$result"
+# Command: browse (interactive fzf session picker — default when no args)
+cmd_browse() {
+    local result
+    result=$(fzf_main)
 
-            # Create new session from form values
-            # shellcheck disable=SC2086
-            cmd_new_internal "$directory" "$agent_type" "$task" "$worktree_name" $flags
-        elif [[ -n "$result" ]]; then
-            # Attach to selected session
-            agent_refresh_tmux_status "$result"
-            tmux_attach "$result"
-        fi
+    if [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
+        # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task<US>worktree_name
+        local directory agent_type flags task worktree_name
+        IFS=$'\x1f' read -r _tag directory agent_type flags task worktree_name <<< "$result"
+
+        # Create new session from form values
+        # shellcheck disable=SC2086
+        cmd_new_internal "$directory" "$agent_type" "$task" "$worktree_name" $flags
+    elif [[ -n "$result" ]]; then
+        # Attach to selected session
+        agent_refresh_tmux_status "$result"
+        tmux_attach "$result"
     fi
 }
 
@@ -1419,7 +1423,7 @@ main() {
     am_config_init
 
     # Parse command
-    local cmd="${1:-list}"
+    local cmd="${1:-browse}"
     [[ $# -gt 0 ]] && shift
 
     # Install runs before strict dependency checks (it verifies deps itself)
@@ -1434,6 +1438,9 @@ main() {
     require_cmd jq
 
     case "$cmd" in
+        browse)
+            cmd_browse
+            ;;
         list-internal)
             fzf_list_sessions
             ;;
