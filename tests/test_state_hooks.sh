@@ -167,12 +167,95 @@ test_state_from_hook_invalid_state() {
     rm -rf "$state_dir"
 }
 
+_ensure_install_lib_sourced() {
+    if [[ "$(type -t _install_claude_hooks)" != "function" ]]; then
+        # Extract just the function from install.sh (can't source the whole file
+        # because it has set -euo pipefail and runs install logic at top level)
+        eval "$(sed -n '/^_install_claude_hooks()/,/^}/p' "$PROJECT_DIR/scripts/install.sh")"
+    fi
+}
+
+test_install_hooks_into_empty_settings() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local settings="$tmp_dir/empty-settings.json"
+    echo '{}' > "$settings"
+
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local stop_count
+    stop_count=$(jq '.hooks.Stop | length' "$settings")
+    assert_eq "1" "$stop_count" "Stop hook installed"
+
+    local notif_count
+    notif_count=$(jq '.hooks.Notification | length' "$settings")
+    assert_eq "3" "$notif_count" "3 Notification hooks installed"
+
+    local upsub_count
+    upsub_count=$(jq '.hooks.UserPromptSubmit | length' "$settings")
+    assert_eq "1" "$upsub_count" "UserPromptSubmit hook installed"
+
+    local post_count
+    post_count=$(jq '.hooks.PostToolUse | length' "$settings")
+    assert_eq "1" "$post_count" "PostToolUse hook installed"
+}
+
+test_install_hooks_preserves_existing() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local settings="$tmp_dir/existing-settings.json"
+    cat > "$settings" <<'JSON'
+{"hooks":{"PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"echo existing"}]}],"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"echo user-hook"}]}]}}
+JSON
+
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    # Existing hooks preserved
+    local precompact_count
+    precompact_count=$(jq '.hooks.PreCompact | length' "$settings")
+    assert_eq "1" "$precompact_count" "existing PreCompact hook preserved"
+
+    # Existing UserPromptSubmit hook preserved + ours added
+    local upsub_count
+    upsub_count=$(jq '.hooks.UserPromptSubmit | length' "$settings")
+    assert_eq "2" "$upsub_count" "existing + new UserPromptSubmit hooks"
+
+    # Verify the existing one is first (untouched)
+    local existing_cmd
+    existing_cmd=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$settings")
+    assert_eq "echo user-hook" "$existing_cmd" "existing UserPromptSubmit hook unchanged"
+}
+
+test_install_hooks_idempotent() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local settings="$tmp_dir/idem-settings.json"
+    echo '{}' > "$settings"
+
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local stop_count
+    stop_count=$(jq '.hooks.Stop | length' "$settings")
+    assert_eq "1" "$stop_count" "idempotent: Stop hook not duplicated"
+
+    local notif_count
+    notif_count=$(jq '.hooks.Notification | length' "$settings")
+    assert_eq "3" "$notif_count" "idempotent: Notification hooks not duplicated"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_from_hook_reads_file
     _run_test test_state_from_hook_missing_file
     _run_test test_state_from_hook_stale_file
     _run_test test_state_from_hook_invalid_state
+    _run_test test_install_hooks_into_empty_settings
+    _run_test test_install_hooks_preserves_existing
+    _run_test test_install_hooks_idempotent
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

@@ -120,6 +120,50 @@ remove_managed_block() {
     log "Updated $file"
 }
 
+# Install am state-detection hooks into Claude Code settings.
+# Merges hooks without overwriting user's existing hooks. Idempotent.
+# Usage: _install_claude_hooks <settings_json_path> <hook_script_path>
+_install_claude_hooks() {
+    local settings_file="$1"
+    local hook_script="$2"
+    local marker="# am-state-hook"
+    local cmd="bash $hook_script $marker"
+
+    [[ -f "$settings_file" ]] || echo '{}' > "$settings_file"
+
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    # Step 1: Remove any existing am hooks (idempotent)
+    # Step 2: Add our hooks to the event arrays
+    jq --arg cmd "$cmd" --arg marker "$marker" '
+        # Remove existing am hook entries
+        .hooks //= {} |
+        .hooks |= with_entries(
+            .value |= if type == "array" then
+                map(select(
+                    (.hooks // []) | all((.command // "") | contains($marker) | not)
+                ))
+            else . end
+        ) |
+        # Add our hooks
+        .hooks.Stop = (.hooks.Stop // []) + [
+            {"matcher": "", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]}
+        ] |
+        .hooks.Notification = (.hooks.Notification // []) + [
+            {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]},
+            {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]},
+            {"matcher": "elicitation_dialog", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]}
+        ] |
+        .hooks.UserPromptSubmit = (.hooks.UserPromptSubmit // []) + [
+            {"matcher": "", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]}
+        ] |
+        .hooks.PostToolUse = (.hooks.PostToolUse // []) + [
+            {"matcher": "", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]}
+        ]
+    ' "$settings_file" > "$tmp_file" && mv "$tmp_file" "$settings_file"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
@@ -195,6 +239,17 @@ if $UPDATE_TMUX; then
     else
         log "Skipped tmux config cleanup"
     fi
+fi
+
+# Install Claude Code hooks for state detection
+CLAUDE_SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+HOOK_SCRIPT="$REPO_DIR/lib/hooks/state-hook.sh"
+
+if confirm "Install state-detection hooks into Claude Code settings ($CLAUDE_SETTINGS)?"; then
+    _install_claude_hooks "$CLAUDE_SETTINGS" "$HOOK_SCRIPT"
+    log "Installed state-detection hooks into $CLAUDE_SETTINGS"
+else
+    log "Skipped Claude Code hook installation"
 fi
 
 log "Installation complete"
