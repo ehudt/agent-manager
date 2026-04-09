@@ -214,6 +214,13 @@ _state_from_pane() {
 
     # --- Custom question prompts ---
 
+    # Claude plan approval prompt ("Would you like to proceed?" with numbered options)
+    if printf '%s' "$content" | grep -qE 'Would you like to proceed\?' \
+       && printf '%s' "$content" | grep -qE '(auto mode|manually approve|Tell Claude what to change)'; then
+        echo "waiting_custom"
+        return
+    fi
+
     # Claude /ask block
     if printf '%s' "$content" | grep -qE '^\s*/ask'; then
         echo "waiting_custom"

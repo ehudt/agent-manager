@@ -39,13 +39,13 @@ while IFS=' ' read -r session _; do
             attention+=("#[fg=colour214,bold]! $(_label "$session")#[default]")
             ;;
         waiting_input)
-            background+=("#[fg=colour244]> $(_label "$session")#[default]")
-            ;;
-        idle)
-            background+=("#[fg=colour244]> $(_label "$session")#[default]")
+            background+=("#[fg=colour114]> $(_label "$session")#[default]")
             ;;
         running)
-            background+=("#[fg=colour244]> $(_label "$session")#[default]")
+            background+=("#[fg=colour75]~ $(_label "$session")#[default]")
+            ;;
+        idle)
+            background+=("#[fg=colour240]- $(_label "$session")#[default]")
             ;;
     esac
 done < <(tmux_list_am_sessions_with_activity)
