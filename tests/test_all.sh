@@ -172,6 +172,7 @@ worker1_tests() {
     run_fzf_tests
     run_sandbox_tests
     run_install_tests
+    run_state_hooks_tests
 }
 
 # Worker 8-10: Sandbox slow tests, sharded by marker to avoid one long pole
