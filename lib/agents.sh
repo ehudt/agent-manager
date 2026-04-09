@@ -521,8 +521,9 @@ agent_kill() {
 
     tmux_kill_session "$session_name" || rc=$?
 
-    # Always clean up registry (session might already be dead)
+    # Always clean up registry and hook state file
     registry_remove "$session_name"
+    rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name"
 
     if [[ $rc -eq 0 ]]; then
         log_success "Killed session: $session_name"

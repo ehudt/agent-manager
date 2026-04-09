@@ -153,9 +153,23 @@ registry_gc() {
                 sandbox_remove "$name"
             fi
             registry_remove "$name"
+            rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name"
             ((removed++))
         fi
     done
+
+    # Clean up orphan hook state files (session gone but file remains)
+    local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+    if [[ -d "$state_dir" ]]; then
+        local state_file sname
+        for state_file in "$state_dir"/${AM_SESSION_PREFIX}*; do
+            [[ -f "$state_file" ]] || continue
+            sname=$(basename "$state_file")
+            if [[ -z "${live_sessions[$sname]:-}" ]]; then
+                rm -f "$state_file"
+            fi
+        done
+    fi
 
     if (( removed > 0 )); then
         log_info "Cleaned up $removed stale registry entries"
