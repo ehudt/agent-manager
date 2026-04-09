@@ -61,6 +61,30 @@ am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mount
 agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
 ```
 
+## Hook-Based State Detection
+
+Claude sessions use push-based hooks as the primary state source. Claude Code
+fires lifecycle hooks (`Stop`, `Notification`, `UserPromptSubmit`, `PostToolUse`)
+that call `lib/hooks/state-hook.sh`. The script maps the event to an am state
+and writes it to `/tmp/am-state/<session_name>`.
+
+State detection priority: **hook state file → JSONL → pane content**.
+
+Hooks are installed via `am install` into `~/.claude/settings.json`. State
+files are cleaned up on session kill and during registry GC.
+
+| Hook Event | Matcher | am State |
+|---|---|---|
+| `Stop` | — | `waiting_input` |
+| `Notification` | `idle_prompt` | `waiting_input` |
+| `Notification` | `permission_prompt` | `waiting_permission` |
+| `Notification` | `elicitation_dialog` | `waiting_custom` |
+| `UserPromptSubmit` | — | `running` |
+| `PostToolUse` | — | `running` |
+
+States not covered by hooks (`starting`, `idle`, `dead`) use existing
+process/tmux checks which are already reliable.
+
 ## Agent-to-Agent CLI Guide
 
 Use these commands when one CLI process or agent needs to launch, monitor, or message another `am` session without attaching to it.
@@ -150,7 +174,8 @@ For agent orchestration, prefer this sequence:
 - `agent_get_state(session_name)` - Get current state: starting, running, waiting_input, waiting_permission, waiting_custom, idle, dead
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
-- `_state_from_jsonl(directory)` - Derive state from Claude JSONL (primary source for Claude sessions)
+- `_state_from_hook(session_name)` - Read state from hook state file (primary source for Claude sessions)
+- `_state_from_jsonl(directory)` - Derive state from Claude JSONL (fallback when hooks unavailable)
 - `_state_from_pane(session, [agent_type])` - Derive state from pane content (all agents)
 - `_state_jsonl_path(dir)` - Find newest Claude JSONL for directory
 - `_state_jsonl_stale(path)` - Check if JSONL is >30s old
@@ -231,4 +256,5 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
 | Add state detection pattern | `lib/state.sh` → `_state_from_pane()` pattern list |
+| Add hook state event | `lib/hooks/state-hook.sh` → event-to-state mapping |
 | Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
