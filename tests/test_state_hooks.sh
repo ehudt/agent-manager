@@ -106,8 +106,73 @@ test_state_hooks() {
     $SUMMARY_MODE || echo ""
 }
 
+_ensure_state_lib_sourced() {
+    if [[ "$(type -t _state_from_hook)" != "function" ]]; then
+        set +u
+        source "$LIB_DIR/utils.sh"
+        source "$LIB_DIR/tmux.sh"
+        source "$LIB_DIR/registry.sh"
+        source "$LIB_DIR/state.sh"
+        set -u
+    fi
+}
+
+test_state_from_hook_reads_file() {
+    _ensure_state_lib_sourced
+    local state_dir
+    state_dir=$(mktemp -d)
+    printf 'waiting_permission' > "$state_dir/am-test01"
+
+    local result
+    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
+    assert_eq "waiting_permission" "$result" "_state_from_hook reads state file"
+    rm -rf "$state_dir"
+}
+
+test_state_from_hook_missing_file() {
+    _ensure_state_lib_sourced
+    local state_dir
+    state_dir=$(mktemp -d)
+
+    local result
+    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-nonexist")
+    assert_eq "" "$result" "_state_from_hook returns empty for missing file"
+    rm -rf "$state_dir"
+}
+
+test_state_from_hook_stale_file() {
+    _ensure_state_lib_sourced
+    local state_dir
+    state_dir=$(mktemp -d)
+    printf 'waiting_input' > "$state_dir/am-test01"
+    # Backdate the file by 5 minutes
+    touch -t "$(date -v-5M '+%Y%m%d%H%M.%S' 2>/dev/null \
+        || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')" "$state_dir/am-test01"
+
+    local result
+    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
+    assert_eq "" "$result" "_state_from_hook returns empty for stale file (>3m)"
+    rm -rf "$state_dir"
+}
+
+test_state_from_hook_invalid_state() {
+    _ensure_state_lib_sourced
+    local state_dir
+    state_dir=$(mktemp -d)
+    printf 'bogus_state' > "$state_dir/am-test01"
+
+    local result
+    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
+    assert_eq "" "$result" "_state_from_hook rejects invalid state values"
+    rm -rf "$state_dir"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
+    _run_test test_state_from_hook_reads_file
+    _run_test test_state_from_hook_missing_file
+    _run_test test_state_from_hook_stale_file
+    _run_test test_state_from_hook_invalid_state
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

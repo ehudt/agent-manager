@@ -114,6 +114,37 @@ _state_from_jsonl() {
 }
 
 # ---------------------------------------------------------------------------
+# Hook state file helpers
+# ---------------------------------------------------------------------------
+
+AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
+
+# Read session state from the hook state file.
+# Returns state string if file exists and is fresh (< 3 minutes old),
+# or empty string if missing/stale.
+# Usage: _state_from_hook <session_name>
+_state_from_hook() {
+    local session="$1"
+    local state_file="$AM_STATE_DIR/$session"
+    [[ -f "$state_file" ]] || return 0
+
+    # Staleness check: ignore files older than 3 minutes
+    local mtime now
+    mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
+    now=$(date +%s)
+    (( now - mtime > 180 )) && return 0
+
+    local state
+    state=$(head -1 "$state_file" 2>/dev/null || true)
+    # Validate — only return known states
+    case "$state" in
+        running|waiting_input|waiting_permission|waiting_custom)
+            echo "$state"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Pane helpers (all agent types)
 # ---------------------------------------------------------------------------
 
@@ -324,8 +355,16 @@ agent_get_state() {
             ;;
     esac
 
-    # For Claude: use JSONL as primary source
+    # For Claude: hook state file → JSONL → pane fallback
     if [[ "$agent_type" == "claude" ]]; then
+        local hook_state
+        hook_state=$(_state_from_hook "$session")
+        if [[ -n "$hook_state" ]]; then
+            echo "$hook_state"
+            return
+        fi
+
+        # Fallback: JSONL
         local dir jsonl_state
         dir=$(registry_get_field "$session" directory 2>/dev/null || true)
         if [[ -n "$dir" ]]; then
@@ -354,17 +393,28 @@ _agent_get_state_fast() {
         return
     fi
 
-    # 2. For Claude: try JSONL first (cheaper than pane capture)
-    if [[ "$agent_type" == "claude" && -n "$dir" ]]; then
-        local jsonl_state
-        jsonl_state=$(_state_from_jsonl "$dir")
-        if [[ -n "$jsonl_state" ]]; then
-            # JSONL says waiting_input → done (no permission prompt can exist)
-            if [[ "$jsonl_state" == "waiting_input" ]]; then
-                echo "waiting_input"
+    # 2. For Claude: hook state file first (cheapest), then JSONL
+    if [[ "$agent_type" == "claude" ]]; then
+        local hook_state
+        hook_state=$(_state_from_hook "$session")
+        if [[ -n "$hook_state" ]]; then
+            # Hook gives a definitive answer for non-running states
+            if [[ "$hook_state" != "running" ]]; then
+                echo "$hook_state"
                 return
             fi
-            # JSONL says running → still need to check pane for permission prompts
+            # running → fall through to pane check for permission prompts
+        elif [[ -n "$dir" ]]; then
+            # No hook → try JSONL
+            local jsonl_state
+            jsonl_state=$(_state_from_jsonl "$dir")
+            if [[ -n "$jsonl_state" ]]; then
+                if [[ "$jsonl_state" == "waiting_input" ]]; then
+                    echo "waiting_input"
+                    return
+                fi
+                # running → fall through to pane check
+            fi
         fi
     fi
 
