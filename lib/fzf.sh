@@ -686,6 +686,48 @@ fzf_main() {
     # Get the path to this script's directory for the preview command
     local lib_dir="${AM_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
+    # Try compiled TUI browser first (eliminates fzf + bash overhead)
+    local browse_cmd="$lib_dir/../bin/am-browse"
+    if [[ -x "$browse_cmd" ]]; then
+        export AM_TMUX_SOCKET AM_DIR AM_SESSION_PREFIX
+        local result
+        result=$("$browse_cmd" \
+            --preview-cmd="$lib_dir/preview" \
+            --kill-cmd="$lib_dir/../bin/kill-and-switch") || return
+
+        case "$result" in
+            __NEW__)
+                # Delegate to bash form (still needs tput/fzf)
+                [[ "$(type -t am_new_session_form)" != "function" ]] && source "$_FZF_LIB_DIR/form.sh"
+                local form_values directory agent_type task worktree_name flags
+                if ! form_values=$(am_new_session_form); then
+                    fzf_main
+                    return $?
+                fi
+                IFS=$'\x1f' read -r directory agent_type task worktree_name flags <<< "$form_values"
+                printf "__NEW_SESSION__\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n" "$directory" "$agent_type" "$flags" "$task" "$worktree_name"
+                ;;
+            __RESTORE__)
+                local restore_result
+                if ! restore_result=$(fzf_restore_picker); then
+                    fzf_main
+                    return $?
+                fi
+                echo "$restore_result"
+                ;;
+            "")
+                # User cancelled
+                ;;
+            *)
+                # Session name — attach
+                echo "$result"
+                ;;
+        esac
+        return
+    fi
+
+    # --- fzf fallback (when Go binary is not built) ---
+
     # Path to the list command for fzf reload subshells.
     # Prefer compiled binary; fall back to am entry point if not built.
     local list_cmd="$lib_dir/../bin/am-list-internal"

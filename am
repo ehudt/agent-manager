@@ -1475,11 +1475,22 @@ EOF
     echo "" >&2
     echo -e "${BOLD}Building compiled helpers...${RESET}" >&2
     if command -v go &>/dev/null; then
+        local go_ok=true
         if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ ) 2>&1; then
             log_success "  Built bin/am-list-internal"
-            steps_done+=("Go binary built")
         else
-            log_warn "  go build failed — am list-internal will not work"
+            log_warn "  go build failed for am-list-internal"
+            go_ok=false
+        fi
+        if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-browse ./cmd/am-browse/ ) 2>&1; then
+            log_success "  Built bin/am-browse"
+        else
+            log_warn "  go build failed for am-browse"
+            go_ok=false
+        fi
+        if $go_ok; then
+            steps_done+=("Go binaries built")
+        else
             (( warnings += 1 ))
         fi
     else
