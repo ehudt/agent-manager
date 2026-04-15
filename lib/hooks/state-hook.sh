@@ -87,3 +87,7 @@ session_name=$(jq -r --arg cwd "$cwd_real" '
 # Write state to file
 mkdir -p "$AM_STATE_DIR"
 printf '%s' "$am_state" > "$AM_STATE_DIR/$session_name"
+
+# Invalidate list cache so the next fzf reload picks up the new state
+AM_DIR="${AM_DIR:-${HOME}/.agent-manager}"
+rm -f "$AM_DIR/.list_cache" 2>/dev/null || true

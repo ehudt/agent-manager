@@ -638,6 +638,9 @@ fzf_new_session_form() {
 
 # Generate session list for fzf
 # Format: "session_name|display_name"
+# Uses a file-based cache ($AM_DIR/.list_cache) to avoid regenerating the
+# display list on every fzf reload.  Cache is valid for 2 seconds and is
+# invalidated when the tmux session count changes.
 # Usage: fzf_list_sessions
 fzf_list_sessions() {
     # Background GC and title scan — don't block list rendering
@@ -645,7 +648,36 @@ fzf_list_sessions() {
     { auto_title_scan >/dev/null 2>&1; } &
     disown 2>/dev/null || true
 
-    _fzf_list_display "with_name"
+    local cache_file="$AM_DIR/.list_cache"
+    local current_count
+    current_count=$(tmux_count_am_sessions)
+
+    # Try to serve from cache: fresh (< 2s) and session count unchanged
+    if [[ -f "$cache_file" ]]; then
+        local cache_mtime
+        cache_mtime=$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0)
+        if (( $(date +%s) - cache_mtime < 2 )); then
+            # First line is the stored session count; rest is cached output
+            local stored_count
+            { read -r stored_count; } < "$cache_file"
+            if [[ "$stored_count" == "$current_count" ]]; then
+                tail -n +2 "$cache_file"
+                return
+            fi
+        fi
+    fi
+
+    # Cache miss — regenerate
+    local output
+    output=$(_fzf_list_display "with_name")
+
+    # Write count + output atomically (write to tmp then rename)
+    {
+        printf '%s\n' "$current_count"
+        [[ -n "$output" ]] && printf '%s\n' "$output"
+    } > "${cache_file}.tmp" && mv -f "${cache_file}.tmp" "$cache_file" 2>/dev/null || true
+
+    [[ -n "$output" ]] && printf '%s\n' "$output"
 }
 
 # Main fzf interface
