@@ -684,27 +684,18 @@ fzf_list_sessions() {
 # Usage: fzf_main
 fzf_main() {
     # Get the path to this script's directory for the preview command
-    local lib_dir
-    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local lib_dir="${AM_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
     # Path to the list command for fzf reload subshells.
     # Prefer compiled binary; fall back to am entry point if not built.
     local list_cmd="$lib_dir/../bin/am-list-internal"
     [[ -x "$list_cmd" ]] || list_cmd="$lib_dir/../am list-internal"
 
-    # Check if any sessions exist
-    local sessions
-    sessions=$(fzf_list_sessions)
-
-    # If no sessions, add placeholder for new session
-    if [[ -z "$sessions" ]]; then
-        sessions="__new__|➕ Create new session"
-    fi
-
     # Build preview command - use standalone script for speed
     local preview_cmd="$lib_dir/preview"
-    local tmux_client_name
-    tmux_client_name=$(am_tmux display-message -p '#{client_name}' 2>/dev/null || true)
+
+    # Resolve tmux client name lazily inside ctrl-x binding (saves ~18ms at startup)
+    local client_name_cmd="tmux -L ${AM_TMUX_SOCKET} display-message -p '#{client_name}'"
 
     # Help text for ? key
     local help_text="
@@ -738,9 +729,9 @@ fzf_main() {
     :am         Open am browser (tmux command)
 "
 
-    # Run fzf
+    # Run fzf — start with placeholder and load list async for instant frame render
     local selected
-    selected=$(echo "$sessions" | fzf \
+    selected=$(echo "__loading__|Loading..." | fzf \
         --sync \
         --ansi \
         --height=100% \
@@ -749,11 +740,12 @@ fzf_main() {
         --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill  ^H:restore" \
         --preview="$preview_cmd {1}" \
         --preview-window="bottom:75%:follow" \
+        --bind="start:reload($list_cmd || echo '__new__|➕ Create new session')" \
         --bind="ctrl-j:preview-down,ctrl-k:preview-up" \
         --bind="ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up" \
         --bind="ctrl-r:reload($list_cmd)" \
         --bind="ctrl-p:toggle-preview" \
-        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($list_cmd)" \
+        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch \$($client_name_cmd) {1})+reload($list_cmd)" \
         --bind="?:preview(echo '$help_text')" \
         --expect="ctrl-n,ctrl-h" \
     )
