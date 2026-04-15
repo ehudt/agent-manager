@@ -14,6 +14,9 @@
 __pycache__/
 *.pyc
 
+# Compiled Go binaries
+bin/am-list-internal
+
 # Sandbox secrets
 sandbox/.env
 .evolver/
