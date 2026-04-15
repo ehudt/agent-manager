@@ -63,7 +63,7 @@ run_perf_test() {
     done
     printf '\r  Progress: %d/%d\n' "$ITERATIONS" "$ITERATIONS"
 
-    mapfile -t latencies < <(sort -n <<<"${latencies[*]}")
+    mapfile -t latencies < <(printf '%s\n' "${latencies[@]}" | sort -n)
     unset IFS
 
     local p50 p95 p99
