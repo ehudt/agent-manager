@@ -120,7 +120,7 @@ test_tmux_binding_snippets() {
     fzf_script=$(cat "$PROJECT_DIR/lib/fzf.sh")
     assert_contains "$fzf_script" "tmux_client_name=\$(am_tmux display-message -p '#{client_name}' 2>/dev/null || true)" \
         "fzf: resolves tmux client name before binding ctrl-x"
-    assert_contains "$fzf_script" 'ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($am_cmd list-internal)' \
+    assert_contains "$fzf_script" 'ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($list_cmd)' \
         "fzf: ctrl-x passes resolved client name to kill-and-switch"
 
     $SUMMARY_MODE || echo ""

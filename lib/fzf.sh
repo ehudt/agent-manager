@@ -687,9 +687,10 @@ fzf_main() {
     local lib_dir
     lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-    # Path to the am entry point for fzf reload subshells.
-    # Using the entry point avoids exporting 22+ functions for subshell access.
-    local am_cmd="$lib_dir/../am"
+    # Path to the list command for fzf reload subshells.
+    # Prefer compiled binary; fall back to am entry point if not built.
+    local list_cmd="$lib_dir/../bin/am-list-internal"
+    [[ -x "$list_cmd" ]] || list_cmd="$lib_dir/../am list-internal"
 
     # Check if any sessions exist
     local sessions
@@ -750,9 +751,9 @@ fzf_main() {
         --preview-window="bottom:75%:follow" \
         --bind="ctrl-j:preview-down,ctrl-k:preview-up" \
         --bind="ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up" \
-        --bind="ctrl-r:reload($am_cmd list-internal)" \
+        --bind="ctrl-r:reload($list_cmd)" \
         --bind="ctrl-p:toggle-preview" \
-        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($am_cmd list-internal)" \
+        --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($list_cmd)" \
         --bind="?:preview(echo '$help_text')" \
         --expect="ctrl-n,ctrl-h" \
     )

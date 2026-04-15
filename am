@@ -161,14 +161,12 @@ source "$AM_LIB_DIR/config.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
 
-# Fast path: list-internal is called on every fzf reload — keep it lean
+# Fast path: list-internal is called on every fzf reload — compiled Go binary
 if [[ "${1:-}" == "list-internal" ]]; then
-    # Fast path: compiled binary (eliminates bash sourcing overhead)
     if [[ -x "$AM_SCRIPT_DIR/bin/am-list-internal" ]]; then
-        "$AM_SCRIPT_DIR/bin/am-list-internal"
-        exit $?
+        exec "$AM_SCRIPT_DIR/bin/am-list-internal"
     fi
-    # Fallback: bash implementation
+    # Fallback when binary not yet built (run 'am install' or 'make build')
     source "$AM_LIB_DIR/fzf.sh"
     am_init
     am_config_init
@@ -1473,7 +1471,23 @@ EOF
     "$AM_SCRIPT_DIR/scripts/install.sh" "$@"
     steps_done+=("PATH setup complete")
 
-    # --- Step 5: Refresh dedicated tmux config ---
+    # --- Step 5: Build compiled helpers ---
+    echo "" >&2
+    echo -e "${BOLD}Building compiled helpers...${RESET}" >&2
+    if command -v go &>/dev/null; then
+        if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ ) 2>&1; then
+            log_success "  Built bin/am-list-internal"
+            steps_done+=("Go binary built")
+        else
+            log_warn "  go build failed — am list-internal will not work"
+            (( warnings += 1 ))
+        fi
+    else
+        log_warn "  Go not found — run 'make build' after installing Go"
+        (( warnings += 1 ))
+    fi
+
+    # --- Step 6: Refresh dedicated tmux config ---
     echo "" >&2
     echo -e "${BOLD}Refreshing tmux config...${RESET}" >&2
     source "$AM_SCRIPT_DIR/lib/tmux.sh"
