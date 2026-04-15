@@ -2,10 +2,7 @@
 # tmux.sh - tmux wrapper functions
 
 # Source utils if not already loaded
-[[ -z "$AM_DIR" ]] && source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
-
-# Ensure tmux is available
-require_cmd tmux
+[[ -z "$AM_DIR" ]] && source "${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/utils.sh"
 
 am_tmux_config_path() {
     # Cache: only generate config once per process

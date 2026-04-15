@@ -11,7 +11,8 @@ AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
 AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
 AM_TMUX_SOCKET="${AM_TMUX_SOCKET:-agent-manager}"
 AM_TMUX_CONF="${AM_TMUX_CONF:-$AM_DIR/tmux.conf}"
-AM_ROOT_DIR="${AM_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+AM_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+AM_ROOT_DIR="${AM_ROOT_DIR:-$(cd "$AM_LIB_DIR/.." && pwd -P)}"
 
 # Colors (only if terminal supports it)
 if [[ -t 1 ]]; then

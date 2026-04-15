@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # sandbox.sh - Container lifecycle functions for agent sandboxes
 
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-[[ -z "$AM_DIR" ]] && source "$SCRIPT_DIR/utils.sh"
-[[ "$(type -t am_config_get)" != "function" ]] && source "$SCRIPT_DIR/config.sh"
-[[ "$(type -t tmux_session_exists)" != "function" ]] && source "$SCRIPT_DIR/tmux.sh"
+_SANDBOX_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+[[ -z "$AM_DIR" ]] && source "$_SANDBOX_LIB_DIR/utils.sh"
+[[ "$(type -t am_config_get)" != "function" ]] && source "$_SANDBOX_LIB_DIR/config.sh"
+[[ "$(type -t tmux_session_exists)" != "function" ]] && source "$_SANDBOX_LIB_DIR/tmux.sh"
 
-SANDBOX_DIR="${AM_SCRIPT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}/sandbox"
+SANDBOX_DIR="${AM_SCRIPT_DIR:-$(cd "$_SANDBOX_LIB_DIR/.." && pwd)}/sandbox"
 SANDBOX_IMAGE="agent-sandbox:persistent"
 SANDBOX_ENV_FILE="$AM_DIR/sandbox.env"
 SANDBOX_HOST_EXIT_CODE="${SANDBOX_HOST_EXIT_CODE:-42}"

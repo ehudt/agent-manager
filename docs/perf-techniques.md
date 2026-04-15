@@ -106,3 +106,113 @@ Pipe `|` doesn't collapse and is rare enough in field values.
 ## Remove contending background work
 
 GC sweeps (`registry_gc`) and title upgrade scans (`auto_title_scan`) write to the same JSON files that `list --json` reads. Running them concurrently causes I/O contention and occasional read-corruption (partial writes). Move these to interactive-only code paths (e.g., `fzf_main`) so they never overlap with batch reads.
+
+## JSONL bulk parsing (avoid per-line jq)
+
+Calling `jq` once per line of a JSONL file is the single most expensive anti-pattern in this codebase. Each `jq` fork costs ~4-6ms; with 100 lines that's 400-600ms of pure overhead.
+
+**Before** (N jq calls):
+```bash
+while IFS= read -r line; do
+    fields=$(printf '%s' "$line" | jq -r '[.name, .id] | join("|")')
+    IFS='|' read -r name id <<< "$fields"
+done < "$JSONL_FILE"
+```
+
+**After** (1 jq call, parallel arrays):
+```bash
+# Parse all lines in one call
+local all_fields
+all_fields=$(jq -r '[.name // "", .id // ""] | join("|")' "$JSONL_FILE")
+
+# Read raw lines and parsed fields into parallel arrays
+local lines=() fields_arr=()
+while IFS= read -r line; do lines+=("$line"); done < "$JSONL_FILE"
+while IFS= read -r f; do fields_arr+=("$f"); done <<< "$all_fields"
+
+# Iterate by index
+for (( i=0; i<${#lines[@]}; i++ )); do
+    IFS='|' read -r name id <<< "${fields_arr[$i]}"
+done
+```
+
+For updating the last matching entry, use `jq -sc` (slurp + compact):
+```bash
+jq -sc --arg sname "$name" --arg field "$field" --arg value "$value" '
+    . as $arr |
+    (reduce range(length) as $i (-1;
+        if $arr[$i].session_name == $sname then $i else . end)) as $last_idx |
+    if $last_idx >= 0 then .[$last_idx][$field] = $value else . end |
+    .[]
+' "$JSONL_FILE" > "$tmp_file"
+```
+
+Note the `. as $arr` binding — inside `reduce`, bare `.` refers to the accumulator, not the original array.
+
+## ISO 8601 string comparison (avoid per-entry date)
+
+UTC timestamps in ISO 8601 format (`2026-04-14T14:16:38Z`) sort lexicographically. Compute a cutoff string once instead of converting each entry's timestamp to epoch:
+
+```bash
+# One date call for the cutoff
+cutoff=$(date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+    || date -u -d "24 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+# String comparison — no subprocess per entry
+if [[ "$created_at" < "$cutoff" ]]; then ...
+```
+
+---
+
+## Measuring performance
+
+### End-to-end: `am list-internal`
+
+The existing perf benchmark covers the fzf reload path:
+
+```bash
+./tests/perf_test.sh                  # 100 iterations, P50/P95/P99
+PERF_ITERATIONS=20 ./tests/perf_test.sh   # quick check
+```
+
+### Per-function breakdown
+
+Source the libraries and use `gdate +%s%N` (requires `brew install coreutils` on macOS) to time individual functions:
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+source lib/utils.sh && source lib/config.sh && source lib/tmux.sh
+source lib/registry.sh && source lib/state.sh && source lib/agents.sh
+source lib/fzf.sh
+
+time_fn() {
+    local label="$1"; shift
+    local start end
+    start=$(gdate +%s%N)
+    "$@" >/dev/null 2>&1 || true
+    end=$(gdate +%s%N)
+    printf '%-40s %4dms\n' "$label" "$(( (end - start) / 1000000 ))"
+}
+
+# Clear throttle caches for cold measurement
+rm -f ~/.agent-manager/.gc_last ~/.agent-manager/.title_scan_last
+
+time_fn "fzf_list_sessions"        fzf_list_sessions
+time_fn "sessions_log_restorable"  sessions_log_restorable
+time_fn "sessions_log_gc"          sessions_log_gc
+time_fn "sessions_log_update"      sessions_log_update "am-XXXX" "task" "test"
+time_fn "registry_gc (forced)"     registry_gc 1
+time_fn "auto_title_scan (forced)" auto_title_scan 1
+```
+
+### Baselines (as of 2026-04-15, ~105 sessions_log entries)
+
+| Function | Target | Typical |
+|---|---|---|
+| `fzf_list_sessions` | <100ms | ~50ms |
+| `sessions_log_restorable` | <100ms | ~50ms |
+| `sessions_log_gc` | <100ms | ~65ms |
+| `sessions_log_update` | <50ms | ~15ms |
+| `registry_gc` (forced) | <200ms | ~100ms |
+| `am list-internal` (end-to-end) | <200ms | ~100ms |

@@ -8,9 +8,10 @@
 # States: starting | running | waiting_input | waiting_permission |
 #         waiting_custom | idle | dead
 
-[[ -z "$AM_DIR" ]] && source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
-[[ "$(type -t tmux_session_exists)" != "function" ]] && source "$(dirname "${BASH_SOURCE[0]}")/tmux.sh"
-[[ "$(type -t registry_get_field)" != "function" ]] && source "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
+_STATE_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+[[ -z "$AM_DIR" ]] && source "$_STATE_LIB_DIR/utils.sh"
+[[ "$(type -t tmux_session_exists)" != "function" ]] && source "$_STATE_LIB_DIR/tmux.sh"
+[[ "$(type -t registry_get_field)" != "function" ]] && source "$_STATE_LIB_DIR/registry.sh"
 
 # ---------------------------------------------------------------------------
 # JSONL helpers (Claude sessions)

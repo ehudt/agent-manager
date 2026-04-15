@@ -2,11 +2,11 @@
 # agents.sh - Agent launcher functions
 
 # Source dependencies if not already loaded
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-[[ -z "$AM_DIR" ]] && source "$SCRIPT_DIR/utils.sh"
-[[ "$(type -t am_stream_logs_enabled)" != "function" ]] && source "$SCRIPT_DIR/config.sh"
-[[ "$(type -t tmux_create_session)" != "function" ]] && source "$SCRIPT_DIR/tmux.sh"
-[[ "$(type -t registry_add)" != "function" ]] && source "$SCRIPT_DIR/registry.sh"
+_AGENTS_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+[[ -z "$AM_DIR" ]] && source "$_AGENTS_LIB_DIR/utils.sh"
+[[ "$(type -t am_stream_logs_enabled)" != "function" ]] && source "$_AGENTS_LIB_DIR/config.sh"
+[[ "$(type -t tmux_create_session)" != "function" ]] && source "$_AGENTS_LIB_DIR/tmux.sh"
+[[ "$(type -t registry_add)" != "function" ]] && source "$_AGENTS_LIB_DIR/registry.sh"
 
 # Supported agent types and their commands
 declare -A AGENT_COMMANDS=(
@@ -328,6 +328,8 @@ agent_launch() {
 
     # Sandbox mode (independent of yolo)
     if $wants_sandbox; then
+        # Lazy-load sandbox.sh
+        [[ "$(type -t sandbox_start)" != "function" ]] && source "$_AGENTS_LIB_DIR/sandbox.sh"
         if ! am_docker_available; then
             log_error "Sandbox requires Docker but docker is not available"
             tmux_kill_session "$session_name" 2>/dev/null
@@ -542,6 +544,7 @@ agent_kill() {
     local container_name
     container_name=$(registry_get_field "$session_name" "container_name")
     if [[ -n "$container_name" ]]; then
+        [[ "$(type -t sandbox_remove)" != "function" ]] && source "$_AGENTS_LIB_DIR/sandbox.sh"
         sandbox_remove "$session_name"
     fi
 

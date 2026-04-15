@@ -2,7 +2,7 @@
 # config.sh - Persistent user defaults and effective config resolution
 
 # Source utils if not already loaded
-[[ -z "$AM_DIR" ]] && source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+[[ -z "$AM_DIR" ]] && source "${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/utils.sh"
 
 AM_CONFIG="${AM_CONFIG:-$AM_DIR/config.json}"
 

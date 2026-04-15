@@ -2,10 +2,7 @@
 # registry.sh - Session metadata storage using JSON
 
 # Source utils if not already loaded
-[[ -z "$AM_DIR" ]] && source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
-
-# Ensure jq is available
-require_cmd jq
+[[ -z "$AM_DIR" ]] && source "${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/utils.sh"
 
 # Add a session to the registry
 # Usage: registry_add <name> <directory> <branch> <agent_type> [task_description]
@@ -322,18 +319,15 @@ auto_title_scan() {
 
     # --- Rolling snapshots + session_id backfill (Claude sessions only) ---
     if [[ -f "$AM_SESSIONS_LOG" ]]; then
-        # Build lookup of sessions_log entries needing backfill or snapshot
+        # Build lookup of sessions_log entries (bulk parse — one jq call)
         local -A slog_sid slog_snap
         local _sl_sname _sl_sid _sl_snap
-        while IFS= read -r _sl_line; do
-            [[ -z "$_sl_line" ]] && continue
-            local _sl_fields
-            _sl_fields=$(printf '%s' "$_sl_line" | jq -r '[.session_name // "", .session_id // "", .snapshot_file // ""] | join("|")' 2>/dev/null)
-            IFS='|' read -r _sl_sname _sl_sid _sl_snap <<< "$_sl_fields"
-            # Keep last entry per session_name
+        while IFS='|' read -r _sl_sname _sl_sid _sl_snap; do
+            [[ -z "$_sl_sname" ]] && continue
+            # Keep last entry per session_name (later lines overwrite)
             slog_sid[$_sl_sname]="$_sl_sid"
             slog_snap[$_sl_sname]="$_sl_snap"
-        done < "$AM_SESSIONS_LOG"
+        done < <(jq -r '[.session_name // "", .session_id // "", .snapshot_file // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null)
 
         local snap_count=0
         for name in "${!reg_agent[@]}"; do
@@ -431,51 +425,18 @@ sessions_log_update() {
     local tmp_file
     tmp_file=$(mktemp)
 
-    # Update the LAST entry matching session_name (most recent launch)
-    jq -c --arg sname "$session_name" --arg field "$field" --arg value "$value" '
-        if .session_name == $sname then .[$field] = $value else . end
-    ' "$AM_SESSIONS_LOG" > "$tmp_file" 2>/dev/null
-
-    # Only the last match should be updated — reverse, update first, reverse back
-    tac "$AM_SESSIONS_LOG" | jq -c --arg sname "$session_name" --arg field "$field" --arg value "$value" '
-        . as $entry | if ($entry.session_name == $sname) then null else . end
-    ' > /dev/null 2>&1 || true
-
-    # Simpler approach: rewrite with awk-style last-match logic via jq slurp
-    jq -sc --arg sname "$session_name" --arg field "$field" --arg value "$value" '
-        (length - 1 - ([range(length)] | reverse | map(select(.[0] == $sname)) | .[0] // -1)) as $idx |
-        . # this is getting complex, use a different approach
-    ' "$AM_SESSIONS_LOG" > /dev/null 2>&1 || true
-
-    # Pragmatic approach: read all lines, find last matching index, update it
-    rm -f "$tmp_file"
-    tmp_file=$(mktemp)
-    local last_idx=-1 idx=0
-    while IFS= read -r line; do
-        local sname_check
-        sname_check=$(printf '%s' "$line" | jq -r '.session_name // ""' 2>/dev/null)
-        if [[ "$sname_check" == "$session_name" ]]; then
-            last_idx=$idx
-        fi
-        ((idx++))
-    done < "$AM_SESSIONS_LOG"
-
-    if (( last_idx < 0 )); then
+    # Single jq -sc call: slurp all lines, find and update the last matching entry
+    if jq -sc --arg sname "$session_name" --arg field "$field" --arg value "$value" '
+        . as $arr |
+        (reduce range(length) as $i (-1;
+            if $arr[$i].session_name == $sname then $i else . end)) as $last_idx |
+        if $last_idx >= 0 then .[$last_idx][$field] = $value else . end |
+        .[]
+    ' "$AM_SESSIONS_LOG" > "$tmp_file" 2>/dev/null; then
+        command mv "$tmp_file" "$AM_SESSIONS_LOG"
+    else
         rm -f "$tmp_file"
-        return 0
     fi
-
-    idx=0
-    while IFS= read -r line; do
-        if (( idx == last_idx )); then
-            printf '%s\n' "$line" | jq -c --arg field "$field" --arg value "$value" '.[$field] = $value' >> "$tmp_file"
-        else
-            printf '%s\n' "$line" >> "$tmp_file"
-        fi
-        ((idx++))
-    done < "$AM_SESSIONS_LOG"
-
-    command mv "$tmp_file" "$AM_SESSIONS_LOG"
 }
 
 # Capture a pane snapshot and save to snapshots directory.
@@ -542,19 +503,35 @@ _sessions_log_jsonl_exists() {
 sessions_log_gc() {
     [[ -f "$AM_SESSIONS_LOG" ]] || return 0
 
-    local tmp_file
-    tmp_file=$(mktemp)
-    local removed=0
-    local now
-    now=$(date +%s)
-    local cutoff_24h=$(( now - 86400 ))
+    # Bulk-parse all fields in one jq call
+    local all_fields
+    all_fields=$(jq -r '[.agent_type // "", .session_id // "", .directory // "", .created_at // "", .snapshot_file // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
 
+    # Read raw lines and parsed fields into parallel arrays
+    local lines=() fields_arr=()
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        local agent sid dir created_at
-        local _fields
-        _fields=$(printf '%s' "$line" | jq -r '[.agent_type // "", .session_id // "", .directory // "", .created_at // ""] | join("|")' 2>/dev/null)
-        IFS='|' read -r agent sid dir created_at <<< "$_fields"
+        lines+=("$line")
+    done < "$AM_SESSIONS_LOG"
+
+    while IFS= read -r fline; do
+        fields_arr+=("$fline")
+    done <<< "$all_fields"
+
+    local removed=0
+
+    # Compute 24h cutoff as ISO string — avoids per-entry date subprocess calls
+    local cutoff_iso
+    cutoff_iso=$(date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+        || date -u -d "24 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
+
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    local i
+    for (( i=0; i<${#lines[@]}; i++ )); do
+        local agent sid dir created_at snap
+        IFS='|' read -r agent sid dir created_at snap <<< "${fields_arr[$i]}"
 
         local keep=true
 
@@ -563,26 +540,19 @@ sessions_log_gc() {
                 keep=false
             fi
         elif [[ "$agent" == "claude" && -z "$sid" ]]; then
-            # No session_id — prune if older than 24h (failed launch)
-            local created_epoch=0
-            created_epoch=$(date -d "$created_at" +%s 2>/dev/null \
-                || TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null \
-                || echo 0)
-            if (( created_epoch > 0 && created_epoch < cutoff_24h )); then
+            # ISO 8601 UTC timestamps sort lexicographically
+            if [[ -n "$created_at" && "$created_at" < "$cutoff_iso" ]]; then
                 keep=false
             fi
         fi
 
         if $keep; then
-            printf '%s\n' "$line" >> "$tmp_file"
+            printf '%s\n' "${lines[$i]}" >> "$tmp_file"
         else
-            # Delete snapshot file
-            local snap
-            snap=$(printf '%s' "$line" | jq -r '.snapshot_file // ""' 2>/dev/null)
             [[ -n "$snap" && -f "$AM_DIR/$snap" ]] && rm -f "$AM_DIR/$snap"
             ((removed++))
         fi
-    done < "$AM_SESSIONS_LOG"
+    done
 
     command mv "$tmp_file" "$AM_SESSIONS_LOG"
 
@@ -604,39 +574,39 @@ sessions_log_restorable() {
         live_sessions[$_sname]=1
     done < <(tmux_list_am_sessions)
 
-    # Deduplicate: keep only the latest entry per session_id
-    # (a session could appear multiple times if relaunched)
-    local -A seen_ids
-    local lines=()
+    # Bulk-parse all fields in one jq call
+    local all_fields
+    all_fields=$(jq -r '[.session_name // "", .session_id // "", .agent_type // "", .directory // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
 
-    # Read in reverse (newest first), keep first occurrence of each session_id
+    # Read raw lines and parsed fields into parallel arrays
+    local lines=() fields_arr=()
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         lines+=("$line")
     done < "$AM_SESSIONS_LOG"
 
+    while IFS= read -r fline; do
+        fields_arr+=("$fline")
+    done <<< "$all_fields"
+
+    # Deduplicate: iterate in reverse (newest first), keep first occurrence of each session_id
+    local -A seen_ids
     local i result=()
     for (( i=${#lines[@]}-1; i>=0; i-- )); do
-        local line="${lines[$i]}"
-        local _fields
-        _fields=$(printf '%s' "$line" | jq -r '[.session_name // "", .session_id // "", .agent_type // "", .directory // ""] | join("|")' 2>/dev/null)
         local sname sid agent dir
-        IFS='|' read -r sname sid agent dir <<< "$_fields"
+        IFS='|' read -r sname sid agent dir <<< "${fields_arr[$i]}"
 
-        # Skip non-claude, no session_id, still alive
         [[ "$agent" == "claude" ]] || continue
         [[ -n "$sid" ]] || continue
         [[ -z "${live_sessions[$sname]:-}" ]] || continue
         [[ -z "${seen_ids[$sid]:-}" ]] || continue
 
-        # Check JSONL still exists
         if _sessions_log_jsonl_exists "$dir" "$sid"; then
             seen_ids[$sid]=1
-            result+=("$line")
+            result+=("${lines[$i]}")
         fi
     done
 
-    # Output newest first
     for line in "${result[@]}"; do
         printf '%s\n' "$line"
     done

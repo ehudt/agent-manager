@@ -3,10 +3,10 @@
 # Alternative to fzf_new_session_form(), gated by new_form config flag.
 
 # Source dependencies if not already loaded
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-[[ -z "$AM_DIR" ]] && source "$SCRIPT_DIR/utils.sh"
-[[ "$(type -t am_default_agent)" != "function" ]] && source "$SCRIPT_DIR/config.sh"
-[[ "$(type -t agent_supports_worktree)" != "function" ]] && source "$SCRIPT_DIR/agents.sh"
+_FORM_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+[[ -z "$AM_DIR" ]] && source "$_FORM_LIB_DIR/utils.sh"
+[[ "$(type -t am_default_agent)" != "function" ]] && source "$_FORM_LIB_DIR/config.sh"
+[[ "$(type -t agent_supports_worktree)" != "function" ]] && source "$_FORM_LIB_DIR/agents.sh"
 
 # Pre-cache tput sequences to avoid forking per frame
 _FORM_CUP_PREFIX=$'\033['   # used as "${_FORM_CUP_PREFIX}${row};0H"

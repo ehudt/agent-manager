@@ -152,16 +152,32 @@ case "${1:-}" in
         ;;
 esac
 
-# Now source all library files (they check dependencies)
+# Export AM_LIB_DIR so libs skip dirname subprocesses
+export AM_LIB_DIR
+
+# Source core libraries (needed by all commands)
 source "$AM_LIB_DIR/utils.sh"
 source "$AM_LIB_DIR/config.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
+
+# Fast path: list-internal is called on every fzf reload — keep it lean
+if [[ "${1:-}" == "list-internal" ]]; then
+    source "$AM_LIB_DIR/fzf.sh"
+    am_init
+    am_config_init
+    fzf_list_sessions
+    exit 0
+fi
+
+# Source remaining libraries for interactive commands
 source "$AM_LIB_DIR/agents.sh"
-source "$AM_LIB_DIR/state.sh"
-source "$AM_LIB_DIR/sandbox.sh"
 source "$AM_LIB_DIR/fzf.sh"
-source "$AM_LIB_DIR/form.sh"
+
+# Lazy-loaders: state.sh, sandbox.sh, form.sh are deferred for faster startup
+_ensure_state() { [[ "$(type -t agent_get_state)" == "function" ]] || source "$AM_LIB_DIR/state.sh"; }
+_ensure_sandbox() { [[ "$(type -t sandbox_start)" == "function" ]] || source "$AM_LIB_DIR/sandbox.sh"; }
+_ensure_form() { [[ "$(type -t _form_run)" == "function" ]] || source "$AM_LIB_DIR/form.sh"; }
 
 # Command: list (plain text or JSON)
 cmd_list() {
@@ -408,6 +424,7 @@ cmd_new() {
 
     # One-page form for fully interactive new-session creation
     if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && -z "$worktree_name" && ${#agent_args[@]} -eq 0 ]]; then
+        _ensure_form
         local form_values flags
         if ! form_values=$(am_new_session_form "$directory" "$(am_default_agent)" "$task" "$worktree_name"); then
             log_info "Cancelled"
@@ -611,6 +628,7 @@ cmd_send() {
     fi
 
     if $do_wait; then
+        _ensure_state
         local ready_states="waiting_input,waiting_permission,waiting_custom,idle"
         local reached
         reached=$(agent_wait_state "$resolved" "$ready_states" "$timeout_s")
@@ -677,6 +695,7 @@ peek_follow_poll() {
 }
 
 cmd_peek() {
+    _ensure_state
     local follow=false
     local pane_name="agent"
     local json=false
@@ -911,6 +930,7 @@ EOF
 
 # Command: info
 cmd_info() {
+    _ensure_state
     local name="${1:-}"
 
     if [[ -z "$name" ]]; then
@@ -930,6 +950,7 @@ cmd_info() {
 
 # Command: status
 cmd_status() {
+    _ensure_state
     local json=false
     local session_arg=""
 
@@ -1021,6 +1042,7 @@ cmd_status() {
 
 # Command: wait
 cmd_wait() {
+    _ensure_state
     local target_states="waiting_input,waiting_permission,waiting_custom,idle,dead"
     local timeout_s=600
     local json=false
@@ -1083,6 +1105,7 @@ cmd_wait() {
 
 # Command: events
 cmd_events() {
+    _ensure_state
     local follow=false
     local timeout_s=600
 
@@ -1187,6 +1210,7 @@ cmd_events() {
 
 # Command: interrupt
 cmd_interrupt() {
+    _ensure_state
     local confirmed=false
 
     while [[ $# -gt 0 ]]; do
@@ -1246,6 +1270,7 @@ cmd_interrupt() {
 
 # Command: sandbox
 cmd_sandbox() {
+    _ensure_sandbox
     local action="${1:-}"
     shift || true
 

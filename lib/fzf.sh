@@ -2,15 +2,12 @@
 # fzf.sh - fzf interface functions
 
 # Source dependencies if not already loaded
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-[[ -z "$AM_DIR" ]] && source "$SCRIPT_DIR/utils.sh"
-[[ "$(type -t am_default_agent)" != "function" ]] && source "$SCRIPT_DIR/config.sh"
-[[ "$(type -t tmux_list_am_sessions)" != "function" ]] && source "$SCRIPT_DIR/tmux.sh"
-[[ "$(type -t registry_get_field)" != "function" ]] && source "$SCRIPT_DIR/registry.sh"
-[[ "$(type -t agent_display_name)" != "function" ]] && source "$SCRIPT_DIR/agents.sh"
-
-# Ensure fzf is available
-require_cmd fzf
+_FZF_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+[[ -z "$AM_DIR" ]] && source "$_FZF_LIB_DIR/utils.sh"
+[[ "$(type -t am_default_agent)" != "function" ]] && source "$_FZF_LIB_DIR/config.sh"
+[[ "$(type -t tmux_list_am_sessions)" != "function" ]] && source "$_FZF_LIB_DIR/tmux.sh"
+[[ "$(type -t registry_get_field)" != "function" ]] && source "$_FZF_LIB_DIR/registry.sh"
+# agents.sh is loaded lazily — only the interactive form functions need it
 
 # Helper: List directories for picker (frecent + git repos)
 # shellcheck disable=SC2120
@@ -241,6 +238,8 @@ EOF
 # Usage: fzf_pick_agent
 # Returns: selected agent type, or empty if cancelled
 fzf_agent_options() {
+    # Lazy-load agents.sh (only interactive form functions need it)
+    [[ "$(type -t agent_display_name)" != "function" ]] && source "$_FZF_LIB_DIR/agents.sh"
     local default_agent="${1:-}"
     local options=()
     local agent
@@ -280,6 +279,8 @@ fzf_pick_agent() {
 }
 
 _new_session_form_rows() {
+    # Lazy-load agents.sh (only interactive form functions need it)
+    [[ "$(type -t agent_supports_worktree)" != "function" ]] && source "$_FZF_LIB_DIR/agents.sh"
     local directory="$1"
     local agent="$2"
     local task="$3"
@@ -742,6 +743,8 @@ fzf_main() {
 
     # Handle new session request (either Ctrl-N or selecting the "new" option)
     if [[ "$key" == "ctrl-n" || "$session_name" == "__new__" ]]; then
+        # Lazy-load form.sh (defines am_new_session_form)
+        [[ "$(type -t am_new_session_form)" != "function" ]] && source "$_FZF_LIB_DIR/form.sh"
         local form_values directory agent_type task worktree_name flags
         if ! form_values=$(am_new_session_form); then
             fzf_main
@@ -822,6 +825,8 @@ _fzf_list_display() {
 # JSON output for scripting
 # Usage: fzf_list_json
 fzf_list_json() {
+    # Lazy-load state.sh — only this function needs parallel state detection
+    [[ "$(type -t _agent_get_state_fast)" != "function" ]] && source "$_FZF_LIB_DIR/state.sh"
     # Warm the tmux config cache so subshells skip regeneration
     am_tmux_config_path >/dev/null 2>&1
 
@@ -904,16 +909,16 @@ fzf_restore_picker() {
     fi
 
     # Build display list: "session_id|directory|display|snapshot_file"
+    # Bulk-parse all fields in one jq call (pipe entries through jq -sc)
+    local all_fields
+    all_fields=$(printf '%s\n' "$entries" | jq -r '[.session_id // "", .directory // "", .branch // "", .agent_type // "", .task // "", .closed_at // "", .created_at // "", .snapshot_file // ""] | join("|")' 2>/dev/null)
+
     local lines=""
     local now
     now=$(date +%s)
 
-    while IFS= read -r entry; do
-        [[ -z "$entry" ]] && continue
-        local _fields
-        _fields=$(printf '%s' "$entry" | jq -r '[.session_id // "", .directory // "", .branch // "", .agent_type // "", .task // "", .closed_at // "", .created_at // "", .snapshot_file // ""] | join("|")' 2>/dev/null)
-        local sid dir branch agent task closed_at created_at snap
-        IFS='|' read -r sid dir branch agent task closed_at created_at snap <<< "$_fields"
+    while IFS='|' read -r sid dir branch agent task closed_at created_at snap; do
+        [[ -z "$sid" ]] && continue
 
         # Calculate age from closed_at or created_at (timestamps are UTC)
         local ref_time="${closed_at:-$created_at}"
@@ -937,7 +942,7 @@ fzf_restore_picker() {
         [[ -z "$snap" || ! -f "$snap_path" ]] && snap_path=""
 
         lines+="${sid}|${dir}|${display}|${snap_path}"$'\n'
-    done <<< "$entries"
+    done <<< "$all_fields"
 
     [[ -z "$lines" ]] && return 1
 
