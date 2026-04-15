@@ -133,7 +133,7 @@ Run `am` (or `am list`) to open the fzf-powered session browser:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ Agent Sessions | Enter:attach  Ctrl-N:new  Ctrl-X:kill  Ctrl-R:refresh   │
+│ Agent Sessions | Enter:attach  ^N:new  ^H:restore  ^X:kill  ^R:refresh   │
 ├───────────────────────────────────────────────────────────────────────────┤
 │ > myapp/feature/auth [claude] Fix user auth  (5m ago)                    │
 │   myproject/main [claude] (2h ago)                                       │
@@ -153,6 +153,7 @@ Run `am` (or `am list`) to open the fzf-powered session browser:
 |-----|--------|
 | `Enter` | Attach to selected session |
 | `Ctrl-N` | Create new session |
+| `Ctrl-H` | Restore a closed session |
 | `Ctrl-X` | Kill selected session |
 | `Ctrl-R` | Refresh session list |
 | `Ctrl-P` | Toggle preview panel |
@@ -178,6 +179,7 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix + a` | Switch to last used am session |
 | `Prefix + n` | Open new-session popup |
 | `Prefix + s` | Open am browser popup |
+| `Prefix + h` | Open restore session popup |
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
 | `Prefix ↑/↓` | Switch between agent and shell panes |
@@ -191,6 +193,22 @@ am peek am-abc123                        # Snapshot of agent pane
 am peek --pane shell am-abc123           # Snapshot of shell pane
 am peek --follow am-abc123               # Stream agent output in real time
 ```
+
+### Restoring closed sessions
+
+Closed a session and want to pick it back up? `am restore` lets you browse recently closed Claude sessions and resume exactly where you left off:
+
+```bash
+am restore
+```
+
+This opens a picker showing closed sessions sorted by recency. The preview panel displays the last captured pane output — a text snapshot of what the agent was showing when the session ended — so you can remember what you were doing.
+
+Select a session and press Enter to resume it via `claude --resume` in the original directory, with full conversation history intact.
+
+Sessions stay restorable as long as Claude's conversation file exists on disk. There's no fixed time limit — cleanup happens automatically when Claude removes its own session data.
+
+You can also open the restore picker from inside the session browser with `Ctrl-H`.
 
 ## Agent-to-Agent Orchestration
 
@@ -422,6 +440,7 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 | `am events <session>` | | Stream state-change events as JSONL |
 | `am interrupt <session>` | | Send Ctrl-C to the agent pane |
 | `am attach <session>` | `a` | Attach to a session |
+| `am restore` | | Browse and resume closed Claude sessions |
 | `am kill <session>` | `rm`, `k` | Kill a session |
 | `am kill --all` | | Kill all sessions |
 | `am info <session>` | `i` | Show session details |
@@ -441,6 +460,8 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 ├── config.json         # Saved defaults (agent, yolo, log streaming)
 ├── sessions.json       # Live session metadata registry
 ├── history.jsonl       # Persistent session history (survives cleanup)
+├── sessions_log.jsonl  # Session restore log (Claude session IDs + metadata)
+├── snapshots/          # Pane text snapshots for closed session preview
 └── tmux.conf           # Generated tmux config for am sessions
 ```
 

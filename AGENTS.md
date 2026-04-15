@@ -58,7 +58,8 @@ fzf_list_sessions() / fzf_list_json() → auto_title_scan() → tmux_pane_title(
 Ctrl-N in fzf → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
-agent_kill() → sandbox_remove() → tmux_kill_session() → registry_remove()
+agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
+am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, claude, --resume, session_id) → tmux_attach()
 ```
 
 ## Hook-Based State Detection
@@ -149,6 +150,19 @@ For agent orchestration, prefer this sequence:
 - Every session exports `$AM_LOG_DIR` into both panes, pointing to `/tmp/am-logs/<session>/`.
 - `am send` and `am peek` are transport primitives. They do not confirm task completion or parse agent state.
 
+### Restore a closed session
+
+Use `am restore` to browse recently closed Claude sessions and resume one:
+
+```bash
+am restore
+```
+
+- Opens an fzf picker showing closed sessions with pane snapshot previews.
+- Sessions are available as long as their Claude conversation JSONL exists on disk.
+- Enter resumes via `claude --resume <session_id>` in the original directory.
+- Also available as `Ctrl-H` in the main session browser (`am` with no args).
+
 ## Key Functions
 
 **Session lifecycle:**
@@ -169,6 +183,15 @@ For agent orchestration, prefer this sequence:
 - `history_append(dir, task, agent_type, branch)` - Append entry to `~/.agent-manager/history.jsonl` (prune throttled to once/hour)
 - `history_prune()` - Remove entries older than 7 days
 - `history_for_directory(path)` - Get recent sessions for a directory, newest first
+
+**Sessions log (for restore):**
+- `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
+- `sessions_log_update(session_name, field, value)` - Update field in most recent log entry for a session
+- `sessions_log_snapshot(session_name, [snapshot_key])` - Capture pane text to `~/.agent-manager/snapshots/`
+- `sessions_log_gc()` - Remove entries whose Claude JSONL no longer exists
+- `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
+- `_sessions_log_detect_id(directory)` - Detect Claude session UUID from JSONL filename
+- `_sessions_log_jsonl_exists(directory, session_id)` - Check if Claude JSONL still exists
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Get current state: starting, running, waiting_input, waiting_permission, waiting_custom, idle, dead
@@ -223,7 +246,8 @@ For agent orchestration, prefer this sequence:
 - `fzf_list_simple()` - Plain text session list for `am list`
 - `fzf_pick_directory()` - Directory picker with history annotations and path completion
 - `_annotate_directory(path)` - Annotate path with recent session history (agent, task, age)
-- `fzf_main()` - Main loop with keybindings
+- `fzf_main()` - Main loop with keybindings (Ctrl-N: new, Ctrl-H: restore, Ctrl-X: kill)
+- `fzf_restore_picker()` - Browse closed sessions, select to resume via `claude --resume`
 
 **Config:**
 - `am_config_init()` - Initialize config file
@@ -258,3 +282,4 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add state detection pattern | `lib/state.sh` → `_state_from_pane()` pattern list |
 | Add hook state event | `lib/hooks/state-hook.sh` → event-to-state mapping |
 | Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
+| Add restore agent support | `lib/registry.sh` → `sessions_log_restorable()` filter, `am` → `cmd_restore_internal()` |

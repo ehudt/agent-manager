@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# restore-preview - Preview script for the restore picker
+# Usage: restore-preview <snapshot_path>
+# Shows the snapshot file contents, or a fallback message.
+
+set -euo pipefail
+
+snap_path="${1:-}"
+
+if [[ -n "$snap_path" && -f "$snap_path" ]]; then
+    cat "$snap_path"
+else
+    echo "No snapshot available"
+fi

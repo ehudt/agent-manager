@@ -268,6 +268,11 @@ agent_launch() {
         history_append "$directory" "$task" "$agent_type" "$branch"
     fi
 
+    # Append to sessions log for restore support (Claude only)
+    if [[ "$agent_type" == "claude" ]]; then
+        sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
+    fi
+
     # Create horizontal split: top pane for agent, bottom pane (15 lines) for shell
     # Split without size, then resize (workaround for detached session sizing issues)
     am_tmux split-window -t "$session_name" -v -c "$session_directory"
@@ -511,6 +516,27 @@ agent_info() {
 agent_kill() {
     local session_name="$1"
     local rc=0
+
+    # Final snapshot + close timestamp for session restore (before killing tmux)
+    local agent_type
+    agent_type=$(registry_get_field "$session_name" "agent_type")
+    if [[ "$agent_type" == "claude" ]] && tmux_session_exists "$session_name"; then
+        # Detect session_id if not yet backfilled
+        local dir sid
+        dir=$(registry_get_field "$session_name" "directory")
+        sid=$(_sessions_log_detect_id "$dir" 2>/dev/null || true)
+        local snap_file
+        if [[ -n "$sid" ]]; then
+            sessions_log_update "$session_name" "session_id" "$sid"
+            snap_file=$(sessions_log_snapshot "$session_name" "$sid")
+        else
+            snap_file=$(sessions_log_snapshot "$session_name" "$session_name")
+        fi
+        [[ -n "$snap_file" ]] && sessions_log_update "$session_name" "snapshot_file" "$snap_file"
+        local closed_at
+        closed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        sessions_log_update "$session_name" "closed_at" "$closed_at"
+    fi
 
     # Remove sandbox container if session had one
     local container_name

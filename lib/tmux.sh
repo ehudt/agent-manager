@@ -36,6 +36,9 @@ bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "
 # Prefix + s: open agent manager popup
 bind s if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$am_cmd"' 'display-message "am shortcuts are active only in am-* sessions"'
 
+# Prefix + H: open restore session popup
+bind h if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$am_cmd restore"' 'display-message "am shortcuts are active only in am-* sessions"'
+
 # Prefix + x: kill the current am session and switch to the next most recent one
 bind-key -T prefix x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$kill_cmd #{client_name} #{session_name}"' 'confirm-before -p "kill-pane #P? (y/n)" kill-pane'
 

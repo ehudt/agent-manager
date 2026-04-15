@@ -49,6 +49,7 @@ COMMANDS:
     wait                Block until a session reaches a target state
     events              Stream state-change events as JSONL
     interrupt           Send Ctrl-C to an agent pane
+    restore             Browse and resume a closed Claude session
     sandbox, sb         Manage sandbox containers and home directory
     install             First-time setup (deps, config, skills, PATH)
     help                Show this help message
@@ -191,7 +192,12 @@ cmd_browse() {
     local result
     result=$(fzf_main)
 
-    if [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
+    if [[ "$result" == $'__RESTORE__\x1f'* ]]; then
+        # Parse: __RESTORE__<US>directory<US>session_id
+        local directory session_id
+        IFS=$'\x1f' read -r _tag directory session_id <<< "$result"
+        cmd_restore_internal "$directory" "$session_id"
+    elif [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
         # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task<US>worktree_name
         local directory agent_type flags task worktree_name
         IFS=$'\x1f' read -r _tag directory agent_type flags task worktree_name <<< "$result"
@@ -221,6 +227,51 @@ cmd_new_internal() {
 
     if [[ -n "$session_name" ]]; then
         tmux_attach "$session_name"
+    fi
+}
+
+# Internal: restore a session by launching claude --resume
+# Usage: cmd_restore_internal <directory> <session_id>
+cmd_restore_internal() {
+    local directory="$1"
+    local session_id="$2"
+
+    if [[ ! -d "$directory" ]]; then
+        log_error "Directory no longer exists: $directory"
+        return 1
+    fi
+
+    local session_name
+    session_name=$(agent_launch "$directory" "claude" "" "" "--resume" "$session_id")
+
+    if [[ -n "$session_name" ]]; then
+        tmux_attach "$session_name"
+    fi
+}
+
+# Command: restore (browse and resume a closed session)
+cmd_restore() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        cat <<'EOF'
+Usage: am restore
+
+Browse recently closed Claude sessions and resume one.
+Shows pane snapshots in the preview panel for visual recall.
+
+Sessions are available as long as their Claude conversation file exists.
+EOF
+        return 0
+    fi
+
+    local result
+    if ! result=$(fzf_restore_picker); then
+        return 0
+    fi
+
+    if [[ "$result" == $'__RESTORE__\x1f'* ]]; then
+        local directory session_id
+        IFS=$'\x1f' read -r _tag directory session_id <<< "$result"
+        cmd_restore_internal "$directory" "$session_id"
     fi
 }
 
@@ -1479,6 +1530,9 @@ main() {
             ;;
         interrupt)
             cmd_interrupt "$@"
+            ;;
+        restore)
+            cmd_restore "$@"
             ;;
         sandbox|sb)
             cmd_sandbox "$@"

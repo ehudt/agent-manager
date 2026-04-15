@@ -683,6 +683,7 @@ fzf_main() {
 
   Actions
     Ctrl-N      Create new session
+    Ctrl-H      Restore a closed session
     Ctrl-X      Kill selected session
     Ctrl-R      Refresh session list
 
@@ -711,7 +712,7 @@ fzf_main() {
         --height=100% \
         --delimiter='|' \
         --with-nth=2 \
-        --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill" \
+        --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill  ^H:restore" \
         --preview="$preview_cmd {1}" \
         --preview-window="bottom:75%:follow" \
         --bind="ctrl-j:preview-down,ctrl-k:preview-up" \
@@ -720,13 +721,24 @@ fzf_main() {
         --bind="ctrl-p:toggle-preview" \
         --bind="ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch $tmux_client_name {1})+reload($am_cmd list-internal)" \
         --bind="?:preview(echo '$help_text')" \
-        --expect="ctrl-n" \
+        --expect="ctrl-n,ctrl-h" \
     )
 
     # Parse result
     local key session_name
     key=$(echo "$selected" | head -n1)
     session_name=$(echo "$selected" | tail -n1 | cut -d'|' -f1)
+
+    # Handle restore request (Ctrl-H)
+    if [[ "$key" == "ctrl-h" ]]; then
+        local restore_result
+        if ! restore_result=$(fzf_restore_picker); then
+            fzf_main
+            return $?
+        fi
+        echo "$restore_result"
+        return 0
+    fi
 
     # Handle new session request (either Ctrl-N or selecting the "new" option)
     if [[ "$key" == "ctrl-n" || "$session_name" == "__new__" ]]; then
@@ -875,4 +887,80 @@ fzf_list_json() {
          {name: .[0], state: .[1], directory: .[2], branch: .[3],
           agent_type: .[4], task: .[5],
           activity: (.[6] | tonumber), created: (.[7] | tonumber)}]'
+}
+
+# Restore picker: browse closed sessions and resume one
+# Usage: fzf_restore_picker
+# Returns: "__RESTORE__<US>directory<US>session_id" on success, or empty on cancel
+fzf_restore_picker() {
+    local lib_dir
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    local entries
+    entries=$(sessions_log_restorable)
+    if [[ -z "$entries" ]]; then
+        log_info "No restorable sessions found" >&2
+        return 1
+    fi
+
+    # Build display list: "session_id|directory|display|snapshot_file"
+    local lines=""
+    local now
+    now=$(date +%s)
+
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        local _fields
+        _fields=$(printf '%s' "$entry" | jq -r '[.session_id // "", .directory // "", .branch // "", .agent_type // "", .task // "", .closed_at // "", .created_at // "", .snapshot_file // ""] | join("|")' 2>/dev/null)
+        local sid dir branch agent task closed_at created_at snap
+        IFS='|' read -r sid dir branch agent task closed_at created_at snap <<< "$_fields"
+
+        # Calculate age from closed_at or created_at (timestamps are UTC)
+        local ref_time="${closed_at:-$created_at}"
+        local ref_epoch=0 age=0
+        if [[ -n "$ref_time" ]]; then
+            ref_epoch=$(date -d "$ref_time" +%s 2>/dev/null \
+                || TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ref_time" +%s 2>/dev/null \
+                || echo 0)
+            (( ref_epoch > 0 )) && age=$(( now - ref_epoch ))
+        fi
+
+        local display
+        display="$(basename "$dir")"
+        [[ -n "$branch" ]] && display="${display}/${branch}"
+        display="${display} [${agent}]"
+        [[ -n "$task" ]] && display="${display} ${task}"
+        display="${display} ($(format_time_ago "$age"))"
+
+        # Resolve snapshot to absolute path for preview
+        local snap_path="${AM_DIR}/${snap}"
+        [[ -z "$snap" || ! -f "$snap_path" ]] && snap_path=""
+
+        lines+="${sid}|${dir}|${display}|${snap_path}"$'\n'
+    done <<< "$entries"
+
+    [[ -z "$lines" ]] && return 1
+
+    # Preview command: show snapshot file (field 4 = absolute snapshot path)
+    local preview_cmd="$lib_dir/restore-preview {4}"
+
+    local selected
+    selected=$(printf '%s' "$lines" | fzf \
+        --sync \
+        --ansi \
+        --height=100% \
+        --delimiter='|' \
+        --with-nth=3 \
+        --header="Restore Session  Enter:resume  Esc:back" \
+        --preview="$preview_cmd" \
+        --preview-window="bottom:75%:wrap" \
+    ) || return 1
+
+    [[ -z "$selected" ]] && return 1
+
+    local selected_sid selected_dir
+    selected_sid=$(echo "$selected" | cut -d'|' -f1)
+    selected_dir=$(echo "$selected" | cut -d'|' -f2)
+
+    printf '__RESTORE__\x1f%s\x1f%s\n' "$selected_dir" "$selected_sid"
 }
