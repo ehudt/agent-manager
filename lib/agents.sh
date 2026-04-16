@@ -278,8 +278,11 @@ agent_launch() {
     am_tmux split-window -t "$session_name" -v -c "$session_directory"
     am_tmux resize-pane -t "$session_name:.{bottom}" -y 15
 
-    # Select top pane for the agent
+    # Select top pane for the agent and set its border title
     am_tmux select-pane -t "$session_name:.{top}"
+    local _pane_title="${task:-$(dir_basename "$directory")}"
+    _pane_title=$(truncate "$_pane_title" 60)
+    am_tmux select-pane -t "$session_name:.{top}" -T "$_pane_title"
 
     # Set up log streaming if enabled
     if am_stream_logs_enabled; then

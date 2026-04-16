@@ -56,7 +56,7 @@ for i in "${!ordered[@]}"; do
             waiting_permission|waiting_custom)
                 entry="#[fg=colour214,bold]${idx}:! ${label}#[default]" ;;
             waiting_input)
-                entry="#[fg=colour34]${idx}:> ${label}#[default]" ;;
+                entry="#[fg=colour114]${idx}:> ${label}#[default]" ;;
             running)
                 entry="#[fg=colour75]${idx}:~ ${label}#[default]" ;;
             *)
@@ -67,5 +67,10 @@ for i in "${!ordered[@]}"; do
     [[ -n "$result" ]] && result+="  "
     result+="$entry"
 done
+
+# Write cache for pane-border-format (fast cat in border, no re-sourcing)
+_sr_cache_dir="/tmp/am-sidebar"
+[[ -d "$_sr_cache_dir" ]] || mkdir -p "$_sr_cache_dir"
+[[ -n "$current" ]] && printf '%s' "$result" > "$_sr_cache_dir/$current"
 
 echo "$result"

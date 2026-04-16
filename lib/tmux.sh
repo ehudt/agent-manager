@@ -33,6 +33,10 @@ bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$switch_cmd"' 'displa
 bind ] if-shell -F '#{m:am-*,#{session_name}}' { switch-client -n ; refresh-client -S } 'paste-buffer -p'
 bind [ if-shell -F '#{m:am-*,#{session_name}}' { switch-client -p ; refresh-client -S } 'copy-mode'
 
+# Prefix + Right/Left: alias for ]/[ cycling
+bind Right if-shell -F '#{m:am-*,#{session_name}}' { switch-client -n ; refresh-client -S } 'send-keys Right'
+bind Left if-shell -F '#{m:am-*,#{session_name}}' { switch-client -p ; refresh-client -S } 'send-keys Left'
+
 # Prefix + 1-9: jump to sidebar slot N
 bind 1 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 1"' 'display-message "am shortcuts are active only in am-* sessions"'
 bind 2 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 2"' 'display-message "am shortcuts are active only in am-* sessions"'
@@ -63,6 +67,13 @@ set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$am_cmd"'
 set -g status-interval 5
 set -g status-right-length 200
 set -g status-right '#($status_right_cmd #{session_name})'
+
+# Pane border sidebar: session list on the divider between agent and shell panes
+set -g pane-border-status bottom
+set -g pane-border-format '#{?#{pane_at_bottom},,#[align=centre]#(cat /tmp/am-sidebar/#{session_name} 2>/dev/null)}'
+set -g pane-border-lines double
+set -g pane-border-style 'fg=colour67'
+set -g pane-active-border-style 'fg=colour14'
 EOF
 )
 
@@ -172,7 +183,7 @@ tmux_enable_pipe_pane() {
     am_tmux pipe-pane -t "${session}:${pane}" -o "${AM_LIB_DIR}/strip-ansi >> ${log_file}"
 }
 
-# Remove log directory for a session
+# Remove log directory and sidebar cache for a session
 tmux_cleanup_logs() {
     local name="$1"
     local log_dir="/tmp/am-logs/${name}"
@@ -180,6 +191,7 @@ tmux_cleanup_logs() {
     if [[ -d "$log_dir" ]]; then
         rm -rf "$log_dir"
     fi
+    rm -f "/tmp/am-sidebar/${name}"
 }
 
 # Attach to a tmux session
