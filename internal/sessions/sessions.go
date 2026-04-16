@@ -37,8 +37,10 @@ type TmuxSession struct {
 // Entry combines tmux session + registry metadata + formatted display.
 type Entry struct {
 	TmuxSession
-	Meta    Session
-	Display string // formatted display string (without session_name| prefix)
+	Meta        Session
+	Display     string // formatted display string (without session_name| prefix)
+	DisplayBase string // display without the trailing time-ago portion
+	TimeAgo     string // e.g. "3m ago" — split out for right-alignment in TUI
 }
 
 // ListTmuxSessions runs tmux list-sessions and returns matching sessions.
@@ -119,6 +121,36 @@ func FormatDisplay(s TmuxSession, meta Session, now int64) string {
 	return display.String()
 }
 
+// FormatDisplayBase produces the display string without the trailing time-ago portion.
+func FormatDisplayBase(s TmuxSession, meta Session) string {
+	var display strings.Builder
+	display.WriteString(s.Name)
+
+	if meta.Directory != "" {
+		display.WriteByte(' ')
+		display.WriteString(filepath.Base(meta.Directory))
+	}
+	if meta.Branch != "" {
+		display.WriteByte('/')
+		display.WriteString(meta.Branch)
+	}
+
+	display.WriteString(" [")
+	if meta.AgentType != "" {
+		display.WriteString(meta.AgentType)
+	} else {
+		display.WriteString("unknown")
+	}
+	display.WriteByte(']')
+
+	if meta.Task != "" {
+		display.WriteByte(' ')
+		display.WriteString(meta.Task)
+	}
+
+	return display.String()
+}
+
 // FormatLine produces one pipe-delimited output line: session_name|display
 func FormatLine(s TmuxSession, meta Session, now int64) string {
 	return s.Name + "|" + FormatDisplay(s, meta, now)
@@ -185,10 +217,13 @@ func LoadEntries() []Entry {
 	entries := make([]Entry, len(sessions))
 	for i, s := range sessions {
 		meta := registry.Sessions[s.Name]
+		timeAgo := FormatTimeAgo(now - s.Activity)
 		entries[i] = Entry{
 			TmuxSession: s,
 			Meta:        meta,
 			Display:     FormatDisplay(s, meta, now),
+			DisplayBase: FormatDisplayBase(s, meta),
+			TimeAgo:     timeAgo,
 		}
 	}
 	return entries

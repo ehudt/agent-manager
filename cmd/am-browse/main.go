@@ -44,12 +44,16 @@ func main() {
 
 	// Open /dev/tty for TUI rendering so stdout stays free for the output protocol.
 	// This is needed because the caller captures stdout: result=$(am-browse ...)
-	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening /dev/tty: %v\n", err)
 		os.Exit(1)
 	}
 	defer tty.Close()
+
+	// Create renderer from tty so lipgloss detects color support correctly
+	// (stdout is piped/captured, so the default renderer sees no colors).
+	initStyles(lipgloss.NewRenderer(tty))
 
 	m := newModel()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(tty))
@@ -81,16 +85,33 @@ type killDoneMsg struct {
 	session string
 }
 
-// --- Styles ---
+// --- Styles (initialized in initStyles after tty is opened) ---
 
 var (
-	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")) // cyan
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")) // green
-	normalStyle   = lipgloss.NewStyle()
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // dim
-	separatorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	helpOverlay   = lipgloss.NewStyle().Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
+	accentStyle    lipgloss.Style
+	titleStyle     lipgloss.Style
+	selectedStyle  lipgloss.Style
+	normalStyle    lipgloss.Style
+	dimStyle       lipgloss.Style
+	keyPillStyle   lipgloss.Style
+	keyActionStyle lipgloss.Style
+	separatorStyle lipgloss.Style
+	helpOverlay    lipgloss.Style
 )
+
+// initStyles creates all styles from a renderer tied to the real tty,
+// so color detection works even when stdout is captured by the caller.
+func initStyles(r *lipgloss.Renderer) {
+	accentStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))                                         // cyan accent bar
+	titleStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))                                          // bright white
+	selectedStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("235"))      // green on subtle dark bg
+	normalStyle = r.NewStyle()
+	dimStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                                        // dim
+	keyPillStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("14")).Background(lipgloss.Color("236"))       // cyan on dark bg
+	keyActionStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                                  // dim
+	separatorStyle = r.NewStyle().Foreground(lipgloss.Color("8"))
+	helpOverlay = r.NewStyle().Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
+}
 
 // --- Model ---
 
@@ -111,8 +132,9 @@ type model struct {
 
 func newModel() model {
 	ti := textinput.New()
-	ti.Placeholder = "Type to filter..."
-	ti.Prompt = "> "
+	ti.Placeholder = "type to filter..."
+	ti.Prompt = "/ "
+	ti.PromptStyle = accentStyle
 	ti.Focus()
 
 	return model{
@@ -310,20 +332,44 @@ func (m model) View() string {
 
 	var b strings.Builder
 
-	// Header
+	// Header: accent bar + title + session count
 	b.WriteByte('\n')
-	header := "  " + headerStyle.Render("Agent Sessions") + "  " +
-		dimStyle.Render("?:help  Enter:attach  ^N:new  ^X:kill  ^H:restore")
-	b.WriteString(header)
-	b.WriteString("\n\n")
+	countStr := dimStyle.Render(fmt.Sprintf("%d active", len(m.filtered)))
+	title := "  " + accentStyle.Render("▎") + " " + titleStyle.Render("Agent Sessions")
+	// Right-align count: pad between title and count
+	titleVisLen := 2 + 2 + 14 // "  " + "▎ " + "Agent Sessions"
+	countVisLen := len(fmt.Sprintf("%d active", len(m.filtered)))
+	pad := m.width - titleVisLen - countVisLen
+	if pad < 2 {
+		pad = 2
+	}
+	b.WriteString(title + strings.Repeat(" ", pad) + countStr)
+	b.WriteByte('\n')
+	b.WriteString("  " + separatorStyle.Render(strings.Repeat("─", m.width-4)))
+	b.WriteByte('\n')
+
+	// Keybind pills
+	b.WriteString("   ")
+	keys := []struct{ key, action string }{
+		{"?", "help"}, {"⏎", "attach"}, {"^N", "new"}, {"^X", "kill"}, {"^H", "restore"},
+	}
+	for i, k := range keys {
+		b.WriteString(keyPillStyle.Render(" " + k.key + " "))
+		b.WriteString(keyActionStyle.Render(" " + k.action))
+		if i < len(keys)-1 {
+			b.WriteString("  ")
+		}
+	}
+	b.WriteByte('\n')
 
 	// Filter input
-	b.WriteString("  ")
+	b.WriteByte('\n')
+	b.WriteString("   ")
 	b.WriteString(m.filter.View())
 	b.WriteString("\n\n")
 
 	// Calculate layout: list gets 25% of space, preview gets 75% (like fzf config)
-	headerLines := 5 // blank + header + blank + filter + blank
+	headerLines := 7 // blank + title + separator + keybinds + blank + filter + blank
 	available := m.height - headerLines
 	listHeight := available
 	previewHeight := 0
@@ -362,21 +408,57 @@ func (m model) View() string {
 			end = len(m.filtered)
 		}
 
+		// Find longest base display among visible entries to set time column position
+		maxBaseLen := 0
+		for i := start; i < end; i++ {
+			if n := len(m.entries[m.filtered[i]].DisplayBase); n > maxBaseLen {
+				maxBaseLen = n
+			}
+		}
+		// Time column starts 2 tabs (16 chars) after the longest base, capped to terminal width
+		timeCol := maxBaseLen + 16 // 16 ≈ two tabs of breathing room
+		if timeCol > m.width-14 {  // leave room for "(XXh XXm ago)"
+			timeCol = m.width - 14
+		}
+
 		for i := start; i < end; i++ {
 			entry := m.entries[m.filtered[i]]
-			line := entry.Display
-			if len(line) > m.width-4 {
-				line = line[:m.width-4]
+			base := entry.DisplayBase
+			timeAgo := "(" + entry.TimeAgo + ")"
+
+			prefix := "  "
+			if i == m.cursor {
+				prefix = "> "
 			}
 
+			// Truncate base if it would overlap the time column
+			maxBase := timeCol - 2 // 2 = prefix width
+			if maxBase < 10 {
+				maxBase = 10
+			}
+			if len(base) > maxBase {
+				base = base[:maxBase]
+			}
+			gap := timeCol - len(base)
+			if gap < 2 {
+				gap = 2
+			}
+			line := prefix + base + strings.Repeat(" ", gap) + timeAgo
+
 			if i == m.cursor {
-				b.WriteString(selectedStyle.Render("> " + line))
+				// Pad to full width for background highlight
+				if len(line) < m.width {
+					line += strings.Repeat(" ", m.width-len(line))
+				}
+				b.WriteString(selectedStyle.Render(line))
 			} else {
-				b.WriteString(normalStyle.Render("  " + line))
+				b.WriteString(normalStyle.Render(line))
 			}
 			b.WriteByte('\n')
 		}
 	}
+
+	b.WriteByte('\n')
 
 	// Preview panel — render ANSI content directly with a simple separator
 	if m.showPreview && previewHeight > 0 {
