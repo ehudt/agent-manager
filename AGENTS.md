@@ -33,8 +33,11 @@ Architecture reference for AI agents working with this codebase.
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit), gated by `new_form` config flag |
-| `lib/fzf.sh` | fzf UI: list generation, directory picker with history annotations, main loop |
-| `lib/preview` | Standalone preview script for fzf panel (extracts first user message, captures pane) |
+| `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
+| `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
+| `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting |
+| `lib/fzf.sh` | fzf fallback UI, directory picker, restore picker, list helpers |
+| `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
 | `lib/status-right` | Standalone script: tmux status-right showing sessions waiting for attention |
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
@@ -52,10 +55,11 @@ Architecture reference for AI agents working with this codebase.
 ## Data Flow
 
 ```
-am → fzf_main() → tmux_attach()
+am → fzf_main() → am-browse (Go TUI) → stdout protocol → tmux_attach()
+am → fzf_main() → fzf (fallback when am-browse not built) → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
-fzf_list_sessions() / fzf_list_json() → auto_title_scan() → tmux_pane_title() → registry_update() + history_append()
-Ctrl-N in fzf → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
+am list-internal → am-list-internal (Go binary) → stdout
+Ctrl-N in browser → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
@@ -240,13 +244,18 @@ am restore
 - `_form_filter_dir_suggestions(query, max)` - Filter cached zoxide/frecent list into `_FORM_DIR_FILTERED` array (no subshell)
 - `_form_output()` - Format form values as `directory\tagent\ttask\tworktree\tflags` (same contract as fzf form)
 
-**fzf:**
-- `fzf_list_sessions()` - Format: `session|display_name`
+**Session browser (Go TUI — `cmd/am-browse`):**
+- Compiled bubbletea binary; primary UI for the interactive session browser
+- Output protocol: session name (attach), `__NEW__`, `__RESTORE__`, or empty (cancel)
+- Flags: `--preview-cmd`, `--kill-cmd`, `--client-name`, `--benchmark`
+
+**fzf (fallback + helpers):**
+- `fzf_main()` - Tries am-browse first; falls back to fzf when binary not built
+- `fzf_list_sessions()` - Format: `session|display_name` (fallback-only, used by fzf path)
 - `fzf_list_json()` - JSON output of sessions for `am list --json`
 - `fzf_list_simple()` - Plain text session list for `am list`
 - `fzf_pick_directory()` - Directory picker with history annotations and path completion
 - `_annotate_directory(path)` - Annotate path with recent session history (agent, task, age)
-- `fzf_main()` - Main loop with keybindings (Ctrl-N: new, Ctrl-H: restore, Ctrl-X: kill)
 - `fzf_restore_picker()` - Browse closed sessions, select to resume via `claude --resume`
 
 **Config:**
@@ -268,7 +277,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 |------|-------|
 | Add agent type | `lib/agents.sh` → `AGENT_COMMANDS` associative array |
 | Add CLI command | `am` → `case "$cmd"` in `main()` |
-| Change fzf keybindings | `lib/fzf.sh` → `fzf_main()` |
+| Change browser keybindings | `cmd/am-browse/main.go` (primary), `lib/fzf.sh` → `fzf_main()` (fallback) |
 | Modify session display | `lib/agents.sh` → `agent_display_name()` |
 | Add metadata field | `lib/registry.sh` → `registry_add()` |
 | Change preview content | `lib/preview` (session), `lib/dir-preview` (directory picker) |

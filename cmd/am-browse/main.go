@@ -42,8 +42,17 @@ func main() {
 		return
 	}
 
+	// Open /dev/tty for TUI rendering so stdout stays free for the output protocol.
+	// This is needed because the caller captures stdout: result=$(am-browse ...)
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening /dev/tty: %v\n", err)
+		os.Exit(1)
+	}
+	defer tty.Close()
+
 	m := newModel()
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(tty))
 
 	result, err := p.Run()
 	if err != nil {
@@ -75,12 +84,12 @@ type killDoneMsg struct {
 // --- Styles ---
 
 var (
-	headerStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))  // cyan
-	selectedStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))  // green
-	normalStyle    = lipgloss.NewStyle()
-	dimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))              // dim
-	previewBorder  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8"))
-	helpOverlay    = lipgloss.NewStyle().Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
+	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")) // cyan
+	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")) // green
+	normalStyle   = lipgloss.NewStyle()
+	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // dim
+	separatorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	helpOverlay   = lipgloss.NewStyle().Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
 )
 
 // --- Model ---
@@ -302,28 +311,25 @@ func (m model) View() string {
 	var b strings.Builder
 
 	// Header
-	header := headerStyle.Render("Agent Sessions") + "  " +
+	b.WriteByte('\n')
+	header := "  " + headerStyle.Render("Agent Sessions") + "  " +
 		dimStyle.Render("?:help  Enter:attach  ^N:new  ^X:kill  ^H:restore")
 	b.WriteString(header)
-	b.WriteByte('\n')
+	b.WriteString("\n\n")
 
 	// Filter input
+	b.WriteString("  ")
 	b.WriteString(m.filter.View())
-	b.WriteByte('\n')
+	b.WriteString("\n\n")
 
-	// Calculate layout
-	headerLines := 2 // header + filter
-	listHeight := m.height - headerLines
+	// Calculate layout: list gets 25% of space, preview gets 75% (like fzf config)
+	headerLines := 5 // blank + header + blank + filter + blank
+	available := m.height - headerLines
+	listHeight := available
 	previewHeight := 0
-	if m.showPreview && m.height > 10 {
-		previewHeight = (m.height * 3) / 4
-		if previewHeight > m.height-headerLines-3 {
-			previewHeight = m.height - headerLines - 3
-		}
-		listHeight = m.height - headerLines - previewHeight
-	}
-	if listHeight < 1 {
-		listHeight = 1
+	if m.showPreview && available > 6 {
+		listHeight = max(3, available/4)
+		previewHeight = available - listHeight
 	}
 
 	// Help overlay
@@ -372,29 +378,32 @@ func (m model) View() string {
 		}
 	}
 
-	// Preview panel
+	// Preview panel — render ANSI content directly with a simple separator
 	if m.showPreview && previewHeight > 0 {
+		// Draw separator line
+		b.WriteString(separatorStyle.Render(strings.Repeat("─", m.width)))
+		b.WriteByte('\n')
+
 		previewContent := m.preview
 		if previewContent == "" && m.selectedSession() != "" {
 			previewContent = dimStyle.Render("Loading preview...")
 		}
 
-		// Truncate preview to fit
+		// Show tail of preview (most recent output), leave 1 line for separator
 		lines := strings.Split(previewContent, "\n")
-		maxLines := previewHeight - 2 // border
-		if maxLines < 0 {
-			maxLines = 0
+		maxLines := previewHeight - 1
+		if maxLines < 1 {
+			maxLines = 1
 		}
 		if len(lines) > maxLines {
-			lines = lines[:maxLines]
+			lines = lines[len(lines)-maxLines:]
 		}
-		previewContent = strings.Join(lines, "\n")
+		// Truncate lines by visible width (skip ANSI escapes when counting)
+		for i, line := range lines {
+			lines[i] = truncateVisible(line, m.width)
+		}
 
-		styled := previewBorder.
-			Width(m.width - 2).
-			Height(previewHeight - 2).
-			Render(previewContent)
-		b.WriteString(styled)
+		b.WriteString(strings.Join(lines, "\n"))
 	}
 
 	return b.String()
@@ -439,5 +448,36 @@ func helpText() string {
     Prefix + s  Open am browser popup
     Prefix + x  Kill current am session
     Prefix + d  Detach from session`
+}
+
+// truncateVisible truncates a string to maxWidth visible characters,
+// preserving ANSI escape sequences (they contribute zero visible width).
+func truncateVisible(s string, maxWidth int) string {
+	visible := 0
+	inEsc := false
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\x1b' {
+			inEsc = true
+			out.WriteByte(ch)
+			continue
+		}
+		if inEsc {
+			out.WriteByte(ch)
+			// CSI sequences end with a letter; OSC ends with BEL
+			if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '\x07' {
+				inEsc = false
+			}
+			continue
+		}
+		if visible >= maxWidth {
+			break
+		}
+		out.WriteByte(ch)
+		visible++
+	}
+	return out.String()
 }
 

@@ -642,6 +642,7 @@ fzf_new_session_form() {
 # display list on every fzf reload.  Cache is valid for 2 seconds and is
 # invalidated when the tmux session count changes.
 # Usage: fzf_list_sessions
+# NOTE: Fallback-only. Primary path uses the compiled am-browse/am-list-internal Go binaries.
 fzf_list_sessions() {
     # Background GC and title scan — don't block list rendering
     { registry_gc >/dev/null 2>&1; } &
@@ -838,6 +839,7 @@ fzf_list_simple() {
 }
 
 # Shared bulk-display helper for fzf_list_sessions and fzf_list_simple.
+# NOTE: Fallback-only. Primary path uses compiled Go binaries.
 # Reads all registry fields in one jq call, then formats each session inline.
 # Usage: _fzf_list_display <mode>   (mode: "with_name" or "without_name")
 _fzf_list_display() {
