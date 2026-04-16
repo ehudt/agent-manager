@@ -176,6 +176,9 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 
 | Key | Action |
 |-----|--------|
+| `Prefix + ]` | Next session in sidebar |
+| `Prefix + [` | Previous session in sidebar |
+| `Prefix + 1-9` | Jump to sidebar slot N |
 | `Prefix + a` | Switch to last used am session |
 | `Prefix + n` | Open new-session popup |
 | `Prefix + s` | Open am browser popup |
@@ -183,6 +186,8 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
 | `Prefix ↑/↓` | Switch between agent and shell panes |
+
+The status bar shows all sessions as numbered slots with the current session highlighted. State icons indicate what each session is doing (`!` needs permission, `>` waiting for input, `~` running, `-` idle).
 
 ### Peeking and monitoring
 
