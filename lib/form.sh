@@ -21,13 +21,13 @@ _FORM_SHOW_CURSOR=$'\033[?25h'
 _FORM_BG_NAV=$'\033[48;5;236m'    # dark gray background in navigate mode
 _FORM_BG_EDIT=$'\033[48;5;24m'   # dark blue background in edit mode
 
-# Form field definitions
-declare -a FORM_FIELDS=()
-declare -A FORM_VALUES=()
-declare -A FORM_TYPES=()
-declare -A FORM_LABELS=()
-declare -A FORM_OPTIONS=()
-declare -A FORM_DISABLED=()
+# Form field definitions (declare -g: stay global when sourced inside a function)
+declare -ga FORM_FIELDS=()
+declare -gA FORM_VALUES=()
+declare -gA FORM_TYPES=()
+declare -gA FORM_LABELS=()
+declare -gA FORM_OPTIONS=()
+declare -gA FORM_DISABLED=()
 FORM_CURSOR=0
 
 # Mode: "navigate" or "edit"
@@ -38,11 +38,11 @@ _FORM_DIR_HIGHLIGHT=0
 _FORM_DIR_SCROLL_OFFSET=0
 
 # Directory suggestions cache
-declare -a _FORM_DIR_SUGGESTIONS=()
+declare -ga _FORM_DIR_SUGGESTIONS=()
 _FORM_DIR_SUGGESTIONS_LOADED=false
 
 # Filtered results cache (avoids subshell)
-declare -a _FORM_DIR_FILTERED=()
+declare -ga _FORM_DIR_FILTERED=()
 
 # Initialize form state
 # Usage: _form_init <directory> <agent> <task> <mode> <yolo> <sandbox> <worktree_enabled> <worktree_name> <docker_available>
