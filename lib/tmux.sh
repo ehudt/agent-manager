@@ -13,10 +13,12 @@ am_tmux_config_path() {
 
     am_init
 
-    local am_cmd switch_cmd kill_cmd status_right_cmd desired_conf
+    local am_cmd switch_cmd kill_cmd cycle_cmd index_cmd status_right_cmd desired_conf
     am_cmd="$AM_ROOT_DIR/am"
     switch_cmd="$AM_ROOT_DIR/bin/switch-last"
     kill_cmd="$AM_ROOT_DIR/bin/kill-and-switch"
+    cycle_cmd="$AM_ROOT_DIR/bin/switch-cycle"
+    index_cmd="$AM_ROOT_DIR/bin/switch-index"
     status_right_cmd="$AM_ROOT_DIR/lib/status-right"
 
     desired_conf=$(cat <<EOF
@@ -26,6 +28,21 @@ set -g detach-on-destroy off
 
 # Prefix + a: switch to last used am session
 bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$switch_cmd"' 'display-message "am shortcuts are active only in am-* sessions"'
+
+# Prefix + ]/[: cycle next/prev session (fall back to default paste/copy-mode outside am)
+bind ] if-shell -F '#{m:am-*,#{session_name}}' { switch-client -n ; refresh-client -S } 'paste-buffer -p'
+bind [ if-shell -F '#{m:am-*,#{session_name}}' { switch-client -p ; refresh-client -S } 'copy-mode'
+
+# Prefix + 1-9: jump to sidebar slot N
+bind 1 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 1"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 2 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 2"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 3 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 3"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 4 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 4"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 5 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 5"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 6 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 6"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 7 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 7"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 8 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 8"' 'display-message "am shortcuts are active only in am-* sessions"'
+bind 9 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 9"' 'display-message "am shortcuts are active only in am-* sessions"'
 
 # Prefix + n: open new-session popup
 bind n if-shell -F '#{m:am-*,#{session_name}}' 'display-popup -E -w 90% -h 80% "$am_cmd new"' 'display-message "am shortcuts are active only in am-* sessions"'
@@ -42,7 +59,7 @@ bind-key -T prefix x if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$kill_c
 # Optional alias: :am
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$am_cmd"'
 
-# Status bar: show sessions waiting for attention
+# Status bar: show sessions as indexed sidebar
 set -g status-interval 5
 set -g status-right-length 200
 set -g status-right '#($status_right_cmd #{session_name})'
@@ -203,6 +220,17 @@ tmux_get_created() { _tmux_get_session_field "$1" session_created; }
 # Usage: tmux_list_am_sessions
 # Returns: newline-separated session names
 tmux_list_am_sessions() {
+    am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
+        | grep "^${AM_SESSION_PREFIX}" \
+        || true
+}
+
+# List all agent-manager sessions in canonical sidebar order. Matches tmux's
+# native session iteration (switch-client -n/-p) so the numbered slots and
+# the cycling keybindings agree. Stable — only changes on session create/kill.
+# Usage: am_session_order
+# Returns: newline-separated session names
+am_session_order() {
     am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
         | grep "^${AM_SESSION_PREFIX}" \
         || true

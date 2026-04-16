@@ -25,4 +25,5 @@ tgt=$(am_tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null
 
 if [[ -n "$tgt" ]]; then
     am_tmux switch-client -t "$tgt" 2>/dev/null || true
+    am_tmux refresh-client -S 2>/dev/null || true
 fi

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Switch to the Nth session in canonical sidebar order.
+# Usage: switch-index <1-9>
+
+set -euo pipefail
+
+index="${1:-}"
+[[ -z "$index" || ! "$index" =~ ^[1-9]$ ]] && exit 1
+
+# Resolve the real script path so installed symlinks still find the repo libs.
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+    script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+    script_path="$(readlink "$script_path")"
+    [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
+done
+script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+repo_dir="$(cd "$script_dir/.." && pwd -P)"
+
+source "$repo_dir/lib/utils.sh"
+source "$repo_dir/lib/tmux.sh"
+
+cur=$(am_tmux display-message -p '#{session_name}' 2>/dev/null) || exit 0
+
+# Get creation-time-ordered sessions (fast — single tmux call, no state detection)
+mapfile -t ordered < <(am_session_order)
+
+# Convert to 0-based
+target_idx=$((index - 1))
+
+[[ $target_idx -ge ${#ordered[@]} ]] && exit 0
+
+target="${ordered[$target_idx]}"
+
+if [[ -n "$target" && "$target" != "$cur" ]]; then
+    am_tmux switch-client -t "$target" 2>/dev/null || true
+    # Force immediate status bar refresh so the highlight moves instantly
+    am_tmux refresh-client -S 2>/dev/null || true
+fi

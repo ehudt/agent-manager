@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Switch to the next or previous am-* session in canonical sidebar order.
+# Usage: switch-cycle <next|prev>
+
+set -euo pipefail
+
+direction="${1:-next}"
+
+# Resolve the real script path so installed symlinks still find the repo libs.
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+    script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+    script_path="$(readlink "$script_path")"
+    [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
+done
+script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+repo_dir="$(cd "$script_dir/.." && pwd -P)"
+
+source "$repo_dir/lib/utils.sh"
+source "$repo_dir/lib/tmux.sh"
+
+cur=$(am_tmux display-message -p '#{session_name}' 2>/dev/null) || exit 0
+
+# Get creation-time-ordered sessions (fast — single tmux call, no state detection)
+mapfile -t ordered < <(am_session_order)
+
+count=${#ordered[@]}
+[[ $count -le 1 ]] && exit 0
+
+# Find current position
+pos=-1
+for i in "${!ordered[@]}"; do
+    if [[ "${ordered[$i]}" == "$cur" ]]; then
+        pos=$i
+        break
+    fi
+done
+
+[[ $pos -lt 0 ]] && exit 0
+
+# Compute target
+if [[ "$direction" == "next" ]]; then
+    target_pos=$(( (pos + 1) % count ))
+else
+    target_pos=$(( (pos - 1 + count) % count ))
+fi
+
+target="${ordered[$target_pos]}"
+
+if [[ -n "$target" && "$target" != "$cur" ]]; then
+    am_tmux switch-client -t "$target" 2>/dev/null || true
+    # Force immediate status bar refresh so the highlight moves instantly
+    am_tmux refresh-client -S 2>/dev/null || true
+fi

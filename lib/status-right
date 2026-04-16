@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # status-right - tmux status-right helper
-# Shows agent sessions waiting for user attention.
+# Shows all agent sessions as an indexed sidebar, ordered by tmux native order.
+# Current session is highlighted in place. State is read from hook state files
+# (fast file read) rather than full state detection.
 # Called by tmux via:  #(/path/to/status-right <current_session>)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/utils.sh"
-source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/tmux.sh"
 source "$SCRIPT_DIR/registry.sh"
-source "$SCRIPT_DIR/state.sh"
 
 current="${1:-}"
+AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 
 # Build a short label for a session: directory basename, or session hash.
 _label() {
@@ -23,51 +24,48 @@ _label() {
     label="${dir:+$(dir_basename "$dir")}"
     [[ -n "$label" && -n "$branch" ]] && label+="/$branch"
     : "${label:=${session#am-}}"
-    truncate "$label" 40
+    truncate "$label" 30
 }
 
-attention=()   # waiting_input, waiting_permission, waiting_custom
-background=()  # idle, running
-
-while IFS=' ' read -r session _; do
-    [[ -z "$session" || "$session" == "$current" ]] && continue
-
-    state=$(agent_get_state "$session" 2>/dev/null || true)
-
-    case "$state" in
-        waiting_permission|waiting_custom)
-            attention+=("#[fg=colour214,bold]! $(_label "$session")#[default]")
-            ;;
-        waiting_input)
-            background+=("#[fg=colour114]> $(_label "$session")#[default]")
-            ;;
-        running)
-            background+=("#[fg=colour75]~ $(_label "$session")#[default]")
-            ;;
-        idle)
-            background+=("#[fg=colour240]- $(_label "$session")#[default]")
-            ;;
-    esac
-done < <(tmux_list_am_sessions_with_activity)
-
-[[ ${#attention[@]} -eq 0 && ${#background[@]} -eq 0 ]] && exit 0
-
-_join() {
-    local result=""
-    for item in "$@"; do
-        [[ -n "$result" ]] && result+="  "
-        result+="$item"
-    done
-    echo "$result"
+# Read state from hook state file (fast — just a file read).
+# Falls back to empty string if file missing or stale.
+_fast_state() {
+    local session="$1"
+    local state_file="$AM_STATE_DIR/$session"
+    [[ -f "$state_file" ]] || return 0
+    head -1 "$state_file" 2>/dev/null || true
 }
 
-attention_str=$( [[ ${#attention[@]} -gt 0 ]] && _join "${attention[@]}" || true)
-background_str=$( [[ ${#background[@]} -gt 0 ]] && _join "${background[@]}" || true)
+# Get sessions in tmux native order
+mapfile -t ordered < <(am_session_order)
 
-if [[ -n "$attention_str" && -n "$background_str" ]]; then
-    echo "${attention_str}  #[fg=colour240]|#[default]  ${background_str}"
-elif [[ -n "$attention_str" ]]; then
-    echo "$attention_str"
-else
-    echo "$background_str"
-fi
+[[ ${#ordered[@]} -eq 0 ]] && exit 0
+
+# Build output in one pass
+result=""
+for i in "${!ordered[@]}"; do
+    idx=$((i + 1))
+    session="${ordered[$i]}"
+    label=$(_label "$session")
+
+    if [[ "$session" == "$current" ]]; then
+        entry="#[fg=colour0,bg=colour14,bold]${idx}:${label}#[default]"
+    else
+        state=$(_fast_state "$session")
+        case "$state" in
+            waiting_permission|waiting_custom)
+                entry="#[fg=colour214,bold]${idx}:! ${label}#[default]" ;;
+            waiting_input)
+                entry="#[fg=colour34]${idx}:> ${label}#[default]" ;;
+            running)
+                entry="#[fg=colour75]${idx}:~ ${label}#[default]" ;;
+            *)
+                entry="#[fg=colour240]${idx}:- ${label}#[default]" ;;
+        esac
+    fi
+
+    [[ -n "$result" ]] && result+="  "
+    result+="$entry"
+done
+
+echo "$result"

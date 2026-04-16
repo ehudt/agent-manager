@@ -49,6 +49,8 @@ Architecture reference for AI agents working with this codebase.
 | `sandbox/entrypoint.sh` | Container init: UID/GID alignment, skeleton seeding, sudoers |
 | `bin/sandbox-shell` | Reconnecting shell loop for sandbox containers (used by shell pane) |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
+| `bin/switch-cycle` | tmux helper: cycle next/prev in canonical sidebar order |
+| `bin/switch-index` | tmux helper: jump to Nth slot in canonical sidebar order |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
 | `docs/` | Architecture docs, backlog, perf notes, sandbox hardening notes |
 
@@ -221,6 +223,7 @@ am restore
 - `tmux_send_keys(session, keys)` - Send keys to a tmux pane
 - `tmux_pane_title(target)` - Read pane title set by the application
 - `tmux_count_am_sessions()` - Count active sessions
+- `am_session_order()` - Canonical sidebar order: creation time (oldest first). Stable — only changes on create/kill
 
 **Sandbox:**
 - `sandbox_start(session_name, dir)` - Create and start per-session Docker container

@@ -159,6 +159,14 @@ EOF
         "tmux config refresh: rewrites prefix+a helper to absolute path"
     assert_contains "$rendered_conf" "run-shell \"$PROJECT_DIR/bin/kill-and-switch #{client_name} #{session_name}\"" \
         "tmux config refresh: rewrites prefix+x helper to absolute path"
+    assert_contains "$rendered_conf" "bind ] if-shell" \
+        "tmux config refresh: prefix+] cycle next binding present"
+    assert_contains "$rendered_conf" "bind [ if-shell" \
+        "tmux config refresh: prefix+[ cycle prev binding present"
+    assert_contains "$rendered_conf" "run-shell \"$PROJECT_DIR/bin/switch-index 1\"" \
+        "tmux config refresh: prefix+1 index binding present"
+    assert_contains "$rendered_conf" "run-shell \"$PROJECT_DIR/bin/switch-index 9\"" \
+        "tmux config refresh: prefix+9 index binding present"
     assert_cmd_fails "tmux config refresh: removes bare switch-last helper" \
         grep -Fq 'run-shell "switch-last"' "$temp_conf"
     assert_cmd_fails "tmux config refresh: removes bare kill-and-switch helper" \

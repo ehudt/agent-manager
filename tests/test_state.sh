@@ -336,10 +336,68 @@ test_agent_wait_state_stable_idle() {
     [[ -n "$saved_date" ]] && eval "$saved_date" || unset -f date
 }
 
+test_am_session_order() {
+    $SUMMARY_MODE || echo "=== Testing am_session_order ==="
+
+    if ! command -v tmux &>/dev/null; then
+        skip_test "am_session_order tests (tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/state.sh"
+    set -u
+
+    setup_integration_env
+
+    local test_dir
+    test_dir=$(mktemp -d)
+
+    # Create 3 sessions
+    local s1 s2 s3
+    s1=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    s2=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    s3=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+
+    local result count
+    result=$(am_session_order)
+    count=$(echo "$result" | wc -l | tr -d ' ')
+    assert_eq "3" "$count" "am_session_order: returns all 3 sessions"
+
+    # Order matches tmux native iteration (alphabetical by session name)
+    local native_order
+    native_order=$(am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
+        | grep "^${AM_SESSION_PREFIX}")
+    assert_eq "$native_order" "$result" "am_session_order: matches tmux native order"
+
+    # Order is stable regardless of activity
+    am_tmux send-keys -t "$s2" "" 2>/dev/null || true
+    sleep 0.1
+    local result2
+    result2=$(am_session_order)
+    assert_eq "$result" "$result2" "am_session_order: stable after activity change"
+
+    # Cleanup
+    [[ -n "$s1" ]] && agent_kill "$s1" 2>/dev/null
+    [[ -n "$s2" ]] && agent_kill "$s2" 2>/dev/null
+    [[ -n "$s3" ]] && agent_kill "$s3" 2>/dev/null
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_state_tests() {
     _run_test test_state
     _run_test test_state_integration
     _run_test test_agent_wait_state_stable_idle
+    _run_test test_am_session_order
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

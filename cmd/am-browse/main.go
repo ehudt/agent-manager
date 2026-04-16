@@ -525,6 +525,9 @@ func helpText() string {
   Type to filter sessions (fuzzy match)
 
   In tmux session
+    Prefix + ]  Next session in sidebar
+    Prefix + [  Previous session in sidebar
+    Prefix + 1-9  Jump to sidebar slot N
     Prefix + a  Switch to last am session
     Prefix + n  Open new-session popup
     Prefix + s  Open am browser popup
