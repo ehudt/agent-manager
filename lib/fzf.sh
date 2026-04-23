@@ -1044,6 +1044,10 @@ fzf_restore_picker() {
         --sync \
         --ansi \
         --height=100% \
+        --layout=reverse \
+        --header-first \
+        --prompt='/ ' \
+        --pointer='>' \
         --delimiter='|' \
         --with-nth=3 \
         --header="Restore Session  Enter:resume  Esc:back" \
