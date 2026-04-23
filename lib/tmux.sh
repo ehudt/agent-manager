@@ -29,13 +29,14 @@ set -g detach-on-destroy off
 # Prefix + a: switch to last used am session
 bind a if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$switch_cmd"' 'display-message "am shortcuts are active only in am-* sessions"'
 
-# Prefix + ]/[: cycle next/prev session (fall back to default paste/copy-mode outside am)
-bind ] if-shell -F '#{m:am-*,#{session_name}}' { switch-client -n ; refresh-client -S } 'paste-buffer -p'
-bind [ if-shell -F '#{m:am-*,#{session_name}}' { switch-client -p ; refresh-client -S } 'copy-mode'
+# Prefix + ]/[: cycle next/prev session in canonical (creation-time) order
+# (fall back to default paste/copy-mode outside am)
+bind ] if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$cycle_cmd next"' 'paste-buffer -p'
+bind [ if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$cycle_cmd prev"' 'copy-mode'
 
 # Prefix + Right/Left: alias for ]/[ cycling
-bind Right if-shell -F '#{m:am-*,#{session_name}}' { switch-client -n ; refresh-client -S } 'send-keys Right'
-bind Left if-shell -F '#{m:am-*,#{session_name}}' { switch-client -p ; refresh-client -S } 'send-keys Left'
+bind Right if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$cycle_cmd next"' 'send-keys Right'
+bind Left if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$cycle_cmd prev"' 'send-keys Left'
 
 # Prefix + 1-9: jump to sidebar slot N
 bind 1 if-shell -F '#{m:am-*,#{session_name}}' 'run-shell "$index_cmd 1"' 'display-message "am shortcuts are active only in am-* sessions"'
@@ -74,6 +75,16 @@ set -g pane-border-format '#{?#{pane_at_bottom},,#[align=centre]#(cat /tmp/am-si
 set -g pane-border-lines double
 set -g pane-border-style 'fg=colour67'
 set -g pane-active-border-style 'fg=colour14'
+
+# Clicking a session tab in the bottom status bar switches to that session.
+# The sidebar entries are wrapped in #[range=user|<session>]...#[norange] by
+# lib/status-right, so mouse_status_range carries the session name directly.
+# switch-client -t does NOT format-expand its target arg, so we shell out via
+# run-shell (whose shell-command arg IS format-expanded) instead.
+# Border-level click isn't possible — tmux doesn't populate mouse_x/mouse_y
+# for MouseDown1Border events.
+set -g mouse on
+bind -n MouseDown1Status if-shell -F '#{&&:#{m:am-*,#{session_name}},#{!=:#{mouse_status_range},}}' { run-shell "tmux switch-client -t '#{mouse_status_range}' ; tmux refresh-client -S" } { switch-client -t = }
 EOF
 )
 
@@ -237,15 +248,35 @@ tmux_list_am_sessions() {
         || true
 }
 
-# List all agent-manager sessions in canonical sidebar order. Matches tmux's
-# native session iteration (switch-client -n/-p) so the numbered slots and
-# the cycling keybindings agree. Stable — only changes on session create/kill.
+# List all agent-manager sessions in canonical sidebar order: creation time
+# ascending, so newly created sessions always appear at the end. Stable — only
+# changes on session create/kill. Numbered slots and cycling keybindings
+# follow this order.
 # Usage: am_session_order
 # Returns: newline-separated session names
 am_session_order() {
-    am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
-        | grep "^${AM_SESSION_PREFIX}" \
+    am_tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
+        | grep " ${AM_SESSION_PREFIX}" \
+        | sort -k1,1n -k2,2 \
+        | awk '{print $2}' \
         || true
+}
+
+# Regenerate /tmp/am-sidebar cache files for every am session and force a
+# client-wide status-bar redraw. Call after creating or killing a session so
+# the pane-border sidebar updates immediately instead of waiting for the 5s
+# status-interval refresh.
+# Usage: am_refresh_sidebar_cache
+am_refresh_sidebar_cache() {
+    local script="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/status-right"
+    [[ -x "$script" ]] || return 0
+    local session
+    while IFS= read -r session; do
+        [[ -n "$session" ]] || continue
+        "$script" "$session" >/dev/null 2>&1 || true
+    done < <(am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
+                | grep "^${AM_SESSION_PREFIX}" || true)
+    am_tmux refresh-client -S 2>/dev/null || true
 }
 
 # List all agent-manager sessions with activity info

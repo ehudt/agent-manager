@@ -376,6 +376,10 @@ agent_launch() {
         fi
     fi
 
+    # Immediately regenerate sidebar cache so the new session appears in every
+    # other session's pane-border without waiting for the 5s status-interval.
+    am_refresh_sidebar_cache
+
     log_success "Created session: $session_name"
     echo "$session_name"
 }
@@ -556,6 +560,10 @@ agent_kill() {
     # Always clean up registry and hook state file
     registry_remove "$session_name"
     rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name"
+
+    # Rebuild sidebar cache for surviving sessions so the killed entry
+    # disappears from every pane-border immediately.
+    am_refresh_sidebar_cache
 
     if [[ $rc -eq 0 ]]; then
         log_success "Killed session: $session_name"

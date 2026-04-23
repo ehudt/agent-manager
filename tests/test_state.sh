@@ -359,10 +359,13 @@ test_am_session_order() {
     local test_dir
     test_dir=$(mktemp -d)
 
-    # Create 3 sessions
+    # Create 3 sessions with small spacing so tmux's second-precision
+    # session_created timestamps are distinguishable.
     local s1 s2 s3
     s1=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    sleep 1.1
     s2=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    sleep 1.1
     s3=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
 
     local result count
@@ -370,11 +373,10 @@ test_am_session_order() {
     count=$(echo "$result" | wc -l | tr -d ' ')
     assert_eq "3" "$count" "am_session_order: returns all 3 sessions"
 
-    # Order matches tmux native iteration (alphabetical by session name)
-    local native_order
-    native_order=$(am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
-        | grep "^${AM_SESSION_PREFIX}")
-    assert_eq "$native_order" "$result" "am_session_order: matches tmux native order"
+    # Order is creation time ascending: oldest first, newest at the end
+    local expected
+    expected=$(printf '%s\n%s\n%s' "$s1" "$s2" "$s3")
+    assert_eq "$expected" "$result" "am_session_order: creation time ascending (newest last)"
 
     # Order is stable regardless of activity
     am_tmux send-keys -t "$s2" "" 2>/dev/null || true

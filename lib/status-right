@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # status-right - tmux status-right helper
-# Shows all agent sessions as an indexed sidebar, ordered by tmux native order.
-# Current session is highlighted in place. State is read from hook state files
-# (fast file read) rather than full state detection.
+# Shows all agent sessions as an indexed sidebar in canonical am_session_order
+# (creation time ascending). Current session is highlighted in place. State is
+# read from hook state files (fast file read) rather than full state detection.
 # Called by tmux via:  #(/path/to/status-right <current_session>)
+#
+# Produces two outputs:
+# - stdout: the formatted string for status-right, with #[range=user|<sid>]
+#   wrappers so MouseDown1Status can route clicks to switch-client.
+# - /tmp/am-sidebar/<current>: same content without range wrappers, consumed
+#   by pane-border-format (which doesn't support #[range=...]).
 
 set -euo pipefail
 
@@ -36,13 +42,17 @@ _fast_state() {
     head -1 "$state_file" 2>/dev/null || true
 }
 
-# Get sessions in tmux native order
+# Get sessions in canonical order (creation time ascending)
 mapfile -t ordered < <(am_session_order)
 
 [[ ${#ordered[@]} -eq 0 ]] && exit 0
 
-# Build output in one pass
-result=""
+# Build both variants in one pass. `plain` (no #[range=...] wrappers) goes to
+# the cache file consumed by pane-border-format. `clickable` (with user
+# ranges) goes to stdout so status-right can route MouseDown1Status to the
+# clicked session.
+plain=""
+clickable=""
 for i in "${!ordered[@]}"; do
     idx=$((i + 1))
     session="${ordered[$i]}"
@@ -64,13 +74,18 @@ for i in "${!ordered[@]}"; do
         esac
     fi
 
-    [[ -n "$result" ]] && result+="  "
-    result+="$entry"
+    if [[ -n "$plain" ]]; then
+        plain+="  "
+        clickable+="  "
+    fi
+    plain+="$entry"
+    clickable+="#[range=user|${session}]${entry}#[norange]"
 done
 
-# Write cache for pane-border-format (fast cat in border, no re-sourcing)
+# Cache the plain variant for pane-border-format.
 _sr_cache_dir="/tmp/am-sidebar"
 [[ -d "$_sr_cache_dir" ]] || mkdir -p "$_sr_cache_dir"
-[[ -n "$current" ]] && printf '%s' "$result" > "$_sr_cache_dir/$current"
+[[ -n "$current" ]] && printf '%s' "$plain" > "$_sr_cache_dir/$current"
 
-echo "$result"
+# Emit the clickable variant on stdout for status-right to render.
+echo "$clickable"
