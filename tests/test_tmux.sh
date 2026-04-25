@@ -96,18 +96,44 @@ test_tmux_listing() {
 test_tmux_binding_snippets() {
     $SUMMARY_MODE || echo "=== Testing tmux binding snippets ==="
 
-    local example_conf
-    example_conf=$(cat "$PROJECT_DIR/config/tmux.conf.example")
-    assert_contains "$example_conf" "source-file \"\$HOME/.tmux.conf\"" \
-        "tmux snippet: sources base tmux config"
-    assert_contains "$example_conf" "set -g detach-on-destroy off" \
-        "tmux snippet: keeps clients inside agent-manager when sessions are killed"
-    assert_contains "$example_conf" 'bind n if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''display-popup -E -w 90% -h 80% "am new"'\''' \
-        "tmux snippet: prefix+n opens new-session popup"
-    assert_contains "$example_conf" 'bind-key -T prefix x if-shell -F '\''#{m:am-*,#{session_name}}'\'' '\''run-shell "kill-and-switch #{client_name} #{session_name}"'\'' '\''confirm-before -p "kill-pane #P? (y/n)" kill-pane'\''' \
-        "tmux snippet: prefix+x kills current session"
-    assert_contains "$example_conf" 'dedicated server' \
-        "tmux snippet: prefix+x documents default fallback"
+    if ! command -v tmux &>/dev/null; then
+        skip_test "tmux binding snippet tests (tmux not installed)"
+        echo ""
+        return
+    fi
+
+    local temp_am_dir temp_conf rendered_conf
+    temp_am_dir=$(mktemp -d)
+    temp_conf="$temp_am_dir/tmux.conf"
+
+    AM_DIR="$temp_am_dir" \
+    AM_TMUX_CONF="$temp_conf" \
+    AM_ROOT_DIR="$PROJECT_DIR" \
+    bash -lc '
+        source "$1/lib/utils.sh"
+        source "$1/lib/tmux.sh"
+        am_tmux_config_path >/dev/null
+    ' _ "$PROJECT_DIR"
+
+    rendered_conf=$(cat "$temp_conf")
+    assert_contains "$rendered_conf" "source-file \"$HOME/.tmux.conf\"" \
+        "tmux config: sources base tmux config"
+    assert_contains "$rendered_conf" "set -g detach-on-destroy off" \
+        "tmux config: keeps clients inside agent-manager when sessions are killed"
+    assert_contains "$rendered_conf" "set -g focus-events on" \
+        "tmux config: enables focus-events for hosted agents"
+    assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am new\"" \
+        "tmux config: prefix+n opens new-session popup"
+    assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
+        "tmux config: prefix+s opens agent manager popup"
+    assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am restore\"" \
+        "tmux config: prefix+h opens restore popup"
+    assert_contains "$rendered_conf" "command-alias[100] am=" \
+        "tmux config: registers :am command alias"
+    assert_contains "$rendered_conf" 'confirm-before -p "kill-pane #P? (y/n)" kill-pane' \
+        "tmux config: prefix+x falls back to kill-pane outside am-* sessions"
+
+    rm -rf "$temp_am_dir"
 
     local install_script
     install_script=$(cat "$PROJECT_DIR/scripts/install.sh")

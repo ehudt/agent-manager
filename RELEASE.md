@@ -21,7 +21,6 @@
 
 - Update `README.md` examples and version references as needed
 - Ensure install instructions still match `scripts/install.sh`
-- Confirm `config/tmux.conf.example` matches documented keybindings
 - Decide license (and add/update `LICENSE`)
 
 ## 4. Publish
