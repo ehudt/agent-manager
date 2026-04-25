@@ -1392,6 +1392,34 @@ _install_check_cmd() {
     fi
 }
 
+_install_go_version() {
+    go version 2>/dev/null | sed -E 's/^go version go([0-9]+(\.[0-9]+){1,2}).*/\1/'
+}
+
+_install_go_ready_for_build() {
+    local min_version="$1"
+    local actual_version
+
+    if ! command -v go &>/dev/null; then
+        log_warn "  Go not found -- run 'make build' after installing Go >= $min_version"
+        return 1
+    fi
+
+    actual_version=$(_install_go_version)
+    if [[ -z "$actual_version" ]]; then
+        log_warn "  Go version unknown (need >= $min_version); skipping Go helper build"
+        return 1
+    fi
+
+    if _install_version_ge "$min_version" "$actual_version"; then
+        log_success "  Go $actual_version ... OK (>= $min_version)"
+        return 0
+    fi
+
+    log_warn "  Go $actual_version ... too old for compiled helpers (need >= $min_version); skipping Go helper build"
+    return 1
+}
+
 # Command: install
 cmd_install() {
     if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -1474,7 +1502,8 @@ EOF
     # --- Step 5: Build compiled helpers ---
     echo "" >&2
     echo -e "${BOLD}Building compiled helpers...${RESET}" >&2
-    if command -v go &>/dev/null; then
+    local min_go_version="1.24"
+    if _install_go_ready_for_build "$min_go_version"; then
         local go_ok=true
         if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ ) 2>&1; then
             log_success "  Built bin/am-list-internal"
@@ -1494,7 +1523,6 @@ EOF
             (( warnings += 1 ))
         fi
     else
-        log_warn "  Go not found — run 'make build' after installing Go"
         (( warnings += 1 ))
     fi
 

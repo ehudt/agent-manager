@@ -105,10 +105,23 @@ test_install() {
     local temp_skills_dir="$temp_root/claude-skills"
     local temp_prefix="$temp_root/bin"
     local temp_shell_rc="$temp_root/.zshrc"
+    local fake_bin="$temp_root/fakebin"
     touch "$temp_shell_rc"
+    mkdir -p "$fake_bin"
+    cat > "$fake_bin/go" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "version" ]]; then
+    echo "go version go1.19.4 test/amd64"
+    exit 0
+fi
+echo "unexpected go invocation: $*" >&2
+exit 99
+EOF
+    chmod +x "$fake_bin/go"
 
     local install_output
-    install_output=$(AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
+    install_output=$(PATH="$fake_bin:$PATH" \
+        AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
         AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
@@ -130,13 +143,20 @@ test_install() {
     assert_contains "$install_output" "fzf" "install: checks fzf"
     assert_contains "$install_output" "jq" "install: checks jq"
     assert_contains "$install_output" "git" "install: checks git"
+    assert_contains "$install_output" "Go 1.19.4 ... too old for compiled helpers" \
+        "install: skips Go helper build with old Go"
+    assert_not_contains "$install_output" "invalid go version" \
+        "install: old Go does not parse go.mod"
+    assert_not_contains "$install_output" "unexpected go invocation" \
+        "install: old Go guard avoids go build"
 
     # Verify summary output
     assert_contains "$install_output" "Setup complete" "install: shows completion message"
 
     # Verify idempotent (run again)
     local install_output2
-    install_output2=$(AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
+    install_output2=$(PATH="$fake_bin:$PATH" \
+        AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
         AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
