@@ -284,6 +284,12 @@ agent_launch() {
     _pane_title=$(truncate "$_pane_title" 60)
     am_tmux select-pane -t "$session_name:.{top}" -T "$_pane_title"
 
+    # Export AM_SESSION_NAME so the state-detection hook can identify which am
+    # session fired it without relying on cwd (which is ambiguous when two am
+    # sessions share a directory).
+    tmux_send_keys "$session_name:.{top}" " export AM_SESSION_NAME='$session_name'" Enter
+    tmux_send_keys "$session_name:.{bottom}" " export AM_SESSION_NAME='$session_name'" Enter
+
     # Set up log streaming if enabled
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"

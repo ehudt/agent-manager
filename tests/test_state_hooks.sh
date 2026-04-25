@@ -87,6 +87,56 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "PostToolUse: writes running"
 
+    # --- PostToolUse does NOT clobber waiting_input (race protection) ---
+    # Claude Code may deliver a delayed PostToolUse from a previous turn after
+    # Stop has already written waiting_input. That must not revert the state.
+    printf 'waiting_input' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_input" "$state" "PostToolUse: does not clobber waiting_input"
+
+    # --- PostToolUse does NOT clobber waiting_permission ---
+    printf 'waiting_permission' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_permission" "$state" "PostToolUse: does not clobber waiting_permission"
+
+    # --- PostToolUse does NOT clobber waiting_custom ---
+    printf 'waiting_custom' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_custom" "$state" "PostToolUse: does not clobber waiting_custom"
+
+    # --- UserPromptSubmit DOES override waiting_input (explicit user action) ---
+    printf 'waiting_input' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "running" "$state" "UserPromptSubmit: overrides waiting_input"
+
+    # --- Duplicate cwd: AM_SESSION_NAME disambiguates which session to update ---
+    # Two am sessions can share a cwd (e.g., multiple Claude instances in the
+    # same repo). Without AM_SESSION_NAME the hook would blindly pick the first
+    # match and keep overwriting the wrong session's state file forever.
+    local dup_registry="$tmp_dir/dup.json"
+    jq -n --arg dir "$real_project_dir" \
+        '{sessions: {
+            "am-first":  {name: "am-first",  directory: $dir, branch: "main", agent_type: "claude", task: "t1"},
+            "am-second": {name: "am-second", directory: $dir, branch: "main", agent_type: "claude", task: "t2"}
+         }}' > "$dup_registry"
+
+    rm -f "$state_dir/am-first" "$state_dir/am-second"
+    AM_REGISTRY="$dup_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-second" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq ""        "$(cat "$state_dir/am-first"  2>/dev/null || echo)" "AM_SESSION_NAME: first session untouched"
+    assert_eq "running" "$(cat "$state_dir/am-second" 2>/dev/null || echo)" "AM_SESSION_NAME: targeted session updated"
+
+    # --- AM_SESSION_NAME pointing at non-existent session → no write ---
+    rm -f "$state_dir/am-first" "$state_dir/am-second"
+    AM_REGISTRY="$dup_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-bogus" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "" "$(cat "$state_dir/am-first"  2>/dev/null || echo)" "AM_SESSION_NAME bogus: first session untouched"
+    assert_eq "" "$(cat "$state_dir/am-second" 2>/dev/null || echo)" "AM_SESSION_NAME bogus: second session untouched"
+
     # --- No matching session → no state file written ---
     rm -f "$state_dir/am-abc123"
     local other_dir="$tmp_dir/other_project"
