@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# lib/hooks/state-hook.sh - Claude Code hook: maps hook events to am session states
+# lib/hooks/state-hook.sh - Agent hook: maps lifecycle events to am session states
 #
-# Claude Code calls this script as a hook. Reads JSON from stdin, maps the event
-# to an am state, finds the matching session in the registry, and writes the state
-# to $AM_STATE_DIR/<session_name>.
+# Claude Code and Codex call this script as a hook. Reads JSON from stdin, maps
+# the event to an am state, finds the matching session in the registry, and
+# writes the state to $AM_STATE_DIR/<session_name>.
 #
 # Supported events:
 #   Stop (stop_hook_active != true)  → waiting_input
@@ -11,6 +11,8 @@
 #   Notification[permission_prompt]  → waiting_permission
 #   Notification[elicitation_dialog] → waiting_custom
 #   UserPromptSubmit                 → running
+#   PreToolUse                       → running
+#   PermissionRequest                → waiting_permission
 #   PostToolUse                      → running
 #
 # Environment overrides (for testing):
@@ -20,7 +22,7 @@
 # Session identification (in order of preference):
 #   1. $AM_SESSION_NAME (exported by am when launching the agent) — exact match
 #   2. $TMUX_PANE → tmux session name — works for sessions running before
-#      AM_SESSION_NAME was added, since Claude inherits TMUX_PANE from its pane
+#      AM_SESSION_NAME was added, since agents inherit TMUX_PANE from their pane
 #   3. cwd match against registry — last resort; cannot disambiguate when
 #      multiple am sessions share a directory (two Claude instances in one repo)
 
@@ -64,7 +66,10 @@ case "$hook_type" in
             *)                  exit 0 ;;
         esac
         ;;
-    UserPromptSubmit|PostToolUse)
+    PermissionRequest)
+        am_state="waiting_permission"
+        ;;
+    UserPromptSubmit|PreToolUse|PostToolUse)
         am_state="running"
         ;;
     *)
@@ -92,7 +97,7 @@ if [[ -n "${AM_SESSION_NAME:-}" ]]; then
     [[ -z "$session_name" ]] && exit 0
 fi
 
-# 2. TMUX_PANE — Claude inherits this from its tmux pane; resolving it to the
+# 2. TMUX_PANE — agents inherit this from their tmux pane; resolving it to the
 #    tmux session name directly avoids the duplicate-cwd bug even for sessions
 #    that predate the AM_SESSION_NAME export.
 if [[ -z "$session_name" && -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
@@ -117,12 +122,13 @@ fi
 
 [[ -z "$session_name" ]] && exit 0
 
-# Race protection: PostToolUse can be delivered after Stop/Notification has
+# Race protection: running-state hooks can be delivered after Stop/Notification
+# or PermissionRequest has
 # already moved the session into a waiting_* state (hooks run concurrently and
-# a slow PostToolUse script can finish last). Skip the write in that case —
+# a slow tool hook can finish last). Skip the write in that case —
 # only UserPromptSubmit (explicit user action) transitions waiting_* → running.
 state_file="$AM_STATE_DIR/$session_name"
-if [[ "$hook_type" == "PostToolUse" && -f "$state_file" ]]; then
+if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
     case "$current" in
         waiting_input|waiting_permission|waiting_custom) exit 0 ;;

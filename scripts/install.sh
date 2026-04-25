@@ -164,6 +164,48 @@ _install_claude_hooks() {
     ' "$settings_file" > "$tmp_file" && mv "$tmp_file" "$settings_file"
 }
 
+# Install Codex hooks for state detection.
+# Merges hooks without overwriting user's existing hooks. Idempotent.
+# Usage: _install_codex_hooks <hooks_json_path> <hook_script_path>
+_install_codex_hooks() {
+    local hooks_file="$1"
+    local hook_script="$2"
+    local marker="# am-state-hook"
+    local cmd="bash $hook_script $marker"
+
+    mkdir -p "$(dirname "$hooks_file")"
+    [[ -f "$hooks_file" ]] || echo '{}' > "$hooks_file"
+
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    jq --arg cmd "$cmd" --arg marker "$marker" '
+        .hooks //= {} |
+        .hooks |= with_entries(
+            .value |= if type == "array" then
+                map(select(
+                    (.hooks // []) | all((.command // "") | contains($marker) | not)
+                ))
+            else . end
+        ) |
+        .hooks.PermissionRequest = (.hooks.PermissionRequest // []) + [
+            {"matcher": "*", "hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}
+        ] |
+        .hooks.UserPromptSubmit = (.hooks.UserPromptSubmit // []) + [
+            {"hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}
+        ] |
+        .hooks.PreToolUse = (.hooks.PreToolUse // []) + [
+            {"matcher": "*", "hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}
+        ] |
+        .hooks.PostToolUse = (.hooks.PostToolUse // []) + [
+            {"matcher": "*", "hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}
+        ] |
+        .hooks.Stop = (.hooks.Stop // []) + [
+            {"hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}
+        ]
+    ' "$hooks_file" > "$tmp_file" && mv "$tmp_file" "$hooks_file"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
@@ -243,6 +285,7 @@ fi
 
 # Install Claude Code hooks for state detection
 CLAUDE_SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+CODEX_HOOKS="${CODEX_HOOKS:-${CODEX_HOME:-$HOME/.codex}/hooks.json}"
 HOOK_SCRIPT="$REPO_DIR/lib/hooks/state-hook.sh"
 
 if confirm "Install state-detection hooks into Claude Code settings ($CLAUDE_SETTINGS)?"; then
@@ -250,6 +293,13 @@ if confirm "Install state-detection hooks into Claude Code settings ($CLAUDE_SET
     log "Installed state-detection hooks into $CLAUDE_SETTINGS"
 else
     log "Skipped Claude Code hook installation"
+fi
+
+if confirm "Install state-detection hooks into Codex hooks ($CODEX_HOOKS)?"; then
+    _install_codex_hooks "$CODEX_HOOKS" "$HOOK_SCRIPT"
+    log "Installed state-detection hooks into $CODEX_HOOKS"
+else
+    log "Skipped Codex hook installation"
 fi
 
 log "Installation complete"

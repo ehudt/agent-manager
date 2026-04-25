@@ -128,6 +128,10 @@ test_standalone_status_right() {
     source "$LIB_DIR/state.sh"
     set +u; source "$LIB_DIR/agents.sh"; set -u
     setup_integration_env
+    local old_state_dir="${AM_STATE_DIR:-}"
+    local test_state_dir
+    test_state_dir=$(mktemp -d)
+    export AM_STATE_DIR="$test_state_dir"
 
     local output rc
 
@@ -163,6 +167,44 @@ test_standalone_status_right() {
     ((TESTS_PASSED++))
     ((TESTS_RUN++))
 
+    local test_dir4 s4 resolved_dir encoded_dir claude_dir claude_jsonl old_claude_cmd
+    test_dir4=$(mktemp -d)
+    old_claude_cmd="${AGENT_COMMANDS[claude]}"
+    AGENT_COMMANDS[claude]="sleep"
+    s4=$(set +u; agent_launch "$test_dir4" claude "task4" "" 1000; set -u) 2>/dev/null
+    AGENT_COMMANDS[claude]="$old_claude_cmd"
+    if [[ -n "$s4" ]] && tmux_session_exists "$s4"; then
+        local agent_ready=false
+        for _ in {1..30}; do
+            if ! _state_pane_is_shell "$s4"; then
+                agent_ready=true
+                break
+            fi
+            sleep 0.1
+        done
+        if $agent_ready; then
+            resolved_dir=$(cd "$test_dir4" && pwd -P)
+            encoded_dir=$(printf '%s' "$resolved_dir" | sed -E 's|[/.]|-|g')
+            claude_dir="$HOME/.claude/projects/$encoded_dir"
+            claude_jsonl="$claude_dir/status-right-test.jsonl"
+            mkdir -p "$claude_dir"
+            printf '%s\n' '{"type":"assistant","message":{"stop_reason":"end_turn","content":"done"}}' > "$claude_jsonl"
+            rm -f "$AM_STATE_DIR/$s4"
+
+            rc=0
+            output=$("$LIB_DIR/status-right" "" 2>&1) || rc=$?
+            assert_eq "0" "$rc" "status-right: exits 0 when hook state is missing"
+            assert_contains "$output" ":> $(basename "$test_dir4")" \
+                "status-right: falls back to JSONL state when hook file is missing"
+            assert_not_contains "$output" ":- $(basename "$test_dir4")" \
+                "status-right: does not render missing hook state as idle"
+        else
+            skip_test "status-right: fallback state test (agent process did not start)"
+        fi
+    else
+        skip_test "status-right: fallback state test (session creation failed)"
+    fi
+
     rc=0
     output=$("$LIB_DIR/status-right" "nonexistent" 2>&1) || rc=$?
     assert_eq "0" "$rc" "status-right: exits 0 with nonexistent current session"
@@ -170,7 +212,15 @@ test_standalone_status_right() {
     [[ -n "$s1" ]] && agent_kill "$s1" 2>/dev/null
     [[ -n "$s2" ]] && agent_kill "$s2" 2>/dev/null
     [[ -n "$s3" ]] && agent_kill "$s3" 2>/dev/null
-    rm -rf "$test_dir1" "$test_dir2" "$test_dir3"
+    [[ -n "${s4:-}" ]] && agent_kill "$s4" 2>/dev/null
+    rm -f "${claude_jsonl:-}"
+    rmdir "${claude_dir:-}" 2>/dev/null || true
+    rm -rf "$test_dir1" "$test_dir2" "$test_dir3" "${test_dir4:-}" "$test_state_dir"
+    if [[ -n "$old_state_dir" ]]; then
+        export AM_STATE_DIR="$old_state_dir"
+    else
+        unset AM_STATE_DIR
+    fi
     teardown_integration_env
 
     $SUMMARY_MODE || echo ""

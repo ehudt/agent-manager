@@ -93,7 +93,7 @@ cd agent-manager
 This symlinks `am` into `~/.local/bin` and sets up the dedicated tmux configuration. The installer will:
 - Add `~/.local/bin` to your PATH in `.zshrc` or `.bashrc` if needed
 - Generate a dedicated tmux config at `~/.agent-manager/tmux.conf` with am-specific keybindings (your personal `~/.tmux.conf` is unaffected)
-- Register state-detection hooks in `~/.claude/settings.json` for push-based session monitoring (existing hooks are preserved)
+- Register state-detection hooks for push-based session monitoring in `~/.claude/settings.json` and `~/.codex/hooks.json` (existing hooks are preserved)
 
 ```bash
 # Install options
@@ -274,7 +274,7 @@ done
 | `idle` | Agent process exited cleanly |
 | `dead` | Agent process crashed or session gone |
 
-For Claude sessions, state is detected via push-based hooks (installed by `am install`) that fire on lifecycle events. JSONL and pane pattern matching serve as fallbacks.
+For Claude and Codex sessions, state is detected via push-based hooks (installed by `am install`) that fire on lifecycle events. JSONL and pane pattern matching serve as fallbacks.
 
 ### Claude Code skill
 

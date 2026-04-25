@@ -81,6 +81,18 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "UserPromptSubmit: writes running"
 
+    # --- Codex PermissionRequest writes waiting_permission ---
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PermissionRequest\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_permission" "$state" "PermissionRequest: writes waiting_permission"
+
+    # --- Codex PreToolUse writes running ---
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PreToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "running" "$state" "PreToolUse: writes running"
+
     # --- PostToolUse writes running ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
@@ -106,6 +118,12 @@ test_state_hooks() {
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "waiting_custom" "$state" "PostToolUse: does not clobber waiting_custom"
+
+    # --- PreToolUse does NOT clobber waiting_permission ---
+    printf 'waiting_permission' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PreToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_permission" "$state" "PreToolUse: does not clobber waiting_permission"
 
     # --- UserPromptSubmit DOES override waiting_input (explicit user action) ---
     printf 'waiting_input' > "$state_dir/am-abc123"
@@ -218,10 +236,10 @@ test_state_from_hook_invalid_state() {
 }
 
 _ensure_install_lib_sourced() {
-    if [[ "$(type -t _install_claude_hooks)" != "function" ]]; then
-        # Extract just the function from install.sh (can't source the whole file
-        # because it has set -euo pipefail and runs install logic at top level)
-        eval "$(sed -n '/^_install_claude_hooks()/,/^}/p' "$PROJECT_DIR/scripts/install.sh")"
+    if [[ "$(type -t _install_claude_hooks)" != "function" || "$(type -t _install_codex_hooks)" != "function" ]]; then
+        # Extract just the hook installer functions from install.sh (can't
+        # source the whole file because it runs install logic at top level).
+        eval "$(awk '/^_install_claude_hooks\(\)/ {p=1} /^while \[\[/ {p=0} p {print}' "$PROJECT_DIR/scripts/install.sh")"
     fi
 }
 
@@ -297,6 +315,60 @@ test_install_hooks_idempotent() {
     assert_eq "3" "$notif_count" "idempotent: Notification hooks not duplicated"
 }
 
+test_install_codex_hooks_into_empty_file() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local hooks="$tmp_dir/hooks.json"
+    echo '{}' > "$hooks"
+
+    _install_codex_hooks "$hooks" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local perm_count upsub_count pre_count post_count stop_count
+    perm_count=$(jq '.hooks.PermissionRequest | length' "$hooks")
+    upsub_count=$(jq '.hooks.UserPromptSubmit | length' "$hooks")
+    pre_count=$(jq '.hooks.PreToolUse | length' "$hooks")
+    post_count=$(jq '.hooks.PostToolUse | length' "$hooks")
+    stop_count=$(jq '.hooks.Stop | length' "$hooks")
+
+    assert_eq "1" "$perm_count" "Codex PermissionRequest hook installed"
+    assert_eq "1" "$upsub_count" "Codex UserPromptSubmit hook installed"
+    assert_eq "1" "$pre_count" "Codex PreToolUse hook installed"
+    assert_eq "1" "$post_count" "Codex PostToolUse hook installed"
+    assert_eq "1" "$stop_count" "Codex Stop hook installed"
+
+    local timeout
+    timeout=$(jq '.hooks.PermissionRequest[0].hooks[0].timeout' "$hooks")
+    assert_eq "5" "$timeout" "Codex hooks use seconds timeout"
+
+    rm -rf "$tmp_dir"
+}
+
+test_install_codex_hooks_preserves_existing_and_idempotent() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local hooks="$tmp_dir/hooks.json"
+    cat > "$hooks" <<'JSON'
+{"hooks":{"PermissionRequest":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo existing"}]}]}}
+JSON
+
+    _install_codex_hooks "$hooks" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+    _install_codex_hooks "$hooks" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local perm_count existing_cmd am_count
+    perm_count=$(jq '.hooks.PermissionRequest | length' "$hooks")
+    assert_eq "2" "$perm_count" "Codex existing + am PermissionRequest hooks"
+
+    existing_cmd=$(jq -r '.hooks.PermissionRequest[0].hooks[0].command' "$hooks")
+    assert_eq "echo existing" "$existing_cmd" "Codex existing hook unchanged"
+
+    am_count=$(jq '[.hooks[][] | select((.hooks // []) | any((.command // "") | contains("# am-state-hook")))] | length' "$hooks")
+    assert_eq "5" "$am_count" "Codex am hooks are idempotent"
+
+    rm -rf "$tmp_dir"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_from_hook_reads_file
@@ -306,6 +378,8 @@ run_state_hooks_tests() {
     _run_test test_install_hooks_into_empty_settings
     _run_test test_install_hooks_preserves_existing
     _run_test test_install_hooks_idempotent
+    _run_test test_install_codex_hooks_into_empty_file
+    _run_test test_install_codex_hooks_preserves_existing_and_idempotent
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

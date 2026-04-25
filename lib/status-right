@@ -17,29 +17,35 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/utils.sh"
 source "$SCRIPT_DIR/tmux.sh"
 source "$SCRIPT_DIR/registry.sh"
+source "$SCRIPT_DIR/state.sh"
 
 current="${1:-}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 
 # Build a short label for a session: directory basename, or session hash.
 _label() {
-    local session="$1"
-    local dir branch label
-    dir=$(registry_get_field "$session" directory 2>/dev/null || true)
-    branch=$(registry_get_field "$session" branch 2>/dev/null || true)
+    local session="$1" dir="$2" branch="$3"
+    local label
     label="${dir:+$(dir_basename "$dir")}"
     [[ -n "$label" && -n "$branch" ]] && label+="/$branch"
     : "${label:=${session#am-}}"
     truncate "$label" 30
 }
 
-# Read state from hook state file (fast — just a file read).
-# Falls back to empty string if file missing or stale.
+# Read state from hook state file first, then fall back to the same lean
+# detector used by `am list --json`. This keeps the common status refresh cheap
+# while avoiding stale `-` idle indicators when /tmp hook state is missing.
 _fast_state() {
-    local session="$1"
-    local state_file="$AM_STATE_DIR/$session"
-    [[ -f "$state_file" ]] || return 0
-    head -1 "$state_file" 2>/dev/null || true
+    local session="$1" agent_type="$2" dir="$3"
+    local state
+
+    state=$(_state_from_hook "$session" 2>/dev/null || true)
+    if [[ -n "$state" ]]; then
+        echo "$state"
+        return
+    fi
+
+    _agent_get_state_fast "$session" "$agent_type" "$dir" 2>/dev/null || true
 }
 
 # Get sessions in canonical order (creation time ascending)
@@ -56,12 +62,17 @@ clickable=""
 for i in "${!ordered[@]}"; do
     idx=$((i + 1))
     session="${ordered[$i]}"
-    label=$(_label "$session")
+    fields=$(registry_get_fields "$session" directory branch agent_type 2>/dev/null || true)
+    dir=""
+    branch=""
+    agent_type=""
+    IFS='|' read -r dir branch agent_type <<< "$fields"
+    label=$(_label "$session" "$dir" "$branch")
 
     if [[ "$session" == "$current" ]]; then
         entry="#[fg=colour0,bg=colour14,bold]${idx}:${label}#[default]"
     else
-        state=$(_fast_state "$session")
+        state=$(_fast_state "$session" "$agent_type" "$dir")
         case "$state" in
             waiting_permission|waiting_custom)
                 entry="#[fg=colour214,bold]${idx}:! ${label}#[default]" ;;
