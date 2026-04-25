@@ -8,8 +8,8 @@
 # Produces two outputs:
 # - stdout: the formatted string for status-right, with #[range=user|<sid>]
 #   wrappers so MouseDown1Status can route clicks to switch-client.
-# - /tmp/am-sidebar/<current>: same content without range wrappers, consumed
-#   by pane-border-format (which doesn't support #[range=...]).
+# - @am_sidebar tmux session option: same content without range wrappers,
+#   consumed by pane-border-format (which doesn't support #[range=...]).
 
 set -euo pipefail
 
@@ -48,8 +48,8 @@ mapfile -t ordered < <(am_session_order)
 [[ ${#ordered[@]} -eq 0 ]] && exit 0
 
 # Build both variants in one pass. `plain` (no #[range=...] wrappers) goes to
-# the cache file consumed by pane-border-format. `clickable` (with user
-# ranges) goes to stdout so status-right can route MouseDown1Status to the
+# the tmux session option consumed by pane-border-format. `clickable` (with
+# user ranges) goes to stdout so status-right can route MouseDown1Status to the
 # clicked session.
 plain=""
 clickable=""
@@ -82,10 +82,12 @@ for i in "${!ordered[@]}"; do
     clickable+="#[range=user|${session}]${entry}#[norange]"
 done
 
-# Cache the plain variant for pane-border-format.
-_sr_cache_dir="/tmp/am-sidebar"
-[[ -d "$_sr_cache_dir" ]] || mkdir -p "$_sr_cache_dir"
-[[ -n "$current" ]] && printf '%s' "$plain" > "$_sr_cache_dir/$current"
+# Update the plain variant for pane-border-format. Keeping this in a tmux option
+# avoids #() command caching in pane-border-format, so refresh-client redraws it
+# immediately after create/kill.
+if [[ -n "$current" ]]; then
+    am_tmux set-option -q -t "$current" @am_sidebar "$plain" >/dev/null 2>&1 || true
+fi
 
 # Emit the clickable variant on stdout for status-right to render.
 echo "$clickable"

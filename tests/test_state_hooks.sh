@@ -40,7 +40,7 @@ test_state_hooks() {
     # Helper: run hook with given JSON input
     run_hook() {
         local input="$1"
-        AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
             "$hook_script" <<< "$input"
     }
 

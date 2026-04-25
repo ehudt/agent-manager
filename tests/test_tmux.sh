@@ -176,11 +176,64 @@ EOF
     $SUMMARY_MODE || echo ""
 }
 
+test_tmux_pane_border_sidebar_refreshes_without_job_cache() {
+    $SUMMARY_MODE || echo "=== Testing pane-border sidebar refresh ==="
+
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "pane-border sidebar refresh test (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir1 test_dir2 s1 s2 label1 label2 sidebar rendered_conf
+    test_dir1=$(mktemp -d)
+    test_dir2=$(mktemp -d)
+    label1=$(dir_basename "$test_dir1")
+    label2=$(dir_basename "$test_dir2")
+
+    s1=$(set +u; agent_launch "$test_dir1" bash "task1" "" 2>/dev/null)
+    s2=$(set +u; agent_launch "$test_dir2" bash "task2" "" 2>/dev/null)
+
+    rendered_conf=$(cat "$(am_tmux_config_path)")
+    assert_contains "$rendered_conf" '#{@am_sidebar}' \
+        "pane-border sidebar: rendered from tmux option"
+    assert_not_contains "$rendered_conf" '#(cat /tmp/am-sidebar/' \
+        "pane-border sidebar: does not use cached #() cat job"
+
+    sidebar=$(am_tmux show-option -qv -t "$s1" @am_sidebar 2>/dev/null || true)
+    assert_contains "$sidebar" "$label1" \
+        "pane-border sidebar: option contains surviving session before kill"
+    assert_contains "$sidebar" "$label2" \
+        "pane-border sidebar: option contains second session before kill"
+
+    [[ -n "$s2" ]] && agent_kill "$s2" 2>/dev/null
+    sidebar=$(am_tmux show-option -qv -t "$s1" @am_sidebar 2>/dev/null || true)
+    assert_contains "$sidebar" "$label1" \
+        "pane-border sidebar: option keeps surviving session after kill"
+    assert_not_contains "$sidebar" "$label2" \
+        "pane-border sidebar: option drops killed session immediately"
+
+    [[ -n "$s1" ]] && agent_kill "$s1" 2>/dev/null
+    rm -rf "$test_dir1" "$test_dir2"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_tmux_tests() {
     _run_test test_tmux
     _run_test test_tmux_listing
     _run_test test_tmux_binding_snippets
     _run_test test_tmux_config_refreshes_stale_helpers
+    _run_test test_tmux_pane_border_sidebar_refreshes_without_job_cache
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

@@ -224,7 +224,7 @@ am restore
 - `tmux_pane_title(target)` - Read pane title set by the application
 - `tmux_count_am_sessions()` - Count active sessions
 - `am_session_order()` - Canonical sidebar order: `session_created` ascending (oldest first, newest appended). Stable — only changes on create/kill
-- `am_refresh_sidebar_cache()` - Regenerate every `/tmp/am-sidebar/<session>` cache file and force a client-wide status refresh. Called from `agent_launch` / `agent_kill` so pane-border updates are instant instead of waiting for the 5s `status-interval`
+- `am_refresh_sidebar_cache()` - Regenerate each session's `@am_sidebar` tmux option and force a client-wide redraw. Called from `agent_launch` / `agent_kill` so pane-border updates are instant instead of waiting for the 5s `status-interval`
 
 **Sandbox:**
 - `sandbox_start(session_name, dir)` - Create and start per-session Docker container

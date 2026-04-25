@@ -203,6 +203,9 @@ test_cli_yolo_sandbox_integration() {
     local test_dir
     test_dir=$(mktemp -d)
 
+    local docker_available=false
+    am_docker_available && docker_available=true
+
     # --- Test: am new --yolo implies sandbox ---
     local session_name
     session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
@@ -210,8 +213,13 @@ test_cli_yolo_sandbox_integration() {
     assert_not_empty "$session_name" "cli yolo: session created"
     assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
         "cli yolo: yolo_mode is true"
-    assert_not_empty "$(registry_get_field "$session_name" container_name)" \
-        "cli yolo: implies sandbox (container created)"
+    if $docker_available; then
+        assert_not_empty "$(registry_get_field "$session_name" container_name)" \
+            "cli yolo: implies sandbox (container created)"
+    else
+        assert_eq "" "$(registry_get_field "$session_name" container_name)" \
+            "cli yolo: skips implied sandbox when docker unavailable"
+    fi
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
     # --- Test: am new --yolo --no-sandbox opts out of implied sandbox ---
@@ -269,6 +277,7 @@ test_cli_yolo_sandbox_integration() {
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
     # --- Test: --no-yolo overrides config default ---
+    am_config_set "default_sandbox" "false" "boolean"
     am_config_set "default_yolo" "true" "boolean"
     session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
         "$PROJECT_DIR/am" new --no-yolo --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)

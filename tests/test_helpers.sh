@@ -201,6 +201,15 @@ fi
 # Usage: setup_integration_env
 # After calling, use $TEST_AM_DIR, $TEST_STUB_DIR
 setup_integration_env() {
+    TEST_OLD_AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
+    TEST_OLD_AM_REGISTRY="${AM_REGISTRY:-$TEST_OLD_AM_DIR/sessions.json}"
+    TEST_OLD_AM_CONFIG="${AM_CONFIG:-$TEST_OLD_AM_DIR/config.json}"
+    TEST_OLD_AM_HISTORY="${AM_HISTORY:-$TEST_OLD_AM_DIR/history.jsonl}"
+    TEST_OLD_AM_SESSIONS_LOG="${AM_SESSIONS_LOG:-$TEST_OLD_AM_DIR/sessions_log.jsonl}"
+    TEST_OLD_AM_SNAPSHOTS_DIR="${AM_SNAPSHOTS_DIR:-$TEST_OLD_AM_DIR/snapshots}"
+    TEST_OLD_AM_TMUX_CONF="${AM_TMUX_CONF:-$TEST_OLD_AM_DIR/tmux.conf}"
+    TEST_OLD_AM_SESSION_PREFIX="${AM_SESSION_PREFIX:-am-}"
+
     TEST_AM_DIR=$(mktemp -d)
     TEST_STUB_DIR="$TEST_DIR"  # stub_agent lives in tests/
     TEST_STUB_BIN=$(mktemp -d)
@@ -208,7 +217,12 @@ setup_integration_env() {
     export AM_DIR="$TEST_AM_DIR"
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_CONFIG="$AM_DIR/config.json"
+    export AM_HISTORY="$AM_DIR/history.jsonl"
+    export AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
+    export AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
+    export AM_TMUX_CONF="$AM_DIR/tmux.conf"
     export AM_SESSION_PREFIX="test-am-"
+    unset _AM_TMUX_CONF_CACHED
     am_init
     am_config_init
 
@@ -222,6 +236,7 @@ setup_integration_env() {
     tmux -L "$AM_TMUX_SOCKET" set-environment -g AM_TMUX_SOCKET "$AM_TMUX_SOCKET" 2>/dev/null || true
     tmux -L "$AM_TMUX_SOCKET" set-environment -g AM_SESSION_PREFIX "$AM_SESSION_PREFIX" 2>/dev/null || true
     tmux -L "$AM_TMUX_SOCKET" set-environment -g AM_DIR "$AM_DIR" 2>/dev/null || true
+    tmux -L "$AM_TMUX_SOCKET" set-environment -g AM_TMUX_CONF "$AM_TMUX_CONF" 2>/dev/null || true
 
     # Prevent test commands from polluting the user's zsh history.
     # Setting HISTFILE via tmux set-environment is insufficient — .zshrc overrides it.
@@ -260,10 +275,15 @@ teardown_integration_env() {
     TEST_AM_DIR=""
     TEST_STUB_BIN=""
     TEST_ZDOTDIR=""
-    export AM_DIR="${HOME}/.agent-manager"
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-    export AM_CONFIG="$AM_DIR/config.json"
-    export AM_SESSION_PREFIX="am-"
+    export AM_DIR="${TEST_OLD_AM_DIR:-$HOME/.agent-manager}"
+    export AM_REGISTRY="${TEST_OLD_AM_REGISTRY:-$AM_DIR/sessions.json}"
+    export AM_CONFIG="${TEST_OLD_AM_CONFIG:-$AM_DIR/config.json}"
+    export AM_HISTORY="${TEST_OLD_AM_HISTORY:-$AM_DIR/history.jsonl}"
+    export AM_SESSIONS_LOG="${TEST_OLD_AM_SESSIONS_LOG:-$AM_DIR/sessions_log.jsonl}"
+    export AM_SNAPSHOTS_DIR="${TEST_OLD_AM_SNAPSHOTS_DIR:-$AM_DIR/snapshots}"
+    export AM_TMUX_CONF="${TEST_OLD_AM_TMUX_CONF:-$AM_DIR/tmux.conf}"
+    export AM_SESSION_PREFIX="${TEST_OLD_AM_SESSION_PREFIX:-am-}"
+    unset _AM_TMUX_CONF_CACHED
     export PATH="${TEST_OLD_PATH:-$PATH}"
 }
 

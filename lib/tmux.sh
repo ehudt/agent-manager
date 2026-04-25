@@ -71,7 +71,7 @@ set -g status-right '#($status_right_cmd #{session_name})'
 
 # Pane border sidebar: session list on the divider between agent and shell panes
 set -g pane-border-status bottom
-set -g pane-border-format '#{?#{pane_at_bottom},,#[align=centre]#(cat /tmp/am-sidebar/#{session_name} 2>/dev/null)}'
+set -g pane-border-format '#{?#{pane_at_bottom},,#[align=centre]#{@am_sidebar}}'
 set -g pane-border-lines double
 set -g pane-border-style 'fg=colour67'
 set -g pane-active-border-style 'fg=colour14'
@@ -194,7 +194,7 @@ tmux_enable_pipe_pane() {
     am_tmux pipe-pane -t "${session}:${pane}" -o "${AM_LIB_DIR}/strip-ansi >> ${log_file}"
 }
 
-# Remove log directory and sidebar cache for a session
+# Remove log directory and legacy sidebar cache for a session
 tmux_cleanup_logs() {
     local name="$1"
     local log_dir="/tmp/am-logs/${name}"
@@ -262,10 +262,9 @@ am_session_order() {
         || true
 }
 
-# Regenerate /tmp/am-sidebar cache files for every am session and force a
-# client-wide status-bar redraw. Call after creating or killing a session so
-# the pane-border sidebar updates immediately instead of waiting for the 5s
-# status-interval refresh.
+# Regenerate pane-border sidebar options for every am session and force a
+# client-wide redraw. Call after creating or killing a session so pane borders
+# update immediately instead of waiting for the 5s status-interval refresh.
 # Usage: am_refresh_sidebar_cache
 am_refresh_sidebar_cache() {
     local script="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/status-right"
@@ -276,6 +275,18 @@ am_refresh_sidebar_cache() {
         "$script" "$session" >/dev/null 2>&1 || true
     done < <(am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
                 | grep "^${AM_SESSION_PREFIX}" || true)
+
+    # Clean up stale files from the old pane-border implementation. That path
+    # used tmux #() jobs, which are cached and caused delayed middle-bar updates.
+    local cache_dir="/tmp/am-sidebar" cache_file
+    if [[ -d "$cache_dir" ]]; then
+        for cache_file in "$cache_dir"/"${AM_SESSION_PREFIX}"*; do
+            [[ -e "$cache_file" ]] || continue
+            rm -f "$cache_file"
+        done
+        rmdir "$cache_dir" 2>/dev/null || true
+    fi
+
     am_tmux refresh-client -S 2>/dev/null || true
 }
 
