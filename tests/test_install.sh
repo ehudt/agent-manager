@@ -110,12 +110,33 @@ test_install() {
     mkdir -p "$fake_bin"
     cat > "$fake_bin/go" <<'EOF'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "version" ]]; then
-    echo "go version go1.19.4 test/amd64"
-    exit 0
-fi
-echo "unexpected go invocation: $*" >&2
-exit 99
+case "${1:-}" in
+    version)
+        echo "go version go1.19.4 test/amd64"
+        ;;
+    build)
+        shift
+        out=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -o)
+                    out="$2"
+                    shift 2
+                    ;;
+                *)
+                    shift
+                    ;;
+            esac
+        done
+        mkdir -p "$(dirname "$out")"
+        : > "$out"
+        chmod +x "$out"
+        ;;
+    *)
+        echo "unexpected go invocation: $*" >&2
+        exit 99
+        ;;
+esac
 EOF
     chmod +x "$fake_bin/go"
 
@@ -143,12 +164,14 @@ EOF
     assert_contains "$install_output" "fzf" "install: checks fzf"
     assert_contains "$install_output" "jq" "install: checks jq"
     assert_contains "$install_output" "git" "install: checks git"
-    assert_contains "$install_output" "Go 1.19.4 ... too old for compiled helpers" \
-        "install: skips Go helper build with old Go"
-    assert_not_contains "$install_output" "invalid go version" \
-        "install: old Go does not parse go.mod"
+    assert_contains "$install_output" "Go 1.19.4 ... OK (>= 1.19)" \
+        "install: Go 1.19 is accepted for helper builds"
+    assert_contains "$install_output" "Built bin/am-list-internal" \
+        "install: builds am-list-internal with Go 1.19"
+    assert_contains "$install_output" "Built bin/am-browse" \
+        "install: builds am-browse with Go 1.19"
     assert_not_contains "$install_output" "unexpected go invocation" \
-        "install: old Go guard avoids go build"
+        "install: fake Go handled all invocations"
 
     # Verify summary output
     assert_contains "$install_output" "Setup complete" "install: shows completion message"

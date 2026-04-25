@@ -1,6 +1,6 @@
 module github.com/ehud-tamir/agent-manager
 
-go 1.24
+go 1.19
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0

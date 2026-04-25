@@ -306,8 +306,15 @@ func (m *model) applyFilter() {
 		}
 	}
 	if m.cursor >= len(m.filtered) {
-		m.cursor = max(0, len(m.filtered)-1)
+		m.cursor = maxInt(0, len(m.filtered)-1)
 	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (m model) selectedSession() string {
@@ -374,7 +381,7 @@ func (m model) View() string {
 	listHeight := available
 	previewHeight := 0
 	if m.showPreview && available > 6 {
-		listHeight = max(3, available/4)
+		listHeight = maxInt(3, available/4)
 		previewHeight = available - listHeight
 	}
 
@@ -565,4 +572,3 @@ func truncateVisible(s string, maxWidth int) string {
 	}
 	return out.String()
 }
-

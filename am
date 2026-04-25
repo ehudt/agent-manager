@@ -1502,7 +1502,7 @@ EOF
     # --- Step 5: Build compiled helpers ---
     echo "" >&2
     echo -e "${BOLD}Building compiled helpers...${RESET}" >&2
-    local min_go_version="1.24"
+    local min_go_version="1.19"
     if _install_go_ready_for_build "$min_go_version"; then
         local go_ok=true
         if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ ) 2>&1; then
