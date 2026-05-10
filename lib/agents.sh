@@ -109,20 +109,19 @@ agent_prepare_managed_worktree() {
     echo "$worktree_path"
 }
 
-# Refresh the tmux status bar from registry metadata.
+# Refresh the tmux status bar for a session: re-run lib/status-bar so the
+# tab strip and pane-border sidebar reflect the current state, then force a
+# client-wide redraw.
 # Usage: agent_refresh_tmux_status <session_name>
 agent_refresh_tmux_status() {
     local session_name="$1"
-    local fields
-    fields=$(registry_get_fields "$session_name" directory branch worktree_path yolo_mode container_name)
+    [[ -n "$session_name" ]] || return 0
 
-    local directory branch worktree_path yolo_mode container_name
-    IFS='|' read -r directory branch worktree_path yolo_mode container_name <<< "$fields"
+    local script="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/status-bar"
+    [[ -x "$script" ]] || return 0
 
-    local worktree_label=""
-    [[ -n "$worktree_path" ]] && worktree_label="$(basename "$worktree_path")"
-
-    tmux_set_session_status "$session_name" "$directory" "$branch" "$worktree_label" "$yolo_mode" "${container_name:+true}"
+    "$script" "$session_name" >/dev/null 2>&1 || true
+    am_tmux refresh-client -S 2>/dev/null || true
 }
 
 # Return the pane target used for the agent process.

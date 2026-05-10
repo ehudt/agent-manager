@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# status-bar - tmux status renderer for the agent-manager dedicated server.
+#
+# Renders all am sessions as a clickable tab strip. Whole bottom bar acts as
+# a tab switcher: each tab carries index, state glyph, dir/branch, task, age.
+# Clicking a tab in status-left switches to that session via MouseDown1Status.
+#
+# Outputs:
+# - stdout: clickable tab strip wrapped in #[range=user|<sid>]…#[norange],
+#   consumed by status-left.
+# - @am_sidebar tmux option: compact tab strip (no tasks/ages, no range
+#   wrappers) consumed by pane-border-format.
+# - @am_attention tmux option: attention counter for non-current sessions,
+#   consumed by status-right.
+#
+# Called by tmux as: #(/path/to/status-bar #{session_name})
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/utils.sh"
+source "$SCRIPT_DIR/tmux.sh"
+source "$SCRIPT_DIR/registry.sh"
+source "$SCRIPT_DIR/state.sh"
+
+# Modes: --print emits clickable strip on stdout (used by tests and ad-hoc
+# inspection). Default mode runs only for side effects: writes per-session
+# @am_status_left, @am_sidebar, and @am_attention options. Keeping stdout
+# empty in default mode lets tmux invoke the script for periodic refresh
+# (via a #() in status-right) without polluting the rendered bar.
+print_mode=false
+if [[ "${1:-}" == "--print" ]]; then
+    print_mode=true
+    shift
+fi
+
+current="${1:-}"
+AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
+
+# Truncation budgets (chars; treats each glyph as 1 col).
+NON_CURRENT_LABEL_MAX=20
+NON_CURRENT_TASK_MAX=18
+CURRENT_LABEL_MAX=28
+CURRENT_TASK_MAX=42
+
+_state_glyph() {
+    case "$1" in
+        running)            printf '%s' '▸' ;;
+        waiting_input)      printf '%s' '●' ;;
+        waiting_permission) printf '%s' '⚠' ;;
+        waiting_custom)     printf '%s' '◆' ;;
+        starting)           printf '%s' '◌' ;;
+        dead)               printf '%s' '✕' ;;
+        *)                  printf '%s' '○' ;;
+    esac
+}
+
+_state_color() {
+    case "$1" in
+        running)            printf '%s' 'colour75'  ;;
+        waiting_input)      printf '%s' 'colour114' ;;
+        waiting_permission) printf '%s' 'colour214' ;;
+        waiting_custom)     printf '%s' 'colour213' ;;
+        starting)           printf '%s' 'colour221' ;;
+        dead)               printf '%s' 'colour196' ;;
+        *)                  printf '%s' 'colour240' ;;
+    esac
+}
+
+_label() {
+    local session="$1" dir="$2" branch="$3"
+    local label
+    label="${dir:+$(dir_basename "$dir")}"
+    [[ -n "$label" && -n "$branch" ]] && label+="/$branch"
+    : "${label:=${session#am-}}"
+    echo "$label"
+}
+
+_compact_age() {
+    local s="$1"
+    (( s < 0 )) && s=0
+    if   (( s < 60 ));    then echo "${s}s"
+    elif (( s < 3600 ));  then echo "$((s/60))m"
+    elif (( s < 86400 )); then echo "$((s/3600))h"
+    else                       echo "$((s/86400))d"
+    fi
+}
+
+_fast_state() {
+    local session="$1" agent_type="$2" dir="$3"
+    local state
+    state=$(_state_from_hook "$session" 2>/dev/null || true)
+    if [[ -n "$state" ]]; then
+        echo "$state"
+        return
+    fi
+    _agent_get_state_fast "$session" "$agent_type" "$dir" 2>/dev/null || true
+}
+
+# Single tmux call returns ordering + activity timestamps. Sort by creation
+# time ascending so newly created sessions always appear at the end (stable
+# numbering for prefix+1..9 keybindings).
+mapfile -t session_meta < <(am_tmux list-sessions -F '#{session_created} #{session_activity} #{session_name}' 2>/dev/null \
+    | grep " ${AM_SESSION_PREFIX}" \
+    | sort -k1,1n -k3,3 || true)
+
+[[ ${#session_meta[@]} -eq 0 ]] && exit 0
+
+now=$(date +%s)
+
+# Pass 1: collect per-session data once. We then format N strip variants
+# (one per "perspective session") using this cached data, so each session's
+# @am_status_left option holds a strip with itself marked as current. tmux
+# then reads the precomputed option on session switch — instant feedback,
+# no async #() job to wait on.
+declare -a S_NAME S_LABEL S_STATE S_GLYPH S_COLOR S_TASK S_AGE
+declare -A STATE_TOTAL=()
+
+for i in "${!session_meta[@]}"; do
+    line="${session_meta[$i]}"
+    activity=$(echo "$line" | awk '{print $2}')
+    session=$(echo "$line" | awk '{print $3}')
+
+    fields=$(registry_get_fields "$session" directory branch agent_type task 2>/dev/null || true)
+    dir="" branch="" agent_type="" task=""
+    IFS='|' read -r dir branch agent_type task <<< "$fields"
+
+    label=$(_label "$session" "$dir" "$branch")
+    state=$(_fast_state "$session" "$agent_type" "$dir")
+    [[ -z "$state" ]] && state="idle"
+
+    age=""
+    if [[ -n "$activity" && "$activity" =~ ^[0-9]+$ ]]; then
+        age=$(_compact_age $(( now - activity )) )
+    fi
+
+    S_NAME[i]=$session
+    S_LABEL[i]=$label
+    S_STATE[i]=$state
+    S_GLYPH[i]=$(_state_glyph "$state")
+    S_COLOR[i]=$(_state_color "$state")
+    S_TASK[i]=${task:-∅}
+    S_AGE[i]=$age
+
+    case "$state" in
+        waiting_input|waiting_permission|waiting_custom|running)
+            STATE_TOTAL[$state]=$(( ${STATE_TOTAL[$state]:-0} + 1 ))
+            ;;
+    esac
+done
+
+# Build a strip from perspective P (P_idx is the "current" tab index).
+_build_strip() {
+    local p_idx="$1" want_clickable="$2" want_compact="$3"
+    local strip="" first=true
+    local i idx state color glyph label task age label_t task_t age_part
+    local body cur_fg entry
+    for i in "${!S_NAME[@]}"; do
+        idx=$((i + 1))
+        state="${S_STATE[$i]}"
+        color="${S_COLOR[$i]}"
+        glyph="${S_GLYPH[$i]}"
+        label="${S_LABEL[$i]}"
+        task="${S_TASK[$i]}"
+        age="${S_AGE[$i]}"
+
+        if (( i == p_idx )); then
+            label_t=$(truncate "$label" "$CURRENT_LABEL_MAX")
+            task_t=$(truncate "$task" "$CURRENT_TASK_MAX")
+        else
+            label_t=$(truncate "$label" "$NON_CURRENT_LABEL_MAX")
+            task_t=$(truncate "$task" "$NON_CURRENT_TASK_MAX")
+        fi
+
+        age_part=""
+        [[ -n "$age" ]] && age_part=" (${age})"
+
+        if [[ "$want_compact" == "true" ]]; then
+            body="${idx}|${glyph} ${label_t}"
+        else
+            body="${idx}|${glyph} ${label_t} · ${task_t}${age_part}"
+        fi
+
+        cur_fg='colour16'
+        case "$state" in
+            idle|dead|starting) cur_fg='colour231' ;;
+        esac
+
+        if (( i == p_idx )); then
+            entry="#[fg=${cur_fg},bg=${color},bold] ${body} #[default]"
+        else
+            entry="#[fg=${color},bg=colour234] ${body} #[default]"
+        fi
+
+        if ! $first; then
+            strip+="  "
+        fi
+        first=false
+
+        if [[ "$want_clickable" == "true" ]]; then
+            strip+="#[range=user|${S_NAME[$i]}]${entry}#[norange]"
+        else
+            strip+="$entry"
+        fi
+    done
+    printf '%s' "$strip"
+}
+
+# Build attention counter from perspective P (exclude P's own state).
+_build_attention() {
+    local p_idx="$1"
+    local p_state="${S_STATE[$p_idx]}"
+    local att="" st cnt g c
+    for st in waiting_permission waiting_custom waiting_input; do
+        cnt=${STATE_TOTAL[$st]:-0}
+        [[ "$p_state" == "$st" ]] && cnt=$(( cnt - 1 ))
+        (( cnt <= 0 )) && continue
+        g=$(_state_glyph "$st")
+        c=$(_state_color "$st")
+        [[ -n "$att" ]] && att+=" "
+        att+="#[fg=${c},bold]${cnt}${g}#[default]"
+    done
+    printf '%s' "$att"
+}
+
+# Write per-session options. Each session sees itself as current — switch is
+# instant because tmux reads the precomputed option.
+for p_idx in "${!S_NAME[@]}"; do
+    p_session="${S_NAME[$p_idx]}"
+    status_left=$(_build_strip "$p_idx" true false)
+    sidebar=$(_build_strip "$p_idx" false true)
+    attention=$(_build_attention "$p_idx")
+    am_tmux set-option -q -t "$p_session" @am_status_left "$status_left" >/dev/null 2>&1 || true
+    am_tmux set-option -q -t "$p_session" @am_sidebar "$sidebar" >/dev/null 2>&1 || true
+    am_tmux set-option -q -t "$p_session" @am_attention "$attention" >/dev/null 2>&1 || true
+done
+
+# Stdout: clickable strip from the perspective of the arg session, only when
+# explicitly requested. tmux invocations leave it empty so #() refreshes
+# don't clobber the bar.
+if $print_mode; then
+    target_idx=-1
+    for i in "${!S_NAME[@]}"; do
+        if [[ "${S_NAME[$i]}" == "$current" ]]; then
+            target_idx=$i
+            break
+        fi
+    done
+    if (( target_idx >= 0 )); then
+        _build_strip "$target_idx" true false
+        echo
+    elif [[ -z "$current" ]]; then
+        # No specific session requested — print first session's view so callers
+        # still see meaningful output.
+        _build_strip 0 true false
+        echo
+    fi
+fi

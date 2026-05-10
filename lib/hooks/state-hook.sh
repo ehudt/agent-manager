@@ -142,3 +142,9 @@ printf '%s' "$am_state" > "$state_file"
 # Invalidate list cache so the next fzf reload picks up the new state
 AM_DIR="${AM_DIR:-${HOME}/.agent-manager}"
 rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
+
+# Push status-bar refresh to the dedicated tmux server so the new glyph
+# appears immediately instead of waiting for the 5s status-interval tick.
+if command -v tmux &>/dev/null; then
+    tmux -L "${AM_TMUX_SOCKET:-agent-manager}" refresh-client -S 2>/dev/null || true
+fi

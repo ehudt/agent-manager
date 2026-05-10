@@ -202,7 +202,7 @@ agent-manager/
 │   ├── fzf.sh              # fzf UI, directory picker with history annotations
 │   ├── preview             # Standalone preview script for fzf panel
 │   ├── dir-preview         # Standalone preview script for directory picker
-│   ├── status-right        # Standalone script: tmux status-right indexed sidebar with session states
+│   ├── status-bar          # Standalone script: renders bottom bar as clickable session-tab strip + writes @am_sidebar / @am_attention
 │   ├── strip-ansi          # Standalone script: strips ANSI escape codes
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
 │   ├── sandbox.sh          # Docker sandbox lifecycle and fleet ops

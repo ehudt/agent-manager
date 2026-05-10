@@ -119,8 +119,8 @@ test_standalone_dir_preview() {
     $SUMMARY_MODE || echo ""
 }
 
-test_standalone_status_right() {
-    $SUMMARY_MODE || echo "=== Testing lib/status-right (standalone) ==="
+test_standalone_status_bar() {
+    $SUMMARY_MODE || echo "=== Testing lib/status-bar (standalone) ==="
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/config.sh"
     source "$LIB_DIR/tmux.sh"
@@ -136,8 +136,8 @@ test_standalone_status_right() {
     local output rc
 
     rc=0
-    output=$("$LIB_DIR/status-right" "" 2>&1) || rc=$?
-    assert_eq "0" "$rc" "status-right: exits 0 with no sessions"
+    output=$("$LIB_DIR/status-bar" --print "" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "status-bar: exits 0 with no sessions"
 
     local test_dir1 test_dir2 test_dir3
     test_dir1=$(mktemp -d)
@@ -151,19 +151,19 @@ test_standalone_status_right() {
     sleep 0.5
 
     rc=0
-    output=$("$LIB_DIR/status-right" "$s1" 2>&1) || rc=$?
-    assert_eq "0" "$rc" "status-right: exits 0 with multiple sessions"
+    output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "status-bar: exits 0 with multiple sessions"
 
     [[ -n "$s1" ]] && tmux_send_keys "$s1" "sleep 10000"
     [[ -n "$s2" ]] && tmux_send_keys "$s2" "echo hello"
     sleep 0.3
 
     rc=0
-    output=$("$LIB_DIR/status-right" "$s1" 2>&1) || rc=$?
-    assert_eq "0" "$rc" "status-right: exits 0 with mixed states"
+    output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "status-bar: exits 0 with mixed states"
 
     [[ -n "$output" ]] || output="(empty)"
-    $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: status-right: produces output format (content: $output)"
+    $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: status-bar: produces output format (content: $output)"
     ((TESTS_PASSED++))
     ((TESTS_RUN++))
 
@@ -186,28 +186,28 @@ test_standalone_status_right() {
             resolved_dir=$(cd "$test_dir4" && pwd -P)
             encoded_dir=$(printf '%s' "$resolved_dir" | sed -E 's|[/.]|-|g')
             claude_dir="$HOME/.claude/projects/$encoded_dir"
-            claude_jsonl="$claude_dir/status-right-test.jsonl"
+            claude_jsonl="$claude_dir/status-bar-test.jsonl"
             mkdir -p "$claude_dir"
             printf '%s\n' '{"type":"assistant","message":{"stop_reason":"end_turn","content":"done"}}' > "$claude_jsonl"
             rm -f "$AM_STATE_DIR/$s4"
 
             rc=0
-            output=$("$LIB_DIR/status-right" "" 2>&1) || rc=$?
-            assert_eq "0" "$rc" "status-right: exits 0 when hook state is missing"
-            assert_contains "$output" ":> $(basename "$test_dir4")" \
-                "status-right: falls back to JSONL state when hook file is missing"
-            assert_not_contains "$output" ":- $(basename "$test_dir4")" \
-                "status-right: does not render missing hook state as idle"
+            output=$("$LIB_DIR/status-bar" --print "" 2>&1) || rc=$?
+            assert_eq "0" "$rc" "status-bar: exits 0 when hook state is missing"
+            assert_contains "$output" "● $(basename "$test_dir4")" \
+                "status-bar: falls back to JSONL state when hook file is missing"
+            assert_not_contains "$output" "○ $(basename "$test_dir4")" \
+                "status-bar: does not render missing hook state as idle"
         else
-            skip_test "status-right: fallback state test (agent process did not start)"
+            skip_test "status-bar: fallback state test (agent process did not start)"
         fi
     else
-        skip_test "status-right: fallback state test (session creation failed)"
+        skip_test "status-bar: fallback state test (session creation failed)"
     fi
 
     rc=0
-    output=$("$LIB_DIR/status-right" "nonexistent" 2>&1) || rc=$?
-    assert_eq "0" "$rc" "status-right: exits 0 with nonexistent current session"
+    output=$("$LIB_DIR/status-bar" --print "nonexistent" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "status-bar: exits 0 with nonexistent current session"
 
     [[ -n "$s1" ]] && agent_kill "$s1" 2>/dev/null
     [[ -n "$s2" ]] && agent_kill "$s2" 2>/dev/null
@@ -283,7 +283,7 @@ test_strip_ansi() {
 run_standalone_scripts_tests() {
     _run_test test_standalone_preview
     _run_test test_standalone_dir_preview
-    _run_test test_standalone_status_right
+    _run_test test_standalone_status_bar
     _run_test test_strip_ansi
 }
 

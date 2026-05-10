@@ -38,7 +38,7 @@ Architecture reference for AI agents working with this codebase.
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting |
 | `lib/fzf.sh` | fzf fallback UI, directory picker, restore picker, list helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
-| `lib/status-right` | Standalone script: tmux status-right showing sessions waiting for attention |
+| `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch, task, age). Also writes `@am_sidebar` (compact pane-border variant) and `@am_attention` (status-right counter). |
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
