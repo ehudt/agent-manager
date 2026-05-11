@@ -687,9 +687,10 @@ fzf_main() {
     # Get the path to this script's directory for the preview command
     local lib_dir="${AM_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
-    # Try compiled TUI browser first (eliminates fzf + bash overhead)
+    # Try compiled TUI browser first (eliminates fzf + bash overhead).
+    # Require non-zero size so test_install's fake-go stub doesn't fire.
     local browse_cmd="$lib_dir/../bin/am-browse"
-    if [[ -x "$browse_cmd" ]]; then
+    if [[ -x "$browse_cmd" && -s "$browse_cmd" ]]; then
         export AM_TMUX_SOCKET AM_DIR AM_SESSION_PREFIX
         local result
         result=$("$browse_cmd" \

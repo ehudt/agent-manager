@@ -10,12 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bash tmux fzf jq
+
+      - name: Build Go binaries
+        run: |
+          go build -o bin/am-list-internal ./cmd/am-list-internal/
+          go build -o bin/am-browse ./cmd/am-browse/
 
       - name: Bash syntax check
         run: |

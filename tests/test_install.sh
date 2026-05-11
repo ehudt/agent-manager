@@ -140,6 +140,19 @@ esac
 EOF
     chmod +x "$fake_bin/go"
 
+    # Snapshot any pre-existing Go binaries so the fake-go stub created by
+    # `am install` doesn't clobber a real build for the duration of a
+    # parallel test run. Other workers exec these binaries from
+    # $PROJECT_DIR/bin and a 0-byte stub there would produce empty output.
+    local _saved_bin="$temp_root/saved-bin"
+    mkdir -p "$_saved_bin"
+    local _bin
+    for _bin in am-list-internal am-browse; do
+        if [[ -f "$PROJECT_DIR/bin/$_bin" ]]; then
+            cp -p "$PROJECT_DIR/bin/$_bin" "$_saved_bin/$_bin"
+        fi
+    done
+
     local install_output
     install_output=$(PATH="$fake_bin:$PATH" \
         AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
@@ -184,6 +197,17 @@ EOF
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
     assert_contains "$install_output2" "already exists" "install: skills symlink idempotent"
+
+    # Restore the real binaries that the fake-go stub clobbered, or remove the
+    # stubs so other workers fall back to the bash path instead of exec'ing a
+    # 0-byte file.
+    for _bin in am-list-internal am-browse; do
+        if [[ -f "$_saved_bin/$_bin" ]]; then
+            cp -p "$_saved_bin/$_bin" "$PROJECT_DIR/bin/$_bin"
+        else
+            rm -f "$PROJECT_DIR/bin/$_bin"
+        fi
+    done
 
     rm -rf "$temp_root"
     $SUMMARY_MODE || echo ""
