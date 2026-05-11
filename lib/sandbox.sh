@@ -192,6 +192,26 @@ _sb_share_spec_parse() {
     printf '%s|%s|%s\n' "$host" "$target" "$mode"
 }
 
+_sb_preseed_share_target() {
+    # Docker Desktop (virtiofs) refuses to auto-create a mountpoint that lives
+    # inside another bind mount. When a share targets a path under the home
+    # bind mount, pre-create the file/dir on the host so Docker can mount onto
+    # an existing path instead of trying to fabricate one.
+    local host_src="$1" container_target="$2"
+    case "$container_target" in
+        "$SB_CONTAINER_HOME"/*) ;;
+        *) return 0 ;;
+    esac
+    local rel="${container_target#"$SB_CONTAINER_HOME"/}"
+    local host_target="$SB_HOME_DIR/$rel"
+    mkdir -p "$(dirname "$host_target")"
+    if [[ -d "$host_src" ]]; then
+        [[ -e "$host_target" ]] || mkdir -p "$host_target"
+    else
+        [[ -e "$host_target" ]] || : > "$host_target"
+    fi
+}
+
 _sb_collect_share_specs() {
     local cli_specs=("$@")
     local cfg raw parsed
@@ -270,6 +290,7 @@ sandbox_start() {
         [[ -z "$parsed" ]] && continue
         IFS='|' read -r share_host share_target share_mode <<< "$parsed"
         [[ -e "$share_host" ]] || { log_warn "Skipping missing share: $share_host"; continue; }
+        _sb_preseed_share_target "$share_host" "$share_target"
         mounts+=(-v "$share_host:$share_target:$share_mode")
     done < <(_sb_collect_share_specs "${share_specs[@]}")
 
