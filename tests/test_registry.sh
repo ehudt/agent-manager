@@ -569,9 +569,15 @@ test_auto_title_scan() {
         "scan: updates task from pane title"
 
     # --- Test 2: Skips session with empty/invalid pane title ---
+    # Isolate HOME so the JSONL fallback can't find a real Claude project dir
+    # that happens to match /tmp/project on the developer's machine.
+    local old_home_2="$HOME"
+    export HOME="$AM_DIR/fake_home_2"
+    mkdir -p "$HOME"
     registry_add "test-scan-3" "/tmp/project" "main" "claude" ""
     auto_title_scan 1
     task=$(registry_get_field "test-scan-3" "task")
+    export HOME="$old_home_2"
     assert_eq "" "$task" \
         "scan: skips session with empty pane title"
 
@@ -620,6 +626,44 @@ test_auto_title_scan() {
     task=$(registry_get_field "test-scan-7" "task")
     assert_eq "Clean up the mess" "$task" \
         "scan: trims leading non-alphanumeric chars from pane title"
+
+    # --- Test 8: JSONL fallback when pane title is empty (Claude only) ---
+    # Set up a fake Claude project dir with a JSONL whose first user message
+    # should be used as the task.
+    local fake_home_8="$AM_DIR/fake_home_8"
+    local fake_dir_8="/tmp/jsonl-fallback-test-8"
+    local fake_proj_8
+    fake_proj_8="${fake_dir_8//\//-}"
+    fake_proj_8="${fake_proj_8//./-}"
+    mkdir -p "$fake_home_8/.claude/projects/$fake_proj_8"
+    printf '%s\n' '{"type":"user","message":{"content":"Investigate JSONL fallback path"}}' \
+        > "$fake_home_8/.claude/projects/$fake_proj_8/test.jsonl"
+    local old_home_8="$HOME"
+    export HOME="$fake_home_8"
+    registry_add "test-scan-8" "$fake_dir_8" "main" "claude" ""
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-8" "task")
+    export HOME="$old_home_8"
+    assert_eq "Investigate JSONL fallback path" "$task" \
+        "scan: falls back to Claude JSONL first user message when pane title empty"
+
+    # --- Test 9: No JSONL fallback for non-Claude agents ---
+    local fake_home_9="$AM_DIR/fake_home_9"
+    local fake_dir_9="/tmp/jsonl-fallback-test-9"
+    local fake_proj_9
+    fake_proj_9="${fake_dir_9//\//-}"
+    fake_proj_9="${fake_proj_9//./-}"
+    mkdir -p "$fake_home_9/.claude/projects/$fake_proj_9"
+    printf '%s\n' '{"type":"user","message":{"content":"Should not appear"}}' \
+        > "$fake_home_9/.claude/projects/$fake_proj_9/test.jsonl"
+    local old_home_9="$HOME"
+    export HOME="$fake_home_9"
+    registry_add "test-scan-9" "$fake_dir_9" "main" "codex" ""
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-9" "task")
+    export HOME="$old_home_9"
+    assert_eq "" "$task" \
+        "scan: no JSONL fallback for non-Claude agents"
 
     # --- Cleanup ---
     unset -f tmux_pane_title

@@ -35,7 +35,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit), gated by `new_form` config flag |
 | `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
 | `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
-| `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting |
+| `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
 | `lib/fzf.sh` | fzf fallback UI, directory picker, restore picker, list helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
 | `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch, task, age). Also writes `@am_sidebar` (compact pane-border variant) and `@am_attention` (status-right counter). |
@@ -176,7 +176,7 @@ am restore
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
-- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s)
+- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker.
 
 **Title helpers:**
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)

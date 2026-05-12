@@ -211,6 +211,11 @@ func LoadEntries() []Entry {
 		return sessions[i].Activity > sessions[j].Activity
 	})
 
+	// Refresh registry task fields from pane titles (and Claude JSONL fallback)
+	// before reading. Throttled to once per 60s via shared marker file, so this
+	// is cheap on the hot fzf-reload path.
+	RefreshTitles(amDir, socket, sessions)
+
 	registry := ReadRegistry(filepath.Join(amDir, "sessions.json"))
 	now := time.Now().Unix()
 

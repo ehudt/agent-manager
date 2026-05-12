@@ -296,13 +296,26 @@ auto_title_scan() {
         scanned=$((scanned + 1))
 
         # Read the agent pane title (set by the agent via terminal escape sequences)
-        title=$(tmux_pane_title "${name}:.{top}" 2>/dev/null) || continue
+        title=$(tmux_pane_title "${name}:.{top}" 2>/dev/null) || title=""
         # Trim leading non-alphanumeric characters (escape artifacts, symbols)
         title=$(echo "$title" | sed -E 's/^[^[:alnum:]]*//')
 
         if ! _title_valid "$title"; then
-            _titler_log "  $name: skip (invalid pane title: ${title:0:40})"
-            continue
+            # Fallback: for Claude sessions, derive task from JSONL first user message.
+            # Covers fresh sessions (title not painted yet), bash-only panes, and
+            # legacy sessions created before auto-titling existed.
+            local fallback=""
+            if [[ "${reg_agent[$name]}" == "claude" && -n "${reg_dir[$name]}" ]]; then
+                fallback=$(claude_first_user_message "${reg_dir[$name]}" 2>/dev/null || true)
+                fallback="${fallback:0:60}"
+            fi
+            if [[ -n "$fallback" ]] && _title_valid "$fallback"; then
+                title="$fallback"
+                _titler_log "  $name: jsonl fallback=\"$title\""
+            else
+                _titler_log "  $name: skip (no valid title: pane=${title:0:40})"
+                continue
+            fi
         fi
 
         # Skip if title hasn't changed
