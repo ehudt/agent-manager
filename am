@@ -207,6 +207,9 @@ cmd_list() {
     if $json; then
         fzf_list_json
     else
+        # Refresh task fields from pane titles / Claude JSONL. Throttled to
+        # once per 60s via shared marker, so cost is bounded.
+        auto_title_scan >/dev/null 2>&1
         fzf_list_simple
     fi
 }
@@ -1030,6 +1033,9 @@ cmd_status() {
     fi
 
     registry_gc >/dev/null 2>&1
+    # Refresh task fields from pane titles / Claude JSONL. Throttled to once
+    # per 60s via shared marker, so the cost is bounded across rapid invocations.
+    auto_title_scan >/dev/null 2>&1
 
     local count
     count=$(tmux_count_am_sessions)
