@@ -254,6 +254,76 @@ test_registry_gc() {
     $SUMMARY_MODE || echo ""
 }
 
+test_registry_gc_go_path() {
+    $SUMMARY_MODE || echo "=== Testing Integration: Registry GC (Go path) ==="
+
+    local repo_root
+    repo_root=$(cd "$LIB_DIR/.." && pwd)
+    local bin="$repo_root/bin/am-list-internal"
+
+    if [[ ! -x "$bin" || ! -s "$bin" ]]; then
+        skip_test "Go path GC (bin/am-list-internal not built — run 'make build')"
+        echo ""
+        return
+    fi
+    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
+        skip_test "Go path GC (jq or tmux not installed)"
+        echo ""
+        return
+    fi
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir
+    test_dir=$(mktemp -d)
+
+    local live_session
+    live_session=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+
+    if [[ -z "$live_session" ]]; then
+        skip_test "Go path GC (agent_launch failed)"
+        teardown_integration_env
+        rm -rf "$test_dir"
+        echo ""
+        return
+    fi
+
+    registry_add "test-am-stale-go" "/tmp/gone-go" "main" "claude" ""
+    # Seed an orphan hook state file the Go path should remove.
+    local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+    mkdir -p "$state_dir"
+    : > "$state_dir/test-am-stale-go"
+
+    # Ensure throttle does not skip.
+    rm -f "$AM_DIR/.gc_last"
+
+    "$bin" >/dev/null 2>&1 || true
+
+    assert_eq "false" "$(registry_exists test-am-stale-go && echo true || echo false)" \
+        "go path: stale entry removed"
+    assert_eq "true" "$(registry_exists "$live_session" && echo true || echo false)" \
+        "go path: live entry preserved"
+    assert_cmd_fails "go path: orphan state file removed" test -f "$state_dir/test-am-stale-go"
+    assert_cmd_succeeds "go path: .gc_last marker written" test -f "$AM_DIR/.gc_last"
+
+    # Throttle check: add another orphan, run again immediately, marker should block reap.
+    registry_add "test-am-stale-go-2" "/tmp/gone-go-2" "main" "claude" ""
+    "$bin" >/dev/null 2>&1 || true
+    assert_eq "true" "$(registry_exists test-am-stale-go-2 && echo true || echo false)" \
+        "go path: throttle keeps stale entry within 60s"
+
+    [[ -n "$live_session" ]] && agent_kill "$live_session" 2>/dev/null
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 # ============================================
 # Test: Session History (history.jsonl)
 # ============================================
@@ -680,6 +750,7 @@ run_registry_tests() {
     _run_test test_registry_extended
     _run_test test_registry_get_fields
     _run_test test_registry_gc
+    _run_test test_registry_gc_go_path
     _run_test test_history
     _run_test test_history_integration
     _run_test test_auto_title_session

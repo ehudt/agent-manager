@@ -183,7 +183,7 @@ am restore
 
 **Registry (JSON metadata):**
 - `registry_add/get_field/get_fields/update/remove/list` - CRUD for sessions.json
-- `registry_gc()` - Remove entries for dead tmux sessions (uses `tmux_session_exists`)
+- `registry_gc()` - Remove entries for dead tmux sessions (uses `tmux_session_exists`). Mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.gc_last` throttle marker. Go reap covers registry rows + hook state files only; sandbox containers stay with the bash GC's `sandbox_gc_orphans`.
 
 **Session history (JSONL):**
 - `history_append(dir, task, agent_type, branch)` - Append entry to `~/.agent-manager/history.jsonl` (prune throttled to once/hour)

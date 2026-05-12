@@ -203,6 +203,14 @@ func LoadEntries() []Entry {
 	prefix := EnvOr("AM_SESSION_PREFIX", "am-")
 
 	sessions := ListTmuxSessions(socket, prefix)
+
+	// Reap orphan registry rows + hook state files for tmux sessions that are
+	// gone. Throttled (60s, shared with bash registry_gc via .gc_last) so it's
+	// cheap on the hot fzf-reload path. Runs even when no live sessions remain
+	// so the last orphan rows get cleaned up.
+	stateDir := EnvOr("AM_STATE_DIR", "/tmp/am-state")
+	ReapOrphans(amDir, stateDir, sessions)
+
 	if len(sessions) == 0 {
 		return nil
 	}
