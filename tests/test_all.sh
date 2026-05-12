@@ -214,9 +214,10 @@ worker6_tests() {
     run_bin_helpers_tests
 }
 
-# Worker 7: Standalone scripts (~5s solo)
+# Worker 7: Standalone scripts + session-switch perf regression (~5s solo)
 worker7_tests() {
     run_standalone_scripts_tests
+    run_perf_session_switch_tests
 }
 
 # ============================================

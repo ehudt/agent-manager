@@ -233,8 +233,11 @@ cmd_browse() {
         # shellcheck disable=SC2086
         cmd_new_internal "$directory" "$agent_type" "$task" "$worktree_name" $flags
     elif [[ -n "$result" ]]; then
-        # Attach to selected session
-        agent_refresh_tmux_status "$result"
+        # Attach to selected session. The session set is unchanged, so the
+        # precomputed @am_status_left option (written when sessions were
+        # created/killed) is already correct — no sync status-bar call here.
+        # client-session-changed fires status-bar in the background to keep
+        # state glyphs current.
         tmux_attach "$result"
     fi
 }
@@ -553,10 +556,10 @@ cmd_attach() {
         return 1
     fi
 
-    # Try exact or prefixed match
+    # Try exact or prefixed match. No sync status-bar refresh — attaching does
+    # not change the session set, so precomputed options are still correct.
     local resolved
     if resolved=$(resolve_session "$name"); then
-        agent_refresh_tmux_status "$resolved"
         tmux_attach "$resolved"
         return 0
     fi
@@ -571,7 +574,6 @@ cmd_attach() {
         log_error "No session found matching: $name"
         return 1
     elif [[ $count -eq 1 ]]; then
-        agent_refresh_tmux_status "$matches"
         tmux_attach "$matches"
     else
         log_info "Multiple matches found:"
@@ -580,7 +582,6 @@ cmd_attach() {
         echo -n "Enter session name: " >&2
         read -r selected
         if [[ -n "$selected" ]]; then
-            agent_refresh_tmux_status "$selected"
             tmux_attach "$selected"
         fi
     fi

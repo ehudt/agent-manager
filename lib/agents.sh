@@ -256,11 +256,14 @@ agent_launch() {
         return 1
     fi
 
-    # Register session metadata
+    # Register session metadata. Status-bar refresh deferred to the single
+    # am_refresh_sidebar_cache call at the end of agent_launch — running
+    # status-bar in three separate places during launch (here, after sandbox
+    # start, after worktree create) was the dominant source of new-session
+    # latency.
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
     registry_update "$session_name" "yolo_mode" "$wants_yolo"
     registry_update "$session_name" "sandbox_mode" "$wants_sandbox"
-    agent_refresh_tmux_status "$session_name"
 
     # Log to persistent history if task is known at launch
     if [[ -n "$task" ]]; then
@@ -350,7 +353,6 @@ agent_launch() {
         fi
         sandbox_start "$session_name" "$sandbox_directory" "${sandbox_shares[@]}"
         registry_update "$session_name" "container_name" "$session_name"
-        agent_refresh_tmux_status "$session_name"
         local attach_cmd
         attach_cmd=$(sandbox_enter_cmd "$session_name" "$session_directory")
         tmux_send_keys "$session_name:.{bottom}" "$attach_cmd" Enter
@@ -369,7 +371,6 @@ agent_launch() {
     # Background: wait for CLI-managed worktrees to appear, then cd shell pane into them.
     if [[ -n "$worktree_path" ]]; then
         registry_update "$session_name" "worktree_path" "$worktree_path"
-        agent_refresh_tmux_status "$session_name"
         if [[ "$session_directory" != "$worktree_path" ]]; then
             (for _i in $(seq 1 20); do
                 if [ -d "$worktree_path" ]; then

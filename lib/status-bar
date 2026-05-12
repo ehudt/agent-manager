@@ -43,58 +43,116 @@ NON_CURRENT_TASK_MAX=18
 CURRENT_LABEL_MAX=28
 CURRENT_TASK_MAX=42
 
-_state_glyph() {
-    case "$1" in
-        running)            printf '%s' '▸' ;;
-        waiting_input)      printf '%s' '●' ;;
-        waiting_permission) printf '%s' '⚠' ;;
-        waiting_custom)     printf '%s' '◆' ;;
-        starting)           printf '%s' '◌' ;;
-        dead)               printf '%s' '✕' ;;
-        *)                  printf '%s' '○' ;;
-    esac
+# State lookup tables — avoid spawning a subshell per session for the glyph
+# and color helpers. Status-bar runs on the hot path between Enter and attach;
+# eliminating these $()  forks is the difference between "instant" and "lag".
+declare -A GLYPH=(
+    [running]='▸'
+    [waiting_input]='●'
+    [waiting_permission]='⚠'
+    [waiting_custom]='◆'
+    [starting]='◌'
+    [dead]='✕'
+)
+declare -A COLOR=(
+    [running]='colour75'
+    [waiting_input]='colour114'
+    [waiting_permission]='colour214'
+    [waiting_custom]='colour213'
+    [starting]='colour221'
+    [dead]='colour196'
+)
+
+# Truncate to `_T` (no $() fork). Caller reads `$_T`.
+_trunc() {
+    local s="$1" max="$2"
+    if (( ${#s} > max )); then
+        _T="${s:0:$((max - 3))}..."
+    else
+        _T="$s"
+    fi
 }
 
-_state_color() {
-    case "$1" in
-        running)            printf '%s' 'colour75'  ;;
-        waiting_input)      printf '%s' 'colour114' ;;
-        waiting_permission) printf '%s' 'colour214' ;;
-        waiting_custom)     printf '%s' 'colour213' ;;
-        starting)           printf '%s' 'colour221' ;;
-        dead)               printf '%s' 'colour196' ;;
-        *)                  printf '%s' 'colour240' ;;
-    esac
-}
-
-_label() {
-    local session="$1" dir="$2" branch="$3"
-    local label
-    label="${dir:+$(dir_basename "$dir")}"
-    [[ -n "$label" && -n "$branch" ]] && label+="/$branch"
-    : "${label:=${session#am-}}"
-    echo "$label"
-}
-
-_compact_age() {
+# Compact age to `_A` (no $() fork). Caller reads `$_A`.
+_compact_age_set() {
     local s="$1"
     (( s < 0 )) && s=0
-    if   (( s < 60 ));    then echo "${s}s"
-    elif (( s < 3600 ));  then echo "$((s/60))m"
-    elif (( s < 86400 )); then echo "$((s/3600))h"
-    else                       echo "$((s/86400))d"
+    if   (( s < 60 ));    then _A="${s}s"
+    elif (( s < 3600 ));  then _A="$((s/60))m"
+    elif (( s < 86400 )); then _A="$((s/3600))h"
+    else                       _A="$((s/86400))d"
     fi
 }
 
+# Inline hook-state read — _state_from_hook in state.sh forks `stat` and
+# `head`; status-bar runs on the hot path so we drop the `head` fork by
+# reading the first line via bash builtin. Writes to `_HS`.
+_hook_state_set() {
+    local session="$1"
+    local state_file="$AM_STATE_DIR/$session"
+    _HS=""
+    [[ -f "$state_file" ]] || return 0
+    local mtime
+    mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
+    (( now - mtime > 180 )) && return 0
+    local line=""
+    IFS= read -r line < "$state_file" 2>/dev/null || true
+    case "$line" in
+        running|waiting_input|waiting_permission|waiting_custom) _HS="$line" ;;
+    esac
+}
+
+# Bulk-data variant of _state_pane_is_shell. Reads from SESSION_TOP_PID and
+# PROC_COMM / PROC_CHILDREN tables built once per status-bar run, instead of
+# forking tmux+ps repeatedly.
+_pane_is_shell_bulk() {
+    local pid="${SESSION_TOP_PID[$1]:-}"
+    [[ -z "$pid" ]] && return 1
+    local comm="${PROC_COMM[$pid]:-}"
+    case "$comm" in
+        bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash) ;;
+        *) return 1 ;;
+    esac
+    local cpid ccomm
+    for cpid in ${PROC_CHILDREN[$pid]:-}; do
+        ccomm="${PROC_COMM[$cpid]:-}"
+        case "$ccomm" in
+            bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash|"") ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+# Status-bar state detection — fork-free for the common case. Order:
+#   1. Hook state file (Claude's primary signal)
+#   2. Bulk shell check → idle (status bar treats dead as idle visually;
+#      the periodic full refresh in lib/state.sh can upgrade to dead later
+#      via agent_classify_exit, but that path is too fork-heavy to run on
+#      every attach)
+#   3. JSONL fallback for Claude
+#   4. Pane-content patterns (still forks; only reached for live agents
+#      without a hook signal)
 _fast_state() {
     local session="$1" agent_type="$2" dir="$3"
-    local state
-    state=$(_state_from_hook "$session" 2>/dev/null || true)
-    if [[ -n "$state" ]]; then
-        echo "$state"
+    _hook_state_set "$session"
+    if [[ -n "$_HS" ]]; then
+        echo "$_HS"
         return
     fi
-    _agent_get_state_fast "$session" "$agent_type" "$dir" 2>/dev/null || true
+    if _pane_is_shell_bulk "$session"; then
+        echo "idle"
+        return
+    fi
+    if [[ "$agent_type" == "claude" && -n "$dir" ]]; then
+        local jstate
+        jstate=$(_state_from_jsonl "$dir" 2>/dev/null || true)
+        if [[ -n "$jstate" ]]; then
+            echo "$jstate"
+            return
+        fi
+    fi
+    _state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || echo running
 }
 
 # Single tmux call returns ordering + activity timestamps. Sort by creation
@@ -106,7 +164,43 @@ mapfile -t session_meta < <(am_tmux list-sessions -F '#{session_created} #{sessi
 
 [[ ${#session_meta[@]} -eq 0 ]] && exit 0
 
+# Bulk registry read — one jq invocation for all sessions' fields, indexed by
+# name into associative arrays. Replaces N separate `registry_get_fields`
+# calls (each forking jq) with a single fork.
+declare -A REG_DIR=() REG_BRANCH=() REG_AGENT=() REG_TASK=()
+if [[ -r "${AM_REGISTRY:-}" ]]; then
+    while IFS=$'\x1f' read -r _reg_name _reg_dir _reg_branch _reg_agent _reg_task; do
+        [[ -n "$_reg_name" ]] || continue
+        REG_DIR[$_reg_name]=$_reg_dir
+        REG_BRANCH[$_reg_name]=$_reg_branch
+        REG_AGENT[$_reg_name]=$_reg_agent
+        REG_TASK[$_reg_name]=$_reg_task
+    done < <(jq -r --arg us $'\x1f' '
+        .sessions | to_entries[] |
+        [.key, (.value.directory // ""), (.value.branch // ""),
+         (.value.agent_type // ""), (.value.task // "")] | join($us)
+    ' "$AM_REGISTRY" 2>/dev/null || true)
+fi
+
 now=$(date +%s)
+
+# Bulk pane-pid fetch: one tmux list-panes call indexes the top pane for each
+# session. Replaces N `display-message #{pane_pid}` forks inside the loop.
+declare -A SESSION_TOP_PID=()
+while IFS='|' read -r _bp_sess _bp_top _bp_pid; do
+    [[ "$_bp_top" == "1" ]] || continue
+    [[ "$_bp_sess" == "${AM_SESSION_PREFIX}"* ]] || continue
+    SESSION_TOP_PID[$_bp_sess]=$_bp_pid
+done < <(am_tmux list-panes -a -F '#{session_name}|#{pane_at_top}|#{pane_pid}' 2>/dev/null || true)
+
+# Bulk process-table fetch: one ps -eo call yields comm + children for every
+# pid. Replaces ~3 ps forks per session in _state_pane_is_shell.
+declare -A PROC_COMM=() PROC_CHILDREN=()
+while read -r _bp_p _bp_pp _bp_c; do
+    [[ -z "$_bp_p" || "$_bp_p" == "PID" ]] && continue
+    PROC_COMM[$_bp_p]=$_bp_c
+    PROC_CHILDREN[$_bp_pp]="${PROC_CHILDREN[$_bp_pp]:-} $_bp_p"
+done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
 
 # Pass 1: collect per-session data once. We then format N strip variants
 # (one per "perspective session") using this cached data, so each session's
@@ -117,28 +211,36 @@ declare -a S_NAME S_LABEL S_STATE S_GLYPH S_COLOR S_TASK S_AGE
 declare -A STATE_TOTAL=()
 
 for i in "${!session_meta[@]}"; do
-    line="${session_meta[$i]}"
-    activity=$(echo "$line" | awk '{print $2}')
-    session=$(echo "$line" | awk '{print $3}')
+    # Bash-only parse of "<created> <activity> <name>" — no awk fork.
+    read -r _created activity session <<< "${session_meta[$i]}"
 
-    fields=$(registry_get_fields "$session" directory branch agent_type task 2>/dev/null || true)
-    dir="" branch="" agent_type="" task=""
-    IFS='|' read -r dir branch agent_type task <<< "$fields"
+    dir="${REG_DIR[$session]:-}"
+    branch="${REG_BRANCH[$session]:-}"
+    agent_type="${REG_AGENT[$session]:-}"
+    task="${REG_TASK[$session]:-}"
 
-    label=$(_label "$session" "$dir" "$branch")
+    # Inline _label: basename via parameter expansion, no basename fork.
+    if [[ -n "$dir" ]]; then
+        label="${dir##*/}"
+        [[ -n "$branch" ]] && label+="/$branch"
+    else
+        label="${session#"${AM_SESSION_PREFIX}"}"
+    fi
+
     state=$(_fast_state "$session" "$agent_type" "$dir")
     [[ -z "$state" ]] && state="idle"
 
     age=""
     if [[ -n "$activity" && "$activity" =~ ^[0-9]+$ ]]; then
-        age=$(_compact_age $(( now - activity )) )
+        _compact_age_set $(( now - activity ))
+        age="$_A"
     fi
 
     S_NAME[i]=$session
     S_LABEL[i]=$label
     S_STATE[i]=$state
-    S_GLYPH[i]=$(_state_glyph "$state")
-    S_COLOR[i]=$(_state_color "$state")
+    S_GLYPH[i]="${GLYPH[$state]:-○}"
+    S_COLOR[i]="${COLOR[$state]:-colour240}"
     S_TASK[i]=${task:-∅}
     S_AGE[i]=$age
 
@@ -150,6 +252,7 @@ for i in "${!session_meta[@]}"; do
 done
 
 # Build a strip from perspective P (P_idx is the "current" tab index).
+# Writes to `_STRIP` (no $() fork on caller side).
 _build_strip() {
     local p_idx="$1" want_clickable="$2" want_compact="$3"
     local strip="" first=true
@@ -165,11 +268,11 @@ _build_strip() {
         age="${S_AGE[$i]}"
 
         if (( i == p_idx )); then
-            label_t=$(truncate "$label" "$CURRENT_LABEL_MAX")
-            task_t=$(truncate "$task" "$CURRENT_TASK_MAX")
+            _trunc "$label" "$CURRENT_LABEL_MAX"; label_t="$_T"
+            _trunc "$task" "$CURRENT_TASK_MAX"; task_t="$_T"
         else
-            label_t=$(truncate "$label" "$NON_CURRENT_LABEL_MAX")
-            task_t=$(truncate "$task" "$NON_CURRENT_TASK_MAX")
+            _trunc "$label" "$NON_CURRENT_LABEL_MAX"; label_t="$_T"
+            _trunc "$task" "$NON_CURRENT_TASK_MAX"; task_t="$_T"
         fi
 
         age_part=""
@@ -203,10 +306,11 @@ _build_strip() {
             strip+="$entry"
         fi
     done
-    printf '%s' "$strip"
+    _STRIP="$strip"
 }
 
 # Build attention counter from perspective P (exclude P's own state).
+# Writes to `_ATT`.
 _build_attention() {
     local p_idx="$1"
     local p_state="${S_STATE[$p_idx]}"
@@ -215,25 +319,36 @@ _build_attention() {
         cnt=${STATE_TOTAL[$st]:-0}
         [[ "$p_state" == "$st" ]] && cnt=$(( cnt - 1 ))
         (( cnt <= 0 )) && continue
-        g=$(_state_glyph "$st")
-        c=$(_state_color "$st")
+        g="${GLYPH[$st]}"
+        c="${COLOR[$st]}"
         [[ -n "$att" ]] && att+=" "
         att+="#[fg=${c},bold]${cnt}${g}#[default]"
     done
-    printf '%s' "$att"
+    _ATT="$att"
 }
 
 # Write per-session options. Each session sees itself as current — switch is
-# instant because tmux reads the precomputed option.
+# instant because tmux reads the precomputed option. All set-option calls
+# are chained into a single tmux invocation (tmux's `;` command separator)
+# so we pay one fork+exec instead of 3N.
+batch_args=()
 for p_idx in "${!S_NAME[@]}"; do
     p_session="${S_NAME[$p_idx]}"
-    status_left=$(_build_strip "$p_idx" true false)
-    sidebar=$(_build_strip "$p_idx" false true)
-    attention=$(_build_attention "$p_idx")
-    am_tmux set-option -q -t "$p_session" @am_status_left "$status_left" >/dev/null 2>&1 || true
-    am_tmux set-option -q -t "$p_session" @am_sidebar "$sidebar" >/dev/null 2>&1 || true
-    am_tmux set-option -q -t "$p_session" @am_attention "$attention" >/dev/null 2>&1 || true
+    _build_strip "$p_idx" true false;  status_left="$_STRIP"
+    _build_strip "$p_idx" false true;  sidebar="$_STRIP"
+    _build_attention "$p_idx";         attention="$_ATT"
+
+    (( ${#batch_args[@]} > 0 )) && batch_args+=(';')
+    batch_args+=(set-option -q -t "$p_session" @am_status_left "$status_left")
+    batch_args+=(';')
+    batch_args+=(set-option -q -t "$p_session" @am_sidebar "$sidebar")
+    batch_args+=(';')
+    batch_args+=(set-option -q -t "$p_session" @am_attention "$attention")
 done
+
+if (( ${#batch_args[@]} > 0 )); then
+    am_tmux "${batch_args[@]}" >/dev/null 2>&1 || true
+fi
 
 # Stdout: clickable strip from the perspective of the arg session, only when
 # explicitly requested. tmux invocations leave it empty so #() refreshes
@@ -248,11 +363,11 @@ if $print_mode; then
     done
     if (( target_idx >= 0 )); then
         _build_strip "$target_idx" true false
-        echo
+        printf '%s\n' "$_STRIP"
     elif [[ -z "$current" ]]; then
         # No specific session requested — print first session's view so callers
         # still see meaningful output.
         _build_strip 0 true false
-        echo
+        printf '%s\n' "$_STRIP"
     fi
 fi

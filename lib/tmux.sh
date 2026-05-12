@@ -77,9 +77,14 @@ set -g status-left '#{@am_status_left}'
 set -g status-right-length 120
 set -g status-right '#($status_bar_cmd #{session_name})#{@am_attention} #[fg=colour245]%H:%M '
 
-# Refresh options synchronously the moment the active session changes so the
-# new tab highlight appears in the same frame as the switch.
-set-hook -g client-session-changed 'run-shell "$status_bar_cmd #{session_name}"'
+# Refresh options after the active session changes. run-shell -b detaches
+# the child so tmux doesn't block on it — switch-client returns immediately
+# and the user is in the new session before status-bar finishes. The
+# precomputed @am_status_left option already has the right "current"
+# highlighting baked in (status-bar writes one per perspective), so the
+# visual update is instant; this hook just keeps state glyphs and ages
+# fresh between the 5s status-interval ticks.
+set-hook -g client-session-changed 'run-shell -b "$status_bar_cmd #{session_name}"'
 
 # Drop tmux's default window list — am sessions use a single window so the
 # default 'index:name*' slot is just clutter between tabs and the clock.
@@ -261,16 +266,15 @@ am_session_order() {
 # every am session and force a client-wide redraw. Call after creating or
 # killing a session so the status bar and pane border update immediately
 # instead of waiting for the 5s status-interval refresh.
+#
+# A single status-bar invocation already writes options for every session in
+# its final loop, so this just runs it once — the previous per-session loop
+# performed the exact same work N times.
 # Usage: am_refresh_sidebar_cache
 am_refresh_sidebar_cache() {
     local script="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/status-bar"
     [[ -x "$script" ]] || return 0
-    local session
-    while IFS= read -r session; do
-        [[ -n "$session" ]] || continue
-        "$script" "$session" >/dev/null 2>&1 || true
-    done < <(am_tmux list-sessions -F '#{session_name}' 2>/dev/null \
-                | grep "^${AM_SESSION_PREFIX}" || true)
+    "$script" >/dev/null 2>&1 || true
 
     # Clean up stale files from the old pane-border implementation. That path
     # used tmux #() jobs, which are cached and caused delayed middle-bar updates.
