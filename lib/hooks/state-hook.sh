@@ -143,6 +143,16 @@ printf '%s' "$am_state" > "$state_file"
 AM_DIR="${AM_DIR:-${HOME}/.agent-manager}"
 rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
 
+# Invalidate title-scan throttle on prompt boundaries so the next status-bar
+# tick refreshes the registry task field within ~5s instead of waiting up to
+# 60s. Only fire on prompt boundaries — tool hooks would defeat the throttle
+# for busy sessions.
+case "$hook_type" in
+    UserPromptSubmit|Stop)
+        rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
+        ;;
+esac
+
 # Push status-bar refresh to the dedicated tmux server so the new glyph
 # appears immediately instead of waiting for the 5s status-interval tick.
 if command -v tmux &>/dev/null; then
