@@ -241,6 +241,13 @@ test_state_integration() {
         local list_has_state
         list_has_state=$(echo "$list_json" | jq 'if length > 0 then .[0] | has("state") else true end' 2>/dev/null || echo "false")
         assert_eq "true" "$list_has_state" "am list --json: state field present in objects"
+
+        # Regression: a stale caller of a removed helper used to fail
+        # silently inside a subshell and leave .state as empty string for
+        # every live session. Lock in non-empty state for live sessions.
+        local list_state_nonempty
+        list_state_nonempty=$(echo "$list_json" | jq 'if length > 0 then (.[0].state | length > 0) else true end' 2>/dev/null || echo "false")
+        assert_eq "true" "$list_state_nonempty" "am list --json: state field non-empty for live session"
     else
         skip_test "am list --json: state field (am list --json unavailable in test env)"
     fi

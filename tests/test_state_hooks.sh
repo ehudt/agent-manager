@@ -212,14 +212,28 @@ test_state_from_hook_stale_file() {
     _ensure_state_lib_sourced
     local state_dir
     state_dir=$(mktemp -d)
-    printf 'waiting_input' > "$state_dir/am-test01"
-    # Backdate the file by 5 minutes
-    touch -t "$(date -v-5M '+%Y%m%d%H%M.%S' 2>/dev/null \
-        || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')" "$state_dir/am-test01"
+    local backdated
+    backdated=$(date -v-5M '+%Y%m%d%H%M.%S' 2>/dev/null \
+        || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')
 
+    # Terminal waiting states are persistent — an idle session can sit at
+    # waiting_input for hours without firing a new hook. The staleness gate
+    # must not drop these.
+    printf 'waiting_input' > "$state_dir/am-test01"
+    touch -t "$backdated" "$state_dir/am-test01"
     local result
     result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
-    assert_eq "" "$result" "_state_from_hook returns empty for stale file (>3m)"
+    assert_eq "waiting_input" "$result" \
+        "_state_from_hook trusts stale waiting_input (terminal state)"
+
+    # Running implies an in-progress turn; missing PostToolUse/Stop for
+    # >3 min means the agent likely crashed. Pane fallback should take over.
+    printf 'running' > "$state_dir/am-test02"
+    touch -t "$backdated" "$state_dir/am-test02"
+    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test02")
+    assert_eq "" "$result" \
+        "_state_from_hook drops stale running (>3m) so pane fallback runs"
+
     rm -rf "$state_dir"
 }
 

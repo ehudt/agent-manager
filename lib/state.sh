@@ -247,11 +247,22 @@ _state_hook_read() {
     local mtime
     mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
     [[ -z "$now_epoch" ]] && now_epoch=$(date +%s)
-    (( now_epoch - mtime > 180 )) && return 0
     local line=""
     IFS= read -r line < "$state_file" 2>/dev/null || true
+    # Terminal waiting states are persistent — an idle session can sit at
+    # waiting_input for days without any new hook firing, and that's the
+    # whole point. Only running has a staleness gate (3 min) since it
+    # implies an in-progress turn that should produce PostToolUse / Stop
+    # hooks; a stale `running` is the "agent crashed mid-tool-call" case
+    # where we'd rather fall through to the pane check.
     case "$line" in
-        running|waiting_input|waiting_permission|waiting_custom) __out="$line" ;;
+        waiting_input|waiting_permission|waiting_custom)
+            __out="$line"
+            ;;
+        running)
+            (( now_epoch - mtime > 180 )) && return 0
+            __out="$line"
+            ;;
     esac
 }
 

@@ -907,7 +907,7 @@ _fzf_list_display() {
 # Usage: fzf_list_json
 fzf_list_json() {
     # Lazy-load state.sh — only this function needs parallel state detection
-    [[ "$(type -t _agent_get_state_fast)" != "function" ]] && source "$_FZF_LIB_DIR/state.sh"
+    [[ "$(type -t _state_resolve)" != "function" ]] && source "$_FZF_LIB_DIR/state.sh"
     # Warm the tmux config cache so subshells skip regeneration
     am_tmux_config_path >/dev/null 2>&1
 
@@ -946,11 +946,13 @@ fzf_list_json() {
         reg_task[$_rname]=$_rtask
     done < <(jq -r '.sessions | to_entries[] | [.key, .value.directory // "", .value.branch // "", .value.agent_type // "", .value.task // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
-    # Parallel state detection using lean per-session function
+    # Parallel state detection. _state_resolve in non-bulk mode handles its
+    # own per-session tmux/ps lookups; running each session in its own
+    # subshell keeps the fork-fanout overlapping.
     local state_tmpdir session
     state_tmpdir=$(mktemp -d)
     for session in "${session_names[@]}"; do
-        ( _agent_get_state_fast "$session" "${reg_agent[$session]:-}" "${reg_dir[$session]:-}" \
+        ( _state_resolve "$session" "${reg_agent[$session]:-}" "${reg_dir[$session]:-}" \
             > "$state_tmpdir/$session" 2>/dev/null; true ) &
     done
     wait
