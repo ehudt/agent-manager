@@ -25,16 +25,26 @@ lab_jsonl "$real" shadow \
     "$(jsonl_system 'boot')" \
     "$(jsonl_user_text 'queued but not answered')" >/dev/null
 
-state=$(probe_jsonl "$real")
+# Simulate Claude firing a hook that carries the active conversation's
+# session_id. state-hook.sh persists it to sessions.json as
+# claude_session_id, after which state derivation targets active.jsonl
+# instead of the newest-mtime shadow.
+lab_hook lab-aaa '{"hook_event_name":"Stop","session_id":"active"}'
+
+state=$(probe_jsonl "$real" lab-aaa)
 
 echo "----- probes -----" >&2
-printf '  newest jsonl: %s\n' "$(_state_jsonl_path "$real")" >&2
+printf '  claude_session_id in registry: %s\n' \
+    "$(registry_get_field lab-aaa claude_session_id)" >&2
+printf '  resolved jsonl: %s\n' "$(_state_jsonl_path "$real" lab-aaa)" >&2
+printf '  newest jsonl (mtime fallback): %s\n' "$(_state_jsonl_path "$real")" >&2
 printf '  _state_from_jsonl: %s\n' "$state" >&2
 echo "------------------" >&2
 
-# Document the bug: harness *expects* waiting_input (because the active
-# conversation ended in end_turn), but current code returns running.
-lab_xfail "waiting_input" "$state" \
+# Active conversation ended end_turn -> waiting_input. After the fix,
+# _state_jsonl_path resolves the active jsonl via claude_session_id and
+# ignores the fresher stub.
+lab_assert "waiting_input" "$state" \
     "active conversation ended end_turn — should report waiting_input even if a fresher stub jsonl exists in same dir"
 
 lab_report

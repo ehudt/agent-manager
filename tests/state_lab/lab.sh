@@ -290,9 +290,9 @@ probe_hook() {
     head -1 "$f"
 }
 
-# probe_jsonl <dir>  -> _state_from_jsonl output
+# probe_jsonl <dir> [session]  -> _state_from_jsonl output
 probe_jsonl() {
-    _state_from_jsonl "$1" || true
+    _state_from_jsonl "$1" "${2:-}" || true
 }
 
 # probe_pane <session> <agent_type>

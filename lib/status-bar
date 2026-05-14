@@ -151,7 +151,7 @@ _fast_state() {
     fi
     if [[ "$agent_type" == "claude" && -n "$dir" ]]; then
         local jstate
-        jstate=$(_state_from_jsonl "$dir" 2>/dev/null || true)
+        jstate=$(_state_from_jsonl "$dir" "$session" 2>/dev/null || true)
         if [[ -n "$jstate" ]]; then
             echo "$jstate"
             return

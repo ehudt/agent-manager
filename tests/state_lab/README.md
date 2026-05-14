@@ -54,10 +54,6 @@ XFAIL on mismatch (does not fail the run), XPASS when it suddenly passes
 
 ## Current XFAILs
 
-1. `01-jsonl-newest-vs-active` — `_state_jsonl_path` picks newest mtime
-   in project dir; fresher shadow jsonl shadows the active conversation.
-2. `05-jsonl-tail20-metadata-flood` — `tail -20` window can miss the last
-   meaningful entry when Claude appends 20+ metadata rows.
-
-Both are real bugs observed on 2026-05-13 (am-6bb668). Fixing them should
-flip the XFAILs to XPASS — that's the regression signal.
+None — Phase 1 of `docs/state-detection-plan.md` cleared both originally
+documented bugs (newest-mtime shadow, `tail -20` flood). All cases now run
+under `lab_assert` and must stay green.

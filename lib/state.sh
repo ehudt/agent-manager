@@ -25,11 +25,16 @@ _state_encode_dir() {
     echo "$1" | sed -E 's|[/.]|-|g'
 }
 
-# Return the path to the newest Claude session JSONL for a directory.
-# Usage: _state_jsonl_path <dir>
+# Return the path to the Claude session JSONL for a directory.
+# Usage: _state_jsonl_path <dir> [session_name]
 # Returns: file path on stdout, or empty string if not found
+#
+# When session_name is given and a claude_session_id is resolvable (registry,
+# pane args, or lsof), targets that exact conversation. Falls back to the
+# newest mtime only when no signal is available — that fallback mis-attributes
+# state when a fresher stub jsonl shadows the active conversation (Bug 1).
 _state_jsonl_path() {
-    local dir="$1"
+    local dir="$1" session="${2:-}"
     # Resolve symlinks to match Claude's encoding (e.g. /tmp → /private/tmp)
     local resolved
     resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
@@ -37,7 +42,110 @@ _state_jsonl_path() {
     encoded=$(_state_encode_dir "$resolved")
     project_dir="$HOME/.claude/projects/$encoded"
     [[ -d "$project_dir" ]] || return 0
+
+    if [[ -n "$session" ]]; then
+        local sid
+        sid=$(_state_claude_session_id "$session" "$resolved" "$project_dir")
+        if [[ -n "$sid" && -f "$project_dir/$sid.jsonl" ]]; then
+            echo "$project_dir/$sid.jsonl"
+            return
+        fi
+    fi
+
     command ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1
+}
+
+# Resolve the Claude conversation UUID owning a session's agent pane.
+# Signals tried in order:
+#   1. registry.claude_session_id  (written by state-hook.sh from hook payload)
+#   2. pane child process args     (--session-id <uuid>)
+#   3. lsof on the pane's claude child, intersected with the project dir
+# Caches the resolved id back to the registry. Returns empty if none match.
+# Usage: _state_claude_session_id <session> <resolved_dir> <project_dir>
+_state_claude_session_id() {
+    local session="$1" resolved_dir="$2" project_dir="$3"
+    local sid
+
+    sid=$(registry_get_field "$session" claude_session_id 2>/dev/null || true)
+    [[ -n "$sid" ]] && { echo "$sid"; return; }
+
+    sid=$(_state_sid_from_pane_args "$session")
+    if [[ -n "$sid" ]]; then
+        registry_update "$session" claude_session_id "$sid" 2>/dev/null || true
+        echo "$sid"
+        return
+    fi
+
+    sid=$(_state_sid_from_lsof "$session" "$project_dir")
+    if [[ -n "$sid" ]]; then
+        registry_update "$session" claude_session_id "$sid" 2>/dev/null || true
+        echo "$sid"
+    fi
+}
+
+# Find the first `claude` descendant of a session's top pane pid.
+# Usage: _state_pane_claude_pid <session>
+# Returns: pid on stdout, or empty
+_state_pane_claude_pid() {
+    local session="$1"
+    local pane_pid
+    pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
+    [[ -z "$pane_pid" ]] && return 0
+
+    # Build ppid->children map and pid->comm map from one ps fork.
+    local -A _PCHILD=() _PCOMM=()
+    local _p _pp _c
+    while read -r _p _pp _c; do
+        [[ -z "$_p" || "$_p" == "PID" ]] && continue
+        _PCOMM[$_p]=$_c
+        _PCHILD[$_pp]="${_PCHILD[$_pp]:-} $_p"
+    done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
+
+    # BFS descendants
+    local queue=("$pane_pid") cur child
+    while (( ${#queue[@]} > 0 )); do
+        cur="${queue[0]}"
+        queue=("${queue[@]:1}")
+        case "${_PCOMM[$cur]:-}" in
+            claude|*[/\\]claude) echo "$cur"; return 0 ;;
+        esac
+        for child in ${_PCHILD[$cur]:-}; do
+            queue+=("$child")
+        done
+    done
+}
+
+# Extract --session-id from the claude child's argv, if present.
+# Usage: _state_sid_from_pane_args <session>
+_state_sid_from_pane_args() {
+    local pid
+    pid=$(_state_pane_claude_pid "$1")
+    [[ -z "$pid" ]] && return 0
+    local args
+    args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+    [[ -z "$args" ]] && return 0
+    printf '%s' "$args" \
+        | sed -nE 's/.*--session-id[= ]([0-9a-fA-F-]{8,})\b.*/\1/p' \
+        | head -1
+}
+
+# Intersect open file descriptors of the claude child with jsonls in the
+# project dir. Last-resort signal when args don't carry the id.
+# Usage: _state_sid_from_lsof <session> <project_dir>
+_state_sid_from_lsof() {
+    command -v lsof >/dev/null 2>&1 || return 0
+    local pid
+    pid=$(_state_pane_claude_pid "$1")
+    [[ -z "$pid" ]] && return 0
+    local project_dir="$2"
+    [[ -d "$project_dir" ]] || return 0
+    local path
+    path=$(lsof -p "$pid" -Fn 2>/dev/null \
+        | sed -nE "s|^n(${project_dir}/[^/]+\\.jsonl)$|\\1|p" \
+        | head -1)
+    [[ -n "$path" ]] || return 0
+    local base="${path##*/}"
+    echo "${base%.jsonl}"
 }
 
 # Check whether a JSONL file is stale (mtime older than 30 seconds).
@@ -53,12 +161,12 @@ _state_jsonl_stale() {
 }
 
 # Derive session state from the Claude JSONL file.
-# Usage: _state_from_jsonl <directory>
+# Usage: _state_from_jsonl <directory> [session_name]
 # Returns: state string on stdout, or empty string if cannot determine
 _state_from_jsonl() {
-    local dir="$1"
+    local dir="$1" session="${2:-}"
     local jsonl
-    jsonl=$(_state_jsonl_path "$dir")
+    jsonl=$(_state_jsonl_path "$dir" "$session")
     [[ -n "$jsonl" && -f "$jsonl" ]] || return 0
 
     # Find the last meaningful entry: assistant, user, or queue-operation.
@@ -374,7 +482,7 @@ agent_get_state() {
         local dir jsonl_state
         dir=$(registry_get_field "$session" directory 2>/dev/null || true)
         if [[ -n "$dir" ]]; then
-            jsonl_state=$(_state_from_jsonl "$dir")
+            jsonl_state=$(_state_from_jsonl "$dir" "$session")
             if [[ -n "$jsonl_state" ]]; then
                 echo "$jsonl_state"
                 return
@@ -413,7 +521,7 @@ _agent_get_state_fast() {
         elif [[ -n "$dir" ]]; then
             # No hook → try JSONL
             local jsonl_state
-            jsonl_state=$(_state_from_jsonl "$dir")
+            jsonl_state=$(_state_from_jsonl "$dir" "$session")
             if [[ -n "$jsonl_state" ]]; then
                 if [[ "$jsonl_state" == "waiting_input" ]]; then
                     echo "waiting_input"

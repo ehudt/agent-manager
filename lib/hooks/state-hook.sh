@@ -135,6 +135,26 @@ if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$sta
     esac
 fi
 
+# Persist the Claude conversation UUID once per session. State derivation uses
+# this to target the right jsonl instead of guessing newest mtime in the
+# project dir (which mis-attributes state when a fresher stub conversation
+# shadows the active one). Skip the jq write when the value is already
+# correct so steady-state hooks don't pay the fork.
+claude_session_id=$(printf '%s' "$hook_input" | jq -r '.session_id // empty' 2>/dev/null || true)
+if [[ -n "$claude_session_id" ]]; then
+    current_sid=$(jq -r --arg n "$session_name" '.sessions[$n].claude_session_id // empty' "$AM_REGISTRY" 2>/dev/null || true)
+    if [[ "$current_sid" != "$claude_session_id" ]]; then
+        sid_tmp=$(mktemp)
+        if jq --arg n "$session_name" --arg sid "$claude_session_id" '
+            if .sessions[$n] then .sessions[$n].claude_session_id = $sid else . end
+        ' "$AM_REGISTRY" > "$sid_tmp" 2>/dev/null; then
+            mv "$sid_tmp" "$AM_REGISTRY"
+        else
+            rm -f "$sid_tmp"
+        fi
+    fi
+fi
+
 # Write state to file
 mkdir -p "$AM_STATE_DIR"
 printf '%s' "$am_state" > "$state_file"
