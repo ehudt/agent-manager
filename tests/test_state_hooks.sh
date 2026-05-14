@@ -383,6 +383,107 @@ JSON
     rm -rf "$tmp_dir"
 }
 
+test_enable_codex_hooks_feature_new_file() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+
+    _enable_codex_hooks_feature "$cfg"
+
+    grep -q '^\[features\]' "$cfg" && \
+        ((TESTS_PASSED++)) && ((TESTS_RUN++)) && \
+        ($SUMMARY_MODE || printf '%bPASS%b: codex feature: [features] section present\n' "$TEST_GREEN" "$TEST_RESET") || \
+        ( ((TESTS_FAILED++)) && ((TESTS_RUN++)) && \
+            printf '%bFAIL%b: codex feature: [features] missing\n' "$TEST_RED" "$TEST_RESET" )
+
+    grep -q '^codex_hooks[[:space:]]*=[[:space:]]*true' "$cfg" && \
+        ((TESTS_PASSED++)) && ((TESTS_RUN++)) && \
+        ($SUMMARY_MODE || printf '%bPASS%b: codex feature: codex_hooks = true present\n' "$TEST_GREEN" "$TEST_RESET") || \
+        ( ((TESTS_FAILED++)) && ((TESTS_RUN++)) && \
+            printf '%bFAIL%b: codex feature: codex_hooks line missing\n' "$TEST_RED" "$TEST_RESET" )
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_codex_hooks_feature_existing_section() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+    cat > "$cfg" <<'TOML'
+[model]
+provider = "openai"
+
+[features]
+other_flag = "keep"
+TOML
+
+    _enable_codex_hooks_feature "$cfg"
+
+    local other_kept
+    other_kept=$(grep -c '^other_flag[[:space:]]*=[[:space:]]*"keep"' "$cfg" || true)
+    assert_eq "1" "$other_kept" "codex feature: existing keys preserved"
+
+    local codex_count
+    codex_count=$(grep -c '^codex_hooks[[:space:]]*=[[:space:]]*true' "$cfg" || true)
+    assert_eq "1" "$codex_count" "codex feature: codex_hooks = true added under [features]"
+
+    local model_kept
+    model_kept=$(grep -c '^\[model\]' "$cfg" || true)
+    assert_eq "1" "$model_kept" "codex feature: other sections preserved"
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_codex_hooks_feature_idempotent() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+
+    _enable_codex_hooks_feature "$cfg"
+    _enable_codex_hooks_feature "$cfg"
+    _enable_codex_hooks_feature "$cfg"
+
+    local features_count codex_count
+    features_count=$(grep -c '^\[features\]' "$cfg" || true)
+    codex_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
+    assert_eq "1" "$features_count" "codex feature: idempotent — no duplicate [features]"
+    assert_eq "1" "$codex_count" "codex feature: idempotent — no duplicate codex_hooks line"
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_codex_hooks_feature_replaces_false() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+    cat > "$cfg" <<'TOML'
+[features]
+codex_hooks = false
+TOML
+
+    _enable_codex_hooks_feature "$cfg"
+
+    local val
+    val=$(grep '^codex_hooks[[:space:]]*=' "$cfg" | head -1)
+    case "$val" in
+        *"= true"*|*"=true"*)
+            ((TESTS_PASSED++)); ((TESTS_RUN++))
+            $SUMMARY_MODE || printf '%bPASS%b: codex feature: false -> true upgrade\n' "$TEST_GREEN" "$TEST_RESET"
+            ;;
+        *)
+            ((TESTS_FAILED++)); ((TESTS_RUN++))
+            printf '%bFAIL%b: codex feature: did not flip false to true (got: %s)\n' \
+                "$TEST_RED" "$TEST_RESET" "$val"
+            ;;
+    esac
+
+    rm -rf "$tmp_dir"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_from_hook_reads_file
@@ -394,6 +495,10 @@ run_state_hooks_tests() {
     _run_test test_install_hooks_idempotent
     _run_test test_install_codex_hooks_into_empty_file
     _run_test test_install_codex_hooks_preserves_existing_and_idempotent
+    _run_test test_enable_codex_hooks_feature_new_file
+    _run_test test_enable_codex_hooks_feature_existing_section
+    _run_test test_enable_codex_hooks_feature_idempotent
+    _run_test test_enable_codex_hooks_feature_replaces_false
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
