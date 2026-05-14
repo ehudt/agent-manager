@@ -34,8 +34,9 @@ printf '  jsonl total lines: %d\n' "$(wc -l < "$(_state_jsonl_path "$real")")" >
 printf '  _state_from_jsonl: %s\n' "$state" >&2
 echo "------------------" >&2
 
-# Real conversation is end_turn -> waiting_input, but tail -20 misses it.
-lab_xfail "waiting_input" "$state" \
-    "tail -20 window must include the last meaningful entry — needs grep across whole file or larger window"
+# Real conversation is end_turn -> waiting_input. After fix, reverse-stream
+# scan picks the last meaningful line regardless of trailing metadata depth.
+lab_assert "waiting_input" "$state" \
+    "reverse-stream scan must find last meaningful entry past trailing metadata flood"
 
 lab_report

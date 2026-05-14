@@ -64,10 +64,15 @@ _state_from_jsonl() {
     # Find the last meaningful entry: assistant, user, or queue-operation.
     # Skip metadata entries (system, progress, file-history-snapshot, etc.)
     # that Claude appends after the actual conversation turn.
+    #
+    # Read the file reversed and scan from the bottom so a metadata flood
+    # (file-history-snapshot / last-prompt / ai-title / attachment / system)
+    # of arbitrary depth still finds the last meaningful line. Cap at 200
+    # reversed lines to keep cost bounded on huge files.
     local last_line
-    last_line=$(tail -20 "$jsonl" 2>/dev/null \
-        | grep -E '"type"\s*:\s*"(assistant|user|queue-operation)"' \
-        | tail -1) || return 0
+    last_line=$( { tail -r "$jsonl" 2>/dev/null || tac "$jsonl" 2>/dev/null; } \
+        | head -n 200 \
+        | grep -m1 -E '"type"[[:space:]]*:[[:space:]]*"(assistant|user|queue-operation)"') || return 0
     [[ -n "$last_line" ]] || return 0
 
     # Extract all needed fields in a single jq call (avoids 4 separate process spawns)
