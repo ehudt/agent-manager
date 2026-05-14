@@ -305,9 +305,20 @@ probe_agent_get_state() {
     agent_get_state "$1" 2>/dev/null || true
 }
 
-# probe_fast_state <session> <agent_type> <dir> — calls the status-bar lean path
-probe_fast_state() {
-    _agent_get_state_fast "$1" "$2" "$3" 2>/dev/null || true
+# probe_resolve <session> <agent_type> <dir> — non-bulk _state_resolve path
+probe_resolve() {
+    _state_resolve "$1" "$2" "$3" 2>/dev/null || true
+}
+
+# probe_resolve_bulk <session> <agent_type> <dir>
+#   Builds empty bulk fixtures and runs the bulk variant. Use to assert both
+#   call sites agree on a given fixture.
+probe_resolve_bulk() {
+    declare -A __PB_TOP=() __PB_COMM=() __PB_CHILD=()
+    local __PB_NOW
+    __PB_NOW=$(date +%s)
+    _state_resolve "$1" "$2" "$3" \
+        __PB_TOP __PB_COMM __PB_CHILD "$__PB_NOW" 2>/dev/null || true
 }
 
 # probe_all <session> [agent_type=claude]
@@ -319,7 +330,8 @@ probe_all() {
     printf '  %-22s = %s\n' "_state_from_jsonl"   "$(probe_jsonl "$dir")"
     printf '  %-22s = %s\n' "_state_from_pane"    "$(probe_pane "$session" "$agent_type")"
     printf '  %-22s = %s\n' "agent_get_state"     "$(probe_agent_get_state "$session")"
-    printf '  %-22s = %s\n' "_agent_get_state_fast" "$(probe_fast_state "$session" "$agent_type" "$dir")"
+    printf '  %-22s = %s\n' "_state_resolve"       "$(probe_resolve "$session" "$agent_type" "$dir")"
+    printf '  %-22s = %s\n' "_state_resolve bulk"  "$(probe_resolve_bulk "$session" "$agent_type" "$dir")"
 }
 
 lab_report() {

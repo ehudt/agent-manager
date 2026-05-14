@@ -233,29 +233,36 @@ _state_from_jsonl() {
 
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 
+# Read session state from the hook state file into a caller-supplied variable.
+# No subshell, no head fork — used by both the public _state_from_hook wrapper
+# (one-shot calls) and _state_resolve's bulk path (avoids $() per session).
+# Usage: _state_hook_read <session_name> <out_var_name> [now_epoch]
+_state_hook_read() {
+    local session="$1"
+    local -n __out="$2"
+    local now_epoch="${3:-}"
+    __out=""
+    local state_file="$AM_STATE_DIR/$session"
+    [[ -f "$state_file" ]] || return 0
+    local mtime
+    mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
+    [[ -z "$now_epoch" ]] && now_epoch=$(date +%s)
+    (( now_epoch - mtime > 180 )) && return 0
+    local line=""
+    IFS= read -r line < "$state_file" 2>/dev/null || true
+    case "$line" in
+        running|waiting_input|waiting_permission|waiting_custom) __out="$line" ;;
+    esac
+}
+
 # Read session state from the hook state file.
 # Returns state string if file exists and is fresh (< 3 minutes old),
 # or empty string if missing/stale.
 # Usage: _state_from_hook <session_name>
 _state_from_hook() {
-    local session="$1"
-    local state_file="$AM_STATE_DIR/$session"
-    [[ -f "$state_file" ]] || return 0
-
-    # Staleness check: ignore files older than 3 minutes
-    local mtime now
-    mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
-    now=$(date +%s)
-    (( now - mtime > 180 )) && return 0
-
-    local state
-    state=$(head -1 "$state_file" 2>/dev/null || true)
-    # Validate — only return known states
-    case "$state" in
-        running|waiting_input|waiting_permission|waiting_custom)
-            echo "$state"
-            ;;
-    esac
+    local _hs
+    _state_hook_read "$1" _hs
+    [[ -n "$_hs" ]] && echo "$_hs"
 }
 
 # ---------------------------------------------------------------------------
@@ -280,6 +287,35 @@ agent_classify_exit() {
     else
         echo "idle"
     fi
+}
+
+# Bulk-data variant of _state_pane_is_shell. Reads from pre-built tables
+# instead of forking tmux+ps repeatedly. Used by status-bar where the same
+# process tree is queried for every am session in one tick.
+# Usage: _state_pane_is_shell_bulk <session> <top_pid_map> <comm_map> <children_map>
+#   top_pid_map[session]   = pane top pid
+#   comm_map[pid]          = comm
+#   children_map[ppid]     = "space-separated child pids"
+# Returns: 0 if shell, 1 otherwise
+_state_pane_is_shell_bulk() {
+    local session="$1"
+    local -n __TOP="$2" __COMM="$3" __CHILD="$4"
+    local pid="${__TOP[$session]:-}"
+    [[ -z "$pid" ]] && return 1
+    local comm="${__COMM[$pid]:-}"
+    case "$comm" in
+        bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash) ;;
+        *) return 1 ;;
+    esac
+    local cpid ccomm
+    for cpid in ${__CHILD[$pid]:-}; do
+        ccomm="${__COMM[$cpid]:-}"
+        case "$ccomm" in
+            bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash|"") ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
 }
 
 # Check whether the pane's foreground process is a bare shell (agent exited).
@@ -423,21 +459,55 @@ _state_from_pane() {
 # Public API
 # ---------------------------------------------------------------------------
 
-# Return the current state of a session.
-# Usage: agent_get_state <session_name>
-# Outputs one of: starting | running | waiting_input | waiting_permission |
-#                 waiting_custom | idle | dead
-agent_get_state() {
-    local session="$1"
-
-    # Fast dead check
-    if ! tmux_session_exists "$session"; then
-        echo "dead"
-        return
+# Single state-resolution function — given (session, agent_type, dir), return
+# state. Optional bulk fixtures let status-bar share this function without
+# paying per-session tmux+ps forks: pass map names by reference (bash 4.3+
+# nameref) and the resolver reads them in place of forking.
+#
+# Bulk fixtures (all must be supplied together; otherwise the resolver does
+# its own per-session lookups):
+#   <top_pid_map_name>     associative: session  -> pane top pid
+#   <comm_map_name>        associative: pid      -> comm
+#   <children_map_name>    associative: ppid     -> space-separated child pids
+#   <now_epoch>            integer: seconds since epoch (one date+%s per tick)
+#
+# Resolution order (single canonical path used by both call sites):
+#   1. shell check  → starting (created<5s, non-bulk only) / idle / dead
+#   2. hook         → waiting_* short-circuits (skip pane fork)
+#   3. pane         → permission / custom / dead / idle
+#   4. jsonl        → Claude only, when dir is set
+#   5. pane result fallback (running / waiting_input)
+#
+# Usage:
+#   _state_resolve <session> <agent_type> <dir>
+#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch>
+_state_resolve() {
+    local session="$1" agent_type="${2:-}" dir="${3:-}"
+    local use_bulk=false
+    if (( $# >= 7 )); then
+        use_bulk=true
     fi
 
-    if _state_pane_is_shell "$session"; then
-        # Shell running in agent pane: either still starting or already exited
+    # 1. Shell check
+    local is_shell=false
+    if $use_bulk; then
+        if _state_pane_is_shell_bulk "$session" "$4" "$5" "$6"; then
+            is_shell=true
+        fi
+    else
+        if _state_pane_is_shell "$session"; then
+            is_shell=true
+        fi
+    fi
+
+    if $is_shell; then
+        if $use_bulk; then
+            # Bulk path: status-bar treats dead as idle visually; the periodic
+            # full agent_get_state can upgrade to dead later.
+            echo "idle"
+            return
+        fi
+        # Non-bulk: distinguish starting (<5s old) vs idle/dead via classifier.
         local created_at created_epoch now age
         created_at=$(registry_get_field "$session" created_at 2>/dev/null || true)
         if [[ -n "$created_at" ]]; then
@@ -455,11 +525,23 @@ agent_get_state() {
         return
     fi
 
-    local agent_type
-    agent_type=$(registry_get_field "$session" agent_type 2>/dev/null || true)
+    # 2. Hook terminal short-circuit. waiting_* states are authoritative; we
+    # skip the pane fork. running falls through so concurrent permission
+    # prompts painted during a tool call are caught.
+    local hook_state=""
+    if $use_bulk; then
+        _state_hook_read "$session" hook_state "$7"
+    else
+        _state_hook_read "$session" hook_state
+    fi
+    case "$hook_state" in
+        waiting_input|waiting_permission|waiting_custom)
+            echo "$hook_state"
+            return
+            ;;
+    esac
 
-    # Check permission/custom prompts first via pane (applies to all agents)
-    # Skip alive check — we already verified session exists and is not a bare shell above
+    # 3. Pane (skip-alive — we already filtered shell / dead session above)
     local pane_state
     pane_state=$(_state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || true)
     case "$pane_state" in
@@ -469,73 +551,38 @@ agent_get_state() {
             ;;
     esac
 
-    # For Claude: hook state file → JSONL → pane fallback
-    if [[ "$agent_type" == "claude" ]]; then
-        local hook_state
-        hook_state=$(_state_from_hook "$session")
-        if [[ -n "$hook_state" ]]; then
-            echo "$hook_state"
+    # 4. JSONL fallback for Claude
+    if [[ "$agent_type" == "claude" && -n "$dir" ]]; then
+        local jstate
+        jstate=$(_state_from_jsonl "$dir" "$session" 2>/dev/null || true)
+        if [[ -n "$jstate" ]]; then
+            echo "$jstate"
             return
-        fi
-
-        # Fallback: JSONL
-        local dir jsonl_state
-        dir=$(registry_get_field "$session" directory 2>/dev/null || true)
-        if [[ -n "$dir" ]]; then
-            jsonl_state=$(_state_from_jsonl "$dir" "$session")
-            if [[ -n "$jsonl_state" ]]; then
-                echo "$jsonl_state"
-                return
-            fi
         fi
     fi
 
-    # Fall back to pane result (running or waiting_input)
-    echo "${pane_state:-running}"
+    # 5. Fall back to pane result (running / waiting_input), then hook running,
+    # then conservative running.
+    echo "${pane_state:-${hook_state:-running}}"
 }
 
-# Lean state detection for a single session.
-# Skips session-existence check and registry reads; caller provides metadata.
-# Usage: _agent_get_state_fast <session> <agent_type> <directory>
-# Outputs: state string
-_agent_get_state_fast() {
-    local session="$1" agent_type="$2" dir="$3"
+# Return the current state of a session.
+# Usage: agent_get_state <session_name>
+# Outputs one of: starting | running | waiting_input | waiting_permission |
+#                 waiting_custom | idle | dead
+agent_get_state() {
+    local session="$1"
 
-    # 1. Shell check — catches idle/dead quickly
-    if _state_pane_is_shell "$session"; then
-        agent_classify_exit "$session"
+    if ! tmux_session_exists "$session"; then
+        echo "dead"
         return
     fi
 
-    # 2. For Claude: hook state file first (cheapest), then JSONL
-    if [[ "$agent_type" == "claude" ]]; then
-        local hook_state
-        hook_state=$(_state_from_hook "$session")
-        if [[ -n "$hook_state" ]]; then
-            # Hook gives a definitive answer for non-running states
-            if [[ "$hook_state" != "running" ]]; then
-                echo "$hook_state"
-                return
-            fi
-            # running → fall through to pane check for permission prompts
-        elif [[ -n "$dir" ]]; then
-            # No hook → try JSONL
-            local jsonl_state
-            jsonl_state=$(_state_from_jsonl "$dir" "$session")
-            if [[ -n "$jsonl_state" ]]; then
-                if [[ "$jsonl_state" == "waiting_input" ]]; then
-                    echo "waiting_input"
-                    return
-                fi
-                # running → fall through to pane check
-            fi
-        fi
-    fi
+    local agent_type dir
+    agent_type=$(registry_get_field "$session" agent_type 2>/dev/null || true)
+    dir=$(registry_get_field "$session" directory 2>/dev/null || true)
 
-    # 3. Pane-based detection (permission prompts, agent-specific patterns)
-    local pane_state
-    pane_state=$(_state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || true)
-    echo "${pane_state:-running}"
+    _state_resolve "$session" "$agent_type" "$dir"
 }
 
 # Block until a session reaches one of the target states.

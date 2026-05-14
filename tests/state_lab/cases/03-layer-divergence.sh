@@ -1,24 +1,12 @@
 #!/usr/bin/env bash
-# Case 03: divergence between the three state-detection paths.
+# Case 03: hook=running must fall through to pane permission detection.
 #
-# Three implementations exist today:
-#   A. agent_get_state           (lib/state.sh)     — used by `am list --json`
-#   B. _agent_get_state_fast     (lib/state.sh)     — internal lean variant
-#   C. _fast_state               (lib/status-bar)   — used by the tmux strip
-#
-# They differ in priority order. The most consequential gap is C: the
-# status-bar short-circuits on ANY hook value, while A and B only short-
-# circuit for non-running hook values and otherwise still run pane checks
-# (so permission prompts can be detected mid-tool-call).
-#
-# This case sets up: hook=running + pane content matching a permission
-# prompt. A returns waiting_permission; C returns running. That divergence
-# is the visible "▸ in status bar while ● in browser" bug.
+# Both call sites — agent_get_state (am list --json) and the status-bar
+# bulk path — go through _state_resolve. Locks in Phase 1.3 (no
+# ▸-in-sidebar / ●-in-browser divergence) and Phase 2 (one resolver).
 
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lab.sh"
-# shellcheck disable=SC1090
-source "$(dirname "${BASH_SOURCE[0]}")/../../../lib/status-bar.shim.sh" 2>/dev/null || true
 
 lab_init
 trap lab_cleanup EXIT
@@ -42,7 +30,8 @@ mkdir -p "$AM_STATE_DIR"
 printf 'running' > "$AM_STATE_DIR/lab-ccc"
 
 a=$(probe_agent_get_state lab-ccc)
-b=$(probe_fast_state lab-ccc claude "$real")
+b=$(probe_resolve lab-ccc claude "$real")
+c=$(probe_resolve_bulk lab-ccc claude "$real")
 
 echo "----- layers -----" >&2
 probe_all lab-ccc claude >&2
@@ -50,14 +39,9 @@ echo "------------------" >&2
 
 lab_assert "waiting_permission" "$a" \
     "agent_get_state: pane permission prompt wins over running hook"
-
-# _agent_get_state_fast falls through to pane when hook=running, so it
-# should also catch the prompt.
 lab_assert "waiting_permission" "$b" \
-    "_agent_get_state_fast: hook=running falls through to pane permission check"
-
-# NOTE: A status-bar reproduction is intentionally not asserted here
-# because lib/status-bar is a script (not a sourceable function library)
-# and short-circuits on any hook value. Tracked in the consolidation plan.
+    "_state_resolve (non-bulk): hook=running falls through to pane permission"
+lab_assert "waiting_permission" "$c" \
+    "_state_resolve (bulk): hook=running falls through to pane permission"
 
 lab_report

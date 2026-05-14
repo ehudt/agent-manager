@@ -84,81 +84,11 @@ _compact_age_set() {
     fi
 }
 
-# Inline hook-state read — _state_from_hook in state.sh forks `stat` and
-# `head`; status-bar runs on the hot path so we drop the `head` fork by
-# reading the first line via bash builtin. Writes to `_HS`.
-_hook_state_set() {
-    local session="$1"
-    local state_file="$AM_STATE_DIR/$session"
-    _HS=""
-    [[ -f "$state_file" ]] || return 0
-    local mtime
-    mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
-    (( now - mtime > 180 )) && return 0
-    local line=""
-    IFS= read -r line < "$state_file" 2>/dev/null || true
-    case "$line" in
-        running|waiting_input|waiting_permission|waiting_custom) _HS="$line" ;;
-    esac
-}
-
-# Bulk-data variant of _state_pane_is_shell. Reads from SESSION_TOP_PID and
-# PROC_COMM / PROC_CHILDREN tables built once per status-bar run, instead of
-# forking tmux+ps repeatedly.
-_pane_is_shell_bulk() {
-    local pid="${SESSION_TOP_PID[$1]:-}"
-    [[ -z "$pid" ]] && return 1
-    local comm="${PROC_COMM[$pid]:-}"
-    case "$comm" in
-        bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash) ;;
-        *) return 1 ;;
-    esac
-    local cpid ccomm
-    for cpid in ${PROC_CHILDREN[$pid]:-}; do
-        ccomm="${PROC_COMM[$cpid]:-}"
-        case "$ccomm" in
-            bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash|"") ;;
-            *) return 1 ;;
-        esac
-    done
-    return 0
-}
-
-# Status-bar state detection — fork-free for the common case. Order:
-#   1. Hook state file (Claude's primary signal)
-#   2. Bulk shell check → idle (status bar treats dead as idle visually;
-#      the periodic full refresh in lib/state.sh can upgrade to dead later
-#      via agent_classify_exit, but that path is too fork-heavy to run on
-#      every attach)
-#   3. JSONL fallback for Claude
-#   4. Pane-content patterns (still forks; only reached for live agents
-#      without a hook signal)
-_fast_state() {
-    local session="$1" agent_type="$2" dir="$3"
-    _hook_state_set "$session"
-    # Hook short-circuit: only for terminal waiting states. `running` falls
-    # through to pane so permission prompts painted during a tool call are
-    # caught (otherwise status-bar shows ▸ while browser shows ⚠).
-    case "$_HS" in
-        waiting_input|waiting_permission|waiting_custom)
-            echo "$_HS"
-            return
-            ;;
-    esac
-    if _pane_is_shell_bulk "$session"; then
-        echo "idle"
-        return
-    fi
-    if [[ "$agent_type" == "claude" && -n "$dir" ]]; then
-        local jstate
-        jstate=$(_state_from_jsonl "$dir" "$session" 2>/dev/null || true)
-        if [[ -n "$jstate" ]]; then
-            echo "$jstate"
-            return
-        fi
-    fi
-    _state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || echo "${_HS:-running}"
-}
+# State detection is delegated to lib/state.sh `_state_resolve` with bulk
+# fixtures so we share the resolver with `agent_get_state` instead of
+# maintaining a parallel implementation that drifts (see the historical
+# ▸-in-sidebar / ●-in-browser divergence). The bulk fixtures SESSION_TOP_PID
+# / PROC_COMM / PROC_CHILDREN are built once below and passed by nameref.
 
 # Single tmux call returns ordering + activity timestamps. Sort by creation
 # time ascending so newly created sessions always appear at the end (stable
@@ -239,7 +169,8 @@ for i in "${!session_meta[@]}"; do
         label="${session#"${AM_SESSION_PREFIX}"}"
     fi
 
-    state=$(_fast_state "$session" "$agent_type" "$dir")
+    state=$(_state_resolve "$session" "$agent_type" "$dir" \
+        SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now")
     [[ -z "$state" ]] && state="idle"
 
     age=""
