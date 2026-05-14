@@ -77,7 +77,21 @@ _state_claude_session_id() {
         [[ -n "$sid" ]] && { echo "$sid"; return; }
     fi
 
-    sid=$(_state_sid_from_pane_args "$session")
+    # Sidecar miss: resolve via pane args / lsof. Build the ps map once and
+    # share it between both lookups (each previously forked ps independently).
+    local -A _SID_COMM=() _SID_CHILD=()
+    local _p _pp _c
+    while read -r _p _pp _c; do
+        [[ -z "$_p" || "$_p" == "PID" ]] && continue
+        _SID_COMM[$_p]=$_c
+        _SID_CHILD[$_pp]="${_SID_CHILD[$_pp]:-} $_p"
+    done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
+
+    local claude_pid
+    claude_pid=$(_state_pane_claude_pid "$session" _SID_COMM _SID_CHILD)
+    [[ -z "$claude_pid" ]] && return 0
+
+    sid=$(_state_sid_from_pane_args_pid "$claude_pid")
     if [[ -n "$sid" ]]; then
         mkdir -p "${AM_STATE_DIR:-/tmp/am-state}" 2>/dev/null || true
         printf '%s' "$sid" > "$sid_file" 2>/dev/null || true
@@ -85,7 +99,7 @@ _state_claude_session_id() {
         return
     fi
 
-    sid=$(_state_sid_from_lsof "$session" "$project_dir")
+    sid=$(_state_sid_from_lsof_pid "$claude_pid" "$project_dir")
     if [[ -n "$sid" ]]; then
         mkdir -p "${AM_STATE_DIR:-/tmp/am-state}" 2>/dev/null || true
         printf '%s' "$sid" > "$sid_file" 2>/dev/null || true
@@ -94,22 +108,32 @@ _state_claude_session_id() {
 }
 
 # Find the first `claude` descendant of a session's top pane pid.
-# Usage: _state_pane_claude_pid <session>
+# Usage: _state_pane_claude_pid <session> [<comm_map_name> <child_map_name>]
 # Returns: pid on stdout, or empty
+#
+# When map names are supplied, reads from caller's pre-built tables instead of
+# forking ps. Used by _state_claude_session_id to share one ps fork across
+# sid_from_pane_args + sid_from_lsof.
 _state_pane_claude_pid() {
     local session="$1"
     local pane_pid
     pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
     [[ -z "$pane_pid" ]] && return 0
 
-    # Build ppid->children map and pid->comm map from one ps fork.
     local -A _PCHILD=() _PCOMM=()
-    local _p _pp _c
-    while read -r _p _pp _c; do
-        [[ -z "$_p" || "$_p" == "PID" ]] && continue
-        _PCOMM[$_p]=$_c
-        _PCHILD[$_pp]="${_PCHILD[$_pp]:-} $_p"
-    done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
+    if (( $# >= 3 )); then
+        local -n __cm="$2" __ch="$3"
+        local _k
+        for _k in "${!__cm[@]}"; do _PCOMM[$_k]="${__cm[$_k]}"; done
+        for _k in "${!__ch[@]}"; do _PCHILD[$_k]="${__ch[$_k]}"; done
+    else
+        local _p _pp _c
+        while read -r _p _pp _c; do
+            [[ -z "$_p" || "$_p" == "PID" ]] && continue
+            _PCOMM[$_p]=$_c
+            _PCHILD[$_pp]="${_PCHILD[$_pp]:-} $_p"
+        done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
+    fi
 
     # BFS descendants
     local queue=("$pane_pid") cur child
@@ -126,10 +150,19 @@ _state_pane_claude_pid() {
 }
 
 # Extract --session-id from the claude child's argv, if present.
+# Two entry points so callers that already resolved the claude pid (via a
+# shared ps map) don't re-fork ps inside _state_pane_claude_pid.
 # Usage: _state_sid_from_pane_args <session>
+#        _state_sid_from_pane_args_pid <claude_pid>
 _state_sid_from_pane_args() {
     local pid
     pid=$(_state_pane_claude_pid "$1")
+    [[ -z "$pid" ]] && return 0
+    _state_sid_from_pane_args_pid "$pid"
+}
+
+_state_sid_from_pane_args_pid() {
+    local pid="$1"
     [[ -z "$pid" ]] && return 0
     local args
     args=$(ps -p "$pid" -o args= 2>/dev/null || true)
@@ -142,16 +175,28 @@ _state_sid_from_pane_args() {
 # Intersect open file descriptors of the claude child with jsonls in the
 # project dir. Last-resort signal when args don't carry the id.
 # Usage: _state_sid_from_lsof <session> <project_dir>
+#        _state_sid_from_lsof_pid <claude_pid> <project_dir>
 _state_sid_from_lsof() {
     command -v lsof >/dev/null 2>&1 || return 0
     local pid
     pid=$(_state_pane_claude_pid "$1")
+    _state_sid_from_lsof_pid "$pid" "$2"
+}
+
+_state_sid_from_lsof_pid() {
+    command -v lsof >/dev/null 2>&1 || return 0
+    local pid="$1" project_dir="$2"
     [[ -z "$pid" ]] && return 0
-    local project_dir="$2"
     [[ -d "$project_dir" ]] || return 0
+    # Escape regex metacharacters in project_dir so literal '.' in
+    # ~/.claude/projects/<encoded> doesn't act as a wildcard (false positives
+    # vanishingly unlikely in practice — paths still align byte-for-byte —
+    # but the sharp edge has bitten enough times to be worth removing).
+    local project_dir_esc
+    project_dir_esc=$(printf '%s' "$project_dir" | sed 's/[][\.*^$/]/\\&/g')
     local path
     path=$(lsof -p "$pid" -Fn 2>/dev/null \
-        | sed -nE "s|^n(${project_dir}/[^/]+\\.jsonl)$|\\1|p" \
+        | sed -nE "s|^n(${project_dir_esc}/[^/]+\\.jsonl)$|\\1|p" \
         | head -1)
     [[ -n "$path" ]] || return 0
     local base="${path##*/}"
@@ -242,6 +287,20 @@ _state_from_jsonl() {
 # ---------------------------------------------------------------------------
 
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
+
+# Append a one-line trace of which resolver step produced an answer.
+# Gated by AM_STATE_DEBUG=1 — silent no-op otherwise. Format:
+#   <iso8601>\t<session>\t<agent_type>\t<source>\t<state>
+# Sink: $AM_DIR/.state-debug.log (rotated by the caller, not here).
+# Usage: _state_debug <session> <agent_type> <source> <state>
+_state_debug() {
+    [[ "${AM_STATE_DEBUG:-}" != "1" ]] && return 0
+    local sink="${AM_DIR:-$HOME/.agent-manager}/.state-debug.log"
+    # Append-only; ignore failure (read-only fs, permissions, etc).
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-?}" "$3" "$4" \
+        >> "$sink" 2>/dev/null || true
+}
 
 # Read session state from the hook state file into a caller-supplied variable.
 # No subshell, no head fork — used by both the public _state_from_hook wrapper
@@ -339,47 +398,26 @@ _state_pane_is_shell_bulk() {
     return 0
 }
 
-# Check whether the pane's foreground process is a bare shell (agent exited).
-# Some agents (e.g. Claude) override process.title to a version string,
-# so pane_current_command returns e.g. "2.1.69" instead of "claude".
-# We check the pane PID: if it's a shell with no child processes, the agent
-# has exited and we're back at the prompt.
+# Build size-1 bulk fixtures into the named maps for a single session and call
+# _state_pane_is_shell_bulk. Replaces the previous non-bulk implementation,
+# which forked ps twice and reimplemented shell-child detection. Kept as a
+# named function because tests call it directly (test_standalone_scripts.sh).
 # Usage: _state_pane_is_shell <session>
 # Returns: 0 if shell, 1 otherwise
 _state_pane_is_shell() {
     local session="$1"
-
+    local -A __ps_top=() __ps_comm=() __ps_child=()
     local pane_pid
     pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
     [[ -z "$pane_pid" ]] && return 1
-
-    local pane_proc
-    pane_proc=$(ps -p "$pane_pid" -o comm= 2>/dev/null || true)
-    case "${pane_proc:-}" in
-        bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash) ;;
-        *) return 1 ;;
-    esac
-
-    # Pane PID is a shell. If it has no child processes (or only shell
-    # children), the agent has exited.  Background shell children (e.g.
-    # zsh sub-shells from initialization) must not mask an agent exit.
-    # NOTE: pgrep -P is unreliable on macOS (misses processes that set their
-    # own process group, e.g. claude/node). Use ps -eo instead.
-    local child_line child_pid child_proc has_non_shell=false has_any=false
-    while IFS= read -r child_line; do
-        child_pid="${child_line%% *}"
-        [[ -z "$child_pid" || "$child_pid" == "PID" ]] && continue
-        has_any=true
-        child_proc=$(ps -p "$child_pid" -o comm= 2>/dev/null || true)
-        case "${child_proc:-}" in
-            bash|zsh|sh|fish|dash|-bash|-zsh|-sh|-fish|-dash|"") ;;
-            *) has_non_shell=true; break ;;
-        esac
-    done < <(ps -eo pid=,ppid= 2>/dev/null | awk -v ppid="$pane_pid" '$2==ppid {print $1}')
-
-    $has_any || return 0          # no children at all
-    $has_non_shell && return 1    # non-shell child alive → agent still running
-    return 0                      # only shell children → agent has exited
+    __ps_top[$session]=$pane_pid
+    local _p _pp _c
+    while read -r _p _pp _c; do
+        [[ -z "$_p" || "$_p" == "PID" ]] && continue
+        __ps_comm[$_p]=$_c
+        __ps_child[$_pp]="${__ps_child[$_pp]:-} $_p"
+    done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
+    _state_pane_is_shell_bulk "$session" __ps_top __ps_comm __ps_child
 }
 
 # Derive session state from tmux pane content.
@@ -504,45 +542,61 @@ _state_from_pane() {
 #   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch>
 _state_resolve() {
     local session="$1" agent_type="${2:-}" dir="${3:-}"
-    local use_bulk=false
+
+    # Bulk fixtures: when caller supplies (status-bar tick), reuse. Otherwise
+    # build size-1 fixtures inline. One code path either way.
+    local top_name comm_name child_name now_val
+    local -A __auto_top=() __auto_comm=() __auto_child=()
+    # skip_classifier: bulk callers skip starting/dead classification (status-
+    # bar treats any shell as idle; the per-session agent_get_state path can
+    # upgrade later). Non-bulk callers run the full classifier.
+    local skip_classifier=false
     if (( $# >= 7 )); then
-        use_bulk=true
+        top_name="$4"; comm_name="$5"; child_name="$6"; now_val="$7"
+        skip_classifier=true
+    else
+        local pane_pid
+        pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
+        [[ -n "$pane_pid" ]] && __auto_top[$session]=$pane_pid
+        local _p _pp _c
+        while read -r _p _pp _c; do
+            [[ -z "$_p" || "$_p" == "PID" ]] && continue
+            __auto_comm[$_p]=$_c
+            __auto_child[$_pp]="${__auto_child[$_pp]:-} $_p"
+        done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
+        now_val=$(date +%s)
+        top_name=__auto_top; comm_name=__auto_comm; child_name=__auto_child
     fi
+
+    # Optional instrumentation (AM_STATE_DEBUG=1). Each return path tags
+    # itself via _state_debug; sink is appended to $AM_DIR/.state-debug.log
+    # so empirical layer-usage data can drive future simplifications.
+    local _dbg_session="$session" _dbg_agent="$agent_type"
 
     # 1. Shell check
-    local is_shell=false
-    if $use_bulk; then
-        if _state_pane_is_shell_bulk "$session" "$4" "$5" "$6"; then
-            is_shell=true
-        fi
-    else
-        if _state_pane_is_shell "$session"; then
-            is_shell=true
-        fi
-    fi
-
-    if $is_shell; then
-        if $use_bulk; then
-            # Bulk path: status-bar treats dead as idle visually; the periodic
-            # full agent_get_state can upgrade to dead later.
+    if _state_pane_is_shell_bulk "$session" "$top_name" "$comm_name" "$child_name"; then
+        if $skip_classifier; then
+            _state_debug "$_dbg_session" "$_dbg_agent" shell idle
             echo "idle"
             return
         fi
-        # Non-bulk: distinguish starting (<5s old) vs idle/dead via classifier.
-        local created_at created_epoch now age
+        local created_at created_epoch age
         created_at=$(registry_get_field "$session" created_at 2>/dev/null || true)
         if [[ -n "$created_at" ]]; then
-            now=$(date +%s)
             created_epoch=$(date -d "$created_at" +%s 2>/dev/null \
                 || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null \
                 || echo 0)
-            age=$(( now - created_epoch ))
+            age=$(( now_val - created_epoch ))
             if (( age < 5 )); then
+                _state_debug "$_dbg_session" "$_dbg_agent" shell starting
                 echo "starting"
                 return
             fi
         fi
-        agent_classify_exit "$session"
+        local _exit_state
+        _exit_state=$(agent_classify_exit "$session")
+        _state_debug "$_dbg_session" "$_dbg_agent" classify_exit "$_exit_state"
+        echo "$_exit_state"
         return
     fi
 
@@ -550,13 +604,10 @@ _state_resolve() {
     # skip the pane fork. running falls through so concurrent permission
     # prompts painted during a tool call are caught.
     local hook_state=""
-    if $use_bulk; then
-        _state_hook_read "$session" hook_state "$7"
-    else
-        _state_hook_read "$session" hook_state
-    fi
+    _state_hook_read "$session" hook_state "$now_val"
     case "$hook_state" in
         waiting_input|waiting_permission|waiting_custom)
+            _state_debug "$_dbg_session" "$_dbg_agent" hook "$hook_state"
             echo "$hook_state"
             return
             ;;
@@ -567,6 +618,7 @@ _state_resolve() {
     pane_state=$(_state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || true)
     case "$pane_state" in
         waiting_permission|waiting_custom|dead|idle)
+            _state_debug "$_dbg_session" "$_dbg_agent" pane "$pane_state"
             echo "$pane_state"
             return
             ;;
@@ -577,6 +629,7 @@ _state_resolve() {
         local jstate
         jstate=$(_state_from_jsonl "$dir" "$session" 2>/dev/null || true)
         if [[ -n "$jstate" ]]; then
+            _state_debug "$_dbg_session" "$_dbg_agent" jsonl "$jstate"
             echo "$jstate"
             return
         fi
@@ -584,7 +637,9 @@ _state_resolve() {
 
     # 5. Fall back to pane result (running / waiting_input), then hook running,
     # then conservative running.
-    echo "${pane_state:-${hook_state:-running}}"
+    local _fallback="${pane_state:-${hook_state:-running}}"
+    _state_debug "$_dbg_session" "$_dbg_agent" fallback "$_fallback"
+    echo "$_fallback"
 }
 
 # Return the current state of a session.

@@ -92,6 +92,20 @@ files are cleaned up on session kill and during registry GC.
 States not covered by hooks (`starting`, `idle`, `dead`) use existing
 process/tmux checks which are already reliable.
 
+### Debug instrumentation
+
+- `AM_STATE_DEBUG=1` — `_state_resolve` appends one line per call to
+  `$AM_DIR/.state-debug.log` (`<iso8601>\t<session>\t<agent>\t<source>\t<state>`)
+  recording which layer (`shell` / `hook` / `pane` / `jsonl` / `fallback` /
+  `classify_exit`) produced the answer. Use for empirical data on which
+  fallbacks are still load-bearing before cutting them.
+- `AM_HOOK_DEBUG=1` — `state-hook.sh` appends to `$AM_DIR/.hook-debug.log`
+  every time a hook fires but exits without writing state (registry miss,
+  missing `AM_SESSION_NAME`, cwd mismatch). Surfaces vanished-session bugs
+  that otherwise look like ghosts.
+
+Both are opt-in. Logs are append-only; rotate externally if they grow.
+
 ## Agent-to-Agent CLI Guide
 
 Use these commands when one CLI process or agent needs to launch, monitor, or message another `am` session without attaching to it.

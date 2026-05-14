@@ -31,6 +31,18 @@ set -euo pipefail
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 
+# Optional debug trail. Gated by AM_HOOK_DEBUG=1 — silent no-op otherwise.
+# Lets us see when a hook fires but the script exits without writing state
+# (registry miss, missing AM_SESSION_NAME, cwd mismatch, etc).
+# Sink: $AM_DIR/.hook-debug.log
+_hook_debug() {
+    [[ "${AM_HOOK_DEBUG:-}" != "1" ]] && return 0
+    local dir="${AM_DIR:-${HOME}/.agent-manager}"
+    printf '%s\t%s\t%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${hook_type:-?}" "$*" \
+        >> "$dir/.hook-debug.log" 2>/dev/null || true
+}
+
 # Read full stdin
 hook_input=$(cat)
 
@@ -94,7 +106,10 @@ session_name=""
 #    to cwd matching, which would silently clobber the wrong session's state.
 if [[ -n "${AM_SESSION_NAME:-}" ]]; then
     session_name=$(_registry_has "$AM_SESSION_NAME")
-    [[ -z "$session_name" ]] && exit 0
+    if [[ -z "$session_name" ]]; then
+        _hook_debug "AM_SESSION_NAME=$AM_SESSION_NAME not in registry; exiting"
+        exit 0
+    fi
 fi
 
 # 2. TMUX_PANE — agents inherit this from their tmux pane; resolving it to the
@@ -110,8 +125,14 @@ fi
 # 3. cwd match — last resort; ambiguous when two sessions share a directory
 if [[ -z "$session_name" ]]; then
     cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // empty' 2>/dev/null || true)
-    [[ -z "$cwd" ]] && exit 0
-    cwd_real=$(cd "$cwd" 2>/dev/null && pwd) || exit 0
+    if [[ -z "$cwd" ]]; then
+        _hook_debug "no AM_SESSION_NAME/TMUX_PANE/cwd; cannot resolve session"
+        exit 0
+    fi
+    cwd_real=$(cd "$cwd" 2>/dev/null && pwd) || {
+        _hook_debug "cwd '$cwd' not accessible; exiting"
+        exit 0
+    }
     session_name=$(jq -r --arg cwd "$cwd_real" '
         .sessions
         | to_entries[]
@@ -120,7 +141,10 @@ if [[ -z "$session_name" ]]; then
     ' "$AM_REGISTRY" 2>/dev/null | head -1 || true)
 fi
 
-[[ -z "$session_name" ]] && exit 0
+if [[ -z "$session_name" ]]; then
+    _hook_debug "no session matched (cwd=${cwd_real:-?})"
+    exit 0
+fi
 
 # Race protection: running-state hooks can be delivered after Stop/Notification
 # or PermissionRequest has
