@@ -150,18 +150,22 @@ registry_gc() {
                 sandbox_remove "$name"
             fi
             registry_remove "$name"
-            rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name"
+            rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name" \
+                  "${AM_STATE_DIR:-/tmp/am-state}/$name.sid"
             ((removed++))
         fi
     done
 
-    # Clean up orphan hook state files (session gone but file remains)
+    # Clean up orphan hook state files and sidecars (session gone but file remains).
+    # State file is "<session>", sidecar is "<session>.sid" — strip the suffix
+    # before checking liveness so live sessions don't lose their sidecar.
     local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
     if [[ -d "$state_dir" ]]; then
         local state_file sname
         for state_file in "$state_dir"/${AM_SESSION_PREFIX}*; do
             [[ -f "$state_file" ]] || continue
             sname=$(basename "$state_file")
+            sname="${sname%.sid}"
             if [[ -z "${live_sessions[$sname]:-}" ]]; then
                 rm -f "$state_file"
             fi

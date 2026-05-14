@@ -206,10 +206,10 @@ am restore
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_from_hook(session_name)` - Read state from hook state file (primary source for Claude sessions)
 - `_state_hook_read(session, out_var [, now_epoch])` - Nameref variant of `_state_from_hook`; no subshell, used inside `_state_resolve`
-- `_state_from_jsonl(directory [, session_name])` - Derive state from Claude JSONL. With session, targets the conversation by `claude_session_id` (registry / pane argv / lsof) instead of newest mtime.
+- `_state_from_jsonl(directory [, session_name])` - Derive state from Claude JSONL. With session, targets the conversation by `claude_session_id` (sidecar / pane argv / lsof) instead of newest mtime.
 - `_state_from_pane(session, [agent_type])` - Derive state from pane content (all agents)
 - `_state_jsonl_path(dir [, session_name])` - Resolve the Claude JSONL for a directory. With session, prefers the conversation owned by the pane; mtime fallback only when no signal resolves.
-- `_state_claude_session_id(session, resolved_dir, project_dir)` - Resolve and cache the conversation UUID owning a session. Tries registry → pane argv (`--session-id`) → lsof
+- `_state_claude_session_id(session, resolved_dir, project_dir)` - Resolve and cache the conversation UUID owning a session. Tries sidecar (`$AM_STATE_DIR/<session>.sid` — written by `state-hook.sh`) → pane argv (`--session-id`) → lsof. Sidecar is per-session to avoid the registry read-modify-write race when concurrent hooks fire.
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Nameref bulk variant of `_state_pane_is_shell`
 - `_state_jsonl_stale(path)` - Check if JSONL is >30s old
 

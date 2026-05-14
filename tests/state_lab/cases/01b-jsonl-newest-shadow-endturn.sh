@@ -32,7 +32,7 @@ lab_jsonl "$real" shadow \
 lab_hook lab-aab '{"hook_event_name":"PostToolUse","session_id":"active"}'
 
 state=$(probe_jsonl "$real" lab-aab)
-echo "  claude_session_id: $(registry_get_field lab-aab claude_session_id)" >&2
+echo "  claude_session_id (sidecar): $(cat "$AM_STATE_DIR/lab-aab.sid" 2>/dev/null || echo '(none)')" >&2
 echo "  resolved jsonl: $(_state_jsonl_path "$real" lab-aab)" >&2
 echo "  _state_from_jsonl: $state" >&2
 

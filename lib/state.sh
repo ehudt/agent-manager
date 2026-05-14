@@ -57,28 +57,38 @@ _state_jsonl_path() {
 
 # Resolve the Claude conversation UUID owning a session's agent pane.
 # Signals tried in order:
-#   1. registry.claude_session_id  (written by state-hook.sh from hook payload)
-#   2. pane child process args     (--session-id <uuid>)
+#   1. sidecar file $AM_STATE_DIR/<session>.sid  (written by state-hook.sh)
+#   2. pane child process args                   (--session-id <uuid>)
 #   3. lsof on the pane's claude child, intersected with the project dir
-# Caches the resolved id back to the registry. Returns empty if none match.
+# Caches the resolved id to the sidecar file. Returns empty if none match.
+#
+# Sidecar is per-session (one writer) — avoids the registry read-modify-write
+# race that hits shared sessions.json when multiple hooks fire concurrently.
 # Usage: _state_claude_session_id <session> <resolved_dir> <project_dir>
 _state_claude_session_id() {
     local session="$1" resolved_dir="$2" project_dir="$3"
-    local sid
+    local sid="" sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session.sid"
 
-    sid=$(registry_get_field "$session" claude_session_id 2>/dev/null || true)
-    [[ -n "$sid" ]] && { echo "$sid"; return; }
+    if [[ -f "$sid_file" ]]; then
+        # `read -r` returns non-zero when the file lacks a trailing newline
+        # (state-hook.sh writes with `printf '%s'`) but still populates $sid.
+        # Don't gate on read's exit status — check the var.
+        IFS= read -r sid < "$sid_file" 2>/dev/null
+        [[ -n "$sid" ]] && { echo "$sid"; return; }
+    fi
 
     sid=$(_state_sid_from_pane_args "$session")
     if [[ -n "$sid" ]]; then
-        registry_update "$session" claude_session_id "$sid" 2>/dev/null || true
+        mkdir -p "${AM_STATE_DIR:-/tmp/am-state}" 2>/dev/null || true
+        printf '%s' "$sid" > "$sid_file" 2>/dev/null || true
         echo "$sid"
         return
     fi
 
     sid=$(_state_sid_from_lsof "$session" "$project_dir")
     if [[ -n "$sid" ]]; then
-        registry_update "$session" claude_session_id "$sid" 2>/dev/null || true
+        mkdir -p "${AM_STATE_DIR:-/tmp/am-state}" 2>/dev/null || true
+        printf '%s' "$sid" > "$sid_file" 2>/dev/null || true
         echo "$sid"
     fi
 }

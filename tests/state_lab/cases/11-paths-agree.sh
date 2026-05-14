@@ -36,9 +36,10 @@ _run_scenario() {
         local arr=($jsonl_lines)
         IFS="$OLD_IFS"
         lab_jsonl "$real" "$name" "${arr[@]}" >/dev/null
-        # Also tag the registry with the claude_session_id so the resolver
-        # targets this jsonl deterministically.
-        registry_update "$session" claude_session_id "$name"
+        # Tag the sidecar with the claude_session_id so the resolver targets
+        # this jsonl deterministically (mirrors what state-hook.sh writes).
+        mkdir -p "$AM_STATE_DIR"
+        printf '%s' "$name" > "$AM_STATE_DIR/$session.sid"
     fi
 
     local a b

@@ -565,7 +565,8 @@ agent_kill() {
 
     # Always clean up registry and hook state file
     registry_remove "$session_name"
-    rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name"
+    rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
 
     # Rebuild sidebar cache for surviving sessions so the killed entry
     # disappears from every pane-border immediately.

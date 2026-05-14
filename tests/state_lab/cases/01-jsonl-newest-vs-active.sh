@@ -26,16 +26,16 @@ lab_jsonl "$real" shadow \
     "$(jsonl_user_text 'queued but not answered')" >/dev/null
 
 # Simulate Claude firing a hook that carries the active conversation's
-# session_id. state-hook.sh persists it to sessions.json as
-# claude_session_id, after which state derivation targets active.jsonl
-# instead of the newest-mtime shadow.
+# session_id. state-hook.sh persists it to a per-session sidecar file
+# ($AM_STATE_DIR/<session>.sid), after which state derivation targets
+# active.jsonl instead of the newest-mtime shadow.
 lab_hook lab-aaa '{"hook_event_name":"Stop","session_id":"active"}'
 
 state=$(probe_jsonl "$real" lab-aaa)
 
 echo "----- probes -----" >&2
-printf '  claude_session_id in registry: %s\n' \
-    "$(registry_get_field lab-aaa claude_session_id)" >&2
+printf '  claude_session_id (sidecar): %s\n' \
+    "$(cat "$AM_STATE_DIR/lab-aaa.sid" 2>/dev/null || echo '(none)')" >&2
 printf '  resolved jsonl: %s\n' "$(_state_jsonl_path "$real" lab-aaa)" >&2
 printf '  newest jsonl (mtime fallback): %s\n' "$(_state_jsonl_path "$real")" >&2
 printf '  _state_from_jsonl: %s\n' "$state" >&2
