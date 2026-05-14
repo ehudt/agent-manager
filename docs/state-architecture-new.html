@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>agent-manager — State Detection & Presentation</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #7d8590;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --amber: #d29922;
+    --magenta: #d2a8ff;
+    --red: #f85149;
+    --cyan: #39c5cf;
+    --code-bg: #010409;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  h1 .sub {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 14px;
+    margin-left: 8px;
+  }
+  h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .lead {
+    color: var(--muted);
+    margin: 0 0 28px;
+    max-width: 920px;
+  }
+  code, .mono {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+    font-size: 12.5px;
+  }
+  code {
+    background: var(--code-bg);
+    color: var(--cyan);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .section { margin-bottom: 32px; }
+
+  /* layout grid */
+  .arch {
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    gap: 18px;
+    align-items: stretch;
+  }
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    position: relative;
+  }
+  .panel.tight { padding: 12px 14px; }
+  .panel .title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .panel .name {
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .panel .name .file {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .panel p { margin: 4px 0; color: var(--muted); font-size: 13px; }
+  .panel ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  .panel ul li { margin-bottom: 2px; }
+  .accent-l { border-left: 3px solid var(--accent); }
+  .accent-g { border-left: 3px solid var(--green); }
+  .accent-a { border-left: 3px solid var(--amber); }
+  .accent-m { border-left: 3px solid var(--magenta); }
+  .accent-r { border-left: 3px solid var(--red); }
+  .accent-c { border-left: 3px solid var(--cyan); }
+
+  /* resolver pipeline */
+  .pipeline {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .pipeline-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 14px;
+  }
+  .pipeline-header .h {
+    font-weight: 600;
+    font-size: 15px;
+  }
+  .pipeline-header .sub {
+    color: var(--muted);
+    font-size: 12px;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .step {
+    display: grid;
+    grid-template-columns: 36px 1fr 220px;
+    gap: 12px;
+    align-items: start;
+    padding: 12px 12px;
+    border-radius: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    margin-bottom: 8px;
+  }
+  .step .num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--code-bg);
+    color: var(--accent);
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .step .body .head {
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .step .body .head .fn {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    color: var(--cyan);
+    font-weight: 500;
+    margin-left: 6px;
+  }
+  .step .body p { margin: 2px 0; color: var(--muted); font-size: 12.5px; }
+  .step .body code { font-size: 11.5px; }
+  .step .outs {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+  }
+  .arrow-down {
+    color: var(--border);
+    text-align: center;
+    font-size: 16px;
+    line-height: 0.6;
+    margin: 0 0 2px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font: 600 11px/1.4 "SF Mono", Menlo, monospace;
+    border: 1px solid;
+  }
+  .b-run     { color: #58a6ff; border-color: #1f6feb; background: #0c2d6b33; }
+  .b-wi      { color: #3fb950; border-color: #238636; background: #0d422322; }
+  .b-perm    { color: #d29922; border-color: #9e6a03; background: #4a330522; }
+  .b-cust    { color: #d2a8ff; border-color: #8957e5; background: #2d1c5022; }
+  .b-start   { color: #f0883e; border-color: #bd561d; background: #4b220a22; }
+  .b-dead    { color: #f85149; border-color: #da3633; background: #4a0d0d22; }
+  .b-idle    { color: #7d8590; border-color: #484f58; background: #20252b22; }
+
+  /* hook table */
+  table.hook {
+    width: 100%;
+    border-collapse: collapse;
+    font: 12.5px/1.5 "SF Mono", Menlo, monospace;
+    margin-top: 6px;
+  }
+  table.hook th, table.hook td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  table.hook th {
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+  }
+  table.hook td:first-child { color: var(--cyan); }
+  table.hook td:nth-child(2) { color: var(--muted); }
+
+  .legend {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 14px;
+    font-size: 12.5px;
+  }
+  .legend .row { display: flex; align-items: center; gap: 8px; }
+  .glyph {
+    width: 24px;
+    height: 22px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  .g-run  { background: #1f6feb55; color: #79c0ff; }
+  .g-wi   { background: #23863655; color: #7ee787; }
+  .g-perm { background: #9e6a0355; color: #ffd33d; }
+  .g-cust { background: #8957e555; color: #d2a8ff; }
+  .g-start{ background: #bd561d55; color: #f0883e; }
+  .g-dead { background: #da363355; color: #ff7b72; }
+
+  /* arrows / connectors */
+  .flow-row {
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    gap: 18px;
+    margin: 4px 0;
+  }
+  .flow-arrow {
+    color: var(--accent);
+    font-family: "SF Mono", Menlo, monospace;
+    text-align: center;
+    align-self: center;
+    font-size: 13px;
+  }
+  .footnote {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+  .kv {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 4px 12px;
+    font-size: 12.5px;
+    margin-top: 6px;
+  }
+  .kv dt { color: var(--cyan); font-family: "SF Mono", Menlo, monospace; }
+  .kv dd { color: var(--muted); margin: 0; }
+
+  hr.sep {
+    border: 0;
+    border-top: 1px dashed var(--border);
+    margin: 20px 0;
+  }
+</style>
+</head>
+<body>
+
+<h1>agent-manager · State Detection &amp; Presentation
+  <span class="sub">derived from <code>lib/state.sh</code>, <code>lib/hooks/state-hook.sh</code>, <code>lib/status-bar</code>, <code>cmd/am-browse</code>, <code>internal/sessions/</code></span>
+</h1>
+<p class="lead">
+  State of every <code>am</code> session is resolved on-demand by a single canonical resolver
+  (<code>_state_resolve</code>). The resolver merges four signals: tmux pane process tree, agent-fired
+  hook files, ANSI-stripped pane content, and Claude conversation JSONL. Two consumers render the result:
+  the bash <code>status-bar</code> that paints tmux tabs, and the Go <code>am-browse</code> TUI that
+  lists sessions for the picker.
+</p>
+
+<!-- ============================================================== -->
+<!-- TOP: PRODUCERS -> RESOLVER -> PRESENTERS                       -->
+<!-- ============================================================== -->
+<div class="section arch">
+
+  <!-- LEFT: signal producers -->
+  <div class="col">
+    <h2>Signal sources</h2>
+
+    <div class="panel accent-g">
+      <div class="title">Hook files (push)</div>
+      <div class="name"><span class="file">lib/hooks/state-hook.sh</span></div>
+      <p>Claude Code / Codex fire lifecycle hooks. Script maps event → am state and writes one of
+        <code>waiting_input | waiting_permission | waiting_custom | running</code> to
+        <code>$AM_STATE_DIR/&lt;session&gt;</code>.</p>
+      <p>Also persists Claude conversation UUID to a per-session sidecar
+        <code>$AM_STATE_DIR/&lt;session&gt;.sid</code> so the resolver can target the right JSONL
+        without racing on shared <code>sessions.json</code>.</p>
+    </div>
+
+    <div class="panel accent-c">
+      <div class="title">tmux pane process tree</div>
+      <div class="name">ps + tmux <span class="file">display-message / list-panes</span></div>
+      <p>Top pane PID + descendants drive the <em>shell-vs-agent</em> distinction and the search for a
+        live <code>claude</code> child (used to resolve session UUID when sidecar misses).</p>
+    </div>
+
+    <div class="panel accent-m">
+      <div class="title">Pane content (pull)</div>
+      <div class="name">tmux <span class="file">capture-pane</span> → ANSI-strip → 40 lines</div>
+      <p>Regex pass detects permission prompts (Claude &amp; Codex), plan-approval / <code>/ask</code>,
+        Codex <code>Working (Xs)</code> spinner, Claude <code>(running)</code> / <code>❯</code> prompt.</p>
+    </div>
+
+    <div class="panel accent-a">
+      <div class="title">Claude JSONL (pull, Claude only)</div>
+      <div class="name"><span class="file">~/.claude/projects/&lt;encoded&gt;/&lt;sid&gt;.jsonl</span></div>
+      <p>Resolver tails the file, finds last <code>assistant</code>/<code>user</code>/<code>queue-operation</code>
+        entry, inspects <code>stop_reason</code>.
+        Stale-gate 30s. Conversation chosen via sidecar → pane <code>--session-id</code> argv → <code>lsof</code>;
+        only falls back to newest-mtime when no signal resolves.</p>
+    </div>
+  </div>
+
+  <!-- MIDDLE: resolver pipeline -->
+  <div class="col">
+    <h2>State resolver (canonical pipeline)</h2>
+
+    <div class="pipeline">
+      <div class="pipeline-header">
+        <div class="h"><span class="mono">_state_resolve</span>(session, agent_type, dir [, bulk maps, now])</div>
+        <div class="sub">lib/state.sh:543</div>
+      </div>
+
+      <div class="step">
+        <div class="num">1</div>
+        <div class="body">
+          <div class="head">Shell check<span class="fn">_state_pane_is_shell_bulk</span></div>
+          <p>Top pane comm is a shell (bash/zsh/sh/fish/dash) with only shell children.</p>
+          <p>Bulk path (status-bar) emits <code>idle</code> directly.
+            Non-bulk: age &lt; 5s → <code>starting</code>, else <code>agent_classify_exit</code>
+            scans last pane line for <code>error|fatal|FAILED</code> → <code>dead</code> / <code>idle</code>.</p>
+        </div>
+        <div class="outs">
+          <span class="badge b-start">starting</span>
+          <span class="badge b-idle">idle</span>
+          <span class="badge b-dead">dead</span>
+        </div>
+      </div>
+      <div class="arrow-down">▼</div>
+
+      <div class="step">
+        <div class="num">2</div>
+        <div class="body">
+          <div class="head">Hook short-circuit<span class="fn">_state_hook_read</span></div>
+          <p>Read <code>$AM_STATE_DIR/&lt;session&gt;</code>. Waiting states are authoritative and
+            persistent. <code>running</code> staleness-gated at 180s (then falls through so a stuck
+            tool call is caught by pane).</p>
+        </div>
+        <div class="outs">
+          <span class="badge b-wi">waiting_input</span>
+          <span class="badge b-perm">waiting_permission</span>
+          <span class="badge b-cust">waiting_custom</span>
+        </div>
+      </div>
+      <div class="arrow-down">▼</div>
+
+      <div class="step">
+        <div class="num">3</div>
+        <div class="body">
+          <div class="head">Pane content<span class="fn">_state_from_pane --skip-alive-check</span></div>
+          <p>Regex on stripped tail. Catches permission prompts &amp; <code>/ask</code> / plan
+            approval even when a slow running-hook hasn't been overridden yet.</p>
+        </div>
+        <div class="outs">
+          <span class="badge b-perm">waiting_permission</span>
+          <span class="badge b-cust">waiting_custom</span>
+          <span class="badge b-dead">dead</span>
+          <span class="badge b-idle">idle</span>
+        </div>
+      </div>
+      <div class="arrow-down">▼</div>
+
+      <div class="step">
+        <div class="num">4</div>
+        <div class="body">
+          <div class="head">JSONL (Claude only)<span class="fn">_state_from_jsonl</span></div>
+          <p>Tail-read up to 200 reversed lines, find last meaningful entry, classify by
+            <code>stop_reason</code>: <code>end_turn</code> → waiting_input; <code>tool_use</code> /
+            null (fresh) → running.</p>
+        </div>
+        <div class="outs">
+          <span class="badge b-run">running</span>
+          <span class="badge b-wi">waiting_input</span>
+        </div>
+      </div>
+      <div class="arrow-down">▼</div>
+
+      <div class="step">
+        <div class="num">5</div>
+        <div class="body">
+          <div class="head">Fallback</div>
+          <p>Return pane spinner/prompt result; else stale hook <code>running</code>; else
+            conservative <code>running</code>.</p>
+        </div>
+        <div class="outs">
+          <span class="badge b-run">running</span>
+          <span class="badge b-wi">waiting_input</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="footnote">
+      <code>agent_get_state(session)</code> is the public single-session entry: checks tmux exists,
+      reads <code>agent_type</code> + <code>directory</code> from registry, calls resolver without bulk maps.
+      <br><code>agent_wait_state(session, target, timeout)</code> polls <code>agent_get_state</code> with
+      a 3-poll + 2s-quiet stability gate.
+      <br>Optional trace: <code>AM_STATE_DEBUG=1</code> → <code>$AM_DIR/.state-debug.log</code> records
+      which step won.
+    </div>
+  </div>
+
+  <!-- RIGHT: presenters -->
+  <div class="col">
+    <h2>Presenters</h2>
+
+    <div class="panel accent-l">
+      <div class="title">tmux tab strip (bulk, hot path)</div>
+      <div class="name"><span class="file">lib/status-bar</span></div>
+      <p>One tmux <code>list-panes</code> + one <code>ps -eo</code> + one <code>jq</code> build the
+        bulk fixtures <code>SESSION_TOP_PID</code> / <code>PROC_COMM</code> / <code>PROC_CHILDREN</code>
+        + <code>REG_*</code>. For each session calls
+        <code>_state_resolve</code> by nameref — no per-session forks.</p>
+      <p>Writes three options per session in one batched <code>tmux set-option ; ...</code> chain so
+        every session has its own pre-rendered "current" view (instant on switch):</p>
+      <ul>
+        <li><code>@am_status_left</code> — clickable strip (status-left)</li>
+        <li><code>@am_sidebar</code> — compact strip (pane-border-format)</li>
+        <li><code>@am_attention</code> — counter of non-current waits (status-right)</li>
+      </ul>
+      <p>Refresh trigger: 5s tmux <code>status-interval</code> tick, plus
+        <code>refresh-client -S</code> issued by every hook fire.</p>
+    </div>
+
+    <div class="panel accent-l">
+      <div class="title">Session picker (Go TUI)</div>
+      <div class="name"><span class="file">cmd/am-browse/main.go</span></div>
+      <p>Bubbletea program. Reads sessions via
+        <code>internal/sessions.LoadEntries</code> → ListTmuxSessions, <code>ReapOrphans</code>,
+        <code>RefreshTitles</code>, ReadRegistry. Sorts by activity desc, renders list + preview pane
+        (<code>preview-cmd</code> = <code>lib/preview</code>).</p>
+      <p>Stdout protocol: session name → attach, <code>__NEW__</code>, <code>__RESTORE__</code>, or
+        empty → cancel. Falls back to <code>lib/fzf.sh</code> when binary not built.</p>
+      <p class="footnote" style="margin-top:8px">
+        Browser itself does <strong>not</strong> compute am-state; live state lives in the tmux tab
+        strip painted by <code>status-bar</code>. The browser shows the registry <code>task</code>
+        field, refreshed by <code>RefreshTitles</code>.</p>
+    </div>
+
+    <div class="panel accent-l">
+      <div class="title">List helper</div>
+      <div class="name"><span class="file">cmd/am-list-internal</span></div>
+      <p>Same <code>LoadEntries</code> path; prints <code>session|display</code> lines for legacy
+        <code>fzf</code> reload and <code>am list [--json]</code>.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- MIDDLE: connectors arrows                                       -->
+<!-- ============================================================== -->
+<div class="flow-row">
+  <div class="flow-arrow">───── signals ─────▶</div>
+  <div class="flow-arrow">───── resolved state ─────▶</div>
+  <div class="flow-arrow">───── rendered ─────▶</div>
+</div>
+
+<hr class="sep">
+
+<!-- ============================================================== -->
+<!-- HOOK EVENT TABLE + LEGEND                                       -->
+<!-- ============================================================== -->
+<div class="section arch">
+
+  <div class="col" style="grid-column: span 2;">
+    <h2>Hook event → am state mapping</h2>
+    <div class="panel tight">
+      <table class="hook">
+        <thead><tr><th>Hook event</th><th>Matcher</th><th>State written</th></tr></thead>
+        <tbody>
+          <tr><td>Stop</td><td>stop_hook_active != true</td><td><span class="badge b-wi">waiting_input</span></td></tr>
+          <tr><td>Notification</td><td>notification_type=idle_prompt</td><td><span class="badge b-wi">waiting_input</span></td></tr>
+          <tr><td>Notification</td><td>notification_type=permission_prompt</td><td><span class="badge b-perm">waiting_permission</span></td></tr>
+          <tr><td>Notification</td><td>notification_type=elicitation_dialog</td><td><span class="badge b-cust">waiting_custom</span></td></tr>
+          <tr><td>PermissionRequest</td><td>—</td><td><span class="badge b-perm">waiting_permission</span></td></tr>
+          <tr><td>UserPromptSubmit</td><td>—</td><td><span class="badge b-run">running</span></td></tr>
+          <tr><td>PreToolUse</td><td>—</td><td><span class="badge b-run">running</span></td></tr>
+          <tr><td>PostToolUse</td><td>—</td><td><span class="badge b-run">running</span></td></tr>
+        </tbody>
+      </table>
+      <p class="footnote">
+        Session resolved in order: <code>$AM_SESSION_NAME</code> → <code>tmux #S of $TMUX_PANE</code> →
+        registry cwd match. Race guard skips <code>running</code> writes when current state file is
+        <code>waiting_*</code> unless event is <code>UserPromptSubmit</code> (only user action
+        transitions waiting → running). Hook also writes <code>.sid</code> sidecar, invalidates
+        <code>.list_cache</code> and <code>.title_scan_last</code>, and issues
+        <code>tmux refresh-client -S</code>.
+      </p>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>Glyph &amp; color legend</h2>
+    <div class="panel tight">
+      <div class="legend">
+        <div class="row"><span class="glyph g-run">▸</span> running</div>
+        <div class="row"><span class="glyph g-wi">●</span> waiting_input</div>
+        <div class="row"><span class="glyph g-perm">⚠</span> waiting_permission</div>
+        <div class="row"><span class="glyph g-cust">◆</span> waiting_custom</div>
+        <div class="row"><span class="glyph g-start">◌</span> starting</div>
+        <div class="row"><span class="glyph g-dead">✕</span> dead</div>
+      </div>
+      <p class="footnote" style="margin-top:10px">
+        Defined in <code>lib/status-bar</code> as <code>GLYPH</code> / <code>COLOR</code> associative
+        maps; status-bar uses them directly without a subshell.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- CACHE LAYER                                                     -->
+<!-- ============================================================== -->
+<div class="section">
+  <h2>Cache &amp; coordination files</h2>
+  <div class="panel tight">
+    <dl class="kv">
+      <dt>$AM_STATE_DIR/&lt;session&gt;</dt>
+      <dd>One-line state file written by <code>state-hook.sh</code>. Read by <code>_state_hook_read</code>. Removed by <code>ReapOrphans</code>.</dd>
+
+      <dt>$AM_STATE_DIR/&lt;session&gt;.sid</dt>
+      <dd>Claude conversation UUID sidecar. Per-session writer avoids the shared-<code>sessions.json</code> read-modify-write race when concurrent hooks fire.</dd>
+
+      <dt>$AM_DIR/sessions.json</dt>
+      <dd>Registry. Holds directory / branch / agent_type / task per session. Read by both bash and Go (<code>ReadRegistry</code>); atomic temp-rename writes.</dd>
+
+      <dt>$AM_DIR/.gc_last</dt>
+      <dd>60s throttle shared by bash <code>registry_gc</code> and Go <code>ReapOrphans</code>. Whichever runs first stamps the marker.</dd>
+
+      <dt>$AM_DIR/.title_scan_last</dt>
+      <dd>60s throttle shared by bash <code>auto_title_scan</code> and Go <code>RefreshTitles</code>. Hooks invalidate it on prompt boundaries so the next status-bar tick refreshes within ~5s.</dd>
+
+      <dt>$AM_DIR/.list_cache</dt>
+      <dd>Cached <code>am list</code> output. Hooks delete it so the next fzf reload picks up the new state.</dd>
+
+      <dt>$AM_DIR/.state-debug.log</dt>
+      <dd>Opt-in trace: <code>AM_STATE_DEBUG=1</code> writes one line per resolution showing which step won (<code>shell|hook|pane|jsonl|fallback|classify_exit</code>).</dd>
+
+      <dt>$AM_DIR/.hook-debug.log</dt>
+      <dd>Opt-in trace: <code>AM_HOOK_DEBUG=1</code> writes one line when a hook fires but exits without writing state (registry miss, no session resolvable, cwd inaccessible).</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- INVARIANTS / DESIGN NOTES                                       -->
+<!-- ============================================================== -->
+<div class="section">
+  <h2>Invariants worth remembering</h2>
+  <div class="panel tight">
+    <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.7;">
+      <li><strong>Single resolver.</strong> Both <code>agent_get_state</code> (per-session) and
+        <code>status-bar</code> (bulk tick) call <code>_state_resolve</code>. Bulk fixtures are passed
+        by bash 4.3+ nameref; without them the resolver builds size-1 fixtures inline.</li>
+      <li><strong>Hook is primary; pane is corrective.</strong> Stage 2 short-circuits on waiting_*,
+        but stage 3 still runs for <code>running</code> so a permission prompt painted during a slow
+        tool call is caught.</li>
+      <li><strong>Per-session sidecar.</strong> Claude conversation UUID lives in
+        <code>&lt;session&gt;.sid</code> rather than the shared registry — eliminates the
+        read-modify-write race on <code>sessions.json</code> when concurrent hooks fire.</li>
+      <li><strong>Status-bar pre-renders one strip per perspective.</strong> Every session's
+        <code>@am_status_left</code> already has itself marked current, so the tmux switch reads a
+        precomputed option — no async <code>#()</code> wait on hot path.</li>
+      <li><strong>Throttles are file-marker based and cross-language.</strong>
+        <code>.gc_last</code> / <code>.title_scan_last</code> coordinate bash and Go without IPC.</li>
+      <li><strong>Browser presents tasks, not state.</strong> The Go TUI shows registry data; live
+        am-state appears only via the tmux tab strip painted by <code>status-bar</code>.</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>
