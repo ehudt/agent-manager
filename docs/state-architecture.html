@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>agent-manager — State Detection & Presentation</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-panel: #161b22;
+    --bg-panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --text-dimmer: #6e7681;
+    --accent: #58a6ff;
+    --accent-2: #a371f7;
+    --running: #79c0ff;     /* colour75 */
+    --wait-input: #7ee787;  /* colour114 */
+    --wait-perm: #ffa657;   /* colour214 */
+    --wait-custom: #d2a8ff; /* colour213 */
+    --starting: #f0c674;    /* colour221 */
+    --dead: #ff6b6b;        /* colour196 */
+    --idle: #8b949e;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 40px 0 14px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 14px; margin: 18px 0 8px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  p { color: var(--text-dim); margin: 4px 0 12px; }
+  code, .mono { font-family: var(--mono); font-size: 12.5px; }
+  code { background: var(--bg-panel-2); padding: 1px 6px; border-radius: 4px; color: var(--text); }
+  .sub { color: var(--text-dim); font-size: 13px; }
+  .panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px; }
+  .grid { display: grid; gap: 14px; }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  @media (max-width: 820px) {
+    .grid-3, .grid-2 { grid-template-columns: 1fr; }
+  }
+
+  /* state legend */
+  .states { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .state-card {
+    background: var(--bg-panel-2);
+    border: 1px solid var(--border);
+    border-left-width: 4px;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .state-card .glyph { font-family: var(--mono); font-size: 18px; margin-right: 8px; font-weight: 700; }
+  .state-card .name { font-family: var(--mono); font-weight: 600; }
+  .state-card .desc { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+  .s-running { border-left-color: var(--running); }
+  .s-running .glyph, .s-running .name { color: var(--running); }
+  .s-wait-input { border-left-color: var(--wait-input); }
+  .s-wait-input .glyph, .s-wait-input .name { color: var(--wait-input); }
+  .s-wait-perm { border-left-color: var(--wait-perm); }
+  .s-wait-perm .glyph, .s-wait-perm .name { color: var(--wait-perm); }
+  .s-wait-custom { border-left-color: var(--wait-custom); }
+  .s-wait-custom .glyph, .s-wait-custom .name { color: var(--wait-custom); }
+  .s-starting { border-left-color: var(--starting); }
+  .s-starting .glyph, .s-starting .name { color: var(--starting); }
+  .s-idle { border-left-color: var(--idle); }
+  .s-idle .glyph, .s-idle .name { color: var(--idle); }
+  .s-dead { border-left-color: var(--dead); }
+  .s-dead .glyph, .s-dead .name { color: var(--dead); }
+
+  /* sources stack */
+  .sources { display: grid; grid-template-columns: 1fr; gap: 0; }
+  .src {
+    background: var(--bg-panel-2);
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+    position: relative;
+  }
+  .src + .src { border-top: none; }
+  .src:first-child { border-radius: 6px 6px 0 0; border-left: 3px solid var(--wait-input); }
+  .src:nth-child(2) { border-left: 3px solid var(--running); }
+  .src:last-child { border-radius: 0 0 6px 6px; border-left: 3px solid var(--starting); }
+  .src .rank { float: right; font-family: var(--mono); color: var(--text-dimmer); font-size: 11px; letter-spacing: 0.1em; }
+  .src .title { font-weight: 600; font-family: var(--mono); }
+  .src .body { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+
+  /* flow boxes */
+  .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; align-items: stretch; }
+  .flow .step {
+    background: var(--bg-panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    position: relative;
+  }
+  .flow .step .n { font-family: var(--mono); color: var(--accent); font-weight: 700; font-size: 12px; }
+  .flow .step .t { font-family: var(--mono); font-weight: 600; font-size: 13px; margin-top: 2px; }
+  .flow .step .d { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+  @media (max-width: 820px) { .flow { grid-template-columns: 1fr; } }
+
+  /* hook events table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.mono { font-family: var(--mono); }
+  tr:last-child td { border-bottom: none; }
+
+  /* presentation paths */
+  .paths { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .path {
+    background: var(--bg-panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .path h4 { margin: 0 0 4px; font-size: 14px; color: var(--accent); }
+  .path .who { color: var(--text-dim); font-size: 12px; margin-bottom: 8px; }
+  .path .uses { margin: 0; padding: 0; list-style: none; }
+  .path .uses li { padding: 4px 0; border-top: 1px dashed var(--border); font-size: 12.5px; }
+  .path .uses li:first-child { border-top: none; }
+  .path .uses code { font-size: 11.5px; }
+  @media (max-width: 820px) { .paths { grid-template-columns: 1fr; } }
+
+  /* arrow svgs inline */
+  .arrow { color: var(--text-dimmer); }
+
+  /* big topology svg */
+  .topo { width: 100%; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+
+  /* state file/path callout */
+  .callout {
+    background: linear-gradient(180deg, var(--bg-panel) 0%, var(--bg-panel-2) 100%);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 10px 0;
+  }
+  .callout .lbl { font-size: 11px; color: var(--accent-2); letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600; }
+  .callout .body { margin-top: 6px; font-family: var(--mono); font-size: 13px; color: var(--text); }
+  .callout .body .k { color: var(--accent); }
+
+  /* file map */
+  .files li { padding: 4px 0; font-size: 13px; color: var(--text-dim); }
+  .files li code { color: var(--text); }
+
+  /* badges */
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; font-family: var(--mono); border: 1px solid var(--border); margin-left: 6px; }
+  .badge.bash { color: var(--starting); }
+  .badge.go { color: var(--running); }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+
+  .legend-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+  .legend-row .chip { background: var(--bg-panel-2); border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; font-size: 11px; font-family: var(--mono); color: var(--text-dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>agent-manager — state detection &amp; presentation</h1>
+    <p class="sub">How a session's state is derived from process / hook / Claude-JSONL signals, and how that single derivation feeds every UI surface (CLI, tmux status bar, Go TUI).</p>
+  </header>
+
+  <!-- =========================================================== -->
+  <h2>1. The seven states</h2>
+  <p>One enum drives every glyph, color, and badge in the tool. Declared in <code>lib/state.sh</code>; glyph + color table lives in <code>lib/status-bar</code>.</p>
+  <div class="states">
+    <div class="state-card s-running"><span class="glyph">▸</span><span class="name">running</span><div class="desc">Agent producing output / executing a tool.</div></div>
+    <div class="state-card s-wait-input"><span class="glyph">●</span><span class="name">waiting_input</span><div class="desc">Turn ended; prompt parked at <code>❯</code>.</div></div>
+    <div class="state-card s-wait-perm"><span class="glyph">⚠</span><span class="name">waiting_permission</span><div class="desc">Claude/Codex y/n approval prompt.</div></div>
+    <div class="state-card s-wait-custom"><span class="glyph">◆</span><span class="name">waiting_custom</span><div class="desc">Elicitation dialog / plan / <code>/ask</code>.</div></div>
+    <div class="state-card s-starting"><span class="glyph">◌</span><span class="name">starting</span><div class="desc">Session &lt; 5 s old, agent not yet attached.</div></div>
+    <div class="state-card s-idle"><span class="glyph">○</span><span class="name">idle</span><div class="desc">Shell prompt, agent exited cleanly.</div></div>
+    <div class="state-card s-dead"><span class="glyph">✕</span><span class="name">dead</span><div class="desc">No tmux session or shell exit with errors.</div></div>
+  </div>
+
+  <!-- =========================================================== -->
+  <h2>2. Signal sources, ranked</h2>
+  <p>Three independent signal sources answer "what is this session doing?". Lower-cost, higher-fidelity sources come first; later sources are fallbacks.</p>
+  <div class="sources">
+    <div class="src">
+      <span class="rank">RANK 1 — push</span>
+      <div class="title">Hook state file <span class="badge bash">bash</span></div>
+      <div class="body">
+        Claude Code (and Codex) fires lifecycle hooks → <code>lib/hooks/state-hook.sh</code> writes one word to
+        <code>/tmp/am-state/&lt;session&gt;</code>. Authoritative for <code>waiting_*</code> — those persist across days with no churn.
+        <code>running</code> has a 180 s staleness gate (catches crashed-mid-tool).
+      </div>
+    </div>
+    <div class="src">
+      <span class="rank">RANK 2 — pull, structured</span>
+      <div class="title">Claude JSONL tail <span class="badge bash">bash</span></div>
+      <div class="body">
+        For Claude only. Last meaningful entry in
+        <code>~/.claude/projects/&lt;encoded-dir&gt;/&lt;sid&gt;.jsonl</code> tells us whether the assistant's
+        <code>stop_reason</code> was <code>end_turn</code> (→ waiting_input) or <code>tool_use</code> (→ running).
+        Session id resolved via sidecar → <code>--session-id</code> argv → <code>lsof</code>, never raw mtime guess.
+      </div>
+    </div>
+    <div class="src">
+      <span class="rank">RANK 3 — pull, fuzzy</span>
+      <div class="title">tmux pane content <span class="badge bash">bash</span></div>
+      <div class="body">
+        Capture last 40 lines, strip ANSI, regex-match: Claude/Codex permission prompts,
+        plan dialogs, <code>(running)</code> tags, spinner, idle <code>❯</code>. Used when hook/JSONL silent
+        and for non-Claude agents that have no JSONL.
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="lbl">Process-level sanity check (runs first)</div>
+    <div class="body">
+      <span class="k">_state_pane_is_shell</span>(session) — if the top pane PID is a shell with no agent
+      child, the agent has exited. Branches to <span class="k">starting</span> (age &lt; 5 s) or
+      <span class="k">agent_classify_exit</span> → <span class="k">idle</span>/<span class="k">dead</span>.
+    </div>
+  </div>
+
+  <!-- =========================================================== -->
+  <h2>3. The resolver — <code>_state_resolve</code></h2>
+  <p>Single canonical path. Called both per-session (<code>agent_get_state</code>) and bulk (<code>lib/status-bar</code> with nameref maps). Keeps the sidebar glyph and the CLI badge in lockstep.</p>
+
+  <div class="flow">
+    <div class="step">
+      <div class="n">STEP 1</div>
+      <div class="t">shell check</div>
+      <div class="d">Pane is bare shell? → <span style="color:var(--starting)">starting</span> / <span style="color:var(--idle)">idle</span> / <span style="color:var(--dead)">dead</span>. <em>short-circuit.</em></div>
+    </div>
+    <div class="step">
+      <div class="n">STEP 2</div>
+      <div class="t">hook terminal</div>
+      <div class="d"><code>/tmp/am-state/&lt;s&gt;</code> says <code>waiting_*</code>? → return immediately, skip pane fork.</div>
+    </div>
+    <div class="step">
+      <div class="n">STEP 3</div>
+      <div class="t">pane scan</div>
+      <div class="d">Match permission / custom / dead / idle from pane content. Skip alive-check (done in step 1).</div>
+    </div>
+    <div class="step">
+      <div class="n">STEP 4</div>
+      <div class="t">JSONL (claude)</div>
+      <div class="d">Reverse-tail conversation JSONL. <code>stop_reason</code> → state. Targeted by sid, not mtime.</div>
+    </div>
+    <div class="step">
+      <div class="n">STEP 5</div>
+      <div class="t">fallback</div>
+      <div class="d">pane <code>running</code> / <code>waiting_input</code>, then hook <code>running</code>, then conservative <code>running</code>.</div>
+    </div>
+  </div>
+
+  <!-- =========================================================== -->
+  <h2>4. Hook flow — push path</h2>
+  <p>Why push wins for waiting states: an idle session can sit at <code>waiting_input</code> for days without polling. Hook writes the word once; everyone reads forever.</p>
+
+  <svg class="topo" viewBox="0 0 1100 280" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#6e7681"/>
+      </marker>
+      <style>
+        .b { fill: #1c2128; stroke: #30363d; stroke-width: 1; }
+        .lab { font: 600 13px ui-monospace, monospace; fill: #e6edf3; }
+        .sub2 { font: 11px ui-monospace, monospace; fill: #8b949e; }
+        .lne { stroke: #6e7681; stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
+        .accentText { fill: #58a6ff; }
+      </style>
+    </defs>
+
+    <!-- Claude -->
+    <rect class="b" x="20" y="40" width="180" height="80" rx="6"/>
+    <text class="lab" x="110" y="68" text-anchor="middle">Claude Code</text>
+    <text class="sub2" x="110" y="86" text-anchor="middle">Stop / Notification</text>
+    <text class="sub2" x="110" y="102" text-anchor="middle">PreTool / PostTool</text>
+    <text class="sub2" x="110" y="118" text-anchor="middle">UserPromptSubmit</text>
+
+    <!-- hook script -->
+    <rect class="b" x="270" y="30" width="240" height="100" rx="6"/>
+    <text class="lab" x="390" y="58" text-anchor="middle">state-hook.sh</text>
+    <text class="sub2" x="390" y="78" text-anchor="middle">stdin = hook JSON</text>
+    <text class="sub2" x="390" y="94" text-anchor="middle">resolve session via</text>
+    <text class="sub2" x="390" y="110" text-anchor="middle">AM_SESSION_NAME → TMUX_PANE → cwd</text>
+    <text class="sub2 accentText" x="390" y="126" text-anchor="middle">map event → state</text>
+
+    <!-- state file -->
+    <rect class="b" x="580" y="20" width="220" height="60" rx="6"/>
+    <text class="lab" x="690" y="46" text-anchor="middle">/tmp/am-state/&lt;s&gt;</text>
+    <text class="sub2" x="690" y="64" text-anchor="middle">single-line state word</text>
+
+    <!-- sid sidecar -->
+    <rect class="b" x="580" y="100" width="220" height="60" rx="6"/>
+    <text class="lab" x="690" y="126" text-anchor="middle">/tmp/am-state/&lt;s&gt;.sid</text>
+    <text class="sub2" x="690" y="144" text-anchor="middle">claude conversation uuid</text>
+
+    <!-- tmux refresh -->
+    <rect class="b" x="580" y="180" width="220" height="60" rx="6"/>
+    <text class="lab" x="690" y="206" text-anchor="middle">tmux refresh-client -S</text>
+    <text class="sub2" x="690" y="224" text-anchor="middle">push status-bar redraw</text>
+
+    <!-- consumers -->
+    <rect class="b" x="870" y="20" width="210" height="100" rx="6"/>
+    <text class="lab" x="975" y="46" text-anchor="middle">consumers</text>
+    <text class="sub2" x="975" y="68" text-anchor="middle">_state_resolve (bash)</text>
+    <text class="sub2" x="975" y="86" text-anchor="middle">status-bar tick</text>
+    <text class="sub2" x="975" y="104" text-anchor="middle">am-browse / list (go)</text>
+
+    <!-- arrows -->
+    <path class="lne" d="M200,80 L268,80"/>
+    <path class="lne" d="M510,60 L578,50"/>
+    <path class="lne" d="M510,90 L578,130"/>
+    <path class="lne" d="M510,120 L578,210"/>
+    <path class="lne" d="M800,50 L868,55"/>
+    <path class="lne" d="M800,130 L868,80"/>
+    <path class="lne" d="M800,210 L868,100"/>
+  </svg>
+
+  <h3>Event → state mapping</h3>
+  <table>
+    <thead><tr><th>Hook event</th><th>Matcher</th><th>State written</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">Stop</td><td>—</td><td class="mono" style="color:var(--wait-input)">waiting_input</td></tr>
+      <tr><td class="mono">Notification</td><td class="mono">idle_prompt</td><td class="mono" style="color:var(--wait-input)">waiting_input</td></tr>
+      <tr><td class="mono">Notification</td><td class="mono">permission_prompt</td><td class="mono" style="color:var(--wait-perm)">waiting_permission</td></tr>
+      <tr><td class="mono">Notification</td><td class="mono">elicitation_dialog</td><td class="mono" style="color:var(--wait-custom)">waiting_custom</td></tr>
+      <tr><td class="mono">PermissionRequest</td><td>—</td><td class="mono" style="color:var(--wait-perm)">waiting_permission</td></tr>
+      <tr><td class="mono">UserPromptSubmit</td><td>—</td><td class="mono" style="color:var(--running)">running</td></tr>
+      <tr><td class="mono">PreToolUse / PostToolUse</td><td>—</td><td class="mono" style="color:var(--running)">running</td></tr>
+    </tbody>
+  </table>
+  <p class="sub">Race guard: <code>running</code> writes are dropped when the current file is <code>waiting_*</code>, unless the event is <code>UserPromptSubmit</code> (only explicit user action transitions <code>waiting → running</code>).</p>
+
+  <!-- =========================================================== -->
+  <h2>5. Presentation surfaces</h2>
+  <p>Three consumers — all call the same <code>_state_resolve</code> (bash) or read the same hook/registry files (Go). Glyphs match across surfaces because they share <code>lib/status-bar</code>'s <code>GLYPH</code> / <code>COLOR</code> tables.</p>
+
+  <div class="paths">
+    <div class="path">
+      <h4>CLI &amp; orchestration <span class="badge bash">bash</span></h4>
+      <div class="who"><code>am peek</code>, <code>am send</code>, agent-to-agent waits</div>
+      <ul class="uses">
+        <li><code>agent_get_state &lt;s&gt;</code> — single-shot resolver; one fork-per-call.</li>
+        <li><code>agent_wait_state &lt;s&gt; states timeout</code> — polls 0.5 s, requires N stable polls + quiet activity before returning.</li>
+        <li><code>agent_classify_exit</code> — pane scan after shell-prompt detected, picks <code>idle</code> vs <code>dead</code>.</li>
+      </ul>
+    </div>
+    <div class="path">
+      <h4>tmux status bar <span class="badge bash">bash</span></h4>
+      <div class="who"><code>lib/status-bar</code> — runs every 5 s + on hook refresh</div>
+      <ul class="uses">
+        <li>Builds <em>bulk fixtures</em>: 1× tmux list-sessions, 1× list-panes, 1× ps, 1× jq — passes by nameref to <code>_state_resolve</code>.</li>
+        <li>Writes 3 options per session: <code>@am_status_left</code> (clickable tabs), <code>@am_sidebar</code> (pane border), <code>@am_attention</code> (counter).</li>
+        <li>N strips precomputed — switch is instant; tmux reads cached option, no shell fork.</li>
+      </ul>
+    </div>
+    <div class="path">
+      <h4>Go TUI <span class="badge go">go</span></h4>
+      <div class="who"><code>cmd/am-browse</code>, <code>cmd/am-list-internal</code></div>
+      <ul class="uses">
+        <li><code>internal/sessions.LoadEntries</code> — parses tmux + <code>sessions.json</code> directly.</li>
+        <li><code>ReapOrphans</code>, <code>RefreshTitles</code> — mirror the bash <code>registry_gc</code> / <code>auto_title_scan</code>, share throttle markers in <code>$AM_DIR</code>.</li>
+        <li>Reads hook state files for glyphs; does <em>not</em> re-implement <code>_state_resolve</code> — relies on what status-bar wrote.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- =========================================================== -->
+  <h2>6. End-to-end topology</h2>
+  <svg class="topo" viewBox="0 0 1140 460" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#6e7681"/>
+      </marker>
+      <style>
+        .col-h { fill: #161b22; stroke: #30363d; }
+        .src-b { fill: #1c2128; stroke: #30363d; }
+        .resolver { fill: #1c2128; stroke: #58a6ff; stroke-width: 1.6; }
+        .consumer { fill: #1c2128; stroke: #a371f7; stroke-width: 1.4; }
+        .lbl2 { font: 600 13px ui-monospace, monospace; fill: #e6edf3; }
+        .lbl-h { font: 600 11px ui-monospace, monospace; fill: #8b949e; letter-spacing: 0.1em; text-transform: uppercase; }
+        .sb { font: 11px ui-monospace, monospace; fill: #8b949e; }
+        .ln { stroke: #6e7681; stroke-width: 1.4; fill: none; marker-end: url(#arr2); }
+        .ln-dash { stroke: #6e7681; stroke-width: 1.2; fill: none; stroke-dasharray: 4 3; marker-end: url(#arr2); }
+      </style>
+    </defs>
+
+    <!-- column headers -->
+    <text class="lbl-h" x="120"  y="24" text-anchor="middle">producers</text>
+    <text class="lbl-h" x="430"  y="24" text-anchor="middle">artifacts on disk</text>
+    <text class="lbl-h" x="730"  y="24" text-anchor="middle">resolver</text>
+    <text class="lbl-h" x="990"  y="24" text-anchor="middle">consumers</text>
+
+    <!-- producers column -->
+    <rect class="src-b" x="30" y="50"  width="190" height="60" rx="6"/>
+    <text class="lbl2" x="125" y="76" text-anchor="middle">Claude / Codex agent</text>
+    <text class="sb"   x="125" y="94" text-anchor="middle">lifecycle hooks, JSONL writes</text>
+
+    <rect class="src-b" x="30" y="140" width="190" height="60" rx="6"/>
+    <text class="lbl2" x="125" y="166" text-anchor="middle">tmux pane process</text>
+    <text class="sb"   x="125" y="184" text-anchor="middle">pane content + child PIDs</text>
+
+    <rect class="src-b" x="30" y="230" width="190" height="60" rx="6"/>
+    <text class="lbl2" x="125" y="256" text-anchor="middle">am launcher</text>
+    <text class="sb"   x="125" y="274" text-anchor="middle">registry rows, created_at</text>
+
+    <rect class="src-b" x="30" y="320" width="190" height="60" rx="6"/>
+    <text class="lbl2" x="125" y="346" text-anchor="middle">state-hook.sh</text>
+    <text class="sb"   x="125" y="364" text-anchor="middle">writes state + sid sidecar</text>
+
+    <!-- artifacts column -->
+    <rect class="src-b" x="280" y="40"  width="300" height="56" rx="6"/>
+    <text class="lbl2" x="430" y="64" text-anchor="middle">/tmp/am-state/&lt;s&gt;</text>
+    <text class="sb"   x="430" y="82" text-anchor="middle">hook-written state word</text>
+
+    <rect class="src-b" x="280" y="110" width="300" height="56" rx="6"/>
+    <text class="lbl2" x="430" y="134" text-anchor="middle">/tmp/am-state/&lt;s&gt;.sid</text>
+    <text class="sb"   x="430" y="152" text-anchor="middle">claude conversation uuid</text>
+
+    <rect class="src-b" x="280" y="180" width="300" height="56" rx="6"/>
+    <text class="lbl2" x="430" y="204" text-anchor="middle">~/.claude/projects/.../&lt;sid&gt;.jsonl</text>
+    <text class="sb"   x="430" y="222" text-anchor="middle">claude conversation log</text>
+
+    <rect class="src-b" x="280" y="250" width="300" height="56" rx="6"/>
+    <text class="lbl2" x="430" y="274" text-anchor="middle">~/.agent-manager/sessions.json</text>
+    <text class="sb"   x="430" y="292" text-anchor="middle">registry: dir / branch / agent / task</text>
+
+    <rect class="src-b" x="280" y="320" width="300" height="56" rx="6"/>
+    <text class="lbl2" x="430" y="344" text-anchor="middle">tmux: list-sessions / list-panes / ps</text>
+    <text class="sb"   x="430" y="362" text-anchor="middle">live process tree + activity ts</text>
+
+    <!-- resolver -->
+    <rect class="resolver" x="640" y="120" width="200" height="200" rx="8"/>
+    <text class="lbl2" x="740" y="148" text-anchor="middle">_state_resolve</text>
+    <text class="sb"   x="740" y="170" text-anchor="middle">lib/state.sh</text>
+    <text class="sb"   x="740" y="194" text-anchor="middle">1. shell check</text>
+    <text class="sb"   x="740" y="212" text-anchor="middle">2. hook terminal</text>
+    <text class="sb"   x="740" y="230" text-anchor="middle">3. pane scan</text>
+    <text class="sb"   x="740" y="248" text-anchor="middle">4. jsonl (claude)</text>
+    <text class="sb"   x="740" y="266" text-anchor="middle">5. fallback</text>
+    <text class="sb"   x="740" y="296" text-anchor="middle" fill="#a371f7">bulk fixtures: nameref</text>
+
+    <!-- consumers -->
+    <rect class="consumer" x="900" y="70"  width="220" height="56" rx="6"/>
+    <text class="lbl2" x="1010" y="94" text-anchor="middle">agent_get_state</text>
+    <text class="sb"   x="1010" y="112" text-anchor="middle">CLI: peek, send, wait</text>
+
+    <rect class="consumer" x="900" y="160" width="220" height="56" rx="6"/>
+    <text class="lbl2" x="1010" y="184" text-anchor="middle">lib/status-bar</text>
+    <text class="sb"   x="1010" y="202" text-anchor="middle">tmux tabs · sidebar · attention</text>
+
+    <rect class="consumer" x="900" y="250" width="220" height="56" rx="6"/>
+    <text class="lbl2" x="1010" y="274" text-anchor="middle">cmd/am-browse</text>
+    <text class="sb"   x="1010" y="292" text-anchor="middle">Go TUI; reads hook files</text>
+
+    <rect class="consumer" x="900" y="340" width="220" height="56" rx="6"/>
+    <text class="lbl2" x="1010" y="364" text-anchor="middle">cmd/am-list-internal</text>
+    <text class="sb"   x="1010" y="382" text-anchor="middle">Go: fast list for fzf reload</text>
+
+    <!-- arrows: producers -> artifacts -->
+    <path class="ln" d="M220,72  L278,66"/>          <!-- claude -> state? not direct, claude -> jsonl -->
+    <path class="ln" d="M220,82  L278,208"/>         <!-- claude -> jsonl -->
+    <path class="ln" d="M220,170 L278,348"/>         <!-- tmux pane -> tmux meta -->
+    <path class="ln" d="M220,260 L278,278"/>         <!-- launcher -> registry -->
+    <path class="ln" d="M220,346 L278,76"/>          <!-- hook -> state -->
+    <path class="ln" d="M220,358 L278,140"/>         <!-- hook -> sid -->
+
+    <!-- artifacts -> resolver -->
+    <path class="ln" d="M580,68  L638,180"/>
+    <path class="ln" d="M580,138 L638,200"/>
+    <path class="ln" d="M580,208 L638,230"/>
+    <path class="ln" d="M580,278 L638,260"/>
+    <path class="ln" d="M580,348 L638,290"/>
+
+    <!-- resolver -> consumers -->
+    <path class="ln" d="M840,150 L898,98"/>
+    <path class="ln" d="M840,200 L898,188"/>
+    <!-- am-browse uses artifacts directly, dashed -->
+    <path class="ln-dash" d="M580,90  C720,80 800,260 898,270"/>
+    <path class="ln-dash" d="M580,278 L898,280"/>
+    <path class="ln-dash" d="M580,90  C740,40 870,340 898,360"/>
+    <path class="ln-dash" d="M580,348 L898,372"/>
+
+    <text class="sb" x="990" y="424" text-anchor="middle" fill="#a371f7">— solid: via _state_resolve · dashed: direct artifact read</text>
+  </svg>
+
+  <!-- =========================================================== -->
+  <h2>7. Key files</h2>
+  <ul class="files" style="list-style: none; padding: 0;">
+    <li><code>lib/state.sh</code> — resolver, JSONL parsing, pane scanning, sid resolution, wait loop.</li>
+    <li><code>lib/hooks/state-hook.sh</code> — event→state mapping, session identification, race guard.</li>
+    <li><code>lib/status-bar</code> — bulk-fixture builder, GLYPH/COLOR tables, per-session tmux options.</li>
+    <li><code>lib/registry.sh</code> — <code>sessions.json</code> CRUD, auto-title scan, history log, sessions log for restore.</li>
+    <li><code>lib/tmux.sh</code> — <code>tmux_session_exists</code>, pane targets, capture, list helpers.</li>
+    <li><code>internal/sessions/sessions.go</code> — Go: registry parse, format, time-ago. Used by both binaries.</li>
+    <li><code>internal/sessions/titles.go</code> — Go mirror of <code>auto_title_scan</code> (pane title → JSONL fallback).</li>
+    <li><code>internal/sessions/reap.go</code> — Go mirror of <code>registry_gc</code> (orphan rows + hook state files).</li>
+    <li><code>cmd/am-browse/main.go</code> — bubbletea TUI, primary browser UI.</li>
+    <li><code>cmd/am-list-internal/main.go</code> — fast list generator for fallback fzf path.</li>
+  </ul>
+
+  <p class="sub" style="margin-top: 30px; text-align:center;">— generated reference; source of truth is the code at <code>/Users/ehud.tamir/code/agent-manager/lib/state.sh</code> —</p>
+</div>
+</body>
+</html>
