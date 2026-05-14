@@ -52,6 +52,7 @@ declare -A GLYPH=(
     [waiting_permission]='⚠'
     [waiting_custom]='◆'
     [starting]='◌'
+    [unknown]='?'
     [dead]='✕'
 )
 declare -A COLOR=(
@@ -60,6 +61,7 @@ declare -A COLOR=(
     [waiting_permission]='colour214'
     [waiting_custom]='colour213'
     [starting]='colour221'
+    [unknown]='colour244'
     [dead]='colour196'
 )
 

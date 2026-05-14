@@ -1079,7 +1079,7 @@ cmd_wait() {
             -h|--help)
                 echo "Usage: am wait [--state <states>] [--timeout N] [--json] <session-name>"
                 echo "  states: comma-separated list of: starting,running,waiting_input,"
-                echo "          waiting_permission,waiting_custom,idle,dead"
+                echo "          waiting_permission,waiting_custom,idle,unknown,dead"
                 return 0
                 ;;
             -*)

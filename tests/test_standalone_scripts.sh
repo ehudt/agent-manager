@@ -167,7 +167,8 @@ test_standalone_status_bar() {
     ((TESTS_PASSED++))
     ((TESTS_RUN++))
 
-    local test_dir4 s4 resolved_dir encoded_dir claude_dir claude_jsonl old_claude_cmd
+    # Missing hook + agent alive (non-shell pane) → status-bar renders '?' (unknown).
+    local test_dir4 s4 old_claude_cmd
     test_dir4=$(mktemp -d)
     old_claude_cmd="${AGENT_COMMANDS[claude]}"
     AGENT_COMMANDS[claude]="sleep"
@@ -183,21 +184,13 @@ test_standalone_status_bar() {
             sleep 0.1
         done
         if $agent_ready; then
-            resolved_dir=$(cd "$test_dir4" && pwd -P)
-            encoded_dir=$(printf '%s' "$resolved_dir" | sed -E 's|[/.]|-|g')
-            claude_dir="$HOME/.claude/projects/$encoded_dir"
-            claude_jsonl="$claude_dir/status-bar-test.jsonl"
-            mkdir -p "$claude_dir"
-            printf '%s\n' '{"type":"assistant","message":{"stop_reason":"end_turn","content":"done"}}' > "$claude_jsonl"
             rm -f "$AM_STATE_DIR/$s4"
 
             rc=0
             output=$("$LIB_DIR/status-bar" --print "" 2>&1) || rc=$?
             assert_eq "0" "$rc" "status-bar: exits 0 when hook state is missing"
-            assert_contains "$output" "● $(basename "$test_dir4")" \
-                "status-bar: falls back to JSONL state when hook file is missing"
-            assert_not_contains "$output" "○ $(basename "$test_dir4")" \
-                "status-bar: does not render missing hook state as idle"
+            assert_contains "$output" "? $(basename "$test_dir4")" \
+                "status-bar: hook silent + agent alive → unknown glyph"
         else
             skip_test "status-bar: fallback state test (agent process did not start)"
         fi
@@ -213,8 +206,6 @@ test_standalone_status_bar() {
     [[ -n "$s2" ]] && agent_kill "$s2" 2>/dev/null
     [[ -n "$s3" ]] && agent_kill "$s3" 2>/dev/null
     [[ -n "${s4:-}" ]] && agent_kill "$s4" 2>/dev/null
-    rm -f "${claude_jsonl:-}"
-    rmdir "${claude_dir:-}" 2>/dev/null || true
     rm -rf "$test_dir1" "$test_dir2" "$test_dir3" "${test_dir4:-}" "$test_state_dir"
     if [[ -n "$old_state_dir" ]]; then
         export AM_STATE_DIR="$old_state_dir"
