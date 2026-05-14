@@ -199,9 +199,10 @@ worker3_tests() {
     run_agents_tests
 }
 
-# Worker 4: State (~7.5s solo)
+# Worker 4: State (~7.5s solo) + state_lab regression gate
 worker4_tests() {
     run_state_tests
+    run_state_lab_tests
 }
 
 # Worker 5: CLI (~7s solo)
