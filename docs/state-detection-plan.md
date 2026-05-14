@@ -4,7 +4,12 @@ Pinning the open bugs and the consolidation plan that removes the
 duplication letting these bugs hide. Captured 2026-05-13 after building
 `tests/state_lab/` and observing two confirmed failures on a real session.
 
-## Confirmed bugs
+**Status (2026-05-14):** Phases 1–3 landed. `_state_resolve` is the single
+state-resolution function; both `agent_get_state` and `lib/status-bar` go
+through it. All lab cases (including 10 and 11) run as part of
+`tests/test_all.sh`. Phase 4 cleanups remain optional.
+
+## Confirmed bugs (resolved)
 
 ### Bug 1 — `_state_jsonl_path` picks the wrong Claude conversation
 
@@ -13,10 +18,15 @@ directory. When a Claude pane is attached to conversation A but a fresher
 stub B (e.g. a sidechain or cancelled new session) exists in the same
 project dir, B shadows A and state derivation operates on the wrong file.
 
-- Repro: `tests/state_lab/cases/01-jsonl-newest-vs-active.sh` (XFAIL).
+- Repro: `tests/state_lab/cases/01-jsonl-newest-vs-active.sh` (passes
+  under `lab_assert` after fix in commit `ff1211c`).
 - Real-world hit: `am-6bb668` on 2026-05-13. Pane in
   `green-wekapp/0cf2837e` (end_turn → `waiting_input`); stub
   `green-wekapp/fe93abc7` had a newer mtime → reported `running`.
+- **Fixed:** state-hook.sh now persists `.session_id` from the hook
+  payload to `sessions.json` as `claude_session_id`; `_state_jsonl_path`
+  resolves the owning conversation via that id (or pane argv / lsof as
+  fallbacks), with mtime only as a last resort.
 
 ### Bug 2 — `_state_from_jsonl` only inspects `tail -20`
 
@@ -27,38 +37,33 @@ after the last meaningful turn, the meaningful entry falls out of view and
 state is reported as empty (caller falls back to pane, which may
 default-to-running).
 
-- Repro: `tests/state_lab/cases/05-jsonl-tail20-metadata-flood.sh` (XFAIL).
+- Repro: `tests/state_lab/cases/05-jsonl-tail20-metadata-flood.sh` (passes
+  under `lab_assert` after fix in commit `169b8b1`).
 - Real-world hit: same `green-wekapp` jsonl had 8+ metadata rows after the
   last `end_turn`; lucky that the tail window still caught it.
+- **Fixed:** replaced `tail -20 | grep` with `(tail -r || tac) | head -n 200
+  | grep -m1`, so the search reverse-streams past arbitrarily deep
+  metadata floods up to a bounded cap.
 
-## Current duplication map
+## Duplication map (after Phase 2)
 
-State detection is implemented three times in bash:
+State detection lives in one function: `_state_resolve` in `lib/state.sh`.
+Two call sites share it:
 
-| Implementation | File | Used by |
+| Call site | File | Args |
 |---|---|---|
-| `agent_get_state` | `lib/state.sh` | `am list --json`, `am wait`, agent-manager CLI |
-| `_agent_get_state_fast` | `lib/state.sh` | internal lean variant (not currently called by anything outside state.sh itself — leftover) |
-| `_fast_state` | `lib/status-bar` | tmux status-bar / sidebar render |
+| `agent_get_state` | `lib/state.sh` (wrapper) | non-bulk |
+| status-bar inline | `lib/status-bar` | bulk fixtures (`SESSION_TOP_PID` / `PROC_COMM` / `PROC_CHILDREN` / `now`) passed by nameref |
 
-Plus inlined re-implementations in `status-bar` for performance:
+Canonical priority order — identical on both sites:
 
-- `_pane_is_shell_bulk` reimplements `_state_pane_is_shell` using a bulk
-  `ps -eo` table shared across all sessions.
-- `_hook_state_set` reimplements `_state_from_hook` to avoid the
-  `$(...)` subshell.
+```
+shell -> hook terminal (waiting_*) -> pane (perm/custom/dead/idle) -> jsonl -> pane fallback
+```
 
-Priority orders differ:
-
-| Path | Order |
-|---|---|
-| `agent_get_state` | exists → shell → pane (permission/custom/dead/idle) → hook → JSONL → pane fallback |
-| `_agent_get_state_fast` | shell → hook (non-running short-circuits) → JSONL (waiting_input short-circuits) → pane |
-| status-bar `_fast_state` | hook (**short-circuits on ANY value**) → shell → JSONL → pane |
-
-The status-bar variant short-circuiting on any hook value is the visible
-"▸ in sidebar / ● in browser" divergence — a permission prompt painted
-during a tool call is never seen.
+Bulk path differences are limited to the shell branch (status-bar reports
+`idle` directly; the non-bulk path runs `agent_classify_exit` to upgrade
+to `dead` when appropriate, and checks `created_at` to surface `starting`).
 
 The Go side (`cmd/am-list-internal`, `cmd/am-browse`) does **not** derive
 state today; both consume the bash-formatted display string. So
@@ -66,7 +71,7 @@ divergence is bash-internal only — for now.
 
 ## Plan
 
-### Phase 1 — fix the two bugs (lab pins regression contract)
+### Phase 1 — fix the two bugs (lab pins regression contract) — **done (commits `21602cf`, `169b8b1`, `ff1211c`)**
 
 1. **Resolve Claude conversation by session id, not by mtime.**
    Three signals, used in order:
@@ -115,7 +120,7 @@ divergence is bash-internal only — for now.
      to lock this in (requires lab to source status-bar's helpers, not
      just lib/state.sh — see Phase 3).
 
-### Phase 2 — single implementation, two access patterns
+### Phase 2 — single implementation, two access patterns — **done (commit `e07e7e4`)**
 
 Goal: one definition of "given (session, agent_type, dir, optional bulk
 data), return state". Two call sites: one-shot (`agent_get_state`) and
@@ -146,7 +151,7 @@ bulk (status-bar).
 
 4. Delete `_agent_get_state_fast` — unused after wrapper refactor.
 
-### Phase 3 — make the lab a CI gate for both paths
+### Phase 3 — make the lab a CI gate for both paths — **done (commit `285b371`)**
 
 The lab currently exercises `lib/state.sh`. After Phase 2, status-bar
 shares the same function — but to lock that in, refactor status-bar to
@@ -169,20 +174,26 @@ Wire `tests/state_lab/run.sh` into `tests/test_all.sh`.
 - Fix the `dup-cwd` ambiguity (case 09) by writing all matching sessions
   rather than the first, or by refusing to write when ambiguous. Trade-
   off: silent miss vs. clobber. Decide once we see a real-world hit; for
-  now the case just pins current behavior.
+  now the case just pins current behavior. **Partial mitigation already
+  in place:** once any hook fires with `.session_id` set, the affected
+  session is tagged with `claude_session_id`, so subsequent state
+  derivation no longer needs cwd disambiguation; the gap is limited to
+  the first hook event after registration.
 - Port `_state_resolve` to Go in `internal/sessions/state.go` when/if
   `am-list-internal` starts emitting state in its output (it currently
   doesn't, which is why the divergence between Go list and bash
   `am list --json` exists only at the bash layer).
+- Unit-test the hook-script `claude_session_id` persistence path
+  (`tests/test_state_hooks.sh`) — currently exercised end-to-end by lab
+  case 01 but not in isolation.
 
 ## Acceptance
 
-Done when:
-
-1. All 9 `tests/state_lab/cases/*.sh` pass (no XFAILs).
-2. New case `10-statusbar-running-with-permission.sh` passes.
-3. New case `11-paths-agree.sh` passes.
-4. `lib/state.sh` exports exactly one state-resolution function.
-5. `lib/status-bar` contains no copy of pane/hook/jsonl logic — only bulk
-   data prep and presentation.
-6. `tests/test_all.sh` runs the lab cases.
+| # | Criterion | Status |
+|---|---|---|
+| 1 | All 9 lab cases pass (no XFAILs) | ✅ |
+| 2 | `10-statusbar-running-with-permission.sh` passes | ✅ |
+| 3 | `11-paths-agree.sh` passes | ✅ |
+| 4 | `lib/state.sh` exports exactly one state-resolution function | ✅ (`_state_resolve`) |
+| 5 | `lib/status-bar` has no copy of pane/hook/jsonl logic — only bulk data prep + presentation | ✅ |
+| 6 | `tests/test_all.sh` runs the lab cases | ✅ |

@@ -200,13 +200,17 @@ am restore
 - `_sessions_log_jsonl_exists(directory, session_id)` - Check if Claude JSONL still exists
 
 **State detection (lib/state.sh):**
-- `agent_get_state(session_name)` - Get current state: starting, running, waiting_input, waiting_permission, waiting_custom, idle, dead
+- `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, idle, dead
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell → hook terminal → pane (perm/custom/dead/idle) → jsonl → pane fallback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_from_hook(session_name)` - Read state from hook state file (primary source for Claude sessions)
-- `_state_from_jsonl(directory)` - Derive state from Claude JSONL (fallback when hooks unavailable)
+- `_state_hook_read(session, out_var [, now_epoch])` - Nameref variant of `_state_from_hook`; no subshell, used inside `_state_resolve`
+- `_state_from_jsonl(directory [, session_name])` - Derive state from Claude JSONL. With session, targets the conversation by `claude_session_id` (registry / pane argv / lsof) instead of newest mtime.
 - `_state_from_pane(session, [agent_type])` - Derive state from pane content (all agents)
-- `_state_jsonl_path(dir)` - Find newest Claude JSONL for directory
+- `_state_jsonl_path(dir [, session_name])` - Resolve the Claude JSONL for a directory. With session, prefers the conversation owned by the pane; mtime fallback only when no signal resolves.
+- `_state_claude_session_id(session, resolved_dir, project_dir)` - Resolve and cache the conversation UUID owning a session. Tries registry → pane argv (`--session-id`) → lsof
+- `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Nameref bulk variant of `_state_pane_is_shell`
 - `_state_jsonl_stale(path)` - Check if JSONL is >30s old
 
 **Utils:**
