@@ -136,10 +136,15 @@ _pane_is_shell_bulk() {
 _fast_state() {
     local session="$1" agent_type="$2" dir="$3"
     _hook_state_set "$session"
-    if [[ -n "$_HS" ]]; then
-        echo "$_HS"
-        return
-    fi
+    # Hook short-circuit: only for terminal waiting states. `running` falls
+    # through to pane so permission prompts painted during a tool call are
+    # caught (otherwise status-bar shows ▸ while browser shows ⚠).
+    case "$_HS" in
+        waiting_input|waiting_permission|waiting_custom)
+            echo "$_HS"
+            return
+            ;;
+    esac
     if _pane_is_shell_bulk "$session"; then
         echo "idle"
         return
@@ -152,7 +157,7 @@ _fast_state() {
             return
         fi
     fi
-    _state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || echo running
+    _state_from_pane "$session" "$agent_type" --skip-alive-check 2>/dev/null || echo "${_HS:-running}"
 }
 
 # Single tmux call returns ordering + activity timestamps. Sort by creation
