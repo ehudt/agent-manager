@@ -42,7 +42,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
-| `lib/state.sh` | Session state detection: JSONL parsing, pane pattern matching, wait/poll |
+| `lib/state.sh` | Session state detection: hook file + process tree, wait/poll |
 | `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `lib/sandbox.sh` | Docker sandbox lifecycle and fleet ops |
@@ -76,7 +76,7 @@ fires lifecycle hooks (`Stop`, `Notification`, `UserPromptSubmit`, `PostToolUse`
 that call `lib/hooks/state-hook.sh`. The script maps the event to an am state
 and writes it to `/tmp/am-state/<session_name>`.
 
-State detection priority: **hook state file → JSONL → pane content**.
+State detection priority: **shell pane check → hook state file → unknown**.
 
 Hooks are installed via `am install` into `~/.claude/settings.json`. State
 files are cleaned up on session kill and during registry GC.
@@ -218,18 +218,14 @@ am restore
 - `_sessions_log_jsonl_exists(directory, session_id)` - Check if Claude JSONL still exists
 
 **State detection (lib/state.sh):**
-- `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, idle, dead
-- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell → hook terminal → pane (perm/custom/dead/idle) → jsonl → pane fallback
+- `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, idle, unknown, dead
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state → `unknown` fallback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_from_hook(session_name)` - Read state from hook state file (primary source for Claude sessions)
 - `_state_hook_read(session, out_var [, now_epoch])` - Nameref variant of `_state_from_hook`; no subshell, used inside `_state_resolve`
-- `_state_from_jsonl(directory [, session_name])` - Derive state from Claude JSONL. With session, targets the conversation by `claude_session_id` (sidecar / pane argv / lsof) instead of newest mtime.
-- `_state_from_pane(session, [agent_type])` - Derive state from pane content (all agents)
-- `_state_jsonl_path(dir [, session_name])` - Resolve the Claude JSONL for a directory. With session, prefers the conversation owned by the pane; mtime fallback only when no signal resolves.
-- `_state_claude_session_id(session, resolved_dir, project_dir)` - Resolve and cache the conversation UUID owning a session. Tries sidecar (`$AM_STATE_DIR/<session>.sid` — written by `state-hook.sh`) → pane argv (`--session-id`) → lsof. Sidecar is per-session to avoid the registry read-modify-write race when concurrent hooks fire.
+- `_state_pane_is_shell(session)` - Detect whether top pane is a plain shell (vs an agent process)
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Nameref bulk variant of `_state_pane_is_shell`
-- `_state_jsonl_stale(path)` - Check if JSONL is >30s old
 
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
@@ -315,7 +311,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
-| Add state detection pattern | `lib/state.sh` → `_state_from_pane()` pattern list |
+| Add state detection signal | `lib/state.sh` → extend `_state_resolve()` ordering |
 | Add hook state event | `lib/hooks/state-hook.sh` → event-to-state mapping |
 | Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
 | Add/edit peek skill | `skills/am-peek/SKILL.md` |
