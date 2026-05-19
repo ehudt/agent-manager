@@ -9,6 +9,7 @@
 # Test/debug artifacts
 *.log
 .claude/worktrees
+.claude/scheduled_tasks.lock
 .codex/worktrees
 .worktrees/
 __pycache__/
