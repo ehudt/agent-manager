@@ -219,7 +219,7 @@ am restore
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, idle, unknown, dead
-- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state → `unknown` fallback
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state → unknown fallback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_from_hook(session_name)` - Read state from hook state file (primary source for Claude sessions)
