@@ -44,6 +44,7 @@ Architecture reference for AI agents working with this codebase.
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: JSONL parsing, pane pattern matching, wait/poll |
 | `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
+| `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `lib/sandbox.sh` | Docker sandbox lifecycle and fleet ops |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
 | `sandbox/entrypoint.sh` | Container init: UID/GID alignment, skeleton seeding, sudoers |
@@ -146,11 +147,14 @@ am peek am-abc123
 am peek --pane shell am-abc123
 am peek --follow am-abc123
 am peek --pane shell --follow am-abc123
+am peek --pane shell --history --lines 200 am-abc123
+am peek --pane shell --history --grep "ERROR|FAIL" --lines 50 am-abc123
 ```
 
 - Default pane is `agent` (top pane). `--pane shell` targets the lower shell pane.
 - Plain `am peek` returns a snapshot using tmux pane capture.
 - `am peek --follow` prefers streamed pane logs when available and falls back to polling tmux output.
+- `am peek --pane shell --history` reads the full streamed scrollback from `/tmp/am-logs/<session>/shell.log` instead of the viewport. Supports `--lines N` (default 200) and `--grep PAT` (filtered via `grep -E` then `tail`). Output is already ANSI-stripped. Mutually exclusive with `--follow` / `--json`. See `skills/am-peek/SKILL.md` for context-conserving usage patterns.
 - This follow contract is the right primitive for a future web wrapper: CLI and web can share the same snapshot/stream model.
 
 ### Recommended automation pattern
@@ -314,4 +318,6 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add state detection pattern | `lib/state.sh` → `_state_from_pane()` pattern list |
 | Add hook state event | `lib/hooks/state-hook.sh` → event-to-state mapping |
 | Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
+| Add/edit peek skill | `skills/am-peek/SKILL.md` |
+| Add new skill (auto-installed) | drop `skills/<name>/SKILL.md`; `am install` loops `skills/*/` |
 | Add restore agent support | `lib/registry.sh` → `sessions_log_restorable()` filter, `am` → `cmd_restore_internal()` |

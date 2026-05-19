@@ -268,6 +268,36 @@ test_strip_ansi() {
     result=$(printf '%s' "$input" | "$strip")
     assert_eq "just plain text" "$result" "strip-ansi: plain text unchanged"
 
+    # ZLE-style in-place edit: type 'oyu', cursor back 3, overwrite with 'you'
+    input=$'oyu\e[3Dyou'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "you" "$result" "strip-ansi: cursor-back overwrite renders final state"
+
+    # ZLE-style edit: replace tail via cursor-back + erase-to-EOL + new content
+    input=$'hello world\e[5D\e[Kthere'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello there" "$result" "strip-ansi: cursor-back + EL renders replacement"
+
+    # Carriage-return redraw: \r returns to col 0, new content overwrites
+    input=$'old line\rnew line'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "new line" "$result" "strip-ansi: CR redraw overwrites earlier content"
+
+    # Single-char correction: type 'helli', cursor back 1, overwrite with 'o'
+    input=$'helli\e[Do'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "hello" "$result" "strip-ansi: single-char cursor-back correction"
+
+    # Delete characters CSI P: type 'abcXXXdef', cursor to col 3, delete 3
+    input=$'abcXXXdef\e[6D\e[3P'
+    result=$(printf '%s' "$input" | "$strip")
+    assert_eq "abcdef" "$result" "strip-ansi: CSI P deletes characters"
+
+    # Multi-param SGR (regression: int conversion must not warn on '38;2;...')
+    input=$'\e[38;2;215;119;87mhello\e[0m'
+    result=$(printf '%s' "$input" | "$strip" 2>&1)
+    assert_eq "hello" "$result" "strip-ansi: multi-param SGR no warning"
+
     $SUMMARY_MODE || echo ""
 }
 

@@ -1,17 +1,145 @@
 #!/usr/bin/perl
-# Strip ANSI escape sequences and terminal control codes from stdin.
+# Strip ANSI escape sequences AND apply common cursor/erase operations so that
+# in-place line edits (zsh ZLE arrow-key corrections, redraws, autosuggest
+# clears) render the final visible state instead of an interleaved keystroke
+# trace.
+#
+# Operates per input line (newline-terminated record). Within a line, maintains
+# a cell buffer and a cursor column. Supported CSI ops:
+#   D  cursor back        (used by ZLE to move left for in-place edits)
+#   K  erase in line      (0=to EOL, 1=to BOL, 2=whole line)
+#   P  delete characters
+#   X  erase characters
+#   @  insert characters
+#   G  cursor to column
+# Cursor-forward (C), up/down (A/B), and absolute position (H/f) are stripped
+# without affecting the column (treating them as no-ops keeps simple cases like
+# `hello\e[10C world` rendering as `hello world` rather than padded with gaps).
+# SGR (m), private (?...), OSC (ESC ] ... BEL), and charset (ESC ( X) sequences
+# are dropped. Backspace+char pairs are removed (legacy overstrike behavior).
+#
 # Used by tmux pipe-pane to produce clean log files.
 
 use strict;
 use warnings;
-$| = 1;  # autoflush
+$| = 1;
 
 while (<STDIN>) {
-    s/\e\[[0-9;]*[a-zA-Z]//g;     # CSI sequences (colors, cursor, etc.)
-    s/\e\[\?[0-9;]*[a-zA-Z]//g;   # CSI private sequences (?25h, ?2004l, etc.)
-    s/\e\][^\a]*\a//g;             # OSC sequences (title set, etc.)
-    s/\e\(B//g;                    # character set selection
-    s/\r//g;                       # carriage returns
-    s/\x08.//g;                    # backspace + overwritten char
-    print;
+    my $trailing_nl = ($_ =~ s/\n\z//) ? 1 : 0;
+    my @cells;
+    my $col = 0;
+    my $len = length($_);
+    my $i = 0;
+
+    while ($i < $len) {
+        my $c = substr($_, $i, 1);
+
+        if ($c eq "\x1b") {
+            if ($i + 1 >= $len) { last; }
+            my $next = substr($_, $i + 1, 1);
+
+            if ($next eq '[') {
+                # CSI: ESC [ params... <final>
+                my $j = $i + 2;
+                while ($j < $len) {
+                    my $b = substr($_, $j, 1);
+                    last if $b =~ /[\x40-\x7e]/;
+                    $j++;
+                }
+                if ($j >= $len) { last; }
+                my $params_raw = substr($_, $i + 2, $j - $i - 2);
+                my $final = substr($_, $j, 1);
+                my $params = $params_raw;
+                $params =~ s/^[?<>=]//;
+                my $n_default = ($final eq 'K' || $final eq 'J') ? 0 : 1;
+                my $first_param = (split /;/, $params, 2)[0];
+                $first_param = '' unless defined $first_param;
+                my $n = ($first_param eq '') ? $n_default : int($first_param);
+
+                if ($final eq 'D') {
+                    $n = 1 if $n < 1;
+                    $col -= $n;
+                    $col = 0 if $col < 0;
+                } elsif ($final eq 'K') {
+                    if ($n == 0) {
+                        $#cells = $col - 1 if $col - 1 < $#cells;
+                    } elsif ($n == 1) {
+                        for (my $k = 0; $k <= $col && $k <= $#cells; $k++) {
+                            $cells[$k] = ' ';
+                        }
+                    } elsif ($n == 2) {
+                        @cells = ();
+                    }
+                } elsif ($final eq 'P') {
+                    $n = 1 if $n < 1;
+                    splice(@cells, $col, $n) if $col <= $#cells;
+                } elsif ($final eq 'X') {
+                    $n = 1 if $n < 1;
+                    for (my $k = 0; $k < $n; $k++) {
+                        $cells[$col + $k] = ' ' if $col + $k <= $#cells;
+                    }
+                } elsif ($final eq 'G') {
+                    $n = 1 if $n < 1;
+                    $col = $n - 1;
+                    $col = 0 if $col < 0;
+                } elsif ($final eq '@') {
+                    $n = 1 if $n < 1;
+                    splice(@cells, $col, 0, (' ') x $n);
+                }
+                # else: ignore (m, C, A, B, H, f, J, s, u, h, l, etc.)
+                $i = $j + 1;
+                next;
+            }
+
+            if ($next eq ']') {
+                # OSC: ESC ] ... (BEL | ESC \)
+                my $j = $i + 2;
+                while ($j < $len) {
+                    my $b = substr($_, $j, 1);
+                    if ($b eq "\x07") { $j++; last; }
+                    if ($b eq "\x1b" && $j + 1 < $len && substr($_, $j + 1, 1) eq '\\') {
+                        $j += 2;
+                        last;
+                    }
+                    $j++;
+                }
+                $i = $j;
+                next;
+            }
+
+            if ($next eq '(' || $next eq ')' || $next eq '*' || $next eq '+') {
+                # Charset designation: ESC ( X (3 bytes)
+                $i += 3;
+                next;
+            }
+
+            # Other 2-byte ESC sequences (ESC 7, ESC 8, ESC =, ESC >, ESC c, etc.)
+            $i += 2;
+            next;
+        }
+
+        if ($c eq "\r") {
+            $col = 0;
+            $i++;
+            next;
+        }
+
+        if ($c eq "\x08") {
+            # Legacy: backspace + next char removed together (man-page overstrike).
+            $i += 2;
+            next;
+        }
+
+        $cells[$col] = $c;
+        $col++;
+        $i++;
+    }
+
+    my $out = '';
+    for my $cell (@cells) {
+        $out .= defined($cell) ? $cell : ' ';
+    }
+    $out =~ s/ +\z//;
+    print $out;
+    print "\n" if $trailing_nl;
 }

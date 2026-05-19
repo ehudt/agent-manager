@@ -706,12 +706,36 @@ peek_follow_poll() {
     done
 }
 
+peek_history_output() {
+    local session_name="$1"
+    local pane_name="$2"
+    local lines="$3"
+    local pattern="$4"
+
+    local log_file
+    log_file=$(tmux_session_pane_log_file "$session_name" "$pane_name") || return 1
+
+    if [[ ! -f "$log_file" ]]; then
+        log_error "Log not available: $log_file"
+        log_error "Enable streaming with: am config set stream_logs true (only affects future sessions)"
+        return 1
+    fi
+
+    if [[ -n "$pattern" ]]; then
+        grep -E -- "$pattern" "$log_file" | tail -n "$lines"
+    else
+        tail -n "$lines" "$log_file"
+    fi
+}
+
 cmd_peek() {
     _ensure_state
     local follow=false
     local pane_name="agent"
     local json=false
-    local lines=50
+    local history=false
+    local lines=""
+    local grep_pattern=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -727,12 +751,20 @@ cmd_peek() {
                 json=true
                 shift
                 ;;
+            --history)
+                history=true
+                shift
+                ;;
+            --grep)
+                grep_pattern="${2:-}"
+                shift 2
+                ;;
             --lines)
-                lines="${2:-50}"
+                lines="${2:-}"
                 shift 2
                 ;;
             -h|--help)
-                echo "Usage: am peek [--pane agent|shell] [--follow] [--json [--lines N]] <session-name>"
+                echo "Usage: am peek [--pane agent|shell] [--follow] [--json [--lines N]] [--history [--lines N] [--grep PAT]] <session-name>"
                 return 0
                 ;;
             -*)
@@ -744,6 +776,28 @@ cmd_peek() {
                 ;;
         esac
     done
+
+    if $history; then
+        if $follow; then
+            log_error "--history is incompatible with --follow"
+            return 1
+        fi
+        if $json; then
+            log_error "--history is incompatible with --json"
+            return 1
+        fi
+    elif [[ -n "$grep_pattern" ]]; then
+        log_error "--grep requires --history"
+        return 1
+    fi
+
+    if [[ -z "$lines" ]]; then
+        if $history; then
+            lines=200
+        else
+            lines=50
+        fi
+    fi
 
     local name="${1:-}"
     if [[ -z "$name" ]]; then
@@ -767,7 +821,9 @@ cmd_peek() {
             ;;
     esac
 
-    if $json; then
+    if $history; then
+        peek_history_output "$resolved" "$pane_name" "$lines" "$grep_pattern"
+    elif $json; then
         local state pane_target raw_content content ts
         state=$(agent_get_state "$resolved")
         pane_target=$(tmux_session_pane_target "$resolved" "$pane_name")
@@ -1477,31 +1533,41 @@ EOF
     # --- Step 3: Symlink skills for Claude Code discovery ---
     echo "" >&2
     echo -e "${BOLD}Setting up skills...${RESET}" >&2
-    local skills_src="$AM_SCRIPT_DIR/skills/am-orchestration"
+    local skills_root="$AM_SCRIPT_DIR/skills"
     local skills_dir="${AM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
-    local skills_target="$skills_dir/am-orchestration"
 
-    if [[ ! -d "$skills_src" ]]; then
-        log_warn "  Skills source not found: $skills_src"
-        (( warnings += 1 ))
-    elif [[ -L "$skills_target" ]]; then
-        local existing
-        existing=$(readlink "$skills_target")
-        if [[ "$existing" == "$skills_src" ]]; then
-            log_success "  Symlink already exists: $skills_target"
-            steps_done+=("Skills symlink verified")
-        else
-            log_warn "  Symlink points to $existing (expected $skills_src)"
-            (( warnings += 1 ))
-        fi
-    elif [[ -e "$skills_target" ]]; then
-        log_warn "  Target exists but is not a symlink: $skills_target"
+    if [[ ! -d "$skills_root" ]]; then
+        log_warn "  Skills source root not found: $skills_root"
         (( warnings += 1 ))
     else
         mkdir -p "$skills_dir"
-        ln -s "$skills_src" "$skills_target"
-        log_success "  Symlinked: $skills_target -> $skills_src"
-        steps_done+=("Skills symlinked")
+        shopt -s nullglob
+        local skill_src skill_name skill_target existing
+        for skill_src in "$skills_root"/*/; do
+            skill_src="${skill_src%/}"
+            [[ -f "$skill_src/SKILL.md" ]] || continue
+            skill_name=$(basename "$skill_src")
+            skill_target="$skills_dir/$skill_name"
+
+            if [[ -L "$skill_target" ]]; then
+                existing=$(readlink "$skill_target")
+                if [[ "$existing" == "$skill_src" ]]; then
+                    log_success "  Symlink already exists: $skill_target"
+                    steps_done+=("Skill $skill_name: verified")
+                else
+                    log_warn "  $skill_target -> $existing (expected $skill_src)"
+                    (( warnings += 1 ))
+                fi
+            elif [[ -e "$skill_target" ]]; then
+                log_warn "  Target exists but is not a symlink: $skill_target"
+                (( warnings += 1 ))
+            else
+                ln -s "$skill_src" "$skill_target"
+                log_success "  Symlinked: $skill_target -> $skill_src"
+                steps_done+=("Skill $skill_name: symlinked")
+            fi
+        done
+        shopt -u nullglob
     fi
 
     # --- Step 4: Install am onto PATH (via scripts/install.sh) ---
