@@ -130,8 +130,12 @@ test_tmux_binding_snippets() {
         "tmux config: prefix+h opens restore popup"
     assert_contains "$rendered_conf" "command-alias[100] am=" \
         "tmux config: registers :am command alias"
-    assert_contains "$rendered_conf" 'confirm-before -p "kill-pane #P? (y/n)" kill-pane' \
-        "tmux config: prefix+x falls back to kill-pane outside am-* sessions"
+    assert_cmd_fails "tmux config: no am-* guard (dedicated server)" \
+        grep -Fq "#{m:am-*,#{session_name}}" "$temp_conf"
+    assert_contains "$rendered_conf" 'bind [ copy-mode' \
+        "tmux config: prefix+[ restored to tmux default copy-mode"
+    assert_contains "$rendered_conf" 'bind ] paste-buffer -p' \
+        "tmux config: prefix+] restored to tmux default paste-buffer"
 
     rm -rf "$temp_am_dir"
 
@@ -185,10 +189,10 @@ EOF
         "tmux config refresh: rewrites prefix+a helper to absolute path"
     assert_contains "$rendered_conf" "run-shell \"$PROJECT_DIR/bin/kill-and-switch #{client_name} #{session_name}\"" \
         "tmux config refresh: rewrites prefix+x helper to absolute path"
-    assert_contains "$rendered_conf" "bind ] if-shell" \
-        "tmux config refresh: prefix+] cycle next binding present"
-    assert_contains "$rendered_conf" "bind [ if-shell" \
-        "tmux config refresh: prefix+[ cycle prev binding present"
+    assert_contains "$rendered_conf" 'bind ] paste-buffer -p' \
+        "tmux config refresh: rebinds prefix+] back to tmux default paste-buffer"
+    assert_contains "$rendered_conf" 'bind [ copy-mode' \
+        "tmux config refresh: rebinds prefix+[ back to tmux default copy-mode"
     assert_contains "$rendered_conf" "run-shell \"$PROJECT_DIR/bin/switch-index 1\"" \
         "tmux config refresh: prefix+1 index binding present"
     assert_contains "$rendered_conf" "run-shell \"$PROJECT_DIR/bin/switch-index 9\"" \
@@ -197,6 +201,8 @@ EOF
         grep -Fq 'run-shell "switch-last"' "$temp_conf"
     assert_cmd_fails "tmux config refresh: removes bare kill-and-switch helper" \
         grep -Fq 'run-shell "kill-and-switch #{client_name} #{session_name}"' "$temp_conf"
+    assert_cmd_fails "tmux config refresh: drops am-* session guard" \
+        grep -Fq "#{m:am-*,#{session_name}}" "$temp_conf"
 
     rm -rf "$temp_am_dir"
     $SUMMARY_MODE || echo ""
