@@ -33,9 +33,12 @@ lab_hook lab-ddd "{\"hook_event_name\":\"PermissionRequest\",\"cwd\":\"$real\"}"
 lab_assert "waiting_permission" "$(probe_hook lab-ddd)" \
     "PermissionRequest overrides running"
 
-# 5. Late PostToolUse must NOT clobber waiting_permission
+# 5. After permission grant, PostToolUse MUST transition waiting_permission ->
+#    running. waiting_permission is transient: it unblocks when the user
+#    answers, after which the tool runs and PostToolUse fires. Race guard only
+#    protects terminal waiting_input.
 lab_hook lab-ddd "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real\"}"
-lab_assert "waiting_permission" "$(probe_hook lab-ddd)" \
-    "PostToolUse after PermissionRequest: race guard preserves waiting_permission"
+lab_assert "running" "$(probe_hook lab-ddd)" \
+    "PostToolUse after PermissionRequest: transitions waiting_permission -> running"
 
 lab_report

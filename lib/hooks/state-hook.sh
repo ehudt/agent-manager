@@ -146,16 +146,21 @@ if [[ -z "$session_name" ]]; then
     exit 0
 fi
 
-# Race protection: running-state hooks can be delivered after Stop/Notification
-# or PermissionRequest has
-# already moved the session into a waiting_* state (hooks run concurrently and
-# a slow tool hook can finish last). Skip the write in that case —
-# only UserPromptSubmit (explicit user action) transitions waiting_* → running.
+# Race protection: a late PostToolUse can arrive after Stop has already
+# written waiting_input (hooks run concurrently, slow tool hook finishes last).
+# waiting_input is terminal — the agent is idle and the user is in the loop —
+# so a late tool hook must not flip it back to running. Only UserPromptSubmit
+# (explicit user action) may transition waiting_input → running.
+#
+# waiting_permission and waiting_custom are explicitly *transient*: they unblock
+# when the user answers, after which Claude/Codex resumes work and fires
+# PreToolUse/PostToolUse. Those hooks MUST move the state forward to running,
+# otherwise the session appears stuck at waiting_permission until end-of-turn.
 state_file="$AM_STATE_DIR/$session_name"
 if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
     case "$current" in
-        waiting_input|waiting_permission|waiting_custom) exit 0 ;;
+        waiting_input) exit 0 ;;
     esac
 fi
 

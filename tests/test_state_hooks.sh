@@ -102,28 +102,35 @@ test_state_hooks() {
     # --- PostToolUse does NOT clobber waiting_input (race protection) ---
     # Claude Code may deliver a delayed PostToolUse from a previous turn after
     # Stop has already written waiting_input. That must not revert the state.
+    # waiting_input is the only terminal state worth protecting — the agent is
+    # idle and the user is in the loop. A late tool hook must not flip it back.
     printf 'waiting_input' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "waiting_input" "$state" "PostToolUse: does not clobber waiting_input"
 
-    # --- PostToolUse does NOT clobber waiting_permission ---
+    # --- PostToolUse DOES transition waiting_permission -> running ---
+    # After the user grants a permission prompt, the tool runs and PostToolUse
+    # fires. That must move the session out of waiting_permission so the UI
+    # reflects that the agent is working again. Without this, the session
+    # appears stuck at waiting_permission until Stop fires at end-of-turn.
     printf 'waiting_permission' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_permission" "$state" "PostToolUse: does not clobber waiting_permission"
+    assert_eq "running" "$state" "PostToolUse: transitions waiting_permission -> running"
 
-    # --- PostToolUse does NOT clobber waiting_custom ---
+    # --- PostToolUse DOES transition waiting_custom -> running ---
     printf 'waiting_custom' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_custom" "$state" "PostToolUse: does not clobber waiting_custom"
+    assert_eq "running" "$state" "PostToolUse: transitions waiting_custom -> running"
 
-    # --- PreToolUse does NOT clobber waiting_permission ---
+    # --- PreToolUse DOES transition waiting_permission -> running ---
+    # After grant, the next tool's PreToolUse must flip the state forward too.
     printf 'waiting_permission' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PreToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_permission" "$state" "PreToolUse: does not clobber waiting_permission"
+    assert_eq "running" "$state" "PreToolUse: transitions waiting_permission -> running"
 
     # --- UserPromptSubmit DOES override waiting_input (explicit user action) ---
     printf 'waiting_input' > "$state_dir/am-abc123"
