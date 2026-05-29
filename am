@@ -96,9 +96,10 @@ OPTIONS FOR 'status':
     --json          Output as JSON (single session or array of all sessions)
 
 KEYBINDINGS (interactive browser):
-    Enter           Attach to selected session
+    Enter           Attach active session or restore inactive session
     Ctrl-N          Create new session (one-page form)
-    Ctrl-X          Kill selected session
+    Ctrl-H          Jump to inactive sessions
+    Ctrl-X          Kill selected active session
     Ctrl-R          Refresh session list
     Ctrl-P          Toggle preview panel
     Ctrl-J/K        Scroll preview up/down

@@ -129,15 +129,16 @@ Running `am new` with no arguments opens an interactive form where you pick a di
 
 ### Interactive session browser
 
-Run `am` (or `am list`) to open the fzf-powered session browser:
+Run `am` (or `am list`) to open the session browser:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ Agent Sessions | Enter:attach  ^N:new  ^H:restore  ^X:kill  ^R:refresh   │
+│ Agent Sessions | Enter:open  ^N:new  ^H:inactive  ^X:kill  ^R:refresh    │
 ├───────────────────────────────────────────────────────────────────────────┤
-│ > myapp/feature/auth [claude] Fix user auth  (5m ago)                    │
-│   myproject/main [claude] (2h ago)                                       │
-│   tools/dev [gemini] Refactor build system  (1d ago)                     │
+│ > am-a1b2c3 myapp/feature/auth [claude] Fix user auth  (5m ago)          │
+│   am-d4e5f6 tools/dev [gemini] Refactor build system  (1d ago)           │
+│   Inactive sessions ─────────────────────────────────────────────────     │
+│   myproject/main [claude] Investigate deploy issue  (2d ago)             │
 ├───────────────────────────────────────────────────────────────────────────┤
 │ Preview:                                                                  │
 │ Directory: ~/code/myapp                                                   │
@@ -151,10 +152,10 @@ Run `am` (or `am list`) to open the fzf-powered session browser:
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Attach to selected session |
+| `Enter` | Attach an active session or restore an inactive session |
 | `Ctrl-N` | Create new session |
-| `Ctrl-H` | Restore a closed session |
-| `Ctrl-X` | Kill selected session |
+| `Ctrl-H` | Jump to inactive sessions |
+| `Ctrl-X` | Kill selected active session |
 | `Ctrl-R` | Refresh session list |
 | `Ctrl-P` | Toggle preview panel |
 | `Esc` | Exit |
@@ -182,7 +183,7 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix + a` | Switch to last used am session |
 | `Prefix + n` | Open new-session popup |
 | `Prefix + s` | Open am browser popup |
-| `Prefix + h` | Open restore session popup |
+| `Prefix + h` | Open session browser for active and inactive sessions |
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
 | `Prefix ↑/↓` | Switch between agent and shell panes |
@@ -201,19 +202,21 @@ am peek --follow am-abc123               # Stream agent output in real time
 
 ### Restoring closed sessions
 
-Closed a session and want to pick it back up? `am restore` lets you browse recently closed Claude sessions and resume exactly where you left off:
+Closed a session and want to pick it back up? Recently closed Claude sessions appear below active sessions in the main `am` browser. Select an inactive session and press Enter to resume it exactly where you left off.
+
+You can also open the standalone restore picker directly:
 
 ```bash
 am restore
 ```
 
-This opens a picker showing closed sessions sorted by recency. The preview panel displays the last captured pane output — a text snapshot of what the agent was showing when the session ended — so you can remember what you were doing.
+The preview panel displays the last captured pane output — a text snapshot of what the agent was showing when the session ended — so you can remember what you were doing.
 
 Select a session and press Enter to resume it via `claude --resume` in the original directory, with full conversation history intact.
 
 Sessions stay restorable as long as Claude's conversation file exists on disk. There's no fixed time limit — cleanup happens automatically when Claude removes its own session data.
 
-You can also open the restore picker from inside the session browser with `Ctrl-H`.
+Inside the session browser, `Ctrl-H` jumps to the inactive section.
 
 ## Agent-to-Agent Orchestration
 
@@ -437,7 +440,7 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `am` | `am list`, `am ls` | Open interactive session browser |
+| `am` | `am list`, `am ls` | Open interactive browser for active and inactive sessions |
 | `am new [dir]` | `create`, `n` | Create new agent session |
 | `am send <session> [prompt]` | | Send a prompt to a running session |
 | `am peek <session>` | | Snapshot or follow a session's pane output |

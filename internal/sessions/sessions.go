@@ -3,6 +3,7 @@
 package sessions
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -34,13 +35,38 @@ type TmuxSession struct {
 	Activity int64
 }
 
-// Entry combines tmux session + registry metadata + formatted display.
+type EntryKind string
+
+const (
+	EntryActive   EntryKind = "active"
+	EntryInactive EntryKind = "inactive"
+)
+
+// SessionLogEntry matches one JSONL row from sessions_log.jsonl.
+type SessionLogEntry struct {
+	SessionName  string `json:"session_name"`
+	SessionID    string `json:"session_id"`
+	Directory    string `json:"directory"`
+	Branch       string `json:"branch"`
+	AgentType    string `json:"agent_type"`
+	Task         string `json:"task"`
+	CreatedAt    string `json:"created_at"`
+	ClosedAt     string `json:"closed_at"`
+	SnapshotFile string `json:"snapshot_file"`
+}
+
+// Entry combines session metadata + formatted display for browser rows.
 type Entry struct {
 	TmuxSession
 	Meta        Session
+	Kind        EntryKind
 	Display     string // formatted display string (without session_name| prefix)
 	DisplayBase string // display without the trailing time-ago portion
 	TimeAgo     string // e.g. "3m ago" — split out for right-alignment in TUI
+
+	// Inactive restore rows.
+	RestoreSessionID string
+	SnapshotPath     string
 }
 
 // ListTmuxSessions runs tmux list-sessions and returns matching sessions.
@@ -151,6 +177,36 @@ func FormatDisplayBase(s TmuxSession, meta Session) string {
 	return display.String()
 }
 
+// FormatRestorableDisplayBase produces the display string for a closed session
+// without the trailing time-ago portion.
+func FormatRestorableDisplayBase(log SessionLogEntry) string {
+	var display strings.Builder
+	if log.Directory != "" {
+		display.WriteString(filepath.Base(log.Directory))
+	} else if log.SessionID != "" {
+		display.WriteString(log.SessionID)
+	}
+	if log.Branch != "" {
+		display.WriteByte('/')
+		display.WriteString(log.Branch)
+	}
+
+	display.WriteString(" [")
+	if log.AgentType != "" {
+		display.WriteString(log.AgentType)
+	} else {
+		display.WriteString("unknown")
+	}
+	display.WriteByte(']')
+
+	if log.Task != "" {
+		display.WriteByte(' ')
+		display.WriteString(log.Task)
+	}
+
+	return display.String()
+}
+
 // FormatLine produces one pipe-delimited output line: session_name|display
 func FormatLine(s TmuxSession, meta Session, now int64) string {
 	return s.Name + "|" + FormatDisplay(s, meta, now)
@@ -195,49 +251,204 @@ func HomeDir() string {
 	return h
 }
 
-// LoadEntries fetches tmux sessions, reads registry, and returns sorted entries
-// ready for display. This is the main entry point for both binaries.
+// LoadEntries fetches active tmux sessions, reads registry, and returns sorted
+// entries ready for display. This is the main entry point for am-list-internal.
 func LoadEntries() []Entry {
 	socket := EnvOr("AM_TMUX_SOCKET", "agent-manager")
 	amDir := EnvOr("AM_DIR", filepath.Join(HomeDir(), ".agent-manager"))
 	prefix := EnvOr("AM_SESSION_PREFIX", "am-")
 
-	sessions := ListTmuxSessions(socket, prefix)
+	tmuxSessions := ListTmuxSessions(socket, prefix)
+	return loadActiveEntries(amDir, socket, tmuxSessions, time.Now())
+}
 
+// LoadBrowserEntries returns active sessions followed by restorable inactive
+// Claude sessions for the interactive session switcher.
+func LoadBrowserEntries() []Entry {
+	socket := EnvOr("AM_TMUX_SOCKET", "agent-manager")
+	amDir := EnvOr("AM_DIR", filepath.Join(HomeDir(), ".agent-manager"))
+	prefix := EnvOr("AM_SESSION_PREFIX", "am-")
+	home := HomeDir()
+
+	tmuxSessions := ListTmuxSessions(socket, prefix)
+	live := make(map[string]bool, len(tmuxSessions))
+	for _, s := range tmuxSessions {
+		live[s.Name] = true
+	}
+
+	now := time.Now()
+	active := loadActiveEntries(amDir, socket, tmuxSessions, now)
+	inactive := LoadRestorableEntries(amDir, home, live, now)
+	return append(active, inactive...)
+}
+
+func loadActiveEntries(amDir, socket string, tmuxSessions []TmuxSession, now time.Time) []Entry {
 	// Reap orphan registry rows + hook state files for tmux sessions that are
 	// gone. Throttled (60s, shared with bash registry_gc via .gc_last) so it's
 	// cheap on the hot fzf-reload path. Runs even when no live sessions remain
 	// so the last orphan rows get cleaned up.
 	stateDir := EnvOr("AM_STATE_DIR", "/tmp/am-state")
-	ReapOrphans(amDir, stateDir, sessions)
+	ReapOrphans(amDir, stateDir, tmuxSessions)
 
-	if len(sessions) == 0 {
+	if len(tmuxSessions) == 0 {
 		return nil
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].Activity > sessions[j].Activity
+	sort.Slice(tmuxSessions, func(i, j int) bool {
+		return tmuxSessions[i].Activity > tmuxSessions[j].Activity
 	})
 
 	// Refresh registry task fields from pane titles (and Claude JSONL fallback)
 	// before reading. Throttled to once per 60s via shared marker file, so this
 	// is cheap on the hot fzf-reload path.
-	RefreshTitles(amDir, socket, sessions)
+	RefreshTitles(amDir, socket, tmuxSessions)
 
 	registry := ReadRegistry(filepath.Join(amDir, "sessions.json"))
-	now := time.Now().Unix()
+	nowUnix := now.Unix()
 
-	entries := make([]Entry, len(sessions))
-	for i, s := range sessions {
+	entries := make([]Entry, len(tmuxSessions))
+	for i, s := range tmuxSessions {
 		meta := registry.Sessions[s.Name]
-		timeAgo := FormatTimeAgo(now - s.Activity)
+		timeAgo := FormatTimeAgo(nowUnix - s.Activity)
 		entries[i] = Entry{
 			TmuxSession: s,
 			Meta:        meta,
-			Display:     FormatDisplay(s, meta, now),
+			Kind:        EntryActive,
+			Display:     FormatDisplay(s, meta, nowUnix),
 			DisplayBase: FormatDisplayBase(s, meta),
 			TimeAgo:     timeAgo,
 		}
 	}
 	return entries
+}
+
+// LoadRestorableEntries reads sessions_log.jsonl and returns closed Claude
+// sessions that still have a backing Claude JSONL available for resume.
+func LoadRestorableEntries(amDir, home string, liveSessions map[string]bool, now time.Time) []Entry {
+	return restorableEntriesFromLog(
+		ReadSessionLog(EnvOr("AM_SESSIONS_LOG", filepath.Join(amDir, "sessions_log.jsonl"))),
+		amDir,
+		home,
+		liveSessions,
+		now,
+	)
+}
+
+// ReadSessionLog parses sessions_log.jsonl, skipping malformed lines.
+func ReadSessionLog(path string) []SessionLogEntry {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	var entries []SessionLogEntry
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry SessionLogEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSessions map[string]bool, now time.Time) []Entry {
+	if home == "" {
+		home = HomeDir()
+	}
+
+	seenIDs := make(map[string]bool)
+	var entries []Entry
+	for i := len(logs) - 1; i >= 0; i-- {
+		log := logs[i]
+		if log.AgentType != "claude" || log.SessionID == "" {
+			continue
+		}
+		if liveSessions != nil && liveSessions[log.SessionName] {
+			continue
+		}
+		if seenIDs[log.SessionID] {
+			continue
+		}
+		if !claudeJSONLExists(home, log.Directory, log.SessionID) {
+			continue
+		}
+
+		seenIDs[log.SessionID] = true
+		base := FormatRestorableDisplayBase(log)
+		ref := parseSessionLogTime(log.ClosedAt)
+		if ref.IsZero() {
+			ref = parseSessionLogTime(log.CreatedAt)
+		}
+		age := int64(0)
+		if !ref.IsZero() {
+			age = now.Unix() - ref.Unix()
+		}
+		timeAgo := FormatTimeAgo(age)
+
+		snapshotPath := ""
+		if log.SnapshotFile != "" {
+			candidate := filepath.Join(amDir, log.SnapshotFile)
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				snapshotPath = candidate
+			}
+		}
+
+		entries = append(entries, Entry{
+			Meta: Session{
+				Name:      log.SessionName,
+				Directory: log.Directory,
+				Branch:    log.Branch,
+				AgentType: log.AgentType,
+				Task:      log.Task,
+			},
+			Kind:             EntryInactive,
+			Display:          base + " (" + timeAgo + ")",
+			DisplayBase:      base,
+			TimeAgo:          timeAgo,
+			RestoreSessionID: log.SessionID,
+			SnapshotPath:     snapshotPath,
+		})
+	}
+	return entries
+}
+
+func parseSessionLogTime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func claudeJSONLExists(home, dir, sessionID string) bool {
+	if home == "" || dir == "" || sessionID == "" {
+		return false
+	}
+	projectDir := filepath.Join(home, ".claude", "projects", encodedClaudeProjectDir(dir))
+	st, err := os.Stat(filepath.Join(projectDir, sessionID+".jsonl"))
+	return err == nil && !st.IsDir()
+}
+
+func encodedClaudeProjectDir(dir string) string {
+	resolved := dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		if st, statErr := os.Stat(abs); statErr == nil && st.IsDir() {
+			if realPath, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+				resolved = realPath
+			} else {
+				resolved = abs
+			}
+		}
+	}
+	return strings.NewReplacer("/", "-", ".", "-").Replace(resolved)
 }

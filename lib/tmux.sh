@@ -59,8 +59,8 @@ bind n display-popup -E -w 90% -h 80% "$am_cmd new"
 # Prefix + s: open agent manager popup
 bind s display-popup -E -w 90% -h 80% "$am_cmd"
 
-# Prefix + H: open restore session popup
-bind h display-popup -E -w 90% -h 80% "$am_cmd restore"
+# Prefix + h: open the merged session switcher, which includes inactive sessions
+bind h display-popup -E -w 90% -h 80% "$am_cmd"
 
 # Prefix + x: kill the current am session and switch to the next most recent one
 bind-key -T prefix x run-shell "$kill_cmd #{client_name} #{session_name}"

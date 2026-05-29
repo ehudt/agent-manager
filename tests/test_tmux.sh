@@ -126,8 +126,8 @@ test_tmux_binding_snippets() {
         "tmux config: prefix+n opens new-session popup"
     assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
         "tmux config: prefix+s opens agent manager popup"
-    assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am restore\"" \
-        "tmux config: prefix+h opens restore popup"
+    assert_contains "$rendered_conf" "bind h display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
+        "tmux config: prefix+h opens merged session switcher"
     assert_contains "$rendered_conf" "command-alias[100] am=" \
         "tmux config: registers :am command alias"
     assert_cmd_fails "tmux config: no am-* guard (dedicated server)" \

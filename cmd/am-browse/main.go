@@ -36,7 +36,7 @@ func main() {
 
 	if benchmark {
 		// Load entries and measure time to "ready"
-		entries := sessions.LoadEntries()
+		entries := sessions.LoadBrowserEntries()
 		elapsed := time.Since(startTime)
 		fmt.Fprintf(os.Stderr, "am-browse: %d sessions loaded in %s\n", len(entries), elapsed)
 		return
@@ -77,7 +77,7 @@ type sessionsLoadedMsg struct {
 }
 
 type previewLoadedMsg struct {
-	session string
+	key     string
 	content string
 }
 
@@ -102,13 +102,13 @@ var (
 // initStyles creates all styles from a renderer tied to the real tty,
 // so color detection works even when stdout is captured by the caller.
 func initStyles(r *lipgloss.Renderer) {
-	accentStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))                                         // cyan accent bar
-	titleStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))                                          // bright white
-	selectedStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("235"))      // green on subtle dark bg
+	accentStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))                                     // cyan accent bar
+	titleStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))                                      // bright white
+	selectedStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("235")) // green on subtle dark bg
 	normalStyle = r.NewStyle()
-	dimStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                                        // dim
-	keyPillStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("14")).Background(lipgloss.Color("236"))       // cyan on dark bg
-	keyActionStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                                  // dim
+	dimStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                                   // dim
+	keyPillStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("14")).Background(lipgloss.Color("236")) // cyan on dark bg
+	keyActionStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                             // dim
 	separatorStyle = r.NewStyle().Foreground(lipgloss.Color("8"))
 	helpOverlay = r.NewStyle().Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
 }
@@ -121,7 +121,7 @@ type model struct {
 	cursor      int
 	filter      textinput.Model
 	preview     string
-	previewFor  string // session name whose preview is loaded
+	previewFor  string // preview key whose content is loaded
 	showPreview bool
 	showHelp    bool
 	width       int
@@ -152,18 +152,30 @@ func (m model) Init() tea.Cmd {
 }
 
 func loadSessions() tea.Msg {
-	entries := sessions.LoadEntries()
+	entries := sessions.LoadBrowserEntries()
 	return sessionsLoadedMsg{entries: entries}
 }
 
-func loadPreview(sessionName string) tea.Cmd {
+func loadPreview(entry sessions.Entry) tea.Cmd {
 	return func() tea.Msg {
-		if previewCmd == "" || sessionName == "" {
-			return previewLoadedMsg{session: sessionName, content: ""}
+		key := previewKey(entry)
+		if key == "" {
+			return previewLoadedMsg{key: key, content: ""}
 		}
-		cmd := exec.Command(previewCmd, sessionName)
+		if entry.Kind == sessions.EntryInactive {
+			if entry.SnapshotPath != "" {
+				if out, err := os.ReadFile(entry.SnapshotPath); err == nil {
+					return previewLoadedMsg{key: key, content: string(out)}
+				}
+			}
+			return previewLoadedMsg{key: key, content: "No snapshot available"}
+		}
+		if previewCmd == "" || entry.Name == "" {
+			return previewLoadedMsg{key: key, content: ""}
+		}
+		cmd := exec.Command(previewCmd, entry.Name)
 		out, _ := cmd.CombinedOutput()
-		return previewLoadedMsg{session: sessionName, content: string(out)}
+		return previewLoadedMsg{key: key, content: string(out)}
 	}
 }
 
@@ -203,9 +215,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case previewLoadedMsg:
 		// Only accept if still relevant
-		if msg.session == m.selectedSession() {
+		if msg.key == m.selectedPreviewKey() {
 			m.preview = msg.content
-			m.previewFor = msg.session
+			m.previewFor = msg.key
 		}
 		return m, nil
 
@@ -226,8 +238,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyEnter:
-			if s := m.selectedSession(); s != "" {
-				m.output = s
+			if entry, ok := m.selectedEntry(); ok {
+				if entry.Kind == sessions.EntryInactive {
+					m.output = "__RESTORE__\x1f" + entry.Meta.Directory + "\x1f" + entry.RestoreSessionID
+				} else {
+					m.output = entry.Name
+				}
 				return m, tea.Quit
 			}
 			return m, nil
@@ -237,8 +253,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyCtrlH:
-			m.output = "__RESTORE__"
-			return m, tea.Quit
+			if m.moveToFirstKind(sessions.EntryInactive) {
+				return m, m.requestPreview()
+			}
+			return m, nil
 
 		case tea.KeyCtrlX:
 			if s := m.selectedSession(); s != "" {
@@ -301,7 +319,11 @@ func (m *model) applyFilter() {
 	query := strings.ToLower(m.filter.Value())
 	m.filtered = nil
 	for i, e := range m.entries {
-		if query == "" || fuzzyMatch(strings.ToLower(e.Display), query) {
+		haystack := strings.ToLower(e.Display)
+		if e.Kind == sessions.EntryInactive {
+			haystack += " inactive restore closed"
+		}
+		if query == "" || fuzzyMatch(haystack, query) {
 			m.filtered = append(m.filtered, i)
 		}
 	}
@@ -317,19 +339,98 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func (m model) selectedSession() string {
+type listRow struct {
+	divider     bool
+	label       string
+	entryIndex  int
+	filteredPos int
+}
+
+func (m model) selectedEntry() (sessions.Entry, bool) {
 	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+		return sessions.Entry{}, false
+	}
+	return m.entries[m.filtered[m.cursor]], true
+}
+
+func (m model) selectedSession() string {
+	entry, ok := m.selectedEntry()
+	if !ok || entry.Kind == sessions.EntryInactive {
 		return ""
 	}
-	return m.entries[m.filtered[m.cursor]].Name
+	return entry.Name
+}
+
+func (m model) selectedPreviewKey() string {
+	entry, ok := m.selectedEntry()
+	if !ok {
+		return ""
+	}
+	return previewKey(entry)
+}
+
+func previewKey(entry sessions.Entry) string {
+	if entry.Kind == sessions.EntryInactive {
+		if entry.RestoreSessionID == "" {
+			return ""
+		}
+		return "inactive:" + entry.RestoreSessionID
+	}
+	if entry.Name == "" {
+		return ""
+	}
+	return "active:" + entry.Name
+}
+
+func (m *model) moveToFirstKind(kind sessions.EntryKind) bool {
+	for pos, idx := range m.filtered {
+		if m.entries[idx].Kind == kind {
+			m.cursor = pos
+			return true
+		}
+	}
+	return false
+}
+
+func (m model) entryCounts() (active, inactive int) {
+	for _, entry := range m.entries {
+		switch entry.Kind {
+		case sessions.EntryInactive:
+			inactive++
+		default:
+			active++
+		}
+	}
+	return active, inactive
+}
+
+func (m model) listRows() ([]listRow, int) {
+	rows := make([]listRow, 0, len(m.filtered)+1)
+	cursorRow := -1
+	inactiveDividerAdded := false
+	for pos, idx := range m.filtered {
+		if m.entries[idx].Kind == sessions.EntryInactive && !inactiveDividerAdded {
+			rows = append(rows, listRow{divider: true, label: "Inactive sessions"})
+			inactiveDividerAdded = true
+		}
+		if pos == m.cursor {
+			cursorRow = len(rows)
+		}
+		rows = append(rows, listRow{entryIndex: idx, filteredPos: pos})
+	}
+	return rows, cursorRow
 }
 
 func (m model) requestPreview() tea.Cmd {
-	s := m.selectedSession()
-	if s == "" || s == m.previewFor {
+	entry, ok := m.selectedEntry()
+	if !ok {
 		return nil
 	}
-	return loadPreview(s)
+	key := previewKey(entry)
+	if key == "" || key == m.previewFor {
+		return nil
+	}
+	return loadPreview(entry)
 }
 
 func (m model) View() string {
@@ -341,11 +442,16 @@ func (m model) View() string {
 
 	// Header: accent bar + title + session count
 	b.WriteByte('\n')
-	countStr := dimStyle.Render(fmt.Sprintf("%d active", len(m.filtered)))
+	activeCount, inactiveCount := m.entryCounts()
+	countLabel := fmt.Sprintf("%d active", activeCount)
+	if inactiveCount > 0 {
+		countLabel = fmt.Sprintf("%d active, %d inactive", activeCount, inactiveCount)
+	}
+	countStr := dimStyle.Render(countLabel)
 	title := "  " + accentStyle.Render("▎") + " " + titleStyle.Render("Agent Sessions")
 	// Right-align count: pad between title and count
 	titleVisLen := 2 + 2 + 14 // "  " + "▎ " + "Agent Sessions"
-	countVisLen := len(fmt.Sprintf("%d active", len(m.filtered)))
+	countVisLen := len(countLabel)
 	pad := m.width - titleVisLen - countVisLen
 	if pad < 2 {
 		pad = 2
@@ -358,7 +464,7 @@ func (m model) View() string {
 	// Keybind pills
 	b.WriteString("   ")
 	keys := []struct{ key, action string }{
-		{"?", "help"}, {"⏎", "attach"}, {"^N", "new"}, {"^X", "kill"}, {"^H", "restore"},
+		{"?", "help"}, {"⏎", "open"}, {"^N", "new"}, {"^X", "kill"}, {"^H", "inactive"},
 	}
 	for i, k := range keys {
 		b.WriteString(keyPillStyle.Render(" " + k.key + " "))
@@ -378,6 +484,9 @@ func (m model) View() string {
 	// Calculate layout: list gets 25% of space, preview gets 75% (like fzf config)
 	headerLines := 7 // blank + title + separator + keybinds + blank + filter + blank
 	available := m.height - headerLines
+	if available < 1 {
+		available = 1
+	}
 	listHeight := available
 	previewHeight := 0
 	if m.showPreview && available > 6 {
@@ -405,36 +514,53 @@ func (m model) View() string {
 		}
 		b.WriteByte('\n')
 	} else {
+		rows, cursorRow := m.listRows()
+
 		// Scroll window
 		start := 0
-		if m.cursor >= listHeight {
-			start = m.cursor - listHeight + 1
+		if cursorRow >= listHeight {
+			start = cursorRow - listHeight + 1
 		}
 		end := start + listHeight
-		if end > len(m.filtered) {
-			end = len(m.filtered)
+		if end > len(rows) {
+			end = len(rows)
 		}
 
 		// Find longest base display among visible entries to set time column position
 		maxBaseLen := 0
 		for i := start; i < end; i++ {
-			if n := len(m.entries[m.filtered[i]].DisplayBase); n > maxBaseLen {
+			row := rows[i]
+			if row.divider {
+				continue
+			}
+			if n := len(m.entries[row.entryIndex].DisplayBase); n > maxBaseLen {
 				maxBaseLen = n
 			}
 		}
 		// Time column starts 2 tabs (16 chars) after the longest base, capped to terminal width
 		timeCol := maxBaseLen + 16 // 16 ≈ two tabs of breathing room
-		if timeCol > m.width-14 {  // leave room for "(XXh XXm ago)"
-			timeCol = m.width - 14
+		maxTimeCol := m.width - 14 // leave room for "(XXh XXm ago)"
+		if maxTimeCol < 10 {
+			maxTimeCol = 10
+		}
+		if timeCol > maxTimeCol {
+			timeCol = maxTimeCol
 		}
 
 		for i := start; i < end; i++ {
-			entry := m.entries[m.filtered[i]]
+			row := rows[i]
+			if row.divider {
+				b.WriteString(sectionDivider(row.label, m.width))
+				b.WriteByte('\n')
+				continue
+			}
+
+			entry := m.entries[row.entryIndex]
 			base := entry.DisplayBase
 			timeAgo := "(" + entry.TimeAgo + ")"
 
 			prefix := "  "
-			if i == m.cursor {
+			if row.filteredPos == m.cursor {
 				prefix = "> "
 			}
 
@@ -452,7 +578,7 @@ func (m model) View() string {
 			}
 			line := prefix + base + strings.Repeat(" ", gap) + timeAgo
 
-			if i == m.cursor {
+			if row.filteredPos == m.cursor {
 				// Pad to full width for background highlight
 				if len(line) < m.width {
 					line += strings.Repeat(" ", m.width-len(line))
@@ -473,8 +599,12 @@ func (m model) View() string {
 		b.WriteString(separatorStyle.Render(strings.Repeat("─", m.width)))
 		b.WriteByte('\n')
 
-		previewContent := m.preview
-		if previewContent == "" && m.selectedSession() != "" {
+		previewContent := ""
+		selectedKey := m.selectedPreviewKey()
+		if selectedKey != "" && m.previewFor == selectedKey {
+			previewContent = m.preview
+		}
+		if previewContent == "" && selectedKey != "" {
 			previewContent = dimStyle.Render("Loading preview...")
 		}
 
@@ -498,6 +628,14 @@ func (m model) View() string {
 	return b.String()
 }
 
+func sectionDivider(label string, width int) string {
+	line := "  " + label
+	if width > len(line)+1 {
+		line += " " + strings.Repeat("─", width-len(line)-1)
+	}
+	return separatorStyle.Render(line)
+}
+
 // --- Fuzzy matching ---
 
 // fuzzyMatch does simple subsequence matching (like fzf's basic algorithm).
@@ -516,13 +654,13 @@ func helpText() string {
 
   Navigation
     Up/Down     Move selection
-    Enter       Attach to selected session
+    Enter       Attach active session or restore inactive session
     Esc/q       Exit without action
 
   Actions
     Ctrl-N      Create new session
-    Ctrl-H      Restore a closed session
-    Ctrl-X      Kill selected session
+    Ctrl-H      Jump to inactive sessions
+    Ctrl-X      Kill selected active session
     Ctrl-R      Refresh session list
 
   View
