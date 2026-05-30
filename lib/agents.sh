@@ -537,9 +537,10 @@ agent_kill() {
     agent_type=$(registry_get_field "$session_name" "agent_type")
     if [[ "$agent_type" == "claude" ]] && tmux_session_exists "$session_name"; then
         # Detect session_id if not yet backfilled
-        local dir sid
+        local dir sid created_at
         dir=$(registry_get_field "$session_name" "directory")
-        sid=$(_sessions_log_detect_id "$dir" 2>/dev/null || true)
+        created_at=$(registry_get_field "$session_name" "created_at")
+        sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$created_at" 2>/dev/null || true)
         local snap_file
         if [[ -n "$sid" ]]; then
             sessions_log_update "$session_name" "session_id" "$sid"

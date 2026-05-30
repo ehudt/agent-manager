@@ -168,6 +168,21 @@ fi
 mkdir -p "$AM_STATE_DIR"
 printf '%s' "$am_state" > "$state_file"
 
+# Persist the Claude/Codex conversation id alongside the state when the hook
+# payload exposes it. This lets restore snapshots bind to the exact pane that
+# fired the hook instead of guessing by cwd, which is ambiguous for duplicate
+# sessions in one repo.
+hook_session_id=$(printf '%s' "$hook_input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
+if [[ -z "$hook_session_id" ]]; then
+    transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+    if [[ -n "$transcript_path" ]]; then
+        hook_session_id=$(basename "$transcript_path" .jsonl)
+    fi
+fi
+if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    printf '%s' "$hook_session_id" > "$AM_STATE_DIR/$session_name.sid"
+fi
+
 # Invalidate list cache so the next fzf reload picks up the new state
 AM_DIR="${AM_DIR:-${HOME}/.agent-manager}"
 rm -f "$AM_DIR/.list_cache" 2>/dev/null || true

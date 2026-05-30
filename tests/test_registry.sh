@@ -609,10 +609,16 @@ test_auto_title_scan() {
     local old_am_dir="$AM_DIR"
     local old_am_registry="$AM_REGISTRY"
     local old_am_history="${AM_HISTORY:-}"
+    local old_am_sessions_log="${AM_SESSIONS_LOG:-}"
+    local old_am_snapshots_dir="${AM_SNAPSHOTS_DIR:-}"
+    local old_am_state_dir="${AM_STATE_DIR:-}"
     AM_DIR=$(mktemp -d)
     export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_HISTORY="$AM_DIR/history.jsonl"
+    export AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
+    export AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
+    export AM_STATE_DIR="$AM_DIR/state"
     am_init
 
     # Stub tmux_pane_title to return titles based on session name
@@ -626,6 +632,21 @@ test_auto_title_scan() {
             test-scan-5:*) echo "First title for history" ;;
             test-scan-6:*) echo "Existing Title" ;;
             test-scan-7:*) echo ">>> Clean up the mess" ;;
+            test-scan-10:*) echo "Stale JSONL guard" ;;
+            test-scan-11:*) echo "Sidecar session id" ;;
+            test-scan-12:*) echo "Sidecar pending JSONL" ;;
+            *) echo "" ;;
+        esac
+    }
+    tmux_session_pane_target() {
+        echo "$1:.{top}"
+    }
+    tmux_capture_pane() {
+        local target="$1"
+        case "$target" in
+            test-scan-10:*) echo "snapshot for test-scan-10" ;;
+            test-scan-11:*) echo "snapshot for test-scan-11" ;;
+            test-scan-12:*) echo "snapshot for test-scan-12" ;;
             *) echo "" ;;
         esac
     }
@@ -735,12 +756,105 @@ test_auto_title_scan() {
     assert_eq "" "$task" \
         "scan: no JSONL fallback for non-Claude agents"
 
+    # --- Test 10: A pre-existing JSONL from the same directory is not this session ---
+    local fake_home_10="$AM_DIR/fake_home_10"
+    local fake_dir_10="$AM_DIR/jsonl-stale-project"
+    local fake_real_10 fake_proj_10
+    mkdir -p "$fake_dir_10"
+    fake_real_10=$(cd "$fake_dir_10" && pwd -P)
+    fake_proj_10="${fake_real_10//\//-}"
+    fake_proj_10="${fake_proj_10//./-}"
+    mkdir -p "$fake_home_10/.claude/projects/$fake_proj_10"
+    printf '%s\n' '{"sessionId":"sid-old","type":"user","message":{"content":"Old session"}}' \
+        > "$fake_home_10/.claude/projects/$fake_proj_10/sid-old.jsonl"
+    touch -t 200001010000.00 "$fake_home_10/.claude/projects/$fake_proj_10/sid-old.jsonl"
+    local old_home_10="$HOME"
+    export HOME="$fake_home_10"
+    registry_add "test-scan-10" "$fake_dir_10" "main" "claude" ""
+    sessions_log_append "test-scan-10" "$fake_dir_10" "main" "claude" ""
+    auto_title_scan 1
+    local sid_10 snap_10 snap_content_10
+    sid_10=$(jq -r 'select(.session_name == "test-scan-10") | .session_id' "$AM_SESSIONS_LOG")
+    snap_10=$(jq -r 'select(.session_name == "test-scan-10") | .snapshot_file' "$AM_SESSIONS_LOG")
+    snap_content_10=$(cat "$AM_DIR/$snap_10" 2>/dev/null || true)
+    export HOME="$old_home_10"
+    assert_eq "" "$sid_10" \
+        "scan: does not backfill a stale directory JSONL into a newer session"
+    assert_eq "snapshots/test-scan-10.txt" "$snap_10" \
+        "scan: snapshots by am session until Claude session id is known"
+    assert_contains "$snap_content_10" "snapshot for test-scan-10" \
+        "scan: keeps the new session snapshot separate from stale JSONL"
+
+    # --- Test 11: Hook sidecar disambiguates two plausible JSONLs in one directory ---
+    local fake_home_11="$AM_DIR/fake_home_11"
+    local fake_dir_11="$AM_DIR/jsonl-sidecar-project"
+    local fake_real_11 fake_proj_11
+    mkdir -p "$fake_dir_11"
+    fake_real_11=$(cd "$fake_dir_11" && pwd -P)
+    fake_proj_11="${fake_real_11//\//-}"
+    fake_proj_11="${fake_proj_11//./-}"
+    mkdir -p "$fake_home_11/.claude/projects/$fake_proj_11" "$AM_STATE_DIR"
+    local old_home_11="$HOME"
+    export HOME="$fake_home_11"
+    registry_add "test-scan-11" "$fake_dir_11" "main" "claude" ""
+    sessions_log_append "test-scan-11" "$fake_dir_11" "main" "claude" ""
+    printf '%s\n' '{"sessionId":"sid-correct","type":"user","message":{"content":"Correct session"}}' \
+        > "$fake_home_11/.claude/projects/$fake_proj_11/sid-correct.jsonl"
+    sleep 1
+    printf '%s\n' '{"sessionId":"sid-other","type":"user","message":{"content":"Other same-dir session"}}' \
+        > "$fake_home_11/.claude/projects/$fake_proj_11/sid-other.jsonl"
+    printf '%s' "sid-correct" > "$AM_STATE_DIR/test-scan-11.sid"
+    auto_title_scan 1
+    local sid_11 snap_11 snap_content_11
+    sid_11=$(jq -r 'select(.session_name == "test-scan-11") | .session_id' "$AM_SESSIONS_LOG")
+    snap_11=$(jq -r 'select(.session_name == "test-scan-11") | .snapshot_file' "$AM_SESSIONS_LOG")
+    snap_content_11=$(cat "$AM_DIR/$snap_11" 2>/dev/null || true)
+    export HOME="$old_home_11"
+    assert_eq "sid-correct" "$sid_11" \
+        "scan: sidecar session id wins over newer same-directory JSONL"
+    assert_eq "snapshots/sid-correct.txt" "$snap_11" \
+        "scan: snapshot uses the sidecar Claude session id"
+    assert_contains "$snap_content_11" "snapshot for test-scan-11" \
+        "scan: writes the disambiguated session snapshot"
+
+    # --- Test 12: If sidecar exists but JSONL is pending, do not guess by directory ---
+    local fake_home_12="$AM_DIR/fake_home_12"
+    local fake_dir_12="$AM_DIR/jsonl-pending-sidecar-project"
+    local fake_real_12 fake_proj_12
+    mkdir -p "$fake_dir_12"
+    fake_real_12=$(cd "$fake_dir_12" && pwd -P)
+    fake_proj_12="${fake_real_12//\//-}"
+    fake_proj_12="${fake_proj_12//./-}"
+    mkdir -p "$fake_home_12/.claude/projects/$fake_proj_12" "$AM_STATE_DIR"
+    local old_home_12="$HOME"
+    export HOME="$fake_home_12"
+    registry_add "test-scan-12" "$fake_dir_12" "main" "claude" ""
+    sessions_log_append "test-scan-12" "$fake_dir_12" "main" "claude" ""
+    printf '%s\n' '{"sessionId":"sid-other","type":"user","message":{"content":"Other same-dir session"}}' \
+        > "$fake_home_12/.claude/projects/$fake_proj_12/sid-other.jsonl"
+    printf '%s' "sid-pending" > "$AM_STATE_DIR/test-scan-12.sid"
+    auto_title_scan 1
+    local sid_12 snap_12 snap_content_12
+    sid_12=$(jq -r 'select(.session_name == "test-scan-12") | .session_id' "$AM_SESSIONS_LOG")
+    snap_12=$(jq -r 'select(.session_name == "test-scan-12") | .snapshot_file' "$AM_SESSIONS_LOG")
+    snap_content_12=$(cat "$AM_DIR/$snap_12" 2>/dev/null || true)
+    export HOME="$old_home_12"
+    assert_eq "" "$sid_12" \
+        "scan: sidecar without JSONL suppresses directory-wide guessing"
+    assert_eq "snapshots/test-scan-12.txt" "$snap_12" \
+        "scan: pending sidecar snapshots by am session name"
+    assert_contains "$snap_content_12" "snapshot for test-scan-12" \
+        "scan: pending sidecar keeps snapshot isolated"
+
     # --- Cleanup ---
-    unset -f tmux_pane_title
+    unset -f tmux_pane_title tmux_session_pane_target tmux_capture_pane
     rm -rf "$AM_DIR"
     export AM_DIR="$old_am_dir"
     export AM_REGISTRY="$old_am_registry"
     export AM_HISTORY="$old_am_history"
+    export AM_SESSIONS_LOG="$old_am_sessions_log"
+    export AM_SNAPSHOTS_DIR="$old_am_snapshots_dir"
+    export AM_STATE_DIR="$old_am_state_dir"
 
     $SUMMARY_MODE || echo ""
 }

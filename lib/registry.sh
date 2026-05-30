@@ -286,14 +286,15 @@ auto_title_scan() {
     _titler_log "scan start (force=$force)"
 
     # Bulk-read all sessions with their fields in one jq call (avoids N+1 registry reads)
-    local -A reg_task reg_dir reg_branch reg_agent
-    local _rname _rtask _rdir _rbranch _ragent
-    while IFS='|' read -r _rname _rtask _rdir _rbranch _ragent; do
+    local -A reg_task reg_dir reg_branch reg_agent reg_created
+    local _rname _rtask _rdir _rbranch _ragent _rcreated
+    while IFS='|' read -r _rname _rtask _rdir _rbranch _ragent _rcreated; do
         reg_task[$_rname]=$_rtask
         reg_dir[$_rname]=$_rdir
         reg_branch[$_rname]=$_rbranch
         reg_agent[$_rname]=$_ragent
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.branch // "", .value.agent_type // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+        reg_created[$_rname]=$_rcreated
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.branch // "", .value.agent_type // "", .value.created_at // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
     local name title scanned=0 updated=0
     for name in "${!reg_task[@]}"; do
@@ -356,7 +357,7 @@ auto_title_scan() {
 
             # Backfill session_id if empty
             if [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
-                sid=$(_sessions_log_detect_id "${reg_dir[$name]}")
+                sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}")
                 if [[ -n "$sid" ]]; then
                     sessions_log_update "$name" "session_id" "$sid"
                     slog_sid[$name]="$sid"
@@ -483,12 +484,63 @@ _slog_encode_dir() {
     echo "$1" | sed -E 's|[/.]|-|g'
 }
 
+_slog_iso_epoch() {
+    local value="$1"
+    [[ -n "$value" ]] || return 1
+    date -d "$value" +%s 2>/dev/null \
+        || TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s 2>/dev/null
+}
+
+_slog_file_mtime() {
+    local path="$1"
+    stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null
+}
+
+_sessions_log_valid_id() {
+    local sid="$1"
+    [[ -n "$sid" && "$sid" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+_sessions_log_sidecar_id() {
+    local session_name="$1"
+    local sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
+    [[ -f "$sid_file" ]] || return 0
+
+    local sid=""
+    IFS= read -r sid < "$sid_file" 2>/dev/null || true
+    if _sessions_log_valid_id "$sid"; then
+        echo "$sid"
+    fi
+}
+
+# Detect the Claude session ID for a specific am session.
+# Prefer the hook sidecar, because it was written by the agent pane itself.
+# Fall back to directory scanning only for JSONLs updated after this am session
+# was created; older same-directory JSONLs belong to previous sessions.
+_sessions_log_detect_id_for_session() {
+    local session_name="$1"
+    local dir="$2"
+    local created_at="${3:-}"
+
+    local sid sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
+    sid=$(_sessions_log_sidecar_id "$session_name")
+    if [[ -f "$sid_file" ]]; then
+        if [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid"; then
+            echo "$sid"
+        fi
+        return 0
+    fi
+
+    _sessions_log_detect_id "$dir" "$created_at"
+}
+
 # Detect the Claude session ID for a directory.
-# Usage: _sessions_log_detect_id <directory>
+# Usage: _sessions_log_detect_id <directory> [not_before_iso]
 # Returns the session UUID of the most recently modified JSONL file.
 # Returns: session UUID on stdout, or empty
 _sessions_log_detect_id() {
     local dir="$1"
+    local not_before="${2:-}"
 
     local resolved encoded project_dir
     resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
@@ -496,10 +548,23 @@ _sessions_log_detect_id() {
     project_dir="$HOME/.claude/projects/$encoded"
     [[ -d "$project_dir" ]] || return 0
 
-    local jsonl_path
-    jsonl_path=$(command ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1)
-    [[ -n "$jsonl_path" && -f "$jsonl_path" ]] || return 0
-    basename "$jsonl_path" .jsonl
+    local min_epoch=0
+    if [[ -n "$not_before" ]]; then
+        min_epoch=$(_slog_iso_epoch "$not_before" 2>/dev/null || echo 0)
+    fi
+
+    local jsonl_path mtime sid
+    while IFS= read -r jsonl_path; do
+        [[ -n "$jsonl_path" && -f "$jsonl_path" ]] || continue
+        if (( min_epoch > 0 )); then
+            mtime=$(_slog_file_mtime "$jsonl_path" 2>/dev/null || echo 0)
+            (( mtime > 0 && mtime < min_epoch )) && continue
+        fi
+        sid=$(basename "$jsonl_path" .jsonl)
+        _sessions_log_valid_id "$sid" || continue
+        echo "$sid"
+        return 0
+    done < <(command ls -t "$project_dir"/*.jsonl 2>/dev/null)
 }
 
 # Check if a Claude JSONL file still exists for a given directory and session_id.

@@ -81,6 +81,15 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "UserPromptSubmit: writes running"
 
+    # --- session_id sidecar is written when present in hook payload ---
+    rm -f "$state_dir/am-abc123" "$state_dir/am-abc123.sid"
+    run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"sid-from-hook\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    local sid
+    sid=$(cat "$state_dir/am-abc123.sid" 2>/dev/null || echo "")
+    assert_eq "running" "$state" "UserPromptSubmit with session_id: writes state"
+    assert_eq "sid-from-hook" "$sid" "UserPromptSubmit with session_id: writes sid sidecar"
+
     # --- Codex PermissionRequest writes waiting_permission ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PermissionRequest\",\"cwd\":\"$real_project_dir\"}"
