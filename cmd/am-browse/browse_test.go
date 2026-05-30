@@ -38,10 +38,15 @@ func TestHelpText(t *testing.T) {
 	if h == "" {
 		t.Error("helpText should not be empty")
 	}
-	// Should contain key bindings
-	for _, want := range []string{"Enter", "Ctrl-N", "Ctrl-X", "Ctrl-H", "Ctrl-R", "Ctrl-P"} {
+	// Should contain public key bindings
+	for _, want := range []string{"Up/Down", "Enter", "Esc/q", "Ctrl-N", "Ctrl-X", "Ctrl-R", "?", "Prefix + 1-9"} {
 		if !containsStr(h, want) {
 			t.Errorf("helpText missing %q", want)
+		}
+	}
+	for _, hidden := range []string{"Ctrl-H", "Ctrl-P"} {
+		if containsStr(h, hidden) {
+			t.Errorf("helpText should not advertise %q", hidden)
 		}
 	}
 }

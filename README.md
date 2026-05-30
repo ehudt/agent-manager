@@ -129,11 +129,11 @@ Running `am new` with no arguments opens an interactive form where you pick a di
 
 ### Interactive session browser
 
-Run `am` (or `am list`) to open the session browser:
+Run `am` to open the session browser:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ Agent Sessions | Enter:open  ^N:new  ^H:inactive  ^X:kill  ^R:refresh    │
+│ Agent Sessions | ?:help  Enter:open  ^N:new  ^X:kill  ^R:refresh         │
 ├───────────────────────────────────────────────────────────────────────────┤
 │ > am-a1b2c3 myapp/feature/auth [claude] Fix user auth  (5m ago)          │
 │   am-d4e5f6 tools/dev [gemini] Refactor build system  (1d ago)           │
@@ -152,13 +152,13 @@ Run `am` (or `am list`) to open the session browser:
 
 | Key | Action |
 |-----|--------|
+| `Up/Down` | Move selection |
 | `Enter` | Attach an active session or restore an inactive session |
+| `Esc/q` | Exit without action |
 | `Ctrl-N` | Create new session |
-| `Ctrl-H` | Jump to inactive sessions |
 | `Ctrl-X` | Kill selected active session |
 | `Ctrl-R` | Refresh session list |
-| `Ctrl-P` | Toggle preview panel |
-| `Esc` | Exit |
+| `?` | Show inline help |
 
 ### Inside a session
 
@@ -177,16 +177,14 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 
 | Key | Action |
 |-----|--------|
-| `Prefix + ]` | Next session in sidebar |
-| `Prefix + [` | Previous session in sidebar |
 | `Prefix + 1-9` | Jump to sidebar slot N |
 | `Prefix + a` | Switch to last used am session |
 | `Prefix + n` | Open new-session popup |
 | `Prefix + s` | Open am browser popup |
-| `Prefix + h` | Open session browser for active and inactive sessions |
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
 | `Prefix ↑/↓` | Switch between agent and shell panes |
+| `:am` | Open am browser as a tmux command |
 
 The status bar shows all sessions as numbered slots with the current session highlighted. State icons indicate what each session is doing (`!` needs permission, `>` waiting for input, `~` running, `-` idle).
 
@@ -198,6 +196,7 @@ Check on a session without attaching to it:
 am peek am-abc123                        # Snapshot of agent pane
 am peek --pane shell am-abc123           # Snapshot of shell pane
 am peek --follow am-abc123               # Stream agent output in real time
+am peek --lines 100 am-abc123            # Include the last 100 lines
 ```
 
 ### Restoring closed sessions
@@ -216,8 +215,6 @@ Select a session and press Enter to resume it via `claude --resume` in the origi
 
 Sessions stay restorable as long as Claude's conversation file exists on disk. There's no fixed time limit — cleanup happens automatically when Claude removes its own session data.
 
-Inside the session browser, `Ctrl-H` jumps to the inactive section.
-
 ## Agent-to-Agent Orchestration
 
 `am` is designed to be driven by other agents. An orchestrator agent can spawn workers, send them tasks, wait for completion, and inspect results — all through the CLI.
@@ -234,10 +231,10 @@ The tests use pytest. Commit fixes individually with descriptive messages.
 am wait "$session"
 
 # 3. Check results
-am peek --json "$session" | jq -r '.lines[-10:][]'
+am peek --lines 10 "$session"
 
-# 4. Send a follow-up (waits until agent is ready)
-am send --wait "$session" "Now update the changelog"
+# 4. Send a follow-up
+am send "$session" "Now update the changelog"
 
 # 5. Clean up or hand off
 am kill "$session"              # or: am attach "$session"
@@ -252,8 +249,8 @@ s2=$(printf 'Run frontend tests\n' | am new --detach --print-session ~/repo)
 am wait --state idle,dead "$s1"
 am wait --state idle,dead "$s2"
 
-am peek --json "$s1" | jq -r '.lines[-5:][]'
-am peek --json "$s2" | jq -r '.lines[-5:][]'
+am peek --lines 5 "$s1"
+am peek --lines 5 "$s2"
 ```
 
 ### Event-driven monitoring
@@ -283,7 +280,7 @@ For Claude and Codex sessions, state is detected via push-based hooks (installed
 
 `am` ships with an orchestration skill for Claude Code at `skills/am-orchestration/SKILL.md`. When installed, Claude Code agents can automatically use `am` to dispatch and manage worker sessions.
 
-<!-- TODO: Video (30-40s) — terminal recording showing an orchestrator agent launching two parallel workers with `am new --detach`, waiting for them with `am wait`, peeking at results with `am peek --json`, and then killing the sessions. Show the session IDs being captured and reused. -->
+<!-- TODO: Video (30-40s) — terminal recording showing an orchestrator agent launching two parallel workers with `am new --detach`, waiting for them with `am wait`, peeking at results with `am peek --lines 10`, and then killing the sessions. Show the session IDs being captured and reused. -->
 
 ## Sandbox Mode (Experimental)
 
@@ -438,28 +435,25 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 
 ## Commands Reference
 
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `am` | `am list`, `am ls` | Open interactive browser for active and inactive sessions |
-| `am new [dir]` | `create`, `n` | Create new agent session |
-| `am send <session> [prompt]` | | Send a prompt to a running session |
-| `am peek <session>` | | Snapshot or follow a session's pane output |
-| `am wait <session>` | | Block until agent reaches a target state |
-| `am events <session>` | | Stream state-change events as JSONL |
-| `am interrupt <session>` | | Send Ctrl-C to the agent pane |
-| `am attach <session>` | `a` | Attach to a session |
-| `am restore` | | Browse and resume closed Claude sessions |
-| `am kill <session>` | `rm`, `k` | Kill a session |
-| `am kill --all` | | Kill all sessions |
-| `am info <session>` | `i` | Show session details |
-| `am status` | `s` | Summary of all sessions |
-| `am status --json` | | Machine-readable session data |
-| `am list --json` | | All sessions as JSON |
-| `am config` | | Show or change saved defaults |
-| `am sandbox <cmd>` | `sb` | Manage sandbox containers and home directory |
-| `am <path>` | | Shortcut for `am new <path>` |
-| `am help` | `-h` | Show help |
-| `am version` | `-v` | Show version |
+| Command | Description |
+|---------|-------------|
+| `am` | Open interactive browser for active and inactive sessions |
+| `am list [--json]` | List all sessions |
+| `am new [dir]` | Create new agent session |
+| `am send <session> [prompt]` | Send a prompt to a running session |
+| `am peek <session>` | Snapshot or follow a session's pane output |
+| `am wait <session>` | Block until agent reaches a target state |
+| `am events <session>` | Stream state-change events as JSONL |
+| `am interrupt <session>` | Send Ctrl-C to the agent pane |
+| `am attach <session>` | Attach to a session |
+| `am restore` | Browse and resume closed Claude sessions |
+| `am kill <session>` | Kill a session |
+| `am status [--json]` | Show detailed session info |
+| `am config` | Show or change saved defaults |
+| `am sandbox <cmd>` / `am sb <cmd>` | Manage sandbox containers and home directory |
+| `am install` | First-time setup for dependencies, config, skills, and PATH |
+| `am help` | Show help |
+| `am version` | Show version |
 
 ## Storage
 

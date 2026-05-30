@@ -193,21 +193,6 @@ test_state_integration() {
         skip_test "am list --json: state field (am list --json unavailable in test env)"
     fi
 
-    local peek_json
-    peek_json=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" peek --json "$session_name" 2>/dev/null || true)
-    if echo "$peek_json" | jq . >/dev/null 2>&1; then
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: am peek --json: valid JSON"
-    else
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: am peek --json: invalid JSON (got: $peek_json)"
-        FAIL_DETAILS+=("FAIL: am peek --json: invalid JSON (got: $peek_json)")
-    fi
-    local peek_has_lines
-    peek_has_lines=$(echo "$peek_json" | jq 'has("lines")' 2>/dev/null || echo "false")
-    assert_eq "true" "$peek_has_lines" "am peek --json: has lines field"
-
     local wait_state
     wait_state=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
         "$PROJECT_DIR/am" wait --timeout 5 "$session_name" 2>/dev/null || true)

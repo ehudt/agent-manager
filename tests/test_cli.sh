@@ -16,6 +16,43 @@ test_cli() {
     assert_contains "$help_output" "--sandbox" "am help: mentions sandbox flag"
     assert_contains "$help_output" "am sb ps" "am help: mentions sandbox ps command"
 
+    local new_help
+    new_help=$("$PROJECT_DIR/am" new --help)
+    assert_contains "$new_help" "-t, --type" "am new --help: shows type flag"
+    assert_contains "$new_help" "-n, --name" "am new --help: shows name flag"
+    assert_contains "$new_help" "-w, --worktree" "am new --help: shows worktree flag"
+    assert_contains "$new_help" "--sandbox" "am new --help: shows sandbox flag"
+    assert_contains "$new_help" "--no-sandbox" "am new --help: shows no-sandbox flag"
+    assert_contains "$new_help" "--share" "am new --help: shows share flag"
+    assert_contains "$new_help" "--detach" "am new --help: shows detach flag"
+    assert_contains "$new_help" "--print-session" "am new --help: shows print-session flag"
+    assert_contains "$new_help" "--" "am new --help: shows agent arg delimiter"
+    assert_not_contains "$new_help" "--yolo" "am new --help: hides yolo flag"
+    assert_not_contains "$new_help" "--no-yolo" "am new --help: hides no-yolo flag"
+    assert_not_contains "$new_help" "--no-worktree" "am new --help: hides no-worktree flag"
+
+    local send_help
+    send_help=$("$PROJECT_DIR/am" send --help)
+    assert_contains "$send_help" "Usage: am send" "am send --help: shows usage"
+    assert_not_contains "$send_help" "--wait" "am send --help: hides wait flag"
+    assert_not_contains "$send_help" "--timeout" "am send --help: hides timeout flag"
+
+    local peek_help
+    peek_help=$("$PROJECT_DIR/am" peek --help)
+    assert_contains "$peek_help" "--pane" "am peek --help: shows pane flag"
+    assert_contains "$peek_help" "--follow" "am peek --help: shows follow flag"
+    assert_contains "$peek_help" "-f" "am peek --help: shows follow shorthand"
+    assert_contains "$peek_help" "--lines" "am peek --help: shows lines flag"
+    assert_not_contains "$peek_help" "--json" "am peek --help: hides json flag"
+    assert_not_contains "$peek_help" "--history" "am peek --help: hides history flag"
+    assert_not_contains "$peek_help" "--grep" "am peek --help: hides grep flag"
+
+    local status_help
+    status_help=$("$PROJECT_DIR/am" status --help)
+    assert_contains "$status_help" "--json" "am status --help: shows json flag"
+    assert_not_contains "$status_help" "--wait" "am status --help: does not show unrelated flags"
+    assert_not_contains "$status_help" "--timeout" "am status --help: does not show unrelated flags"
+
     # Test version
     local version_output
     version_output=$("$PROJECT_DIR/am" version)
@@ -125,6 +162,45 @@ test_cli_extended() {
         sleep 0.2
     done
     assert_contains "$shell_peek" "shell-peek-ready" "am peek --pane shell: captures shell pane"
+
+    tmux_send_keys "$session_name:.{bottom}" 'prefix=shell-tail-; printf "%s%s\n%s%s" "$prefix" old "$prefix" new; sleep 60' Enter
+    local shell_tail=""
+    for _i in $(seq 1 20); do
+        shell_tail=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek --pane shell --lines 1 "$session_name" 2>/dev/null)
+        [[ "$shell_tail" == *"shell-tail-new"* && "$shell_tail" != *"shell-tail-old"* ]] && break
+        sleep 0.2
+    done
+    assert_contains "$shell_tail" "shell-tail-new" "am peek --lines: captures requested tail"
+    assert_not_contains "$shell_tail" "shell-tail-old" "am peek --lines: excludes older output"
+
+    local follow_log="/tmp/am-logs/${session_name}/shell.log"
+    if [[ -f "$follow_log" ]]; then
+        printf 'follow-tail-old\nfollow-tail-new\n' >> "$follow_log"
+        local follow_file follow_pid follow_output
+        follow_file=$(mktemp)
+        AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" peek --pane shell --follow --lines 1 "$session_name" >"$follow_file" 2>/dev/null &
+        follow_pid=$!
+        for _i in $(seq 1 20); do
+            follow_output=$(cat "$follow_file" 2>/dev/null || true)
+            [[ "$follow_output" == *"follow-tail-new"* ]] && break
+            sleep 0.2
+        done
+        kill "$follow_pid" 2>/dev/null || true
+        wait "$follow_pid" 2>/dev/null || true
+        follow_output=$(cat "$follow_file" 2>/dev/null || true)
+        rm -f "$follow_file"
+        assert_contains "$follow_output" "follow-tail-new" "am peek --follow --lines: seeds requested tail"
+        assert_not_contains "$follow_output" "follow-tail-old" "am peek --follow --lines: excludes older log output"
+    else
+        skip_test "am peek --follow --lines: log streaming disabled"
+    fi
+
+    # --- Test: am status <session> shows detailed info plus state ---
+    local status_output
+    status_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" status "$session_name" 2>/dev/null)
+    assert_contains "$status_output" "Directory:" "am status <session>: shows directory"
+    assert_contains "$status_output" "Agent:" "am status <session>: shows agent type"
+    assert_contains "$status_output" "State:" "am status <session>: shows state"
 
     # --- Test: am kill <session> ---
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" kill "$session_name" 2>/dev/null
@@ -262,6 +338,15 @@ test_cli_yolo_sandbox_integration() {
         </dev/null >/dev/null 2>/dev/null || sandbox_rc=$?
     assert_eq "false" "$(test $sandbox_rc -eq 0 && echo true || echo false)" \
         "cli sandbox-no-docker: fails when docker unavailable"
+
+    # --- Test: manager flags before -- survive agent extra args ---
+    local sandbox_extra_rc=0 sandbox_extra_output
+    sandbox_extra_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DOCKER_AVAILABLE="false" \
+        "$PROJECT_DIR/am" new --sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" -- --stub-extra \
+        </dev/null 2>/dev/null) || sandbox_extra_rc=$?
+    [[ -n "$sandbox_extra_output" ]] && agent_kill "$sandbox_extra_output" 2>/dev/null
+    assert_eq "false" "$(test $sandbox_extra_rc -eq 0 && echo true || echo false)" \
+        "cli sandbox-extra-args-no-docker: preserves sandbox before --"
 
     # --- Test: am new --yolo --sandbox enables both independently ---
     session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \

@@ -32,20 +32,18 @@ Manage multiple AI coding agent sessions with an interactive fzf interface.
 
 USAGE:
     am [command] [options]
+    am new [options] <directory> [-- extra-args...]
 
 COMMANDS:
     (default)           Open interactive session browser
-    list, ls            List all sessions
-    list --json, -j     Output sessions as JSON
-    new, create, n      Create a new agent session
+    list                List all sessions
+    new                 Create a new agent session
     send                Send a prompt to a running session
     peek                Show or follow another session's pane output
-    attach, a           Attach to a session by name (exact, prefix, or fuzzy)
-    kill, rm, k         Kill a session
-    kill --all, -a      Kill all agent-manager sessions
+    attach              Attach to a session by name (exact, prefix, or fuzzy)
+    kill                Kill a session
     config              Show or change saved defaults
-    info, i             Show detailed session info
-    status, s           Show session state (all or single); --json for machine output
+    status              Show detailed session info
     wait                Block until a session reaches a target state
     events              Stream state-change events as JSONL
     interrupt           Send Ctrl-C to an agent pane
@@ -54,8 +52,8 @@ COMMANDS:
     install             First-time setup (deps, config, skills, PATH)
     help                Show this help message
 
-SHORTCUT:
-    am <path>           Same as 'am new <path>'
+OPTIONS FOR 'list':
+    --json          Output as JSON
 
 OPTIONS FOR 'new':
     -t, --type      Agent type: claude, codex, gemini (saved default applies)
@@ -63,25 +61,20 @@ OPTIONS FOR 'new':
     -d, --dir       Directory (can also be positional arg)
     -w, --worktree  Enable git worktree isolation (Claude, Codex)
                     Optional: -w <name> to set worktree name (default: am-XXXXXX)
-    --yolo          Enable yolo mode (agent permissive flags)
-    --no-yolo       Disable yolo mode even if enabled by default
     --sandbox       Run session in Docker sandbox container
-    --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])
     --no-sandbox    Disable sandbox even if enabled by default
+    --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])
     --detach        Create the session without attaching
     --print-session Print the created session name to stdout
     --              Pass remaining args to agent (e.g., -- --resume)
 
 OPTIONS FOR 'send':
-    --wait          Wait until session is ready before sending
-    --timeout N     Seconds to wait (default: 600; used with --wait)
     Read prompt text from argv or stdin and inject it into the running agent pane.
 
 OPTIONS FOR 'peek':
     --pane <name>   Pane to inspect: agent|shell (default: agent)
     --follow, -f    Stream output continuously
-    --json          Return structured JSON snapshot with state field
-    --lines N       Lines of pane content to include (default: 50; used with --json)
+    --lines N       Lines of pane content to include, from the end (default: 50)
 
 OPTIONS FOR 'wait':
     --state <list>  Comma-separated target states (default: waiting_input,waiting_permission,waiting_custom,idle,dead)
@@ -98,12 +91,8 @@ OPTIONS FOR 'status':
 KEYBINDINGS (interactive browser):
     Enter           Attach active session or restore inactive session
     Ctrl-N          Create new session (one-page form)
-    Ctrl-H          Jump to inactive sessions
     Ctrl-X          Kill selected active session
     Ctrl-R          Refresh session list
-    Ctrl-P          Toggle preview panel
-    Ctrl-J/K        Scroll preview up/down
-    Ctrl-D/U        Scroll preview half-page down/up
     ?               Show inline help
 
 KEYBINDINGS (inside tmux session):
@@ -118,7 +107,7 @@ KEYBINDINGS (inside tmux session):
 EXAMPLES:
     am                              # Open interactive browser
     am new                          # New session in current dir (uses defaults)
-    am new ~/code/myproject         # New session in specific directory
+    am new ~/code/proj              # New session in specific directory
     am new -t codex ~/code/proj     # New codex session
     am new -n "fix auth" .          # Session with task description
     printf 'Fix auth bug\n' | am new --detach ~/code/proj
@@ -208,9 +197,6 @@ cmd_list() {
     if $json; then
         fzf_list_json
     else
-        # Refresh task fields from pane titles / Claude JSONL. Throttled to
-        # once per 60s via shared marker, so cost is bounded.
-        auto_title_scan >/dev/null 2>&1
         fzf_list_simple
     fi
 }
@@ -393,34 +379,29 @@ cmd_new() {
                 ;;
             --)
                 shift
-                agent_args=("$@")
+                agent_args+=("$@")
                 break
                 ;;
             -h|--help)
-                echo "Usage: am new [options] [directory] [-- agent_args...]"
+                echo "Usage: am new [options] <directory> [-- extra-args...]"
                 echo ""
                 echo "If no directory specified, opens interactive picker."
                 echo ""
                 echo "Options:"
-                echo "  -t, --type    Agent type (claude, codex, gemini)"
-                echo "  -n, --name    Task description"
-                echo "  -d, --dir     Working directory"
+                echo "  -t, --type      Agent type (claude, codex, gemini)"
+                echo "  -n, --name      Task description"
                 echo "  -w, --worktree  Enable git worktree isolation (Claude, Codex)"
                 echo "                  Optional: -w <name> for custom worktree name"
-                echo "  --yolo        Enable yolo mode (implies sandbox + worktree)"
-                echo "  --no-yolo     Disable yolo mode even if enabled by default"
-                echo "  --sandbox     Run session in Docker sandbox container"
-                echo "  --share       Extra sandbox bind mount (<host>[:container][:ro|rw])"
-                echo "  --no-sandbox  Disable sandbox even if enabled by default"
-                echo "  --no-worktree Disable worktree even when implied by --yolo"
-                echo "  --detach      Create the session without attaching"
+                echo "  --sandbox       Run session in Docker sandbox container"
+                echo "  --no-sandbox    Disable sandbox even if enabled by default"
+                echo "  --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])"
+                echo "  --detach        Create the session without attaching"
                 echo "  --print-session  Print the created session name"
-                echo "  --            Pass remaining args to agent command"
+                echo "  --              Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
                 echo "  am new                          # Interactive one-page form"
                 echo "  am new ~/project                # Specific directory"
-                echo "  am new --yolo ~/project         # Yolo mode"
                 echo "  printf 'Fix bug\n' | am new --detach ~/project"
                 echo "  am new ~/project -- --resume    # With agent args"
                 return 0
@@ -603,7 +584,8 @@ cmd_send() {
                 shift 2
                 ;;
             -h|--help)
-                echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
+                echo "Usage: am send <session-name> [prompt]"
+                echo "Read prompt text from argv or stdin and inject it into the running agent pane."
                 return 0
                 ;;
             -*)
@@ -621,7 +603,7 @@ cmd_send() {
 
     if [[ -z "$name" ]]; then
         log_error "Session name required"
-        echo "Usage: am send [--wait] <session-name> [prompt]"
+        echo "Usage: am send <session-name> [prompt]"
         return 1
     fi
 
@@ -630,7 +612,7 @@ cmd_send() {
 
     if [[ -z "$prompt" ]]; then
         log_error "Prompt required via argv or stdin"
-        echo "Usage: am send [--wait] <session-name> [prompt]"
+        echo "Usage: am send <session-name> [prompt]"
         return 1
     fi
 
@@ -666,34 +648,42 @@ cmd_send() {
 peek_capture_output() {
     local session_name="$1"
     local pane_name="$2"
+    local lines="${3:-}"
     local pane_target
     pane_target=$(tmux_session_pane_target "$session_name" "$pane_name") || return 1
 
     local output
-    output=$(tmux_capture_pane "$pane_target" || true)
+    output=$(tmux_capture_pane "$pane_target" "$lines" || true)
     if [[ -n "$output" ]]; then
-        echo "$output" | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}'
+        output=$(echo "$output" | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}')
+        if [[ -n "$lines" && "$lines" =~ ^[0-9]+$ ]]; then
+            echo "$output" | tail -n "$lines"
+        else
+            echo "$output"
+        fi
     fi
 }
 
 peek_follow_logs() {
     local session_name="$1"
     local pane_name="$2"
+    local lines="${3:-50}"
     local log_file
     log_file=$(tmux_session_pane_log_file "$session_name" "$pane_name") || return 1
 
     [[ -f "$log_file" ]] || return 1
-    tail -n 50 -f "$log_file"
+    tail -n "$lines" -f "$log_file"
 }
 
 peek_follow_poll() {
     local session_name="$1"
     local pane_name="$2"
+    local lines="${3:-50}"
     local previous=""
     local current=""
 
     while tmux_session_exists "$session_name"; do
-        current=$(peek_capture_output "$session_name" "$pane_name" || true)
+        current=$(peek_capture_output "$session_name" "$pane_name" "$lines" || true)
         if [[ "$current" != "$previous" ]]; then
             if [[ -n "$previous" && "$current" == "$previous"* ]]; then
                 printf '%s' "${current#$previous}"
@@ -733,7 +723,6 @@ cmd_peek() {
     _ensure_state
     local follow=false
     local pane_name="agent"
-    local json=false
     local history=false
     local lines=""
     local grep_pattern=""
@@ -746,10 +735,6 @@ cmd_peek() {
                 ;;
             --follow|-f)
                 follow=true
-                shift
-                ;;
-            --json)
-                json=true
                 shift
                 ;;
             --history)
@@ -765,7 +750,8 @@ cmd_peek() {
                 shift 2
                 ;;
             -h|--help)
-                echo "Usage: am peek [--pane agent|shell] [--follow] [--json [--lines N]] [--history [--lines N] [--grep PAT]] <session-name>"
+                echo "Usage: am peek [--pane agent|shell] [--follow|-f] [--lines N] <session-name>"
+                echo "Show or follow another session's pane output."
                 return 0
                 ;;
             -*)
@@ -781,10 +767,6 @@ cmd_peek() {
     if $history; then
         if $follow; then
             log_error "--history is incompatible with --follow"
-            return 1
-        fi
-        if $json; then
-            log_error "--history is incompatible with --json"
             return 1
         fi
     elif [[ -n "$grep_pattern" ]]; then
@@ -803,7 +785,7 @@ cmd_peek() {
     local name="${1:-}"
     if [[ -z "$name" ]]; then
         log_error "Session name required"
-        echo "Usage: am peek [--pane agent|shell] [--follow] <session-name>"
+        echo "Usage: am peek [--pane agent|shell] [--follow|-f] [--lines N] <session-name>"
         return 1
     fi
 
@@ -824,32 +806,12 @@ cmd_peek() {
 
     if $history; then
         peek_history_output "$resolved" "$pane_name" "$lines" "$grep_pattern"
-    elif $json; then
-        local state pane_target raw_content content ts
-        state=$(agent_get_state "$resolved")
-        pane_target=$(tmux_session_pane_target "$resolved" "$pane_name")
-        raw_content=$(tmux_capture_pane "$pane_target" "$lines" 2>/dev/null || true)
-        # Strip ANSI, trim trailing blank lines
-        content=$(printf '%s' "$raw_content" \
-            | sed -E 's/\x1b\[[0-9;]*[mGKHF]//g; s/\x1b\[?[0-9;]*[a-zA-Z]//g' \
-            | sed -e :a -e '/^[[:space:]]*$/{' -e '$d' -e N -e ba -e '}')
-        ts=$(date +%s)
-        # Build JSON array of lines
-        local lines_json
-        lines_json=$(printf '%s\n' "$content" | jq -R . | jq -s .)
-        jq -n \
-            --arg name "$resolved" \
-            --arg state "$state" \
-            --arg pane "$pane_name" \
-            --argjson lines_arr "$lines_json" \
-            --argjson ts "$ts" \
-            '{name: $name, state: $state, pane: $pane, lines: $lines_arr, ts: $ts}'
     elif $follow; then
-        if ! peek_follow_logs "$resolved" "$pane_name"; then
-            peek_follow_poll "$resolved" "$pane_name"
+        if ! peek_follow_logs "$resolved" "$pane_name" "$lines"; then
+            peek_follow_poll "$resolved" "$pane_name" "$lines"
         fi
     else
-        peek_capture_output "$resolved" "$pane_name"
+        peek_capture_output "$resolved" "$pane_name" "$lines"
     fi
 }
 
@@ -1075,9 +1037,8 @@ cmd_status() {
                   agent_type: $agent, task: $task,
                   activity: ($activity | tonumber), created: ($created | tonumber)}'
         else
-            local dir_short
-            dir_short=$(registry_get_field "$resolved" directory 2>/dev/null | xargs basename 2>/dev/null || echo "?")
-            printf '%-20s  %-20s  %-30s  %s\n' "$resolved" "$state" "$dir_short" "$(registry_get_field "$resolved" task 2>/dev/null || true)"
+            agent_info "$resolved"
+            printf 'State: %s\n' "$state"
         fi
 
         [[ "$state" == "dead" ]] && return 2

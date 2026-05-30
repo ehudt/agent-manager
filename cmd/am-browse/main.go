@@ -464,7 +464,7 @@ func (m model) View() string {
 	// Keybind pills
 	b.WriteString("   ")
 	keys := []struct{ key, action string }{
-		{"?", "help"}, {"⏎", "open"}, {"^N", "new"}, {"^X", "kill"}, {"^H", "inactive"},
+		{"?", "help"}, {"⏎", "open"}, {"^N", "new"}, {"^X", "kill"}, {"^R", "refresh"},
 	}
 	for i, k := range keys {
 		b.WriteString(keyPillStyle.Render(" " + k.key + " "))
@@ -652,32 +652,27 @@ func fuzzyMatch(text, pattern string) bool {
 func helpText() string {
 	return `  Agent Manager Help
 
-  Navigation
+  Keybindings
     Up/Down     Move selection
     Enter       Attach active session or restore inactive session
     Esc/q       Exit without action
-
-  Actions
     Ctrl-N      Create new session
-    Ctrl-H      Jump to inactive sessions
     Ctrl-X      Kill selected active session
     Ctrl-R      Refresh session list
-
-  View
-    Ctrl-P      Toggle preview panel
     ?           Show this help
 
   Type to filter sessions (fuzzy match)
 
   In tmux session
-    Prefix + ]  Next session in sidebar
-    Prefix + [  Previous session in sidebar
     Prefix + 1-9  Jump to sidebar slot N
     Prefix + a  Switch to last am session
     Prefix + n  Open new-session popup
     Prefix + s  Open am browser popup
     Prefix + x  Kill current am session
-    Prefix + d  Detach from session`
+    Prefix + d  Detach from session
+    Prefix Up/Down
+                Switch panes (agent/shell)
+    :am         Open am browser (tmux command)`
 }
 
 // truncateVisible truncates a string to maxWidth visible characters,

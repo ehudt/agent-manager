@@ -745,21 +745,15 @@ fzf_main() {
     local help_text="
   Agent Manager Help
 
-  Navigation
+  Keybindings
     Up/Down     Move selection
-    Enter       Attach to selected session
+
+    Enter       Attach active session or restore inactive session
     Esc/q       Exit without action
 
-  Actions
     Ctrl-N      Create new session
-    Ctrl-H      Restore a closed session
-    Ctrl-X      Kill selected session
+    Ctrl-X      Kill selected active session
     Ctrl-R      Refresh session list
-
-  View
-    Ctrl-P      Toggle preview panel
-    Ctrl-J/K    Scroll preview down/up
-    Ctrl-D/U    Scroll preview half-page
     ?           Show this help
 
   In tmux session
@@ -781,7 +775,7 @@ fzf_main() {
         --height=100% \
         --delimiter='|' \
         --with-nth=2 \
-        --header="Agent Sessions  ?:help  Enter:attach  ^N:new  ^X:kill  ^H:restore" \
+        --header="Agent Sessions  ?:help  Enter:open  ^N:new  ^X:kill  ^R:refresh" \
         --preview="$preview_cmd {1}" \
         --preview-window="bottom:75%:follow" \
         --bind="start:reload($list_cmd || echo '__new__|➕ Create new session')" \
@@ -799,7 +793,7 @@ fzf_main() {
     key=$(echo "$selected" | head -n1)
     session_name=$(echo "$selected" | tail -n1 | cut -d'|' -f1)
 
-    # Handle restore request (Ctrl-H)
+    # Handle hidden restore request
     if [[ "$key" == "ctrl-h" ]]; then
         local restore_result
         if ! restore_result=$(fzf_restore_picker); then
