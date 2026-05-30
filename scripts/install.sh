@@ -164,17 +164,17 @@ _install_claude_hooks() {
     ' "$settings_file" > "$tmp_file" && mv "$tmp_file" "$settings_file"
 }
 
-# Enable codex_hooks feature flag in ~/.codex/config.toml. Required for
+# Enable Codex hooks feature flag in ~/.codex/config.toml. Required for
 # Codex to discover and fire the hooks installed by _install_codex_hooks.
-# Idempotent: replaces an existing codex_hooks line under [features],
-# appends to [features] if present, otherwise creates the section.
+# Idempotent: replaces existing hooks/codex_hooks lines under [features],
+# appends hooks = true to [features] if present, otherwise creates the section.
 # Usage: _enable_codex_hooks_feature <config_toml_path>
 _enable_codex_hooks_feature() {
     local config_file="$1"
     mkdir -p "$(dirname "$config_file")"
 
     if [[ ! -f "$config_file" ]]; then
-        printf '[features]\ncodex_hooks = true\n' > "$config_file"
+        printf '[features]\nhooks = true\n' > "$config_file"
         return
     fi
 
@@ -185,7 +185,7 @@ _enable_codex_hooks_feature() {
         BEGIN { in_features = 0; wrote = 0; features_seen = 0 }
         # End of [features] section: insert line if not already written
         in_features && /^\[/ {
-            if (!wrote) { print "codex_hooks = true"; wrote = 1 }
+            if (!wrote) { print "hooks = true"; wrote = 1 }
             in_features = 0
         }
         # Section header
@@ -196,19 +196,19 @@ _enable_codex_hooks_feature() {
             next
         }
         /^\[/ { in_features = 0; print; next }
-        # Inside [features] — drop any existing codex_hooks line; insert ours
-        in_features && /^[[:space:]]*codex_hooks[[:space:]]*=/ {
-            if (!wrote) { print "codex_hooks = true"; wrote = 1 }
+        # Inside [features]: drop any existing hooks/codex_hooks line; insert ours.
+        in_features && /^[[:space:]]*(hooks|codex_hooks)[[:space:]]*=/ {
+            if (!wrote) { print "hooks = true"; wrote = 1 }
             next
         }
         { print }
         END {
             if (in_features && !wrote) {
-                print "codex_hooks = true"
+                print "hooks = true"
             } else if (!features_seen) {
                 print ""
                 print "[features]"
-                print "codex_hooks = true"
+                print "hooks = true"
             }
         }
     ' "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
@@ -351,7 +351,7 @@ if confirm "Install state-detection hooks into Codex hooks ($CODEX_HOOKS)?"; the
     _install_codex_hooks "$CODEX_HOOKS" "$HOOK_SCRIPT"
     log "Installed state-detection hooks into $CODEX_HOOKS"
     _enable_codex_hooks_feature "$CODEX_CONFIG"
-    log "Enabled codex_hooks feature flag in $CODEX_CONFIG"
+    log "Enabled Codex hooks feature flag in $CODEX_CONFIG"
 else
     log "Skipped Codex hook installation"
 fi

@@ -73,6 +73,29 @@ test_cli_extended() {
     assert_eq "" "$(echo "$json_output" | jq -r '.[0].branch')" \
         "am list --json: preserves empty branch field"
 
+    # --- Test: list helpers share one row collection shape ---
+    set +u
+    source "$LIB_DIR/fzf.sh"
+    set -u
+    local row_output
+    row_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" _fzf_session_rows 2>/dev/null || true)
+    assert_contains "$row_output" "$session_name" "list row collector: contains session"
+
+    local row_line
+    row_line=$(printf '%s\n' "$row_output" | head -n1)
+    assert_not_empty "$row_line" "list row collector: emits a row"
+
+    local row_name row_state row_dir row_branch row_agent row_task row_activity row_created
+    IFS=$'\x1f' read -r row_name row_state row_dir row_branch row_agent row_task row_activity row_created <<< "$row_line"
+    assert_eq "$session_name" "$row_name" "list row collector: name field"
+    assert_not_empty "$row_state" "list row collector: state field"
+    assert_eq "$test_dir" "$row_dir" "list row collector: directory field"
+    assert_eq "" "$row_branch" "list row collector: branch field"
+    assert_eq "claude" "$row_agent" "list row collector: agent field"
+    assert_eq "cli test" "$row_task" "list row collector: task field"
+    assert_not_empty "$row_activity" "list row collector: activity field"
+    assert_not_empty "$row_created" "list row collector: created field"
+
     # --- Test: am list-internal returns session list for fzf ---
     local internal_output
     internal_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" list-internal 2>/dev/null)

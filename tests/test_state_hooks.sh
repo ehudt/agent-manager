@@ -413,11 +413,15 @@ test_enable_codex_hooks_feature_new_file() {
         ( ((TESTS_FAILED++)) && ((TESTS_RUN++)) && \
             printf '%bFAIL%b: codex feature: [features] missing\n' "$TEST_RED" "$TEST_RESET" )
 
-    grep -q '^codex_hooks[[:space:]]*=[[:space:]]*true' "$cfg" && \
+    grep -q '^hooks[[:space:]]*=[[:space:]]*true' "$cfg" && \
         ((TESTS_PASSED++)) && ((TESTS_RUN++)) && \
-        ($SUMMARY_MODE || printf '%bPASS%b: codex feature: codex_hooks = true present\n' "$TEST_GREEN" "$TEST_RESET") || \
+        ($SUMMARY_MODE || printf '%bPASS%b: codex feature: hooks = true present\n' "$TEST_GREEN" "$TEST_RESET") || \
         ( ((TESTS_FAILED++)) && ((TESTS_RUN++)) && \
-            printf '%bFAIL%b: codex feature: codex_hooks line missing\n' "$TEST_RED" "$TEST_RESET" )
+            printf '%bFAIL%b: codex feature: hooks line missing\n' "$TEST_RED" "$TEST_RESET" )
+
+    local deprecated_count
+    deprecated_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
+    assert_eq "0" "$deprecated_count" "codex feature: deprecated codex_hooks line absent"
 
     rm -rf "$tmp_dir"
 }
@@ -441,9 +445,9 @@ TOML
     other_kept=$(grep -c '^other_flag[[:space:]]*=[[:space:]]*"keep"' "$cfg" || true)
     assert_eq "1" "$other_kept" "codex feature: existing keys preserved"
 
-    local codex_count
-    codex_count=$(grep -c '^codex_hooks[[:space:]]*=[[:space:]]*true' "$cfg" || true)
-    assert_eq "1" "$codex_count" "codex feature: codex_hooks = true added under [features]"
+    local hooks_count
+    hooks_count=$(grep -c '^hooks[[:space:]]*=[[:space:]]*true' "$cfg" || true)
+    assert_eq "1" "$hooks_count" "codex feature: hooks = true added under [features]"
 
     local model_kept
     model_kept=$(grep -c '^\[model\]' "$cfg" || true)
@@ -462,11 +466,13 @@ test_enable_codex_hooks_feature_idempotent() {
     _enable_codex_hooks_feature "$cfg"
     _enable_codex_hooks_feature "$cfg"
 
-    local features_count codex_count
+    local features_count hooks_count deprecated_count
     features_count=$(grep -c '^\[features\]' "$cfg" || true)
-    codex_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
+    hooks_count=$(grep -c '^hooks[[:space:]]*=' "$cfg" || true)
+    deprecated_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
     assert_eq "1" "$features_count" "codex feature: idempotent — no duplicate [features]"
-    assert_eq "1" "$codex_count" "codex feature: idempotent — no duplicate codex_hooks line"
+    assert_eq "1" "$hooks_count" "codex feature: idempotent - no duplicate hooks line"
+    assert_eq "0" "$deprecated_count" "codex feature: idempotent - no deprecated codex_hooks line"
 
     rm -rf "$tmp_dir"
 }
@@ -484,18 +490,22 @@ TOML
     _enable_codex_hooks_feature "$cfg"
 
     local val
-    val=$(grep '^codex_hooks[[:space:]]*=' "$cfg" | head -1)
+    val=$(grep '^hooks[[:space:]]*=' "$cfg" | head -1)
     case "$val" in
         *"= true"*|*"=true"*)
             ((TESTS_PASSED++)); ((TESTS_RUN++))
-            $SUMMARY_MODE || printf '%bPASS%b: codex feature: false -> true upgrade\n' "$TEST_GREEN" "$TEST_RESET"
+            $SUMMARY_MODE || printf '%bPASS%b: codex feature: deprecated false -> hooks true upgrade\n' "$TEST_GREEN" "$TEST_RESET"
             ;;
         *)
             ((TESTS_FAILED++)); ((TESTS_RUN++))
-            printf '%bFAIL%b: codex feature: did not flip false to true (got: %s)\n' \
+            printf '%bFAIL%b: codex feature: did not write hooks = true (got: %s)\n' \
                 "$TEST_RED" "$TEST_RESET" "$val"
             ;;
     esac
+
+    local deprecated_count
+    deprecated_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
+    assert_eq "0" "$deprecated_count" "codex feature: deprecated codex_hooks removed"
 
     rm -rf "$tmp_dir"
 }

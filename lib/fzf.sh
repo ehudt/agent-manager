@@ -833,14 +833,114 @@ fzf_main() {
     fi
 }
 
+# Shared session row collector for `am list` text and JSON output.
+# Output fields are separated by ASCII unit separator:
+# name, state, directory, branch, agent_type, task, activity, created
+# Usage: _fzf_session_rows
+_fzf_session_rows() {
+    # Lazy-load state.sh — only list/status JSON and plain CLI listing need state.
+    [[ "$(type -t _state_resolve)" != "function" ]] && source "$_FZF_LIB_DIR/state.sh"
+    # Warm the tmux config cache so parallel state subshells skip regeneration.
+    am_tmux_config_path >/dev/null 2>&1
+
+    local sep=$'\x1f'
+
+    # Bulk-read tmux data: session_name activity created (one tmux call)
+    local tmux_data
+    tmux_data=$(am_tmux list-sessions -F '#{session_name} #{session_activity} #{session_created}' 2>/dev/null \
+        | grep "^${AM_SESSION_PREFIX}" | sort -t' ' -k2 -rn || true)
+    [[ -z "$tmux_data" ]] && return
+
+    # Collect session names and tmux metadata.
+    local session_names=()
+    local -A tmux_activity tmux_created
+    local _name _activity _created
+    while IFS=' ' read -r _name _activity _created; do
+        [[ -z "$_name" ]] && continue
+        session_names+=("$_name")
+        tmux_activity[$_name]=$_activity
+        tmux_created[$_name]=$_created
+    done <<< "$tmux_data"
+
+    # Bulk-read all registry fields in one jq call.
+    local -A reg_dir reg_branch reg_agent reg_task
+    local _rname _rdir _rbranch _ragent _rtask
+    while IFS=$'\x1f' read -r _rname _rdir _rbranch _ragent _rtask; do
+        [[ -z "$_rname" ]] && continue
+        reg_dir[$_rname]=$_rdir
+        reg_branch[$_rname]=$_rbranch
+        reg_agent[$_rname]=$_ragent
+        reg_task[$_rname]=$_rtask
+    done < <(jq -r --arg sep "$sep" '.sessions | to_entries[] | [.key, .value.directory // "", .value.branch // "", .value.agent_type // "", .value.task // ""] | join($sep)' "$AM_REGISTRY" 2>/dev/null || true)
+
+    # Parallel state detection. _state_resolve in non-bulk mode handles its
+    # own per-session tmux/ps lookups; running each session in its own
+    # subshell keeps the fork-fanout overlapping.
+    local state_tmpdir session
+    state_tmpdir=$(mktemp -d)
+    for session in "${session_names[@]}"; do
+        ( _state_resolve "$session" "${reg_agent[$session]:-}" "${reg_dir[$session]:-}" \
+            > "$state_tmpdir/$session" 2>/dev/null; true ) &
+    done
+    wait
+
+    local -A session_states
+    for session in "${session_names[@]}"; do
+        [[ -f "$state_tmpdir/$session" ]] && session_states[$session]=$(< "$state_tmpdir/$session")
+    done
+    rm -rf "$state_tmpdir"
+
+    for session in "${session_names[@]}"; do
+        printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+            "$session" "$sep" \
+            "${session_states[$session]:-}" "$sep" \
+            "${reg_dir[$session]:-}" "$sep" \
+            "${reg_branch[$session]:-}" "$sep" \
+            "${reg_agent[$session]:-}" "$sep" \
+            "${reg_task[$session]:-}" "$sep" \
+            "${tmux_activity[$session]:-0}" "$sep" \
+            "${tmux_created[$session]:-0}"
+    done
+}
+
+_fzf_format_plain_row() {
+    local session="$1"
+    local directory="$2"
+    local branch="$3"
+    local agent_type="$4"
+    local task="$5"
+    local activity="$6"
+
+    local now idle
+    now=$(date +%s)
+    idle=0
+    [[ -n "$activity" ]] && idle=$((now - activity))
+
+    local display="$session"
+    [[ -n "$directory" ]] && display="$display ${directory##*/}"
+    [[ -n "$branch" ]] && display="$display/$branch"
+    display="$display [${agent_type:-unknown}]"
+    [[ -n "$task" ]] && display="$display $task"
+    display="$display ($(format_time_ago "$idle"))"
+
+    echo "$display"
+}
+
 # Simplified list output (no fzf, just print)
 # Usage: fzf_list_simple
 fzf_list_simple() {
-    _fzf_list_display "without_name"
+    local rows
+    rows=$(_fzf_session_rows)
+    [[ -z "$rows" ]] && return
+
+    while IFS=$'\x1f' read -r session _state directory branch agent_type task activity _created; do
+        [[ -z "$session" ]] && continue
+        _fzf_format_plain_row "$session" "$directory" "$branch" "$agent_type" "$task" "$activity"
+    done <<< "$rows"
 }
 
-# Shared bulk-display helper for fzf_list_sessions and fzf_list_simple.
-# NOTE: Fallback-only. Primary path uses compiled Go binaries.
+# Bulk-display helper for fzf_list_sessions.
+# NOTE: Fallback-only. Primary interactive paths use compiled Go binaries.
 # Reads all registry fields in one jq call, then formats each session inline.
 # Usage: _fzf_list_display <mode>   (mode: "with_name" or "without_name")
 _fzf_list_display() {
@@ -906,75 +1006,19 @@ _fzf_list_display() {
 # JSON output for scripting
 # Usage: fzf_list_json
 fzf_list_json() {
-    # Lazy-load state.sh — only this function needs parallel state detection
-    [[ "$(type -t _state_resolve)" != "function" ]] && source "$_FZF_LIB_DIR/state.sh"
-    # Warm the tmux config cache so subshells skip regeneration
-    am_tmux_config_path >/dev/null 2>&1
-
     # Skip GC and title scan for JSON output — they cause I/O contention
     # and are not needed for a read-only snapshot. The interactive fzf path
     # (fzf_list_sessions) handles these.
 
-    # Bulk-read tmux data: session_name activity created (one tmux call)
-    local tmux_data
-    tmux_data=$(am_tmux list-sessions -F '#{session_name} #{session_activity} #{session_created}' 2>/dev/null \
-        | grep "^${AM_SESSION_PREFIX}" | sort -t' ' -k2 -rn || true)
+    local rows sep
+    rows=$(_fzf_session_rows)
+    sep=$'\x1f'
 
-    if [[ -z "$tmux_data" ]]; then
-        echo "[]"
-        return
-    fi
-
-    # Collect session names
-    local session_names=()
-    local -A tmux_activity tmux_created
-    local _name _activity _created
-    while IFS=' ' read -r _name _activity _created; do
-        session_names+=("$_name")
-        tmux_activity[$_name]=$_activity
-        tmux_created[$_name]=$_created
-    done <<< "$tmux_data"
-
-    # Bulk-read all registry fields in one jq call
-    # Use pipe delimiter (not tab — bash read collapses consecutive tabs)
-    local -A reg_dir reg_branch reg_agent reg_task
-    local _rname _rdir _rbranch _ragent _rtask
-    while IFS='|' read -r _rname _rdir _rbranch _ragent _rtask; do
-        reg_dir[$_rname]=$_rdir
-        reg_branch[$_rname]=$_rbranch
-        reg_agent[$_rname]=$_ragent
-        reg_task[$_rname]=$_rtask
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.directory // "", .value.branch // "", .value.agent_type // "", .value.task // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
-
-    # Parallel state detection. _state_resolve in non-bulk mode handles its
-    # own per-session tmux/ps lookups; running each session in its own
-    # subshell keeps the fork-fanout overlapping.
-    local state_tmpdir session
-    state_tmpdir=$(mktemp -d)
-    for session in "${session_names[@]}"; do
-        ( _state_resolve "$session" "${reg_agent[$session]:-}" "${reg_dir[$session]:-}" \
-            > "$state_tmpdir/$session" 2>/dev/null; true ) &
-    done
-    wait
-
-    local -A session_states
-    for session in "${session_names[@]}"; do
-        [[ -f "$state_tmpdir/$session" ]] && session_states[$session]=$(< "$state_tmpdir/$session")
-    done
-    rm -rf "$state_tmpdir"
-
-    # Build JSON array in one jq call using TSV input
-    local tsv_lines=""
-    for session in "${session_names[@]}"; do
-        local state="${session_states[$session]:-}"
-        tsv_lines+="${session}\t${state}\t${reg_dir[$session]:-}\t${reg_branch[$session]:-}\t${reg_agent[$session]:-}\t${reg_task[$session]:-}\t${tmux_activity[$session]:-0}\t${tmux_created[$session]:-0}\n"
-    done
-
-    printf '%b' "$tsv_lines" | jq -Rsn '
-        [inputs | split("\n")[] | select(length > 0) | split("\t") |
+    printf '%s\n' "$rows" | jq -R -s --arg sep "$sep" '
+        split("\n") | map(select(length > 0) | split($sep) |
          {name: .[0], state: .[1], directory: .[2], branch: .[3],
           agent_type: .[4], task: .[5],
-          activity: (.[6] | tonumber), created: (.[7] | tonumber)}]'
+          activity: (.[6] | tonumber), created: (.[7] | tonumber)})'
 }
 
 # Restore picker: browse closed sessions and resume one

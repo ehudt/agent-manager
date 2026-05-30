@@ -6,6 +6,8 @@
 
 ## Ideas
 
+- **remove shell fallback for go-implemented commands**
+
 - **Inactive sessions issues** - some inactive sessions from the same directory are mismatched with their session id - one session name restores a different session
 
 - **Replace docker vm with micro VM**
