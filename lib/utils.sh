@@ -4,8 +4,6 @@
 # Configuration
 AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
 AM_REGISTRY="$AM_DIR/sessions.json"
-# shellcheck disable=SC2034 # used by lib/registry.sh
-AM_HISTORY="$AM_DIR/history.jsonl"
 AM_SESSION_PREFIX="${AM_SESSION_PREFIX:-am-}"
 AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
 AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"

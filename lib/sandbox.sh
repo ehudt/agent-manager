@@ -441,23 +441,3 @@ sb_reset() {
     _sb_home_ensure
     log_success "Reset sandbox home directory '$SB_HOME_DIR'."
 }
-
-sb_export() {
-    local output_path="$1"
-    mkdir -p "$(dirname "$output_path")"
-    _sb_home_ensure
-    tar czf "$output_path" -C "$SB_HOME_DIR" .
-}
-
-sb_import() {
-    local input_path="$1"
-    local confirm="${2:-0}"
-    [[ -f "$input_path" ]] || { log_error "Import archive not found: $input_path"; return 1; }
-    if [[ "$confirm" != "1" ]]; then
-        log_error "Refusing to import without confirmation. Use: am sb import <path> --confirm"
-        return 1
-    fi
-    rm -rf "${SB_HOME_DIR:?}"/*  "${SB_HOME_DIR}"/.[!.]* "${SB_HOME_DIR}"/..?* 2>/dev/null || true
-    _sb_home_ensure
-    tar xzf "$input_path" -C "$SB_HOME_DIR"
-}

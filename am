@@ -45,7 +45,6 @@ COMMANDS:
     config              Show or change saved defaults
     status              Show detailed session info
     wait                Block until a session reaches a target state
-    events              Stream state-change events as JSONL
     interrupt           Send Ctrl-C to an agent pane
     restore             Browse and resume a closed Claude session
     sandbox, sb         Manage sandbox containers and home directory
@@ -56,7 +55,7 @@ OPTIONS FOR 'list':
     --json          Output as JSON
 
 OPTIONS FOR 'new':
-    -t, --type      Agent type: claude, codex, gemini (saved default applies)
+    -t, --type      Agent type: claude, codex (saved default applies)
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
     -w, --worktree  Enable git worktree isolation (Claude, Codex)
@@ -80,10 +79,6 @@ OPTIONS FOR 'wait':
     --state <list>  Comma-separated target states (default: waiting_input,waiting_permission,waiting_custom,idle,dead)
     --timeout N     Seconds before giving up (default: 600)
     --json          Print final state as JSON object on exit
-
-OPTIONS FOR 'events':
-    --follow        Keep streaming after idle/dead (default: stop on idle/dead)
-    --timeout N     Seconds before stopping (default: 600)
 
 OPTIONS FOR 'status':
     --json          Output as JSON (single session or array of all sessions)
@@ -151,21 +146,16 @@ source "$AM_LIB_DIR/config.sh"
 source "$AM_LIB_DIR/tmux.sh"
 source "$AM_LIB_DIR/registry.sh"
 
-# Fast path: list-internal is called on every fzf reload — compiled Go binary
+# Fast path: list-internal is called on every browser reload — compiled Go binary
 if [[ "${1:-}" == "list-internal" ]]; then
     # Require both executable bit and non-zero size. test_install's fake `go`
     # writes a zero-byte stub at bin/am-list-internal; an exec on that returns
-    # empty output and breaks parallel test workers that share the project
-    # tree. The -s check forces a fallback to the bash path in that case.
+    # empty output and breaks parallel test workers that share the project tree.
     if [[ -x "$AM_SCRIPT_DIR/bin/am-list-internal" && -s "$AM_SCRIPT_DIR/bin/am-list-internal" ]]; then
         exec "$AM_SCRIPT_DIR/bin/am-list-internal"
     fi
-    # Fallback when binary not yet built (run 'am install' or 'make build')
-    source "$AM_LIB_DIR/fzf.sh"
-    am_init
-    am_config_init
-    fzf_list_sessions
-    exit 0
+    echo "Error: bin/am-list-internal is not built. Run 'make' (or 'am install') to build it." >&2
+    exit 1
 fi
 
 # Source remaining libraries for interactive commands
@@ -388,7 +378,7 @@ cmd_new() {
                 echo "If no directory specified, opens interactive picker."
                 echo ""
                 echo "Options:"
-                echo "  -t, --type      Agent type (claude, codex, gemini)"
+                echo "  -t, --type      Agent type (claude, codex)"
                 echo "  -n, --name      Task description"
                 echo "  -w, --worktree  Enable git worktree isolation (Claude, Codex)"
                 echo "                  Optional: -w <name> for custom worktree name"
@@ -890,9 +880,6 @@ cmd_config() {
                 stream_logs)
                     am_stream_logs_enabled && echo true || echo false
                     ;;
-                new_form)
-                    am_new_form_enabled && echo true || echo false
-                    ;;
                 sb_network_restrict|sb_allowed_hosts|sandbox.shares)
                     am_config_get "$key"
                     ;;
@@ -945,7 +932,6 @@ Keys:
   yolo     Default yolo mode (true/false)
   sandbox  Default sandbox mode (true/false)
   logs            Default pane log streaming (true/false)
-  new-form        Use new tput-based session form (true/false)
   sandbox-shares  Sticky sandbox bind mounts (<host>[:container][:ro|rw], comma-separated)
 
 Precedence:
@@ -1136,111 +1122,6 @@ cmd_wait() {
     return $exit_code
 }
 
-# Command: events
-cmd_events() {
-    _ensure_state
-    local follow=false
-    local timeout_s=600
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --follow|-f)
-                follow=true
-                shift
-                ;;
-            --timeout)
-                timeout_s="${2:-600}"
-                shift 2
-                ;;
-            -h|--help)
-                echo "Usage: am events [--follow] [--timeout N] <session-name>"
-                return 0
-                ;;
-            -*)
-                log_error "Unknown option: $1"
-                return 1
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-
-    local name="${1:-}"
-    if [[ -z "$name" ]]; then
-        log_error "Session name required"
-        echo "Usage: am events [--follow] <session-name>"
-        return 1
-    fi
-
-    local resolved
-    if ! resolved=$(resolve_session_fuzzy "$name"); then
-        log_error "Session not found: $name"
-        return 1
-    fi
-
-    local prev_state="" current_state ts start elapsed
-    start=$(date +%s)
-
-    # Emit started event
-    ts=$(date +%s)
-    current_state=$(agent_get_state "$resolved")
-    printf '%s\n' "$(jq -n \
-        --arg event "started" \
-        --arg session "$resolved" \
-        --arg state "$current_state" \
-        --argjson ts "$ts" \
-        '{event: $event, session: $session, state: $state, ts: $ts}')"
-    prev_state="$current_state"
-
-    while true; do
-        sleep 0.5
-
-        elapsed=$(( $(date +%s) - start ))
-        if (( elapsed >= timeout_s )); then
-            break
-        fi
-
-        if ! tmux_session_exists "$resolved"; then
-            current_state="dead"
-        else
-            current_state=$(agent_get_state "$resolved")
-        fi
-
-        if [[ "$current_state" != "$prev_state" ]]; then
-            ts=$(date +%s)
-            printf '%s\n' "$(jq -n \
-                --arg event "state_change" \
-                --arg session "$resolved" \
-                --arg from "$prev_state" \
-                --arg to "$current_state" \
-                --argjson ts "$ts" \
-                '{event: $event, session: $session, from: $from, to: $to, ts: $ts}')"
-            prev_state="$current_state"
-        fi
-
-        # Stop on terminal states unless --follow
-        if ! $follow; then
-            case "$current_state" in
-                idle|dead)
-                    ts=$(date +%s)
-                    printf '%s\n' "$(jq -n \
-                        --arg event "ended" \
-                        --arg session "$resolved" \
-                        --arg state "$current_state" \
-                        --argjson ts "$ts" \
-                        '{event: $event, session: $session, state: $state, ts: $ts}')"
-                    return 0
-                    ;;
-            esac
-        fi
-
-        if ! tmux_session_exists "$resolved"; then
-            break
-        fi
-    done
-}
-
 # Command: interrupt
 cmd_interrupt() {
     _ensure_state
@@ -1324,19 +1205,6 @@ cmd_sandbox() {
             [[ "${1:-}" == "--confirm" ]] && confirm=1
             sb_reset "$confirm"
             ;;
-        export)
-            local path="${1:-}"
-            [[ -z "$path" ]] && { log_error "Usage: am sb export <path>"; return 1; }
-            sb_export "$path"
-            ;;
-        import)
-            local path="${1:-}"
-            local confirm=0
-            shift || true
-            [[ "${1:-}" == "--confirm" ]] && confirm=1
-            [[ -z "$path" ]] && { log_error "Usage: am sb import <path> --confirm"; return 1; }
-            sb_import "$path" "$confirm"
-            ;;
         status)
             local session="${1:-}"
             [[ -z "$session" ]] && { log_error "Usage: am sb status <session>"; return 1; }
@@ -1356,8 +1224,6 @@ Subcommands:
   prune
   build [--no-cache]
   reset --confirm
-  export <path>
-  import <path> --confirm
   enter <session>
   status <session>
 EOF
@@ -1615,9 +1481,6 @@ main() {
         browse)
             cmd_browse
             ;;
-        list-internal)
-            fzf_list_sessions
-            ;;
         list|ls)
             cmd_list "$@"
             ;;
@@ -1647,9 +1510,6 @@ main() {
             ;;
         wait)
             cmd_wait "$@"
-            ;;
-        events)
-            cmd_events "$@"
             ;;
         interrupt)
             cmd_interrupt "$@"

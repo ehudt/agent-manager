@@ -12,7 +12,6 @@ _AGENTS_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 declare -A AGENT_COMMANDS=(
     [claude]="claude"
     [codex]="codex"
-    [gemini]="gemini"
 )
 
 # Check if an agent type accepts the initial prompt as a CLI argument.
@@ -107,21 +106,6 @@ agent_prepare_managed_worktree() {
     fi
 
     echo "$worktree_path"
-}
-
-# Refresh the tmux status bar for a session: re-run lib/status-bar so the
-# tab strip and pane-border sidebar reflect the current state, then force a
-# client-wide redraw.
-# Usage: agent_refresh_tmux_status <session_name>
-agent_refresh_tmux_status() {
-    local session_name="$1"
-    [[ -n "$session_name" ]] || return 0
-
-    local script="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/status-bar"
-    [[ -x "$script" ]] || return 0
-
-    "$script" "$session_name" >/dev/null 2>&1 || true
-    am_tmux refresh-client -S 2>/dev/null || true
 }
 
 # Return the pane target used for the agent process.
@@ -264,11 +248,6 @@ agent_launch() {
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
     registry_update "$session_name" "yolo_mode" "$wants_yolo"
     registry_update "$session_name" "sandbox_mode" "$wants_sandbox"
-
-    # Log to persistent history if task is known at launch
-    if [[ -n "$task" ]]; then
-        history_append "$directory" "$task" "$agent_type" "$branch"
-    fi
 
     # Append to sessions log for restore support (Claude only)
     if [[ "$agent_type" == "claude" ]]; then

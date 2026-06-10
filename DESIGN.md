@@ -2,7 +2,7 @@
 
 ## Overview
 
-A CLI tool for managing multiple AI coding agent sessions (Claude Code, Gemini CLI, etc.) using **tmux** for session persistence and **fzf** for an interactive browsing interface.
+A CLI tool for managing multiple AI coding agent sessions (Claude Code, Codex CLI, etc.) using **tmux** for session persistence and **fzf** for an interactive browsing interface.
 
 ## Requirements
 
@@ -10,7 +10,7 @@ A CLI tool for managing multiple AI coding agent sessions (Claude Code, Gemini C
 |-------------|-------|
 | Use case | Both cross-project and same-project agents |
 | Launch mode | Both from manager AND attach to existing |
-| Agent types | Claude Code, Codex, Gemini CLI (extensible via `AGENT_COMMANDS`) |
+| Agent types | Claude Code, Codex (extensible via `AGENT_COMMANDS`) |
 | Persistence | Sessions must survive logout/reboot |
 | Metadata | Rich: directory, branch, agent type, running time, last command |
 
@@ -29,7 +29,7 @@ A CLI tool for managing multiple AI coding agent sessions (Claude Code, Gemini C
 │         ▼                   ▼                      ▼                │
 │  ┌─────────────┐     ┌─────────────┐     ┌─────────────────────┐   │
 │  │  Session    │     │  Preview    │     │  Agent Runner       │   │
-│  │  Registry   │     │  Renderer   │     │  (claude, gemini)   │   │
+│  │  Registry   │     │  Renderer   │     │  (claude, codex)    │   │
 │  │  (JSON)     │     │  (capture)  │     │                     │   │
 │  └─────────────┘     └─────────────┘     └─────────────────────┘   │
 │                                                                     │
@@ -91,7 +91,7 @@ myapp/feature/auth [claude] implement user auth flow (2h ago)
 ```
 tmux session: am-abc123
   └── window 0: agent
-        ├── pane 0 (top): agent (claude, gemini, codex)  ← preview captures this
+        ├── pane 0 (top): agent (claude, codex)  ← preview captures this
         └── pane 1 (bottom, 15 lines): shell             ← same working directory
 ```
 
@@ -131,7 +131,7 @@ am list --json          # Output JSON for scripting (includes state field)
 # Create new session
 am new                  # Interactive: pick directory, starts claude
 am new /path/to/project # Start claude in specific directory
-am new -t gemini        # Start gemini instead of claude
+am new -t codex         # Start codex instead of claude
 am new --name "my-task" # Custom display name
 am new --yolo           # Enable yolo mode (agent permissive flags)
 am new --sandbox        # Run in Docker sandbox container
@@ -151,7 +151,6 @@ am peek --json <session>          # Structured snapshot with state
 am status <session>               # Show session state
 am status --json <session>        # Machine-readable state
 am wait <session>                 # Block until agent finishes
-am events <session>               # Stream state-change events as JSONL
 am interrupt <session>            # Send Ctrl-C to agent pane
 
 # Attach to session
@@ -293,25 +292,12 @@ Sessions are titled via `auto_title_scan()`, a piggyback scanner that runs durin
 2. Iterates all registry entries
 3. Reads `#{pane_title}` from the agent (top) pane via `tmux_pane_title()`
 4. Trims leading non-alphanumeric characters and validates (≤60 chars, no newlines)
-5. Updates registry `task` field if changed; appends to history on first title
+5. Updates registry `task` field if changed
 
 Key implementation details:
 - Agents set the terminal title via escape sequences; tmux exposes it as `#{pane_title}`
 - Rejects titles over 60 chars or multiline (`_title_valid`)
 - Logs to `~/.agent-manager/titler.log` for debugging
-
-### Session History
-
-Persistent JSONL log at `~/.agent-manager/history.jsonl`:
-
-```json
-{"directory":"/path","task":"Fix auth bug","agent_type":"claude","branch":"main","created_at":"2024-01-15T10:30:00Z"}
-```
-
-- Written at launch (if task known) and after auto-titling
-- Auto-pruned to 7 days
-- Survives session GC (unlike registry entries)
-- Used by directory picker to annotate directories with recent tasks
 
 ### Worktree Isolation
 
@@ -342,10 +328,10 @@ am new -w my-feature ~/project   # worktree at .claude/worktrees/my-feature
 
 ## Future Enhancements
 
-1. ~~**Multi-agent types:** Gemini CLI, Cursor, Aider, etc.~~ *(Done: claude, codex, gemini + extensible)*
+1. ~~**Multi-agent types:** Codex, Cursor, Aider, etc.~~ *(Done: claude, codex + extensible)*
 2. **Session groups:** Group related sessions
 3. **Task tracking:** Integration with todo systems
 4. **Remote sessions:** SSH tunnel support
 5. **Web UI:** Optional browser-based view
-6. ~~**Notifications:** Alert when agent needs input~~ *(Done: `am wait`, `am events`, state detection)*
+6. ~~**Notifications:** Alert when agent needs input~~ *(Done: `am wait`, state detection)*
 7. **Reboot persistence:** tmux-resurrect integration or custom solution

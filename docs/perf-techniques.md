@@ -198,7 +198,6 @@ time_fn() {
 # Clear throttle caches for cold measurement
 rm -f ~/.agent-manager/.gc_last ~/.agent-manager/.title_scan_last
 
-time_fn "fzf_list_sessions"        fzf_list_sessions
 time_fn "sessions_log_restorable"  sessions_log_restorable
 time_fn "sessions_log_gc"          sessions_log_gc
 time_fn "sessions_log_update"      sessions_log_update "am-XXXX" "task" "test"
@@ -210,7 +209,6 @@ time_fn "auto_title_scan (forced)" auto_title_scan 1
 
 | Function | Target | Typical |
 |---|---|---|
-| `fzf_list_sessions` | <100ms | ~50ms |
 | `sessions_log_restorable` | <100ms | ~50ms |
 | `sessions_log_gc` | <100ms | ~65ms |
 | `sessions_log_update` | <50ms | ~15ms |

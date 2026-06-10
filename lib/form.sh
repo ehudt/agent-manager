@@ -1,6 +1,5 @@
 # shellcheck shell=bash
 # form.sh - tput-based new session form
-# Alternative to fzf_new_session_form(), gated by new_form config flag.
 
 # Source dependencies if not already loaded
 _FORM_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
@@ -709,7 +708,7 @@ _form_draw() {
 }
 
 # Main form loop
-# Returns form values on stdout (same format as fzf_new_session_form).
+# Returns form values on stdout.
 # All rendering and input go through /dev/tty so this works inside $() capture.
 _form_run() {
     printf '%s' "${_FORM_HIDE_CURSOR}" > /dev/tty
@@ -767,7 +766,7 @@ _form_cleanup() {
     trap - EXIT INT TERM
 }
 
-# Format output matching fzf_new_session_form contract:
+# Format form values as tab-free \x1f-separated output:
 # directory<US>agent<US>task<US>worktree_name<US>flags  (US = \x1f unit separator)
 _form_output() {
     local directory="${FORM_VALUES[directory]}"
@@ -809,59 +808,55 @@ _form_output() {
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
 }
 
-# Dispatch function: picks form implementation based on feature flag.
-# Same signature and output as fzf_new_session_form().
+# Entry point: parse prefill values, then run the tput form.
+# Output: directory<US>agent<US>task<US>worktree_name<US>flags  (US = \x1f)
 am_new_session_form() {
-    if am_new_form_enabled; then
-        local prefill_directory="${1:-}"
-        local prefill_agent="${2:-$(am_default_agent)}"
-        local prefill_task="${3:-}"
-        local prefill_worktree="${4:-}"
-        local prefill_mode_flags="${5:-}"
+    local prefill_directory="${1:-}"
+    local prefill_agent="${2:-$(am_default_agent)}"
+    local prefill_task="${3:-}"
+    local prefill_worktree="${4:-}"
+    local prefill_mode_flags="${5:-}"
 
-        local directory="${prefill_directory/#\~/$HOME}"
-        local agent="$prefill_agent"
-        local task="$prefill_task"
-        local mode="new"
-        local yolo="false"
-        local sandbox="false"
-        local worktree_enabled="false"
-        local worktree_name=""
-        local yolo_from_flag="false"
-        local docker_available="true"
-        am_docker_available || docker_available="false"
+    local directory="${prefill_directory/#\~/$HOME}"
+    local agent="$prefill_agent"
+    local task="$prefill_task"
+    local mode="new"
+    local yolo="false"
+    local sandbox="false"
+    local worktree_enabled="false"
+    local worktree_name=""
+    local yolo_from_flag="false"
+    local docker_available="true"
+    am_docker_available || docker_available="false"
 
-        # Parse prefill flags
-        [[ "$prefill_mode_flags" == *"--resume"* ]] && mode="resume"
-        [[ "$prefill_mode_flags" == *"--continue"* ]] && mode="continue"
-        if [[ "$prefill_mode_flags" == *"--yolo"* ]]; then
-            yolo="true"
-            yolo_from_flag="true"
-        elif am_default_yolo_enabled; then
-            yolo="true"
-        fi
-        if [[ "$prefill_mode_flags" == *"--sandbox"* ]]; then
-            sandbox="true"
-        elif am_default_sandbox_enabled && [[ "$docker_available" == "true" ]]; then
-            sandbox="true"
-        fi
-
-        # --yolo flag implies sandbox + worktree (config default doesn't override other defaults)
-        if [[ "$yolo_from_flag" == "true" ]]; then
-            [[ "$docker_available" == "true" ]] && sandbox="true"
-            worktree_enabled="true"
-        fi
-
-        case "$prefill_worktree" in
-            ""|false) worktree_enabled="false"; worktree_name="" ;;
-            true|__auto__) worktree_enabled="true"; worktree_name="" ;;
-            *) worktree_enabled="true"; worktree_name="$prefill_worktree" ;;
-        esac
-
-        _form_init "$directory" "$agent" "$task" "$mode" "$yolo" "$sandbox" \
-            "$worktree_enabled" "$worktree_name" "$docker_available"
-        _form_run
-    else
-        fzf_new_session_form "$@"
+    # Parse prefill flags
+    [[ "$prefill_mode_flags" == *"--resume"* ]] && mode="resume"
+    [[ "$prefill_mode_flags" == *"--continue"* ]] && mode="continue"
+    if [[ "$prefill_mode_flags" == *"--yolo"* ]]; then
+        yolo="true"
+        yolo_from_flag="true"
+    elif am_default_yolo_enabled; then
+        yolo="true"
     fi
+    if [[ "$prefill_mode_flags" == *"--sandbox"* ]]; then
+        sandbox="true"
+    elif am_default_sandbox_enabled && [[ "$docker_available" == "true" ]]; then
+        sandbox="true"
+    fi
+
+    # --yolo flag implies sandbox + worktree (config default doesn't override other defaults)
+    if [[ "$yolo_from_flag" == "true" ]]; then
+        [[ "$docker_available" == "true" ]] && sandbox="true"
+        worktree_enabled="true"
+    fi
+
+    case "$prefill_worktree" in
+        ""|false) worktree_enabled="false"; worktree_name="" ;;
+        true|__auto__) worktree_enabled="true"; worktree_name="" ;;
+        *) worktree_enabled="true"; worktree_name="$prefill_worktree" ;;
+    esac
+
+    _form_init "$directory" "$agent" "$task" "$mode" "$yolo" "$sandbox" \
+        "$worktree_enabled" "$worktree_name" "$docker_available"
+    _form_run
 }

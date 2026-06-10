@@ -117,17 +117,6 @@ am_stream_logs_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
-am_new_form_enabled() {
-    if [[ -n "${AM_NEW_FORM:-}" ]]; then
-        am_bool_is_true "${AM_NEW_FORM,,}"
-        return $?
-    fi
-
-    local configured
-    configured=$(am_config_get "new_form")
-    am_bool_is_true "${configured,,}"
-}
-
 am_sb_network_restrict_enabled() {
     if [[ -n "${AM_SB_NETWORK_RESTRICT:-}" ]]; then
         am_bool_is_true "${AM_SB_NETWORK_RESTRICT,,}"
@@ -183,7 +172,6 @@ am_config_key_alias() {
         yolo|default-yolo|default_yolo) echo "default_yolo" ;;
         sandbox|default-sandbox|default_sandbox) echo "default_sandbox" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
-        new-form|new_form) echo "new_form" ;;
         sb-network-restrict|sb_network_restrict) echo "sb_network_restrict" ;;
         sb-allowed-hosts|sb_allowed_hosts) echo "sb_allowed_hosts" ;;
         sandbox-shares|sandbox_shares|sandbox.shares) echo "sandbox.shares" ;;
@@ -194,7 +182,7 @@ am_config_key_alias() {
 am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
-        default_yolo|default_sandbox|stream_logs|new_form|sb_network_restrict) echo "boolean" ;;
+        default_yolo|default_sandbox|stream_logs|sb_network_restrict) echo "boolean" ;;
         sb_allowed_hosts|sandbox.shares) echo "string" ;;
         *) return 1 ;;
     esac
@@ -207,7 +195,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        default_yolo|default_sandbox|stream_logs|new_form|sb_network_restrict)
+        default_yolo|default_sandbox|stream_logs|sb_network_restrict)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         sb_allowed_hosts|sandbox.shares)
@@ -237,12 +225,6 @@ am_config_print() {
     else
         stream_logs_value=false
     fi
-    local new_form_value
-    if am_new_form_enabled; then
-        new_form_value=true
-    else
-        new_form_value=false
-    fi
     local sb_network_restrict_value
     if am_sb_network_restrict_enabled; then
         sb_network_restrict_value=true
@@ -258,7 +240,6 @@ default_agent=$default_agent_value
 default_yolo=$default_yolo_value
 default_sandbox=$default_sandbox_value
 stream_logs=$stream_logs_value
-new_form=$new_form_value
 sb_network_restrict=$sb_network_restrict_value
 sb_allowed_hosts=$sb_allowed_hosts_value
 sandbox.shares=$sandbox_shares_value

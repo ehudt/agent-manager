@@ -6,7 +6,7 @@
 
 <p align="center">
   Run multiple AI coding agents side by side. Switch between them instantly.<br>
-  <code>tmux</code> + <code>fzf</code> powered. Works with Claude Code, Codex CLI, and Gemini CLI.
+  <code>tmux</code> + <code>fzf</code> powered. Works with Claude Code and Codex CLI.
 </p>
 
 <p align="center">
@@ -80,7 +80,6 @@ sudo pacman -S tmux fzf jq zoxide
 |-------|---------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
 | [Codex CLI](https://github.com/openai/codex) | `npm install -g @openai/codex` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @anthropic-ai/gemini-cli` |
 
 ### Install
 
@@ -117,7 +116,6 @@ am help
 ```bash
 am new ~/code/myproject              # New Claude session in a directory
 am new -t codex ~/code/project       # Use Codex instead
-am new -t gemini ~/code/project      # Use Gemini instead
 am new -n "fix auth bug" .           # Session with a task description
 am new --yolo ~/code/myproject       # Permissive mode (agent-specific flags)
 am new -w ~/code/myproject           # Isolate changes in a git worktree
@@ -136,7 +134,7 @@ Run `am` to open the session browser:
 │ Agent Sessions | ?:help  Enter:open  ^N:new  ^X:kill  ^R:refresh         │
 ├───────────────────────────────────────────────────────────────────────────┤
 │ > am-a1b2c3 myapp/feature/auth [claude] Fix user auth  (5m ago)          │
-│   am-d4e5f6 tools/dev [gemini] Refactor build system  (1d ago)           │
+│   am-d4e5f6 tools/dev [codex] Refactor build system  (1d ago)            │
 │   Inactive sessions ─────────────────────────────────────────────────     │
 │   myproject/main [claude] Investigate deploy issue  (2d ago)             │
 ├───────────────────────────────────────────────────────────────────────────┤
@@ -166,7 +164,7 @@ Each session is a tmux split pane — agent on top, shell on the bottom, both in
 
 ```
 ┌─────────────────────────────────────┐
-│  Agent (Claude/Codex/Gemini)        │  ← top pane
+│  Agent (Claude/Codex)               │  ← top pane
 │                                     │
 ├─────────────────────────────────────┤
 │  Shell                              │  ← bottom pane, same directory
@@ -251,15 +249,6 @@ am wait --state idle,dead "$s2"
 
 am peek --lines 5 "$s1"
 am peek --lines 5 "$s2"
-```
-
-### Event-driven monitoring
-
-```bash
-am events "$session" | while IFS= read -r line; do
-    state=$(printf '%s' "$line" | jq -r '.to // .state')
-    printf 'State: %s\n' "$state"
-done
 ```
 
 ### Session states
@@ -361,8 +350,6 @@ am sb ps
 am sb prune
 am sb build --no-cache
 am sb reset --confirm
-am sb export ~/sandbox-state.tgz
-am sb import ~/sandbox-state.tgz --confirm
 ```
 
 `am sandbox` and `am sb` are equivalent prefixes.
@@ -407,10 +394,6 @@ am new -w my-feature ~/project         # Named worktree
 
 Claude sessions are automatically titled from the first user message. A background process extracts the message and sends it to Claude Haiku to generate a short title (e.g., "Fix auth login bug") that appears in the session browser.
 
-### Session history
-
-Sessions are logged to `~/.agent-manager/history.jsonl`. The directory picker annotates paths with recent session history — agent type, task, and age — so you can see what you were working on last.
-
 ### Configuration
 
 ```bash
@@ -429,7 +412,6 @@ Precedence: CLI flag > environment variable > saved config > built-in default.
 |-------|---------|-------------------|
 | `claude` | `claude` | `--dangerously-skip-permissions` |
 | `codex` | `codex` | `--yolo` |
-| `gemini` | `gemini` | `--yolo` |
 
 Unknown agent types are passed through as the command name, so `am new -t aider .` will try to run `aider`.
 
@@ -443,7 +425,6 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 | `am send <session> [prompt]` | Send a prompt to a running session |
 | `am peek <session>` | Snapshot or follow a session's pane output |
 | `am wait <session>` | Block until agent reaches a target state |
-| `am events <session>` | Stream state-change events as JSONL |
 | `am interrupt <session>` | Send Ctrl-C to the agent pane |
 | `am attach <session>` | Attach to a session |
 | `am restore` | Browse and resume closed Claude sessions |
@@ -461,7 +442,6 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 ~/.agent-manager/
 ├── config.json         # Saved defaults (agent, yolo, log streaming)
 ├── sessions.json       # Live session metadata registry
-├── history.jsonl       # Persistent session history (survives cleanup)
 ├── sessions_log.jsonl  # Session restore log (Claude session IDs + metadata)
 ├── snapshots/          # Pane text snapshots for closed session preview
 └── tmux.conf           # Generated tmux config for am sessions

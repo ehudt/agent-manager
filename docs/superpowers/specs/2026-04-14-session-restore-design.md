@@ -79,7 +79,7 @@ Added to existing GC cycle:
   - If not, remove the entry and delete the snapshot file.
 - Entries with no `session_id` and `created_at` older than 24 hours are
   also pruned (failed launches that never produced a JSONL).
-- Rewrite the file atomically (tmp + mv), same pattern as `history_prune`.
+- Rewrite the file atomically (tmp + mv).
 - Throttled alongside existing GC (60s).
 
 ## UI
