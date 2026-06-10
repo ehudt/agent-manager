@@ -167,6 +167,31 @@ registry_count() {
     jq '.sessions | length' "$AM_REGISTRY"
 }
 
+# Stdout wrapper around _state_hook_read (lib/state.sh) for tests.
+_state_from_hook() {
+    local _hs
+    _state_hook_read "$1" _hs
+    [[ -n "$_hs" ]] && echo "$_hs"
+}
+
+# Build size-1 bulk fixtures and call _state_pane_is_shell_bulk (lib/state.sh).
+# Used by tests that probe single sessions directly. Returns: 0 if shell, 1 otherwise.
+_state_pane_is_shell() {
+    local session="$1"
+    local -A __ps_top=() __ps_comm=() __ps_child=()
+    local pane_pid
+    pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
+    [[ -z "$pane_pid" ]] && return 1
+    __ps_top[$session]=$pane_pid
+    local _p _pp _c
+    while read -r _p _pp _c; do
+        [[ -z "$_p" || "$_p" == "PID" ]] && continue
+        __ps_comm[$_p]=$_c
+        __ps_child[$_pp]="${__ps_child[$_pp]:-} $_p"
+    done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
+    _state_pane_is_shell_bulk "$session" __ps_top __ps_comm __ps_child
+}
+
 # Check dependencies
 check_deps() {
     local missing=()
@@ -192,6 +217,75 @@ if [[ -z "${_AM_PARALLEL_WORKER:-}" ]]; then
 fi
 
 # ============================================
+# Polling helpers (avoid fixed sleeps)
+# ============================================
+
+# Poll a command until its stdout contains a needle (20 x 0.2s = ~4s max).
+# Echoes the last captured output so callers can assert on it.
+# Usage: output=$(wait_for_text NEEDLE CMD [ARGS...])
+wait_for_text() {
+    local needle="$1"
+    shift
+    local text="" _i
+    for _i in $(seq 1 20); do
+        text=$("$@" 2>/dev/null || true)
+        [[ "$text" == *"$needle"* ]] && break
+        sleep 0.2
+    done
+    printf '%s\n' "$text"
+}
+
+# Poll a command until it exits 0 (20 x 0.2s = ~4s max). Returns 1 on timeout.
+# Usage: wait_for_cmd CMD [ARGS...]
+wait_for_cmd() {
+    local _i
+    for _i in $(seq 1 20); do
+        "$@" &>/dev/null && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+# ============================================
+# Isolated AM_DIR helpers
+# ============================================
+
+# Redirect AM_DIR (and derived paths) to a fresh temp dir and am_init.
+# Lighter sibling of setup_integration_env for tests that exercise
+# registry/config logic without launching tmux sessions.
+# Usage: setup_isolated_am_dir ... teardown_isolated_am_dir
+setup_isolated_am_dir() {
+    TEST_ISO_OLD_AM_DIR="${AM_DIR:-}"
+    TEST_ISO_OLD_AM_REGISTRY="${AM_REGISTRY:-}"
+    TEST_ISO_OLD_AM_CONFIG="${AM_CONFIG:-}"
+    TEST_ISO_OLD_AM_SESSIONS_LOG="${AM_SESSIONS_LOG:-}"
+    TEST_ISO_OLD_AM_SNAPSHOTS_DIR="${AM_SNAPSHOTS_DIR:-}"
+    TEST_ISO_OLD_AM_STATE_DIR="${AM_STATE_DIR:-}"
+    AM_DIR=$(mktemp -d)
+    export AM_DIR
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    export AM_CONFIG="$AM_DIR/config.json"
+    export AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
+    export AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
+    export AM_STATE_DIR="$AM_DIR/state"
+    am_init
+}
+
+teardown_isolated_am_dir() {
+    rm -rf "$AM_DIR"
+    export AM_DIR="${TEST_ISO_OLD_AM_DIR:-$HOME/.agent-manager}"
+    export AM_REGISTRY="${TEST_ISO_OLD_AM_REGISTRY:-$AM_DIR/sessions.json}"
+    export AM_CONFIG="${TEST_ISO_OLD_AM_CONFIG:-$AM_DIR/config.json}"
+    export AM_SESSIONS_LOG="${TEST_ISO_OLD_AM_SESSIONS_LOG:-$AM_DIR/sessions_log.jsonl}"
+    export AM_SNAPSHOTS_DIR="${TEST_ISO_OLD_AM_SNAPSHOTS_DIR:-$AM_DIR/snapshots}"
+    if [[ -n "$TEST_ISO_OLD_AM_STATE_DIR" ]]; then
+        export AM_STATE_DIR="$TEST_ISO_OLD_AM_STATE_DIR"
+    else
+        unset AM_STATE_DIR
+    fi
+}
+
+# ============================================
 # Integration test helpers
 # ============================================
 
@@ -204,7 +298,6 @@ setup_integration_env() {
     TEST_OLD_AM_DIR="${AM_DIR:-$HOME/.agent-manager}"
     TEST_OLD_AM_REGISTRY="${AM_REGISTRY:-$TEST_OLD_AM_DIR/sessions.json}"
     TEST_OLD_AM_CONFIG="${AM_CONFIG:-$TEST_OLD_AM_DIR/config.json}"
-    TEST_OLD_AM_HISTORY="${AM_HISTORY:-$TEST_OLD_AM_DIR/history.jsonl}"
     TEST_OLD_AM_SESSIONS_LOG="${AM_SESSIONS_LOG:-$TEST_OLD_AM_DIR/sessions_log.jsonl}"
     TEST_OLD_AM_SNAPSHOTS_DIR="${AM_SNAPSHOTS_DIR:-$TEST_OLD_AM_DIR/snapshots}"
     TEST_OLD_AM_TMUX_CONF="${AM_TMUX_CONF:-$TEST_OLD_AM_DIR/tmux.conf}"
@@ -217,7 +310,6 @@ setup_integration_env() {
     export AM_DIR="$TEST_AM_DIR"
     export AM_REGISTRY="$AM_DIR/sessions.json"
     export AM_CONFIG="$AM_DIR/config.json"
-    export AM_HISTORY="$AM_DIR/history.jsonl"
     export AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
     export AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
     export AM_TMUX_CONF="$AM_DIR/tmux.conf"
@@ -228,7 +320,7 @@ setup_integration_env() {
 
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/claude"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/codex"
-    ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/gemini"
+    ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/stubagent"
     TEST_OLD_PATH="${PATH:-}"
     export PATH="$TEST_STUB_BIN:$PATH"
     # Propagate test env into the tmux server so run-shell commands inherit it
@@ -253,8 +345,9 @@ setup_integration_env() {
     AGENT_COMMANDS[claude]="$TEST_STUB_DIR/stub_agent"
     # shellcheck disable=SC2034,SC2154
     AGENT_COMMANDS[codex]="$TEST_STUB_DIR/stub_agent"
+    # Test-only agent type without worktree support (exercises unsupported-agent paths)
     # shellcheck disable=SC2034,SC2154
-    AGENT_COMMANDS[gemini]="$TEST_STUB_DIR/stub_agent"
+    AGENT_COMMANDS[stubagent]="$TEST_STUB_DIR/stub_agent"
 }
 
 # Tear down integration test environment
@@ -278,7 +371,6 @@ teardown_integration_env() {
     export AM_DIR="${TEST_OLD_AM_DIR:-$HOME/.agent-manager}"
     export AM_REGISTRY="${TEST_OLD_AM_REGISTRY:-$AM_DIR/sessions.json}"
     export AM_CONFIG="${TEST_OLD_AM_CONFIG:-$AM_DIR/config.json}"
-    export AM_HISTORY="${TEST_OLD_AM_HISTORY:-$AM_DIR/history.jsonl}"
     export AM_SESSIONS_LOG="${TEST_OLD_AM_SESSIONS_LOG:-$AM_DIR/sessions_log.jsonl}"
     export AM_SNAPSHOTS_DIR="${TEST_OLD_AM_SNAPSHOTS_DIR:-$AM_DIR/snapshots}"
     export AM_TMUX_CONF="${TEST_OLD_AM_TMUX_CONF:-$AM_DIR/tmux.conf}"

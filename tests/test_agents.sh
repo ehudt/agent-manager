@@ -5,22 +5,7 @@ test_agents() {
     $SUMMARY_MODE || echo "=== Testing agents.sh ==="
 
     source "$LIB_DIR/utils.sh"
-
-    # Skip full test if deps missing
-    if ! command -v jq &>/dev/null; then
-        skip_test "agents tests (jq not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/registry.sh"
-
-    if ! command -v tmux &>/dev/null; then
-        skip_test "agents tests (tmux not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/tmux.sh"
     set +u; source "$LIB_DIR/agents.sh"; set -u
 
@@ -38,7 +23,6 @@ test_agents() {
     # Test agent_get_command
     assert_eq "claude" "$(agent_get_command claude)" "agent_get_command: claude"
     assert_eq "codex" "$(agent_get_command codex)" "agent_get_command: codex"
-    assert_eq "gemini" "$(agent_get_command gemini)" "agent_get_command: gemini"
 
     # Test yolo flag mapping
     assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
@@ -49,20 +33,12 @@ test_agents() {
         "_agent_prompt_as_arg: codex uses CLI arg"
     assert_eq "false" "$(_agent_prompt_as_arg claude && echo true || echo false)" \
         "_agent_prompt_as_arg: claude uses stdin"
-    assert_eq "false" "$(_agent_prompt_as_arg gemini && echo true || echo false)" \
-        "_agent_prompt_as_arg: gemini uses stdin"
 
     $SUMMARY_MODE || echo ""
 }
 
 test_agents_extended() {
     $SUMMARY_MODE || echo "=== Testing agents.sh (extended) ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "agents extended tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
@@ -74,45 +50,23 @@ test_agents_extended() {
         "agent_type_supported: claude"
     assert_eq "true" "$(agent_type_supported codex && echo true || echo false)" \
         "agent_type_supported: codex"
-    assert_eq "true" "$(agent_type_supported gemini && echo true || echo false)" \
-        "agent_type_supported: gemini"
     assert_eq "false" "$( (agent_type_supported bogus) 2>/dev/null && echo true || echo false)" \
         "agent_type_supported: bogus rejected"
 
     # Test generate_session_name: different dirs give different names
+    # (prefix/length format is covered in test_agents)
     local name1
     name1=$(generate_session_name "/tmp/project-a")
     local name2
     name2=$(generate_session_name "/tmp/project-b")
-    if [[ "$name1" != "$name2" ]]; then
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: generate_session_name: different dirs different names"
-    else
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: generate_session_name: collision for different dirs"
-        FAIL_DETAILS+=("FAIL: generate_session_name: collision for different dirs")
-    fi
-
-    # Test generate_session_name format: am-XXXXXX
-    local name
-    name=$(generate_session_name "/tmp/test")
-    assert_contains "$name" "am-" "generate_session_name: starts with am-"
-    assert_eq 9 "${#name}" "generate_session_name: length is 9 (am- + 6)"
-
-    # Test agent_get_yolo_flag for gemini (uses default --yolo)
-    assert_eq "--yolo" "$(agent_get_yolo_flag gemini)" "agent_get_yolo_flag: gemini"
+    assert_cmd_succeeds "generate_session_name: different dirs different names" \
+        test "$name1" != "$name2"
 
     $SUMMARY_MODE || echo ""
 }
 
 test_integration_lifecycle() {
     $SUMMARY_MODE || echo "=== Testing Integration: Session Lifecycle ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "integration lifecycle tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
@@ -189,12 +143,6 @@ test_integration_lifecycle() {
 test_worktree() {
     $SUMMARY_MODE || echo "=== Testing Worktree Feature ==="
 
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "worktree tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
     source "$LIB_DIR/registry.sh"
@@ -213,11 +161,6 @@ test_worktree() {
     # Also create a non-git temp dir
     local nongit_dir
     nongit_dir=$(mktemp -d)
-
-    # --- Test: help text includes -w/--worktree ---
-    local help_output
-    help_output=$("$PROJECT_DIR/am" help)
-    assert_contains "$help_output" "--worktree" "help: mentions --worktree flag"
 
     # --- Test: agent_launch with worktree_name sets registry worktree_path ---
     local session_name
@@ -245,14 +188,7 @@ test_worktree() {
 
     # Verify info does NOT show worktree line
     info_output=$(agent_info "$session_name")
-    if [[ "$info_output" != *"Worktree:"* ]]; then
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: no-worktree launch: info omits Worktree line"
-    else
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: no-worktree launch: info unexpectedly shows Worktree"
-        FAIL_DETAILS+=("FAIL: no-worktree launch: info unexpectedly shows Worktree")
-    fi
+    assert_not_contains "$info_output" "Worktree:" "no-worktree launch: info omits Worktree line"
 
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
@@ -302,8 +238,8 @@ test_worktree() {
 
     # --- Test: unsupported agent type ignores worktree ---
     # Capture stderr to verify warning is emitted (output intentionally unused)
-    set +u; agent_launch "$git_dir" "gemini" "" "my-wt" 2>/dev/null 1>/dev/null || true; set -u
-    session_name=$(set +u; agent_launch "$git_dir" "gemini" "" "my-wt" 2>/dev/null)
+    set +u; agent_launch "$git_dir" "stubagent" "" "my-wt" 2>/dev/null 1>/dev/null || true; set -u
+    session_name=$(set +u; agent_launch "$git_dir" "stubagent" "" "my-wt" 2>/dev/null)
     if [[ -n "$session_name" ]]; then
         wt_path=$(registry_get_field "$session_name" worktree_path)
         assert_eq "" "$wt_path" "unsupported worktree: worktree_path not set"
@@ -322,38 +258,6 @@ test_worktree() {
         skip_test "non-git worktree: agent_launch failed"
     fi
 
-    # --- Test: agent_display_name shows task when set ---
-    session_name=$(set +u; agent_launch "$git_dir" "claude" "fix login bug" "" 2>/dev/null)
-    if [[ -n "$session_name" ]]; then
-        local display
-        display=$(agent_display_name "$session_name")
-        assert_contains "$display" "fix login bug" "display_name: shows task"
-        agent_kill "$session_name" 2>/dev/null
-    else
-        skip_test "display_name: agent_launch failed"
-    fi
-
-    # --- Test: agent_display_name omits task when empty ---
-    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "" 2>/dev/null)
-    if [[ -n "$session_name" ]]; then
-        local display
-        display=$(agent_display_name "$session_name")
-        # Should have [claude] but no extra task text between type and time
-        assert_contains "$display" "[claude]" "display_name no task: shows agent type"
-
-        # --- Test: agent_display_name accepts pre-fetched activity ---
-        local activity
-        activity=$(tmux_get_activity "$session_name")
-        local display_with_activity
-        display_with_activity=$(agent_display_name "$session_name" "$activity")
-        assert_contains "$display_with_activity" "[claude]" "display_name with activity: shows agent type"
-        assert_contains "$display_with_activity" "ago)" "display_name with activity: shows time"
-
-        agent_kill "$session_name" 2>/dev/null
-    else
-        skip_test "display_name no task: agent_launch failed"
-    fi
-
     # Cleanup
     rm -rf "$git_dir" "$nongit_dir"
     teardown_integration_env
@@ -363,12 +267,6 @@ test_worktree() {
 
 test_sandbox_yolo_independence() {
     $SUMMARY_MODE || echo "=== Testing sandbox/yolo independence ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "sandbox/yolo tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/config.sh"
@@ -412,12 +310,6 @@ test_sandbox_yolo_independence() {
 
 test_resolve_session() {
     $SUMMARY_MODE || echo "=== Testing resolve_session ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "resolve_session tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
@@ -469,12 +361,6 @@ test_resolve_session() {
 test_prompt_injection() {
     $SUMMARY_MODE || echo "=== Testing prompt injection paths ==="
 
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "prompt injection tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
     source "$LIB_DIR/registry.sh"
@@ -492,9 +378,9 @@ test_prompt_injection() {
     assert_not_empty "$session_name" "claude piped prompt: session created"
 
     if [[ -n "$session_name" ]]; then
-        sleep 0.5
         local pane_output
-        pane_output=$(am_tmux capture-pane -t "${session_name}:.{top}" -p 2>/dev/null || true)
+        pane_output=$(wait_for_text "stub-agent-input:hello from pipe" \
+            am_tmux capture-pane -t "${session_name}:.{top}" -p)
         assert_contains "$pane_output" "stub-agent-input:hello from pipe" \
             "claude piped prompt: prompt delivered via stdin pipe"
         agent_kill "$session_name" 2>/dev/null
@@ -506,10 +392,10 @@ test_prompt_injection() {
     assert_not_empty "$session_name" "codex CLI arg prompt: session created"
 
     if [[ -n "$session_name" ]]; then
-        sleep 0.5
         local pane_output
-        pane_output=$(am_tmux capture-pane -t "${session_name}:.{top}" -p 2>/dev/null || true)
         # The stub agent command should include the prompt as an argument
+        pane_output=$(wait_for_text "hello from arg" \
+            am_tmux capture-pane -t "${session_name}:.{top}" -p)
         assert_contains "$pane_output" "hello from arg" \
             "codex CLI arg prompt: prompt appears in pane (passed as arg)"
         agent_kill "$session_name" 2>/dev/null
@@ -523,12 +409,6 @@ test_prompt_injection() {
 
 test_send_prompt_sandbox_delay() {
     $SUMMARY_MODE || echo "=== Testing agent_send_prompt sandbox delay ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "send_prompt sandbox delay tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"

@@ -4,12 +4,6 @@
 test_state() {
     $SUMMARY_MODE || echo "=== Testing state.sh (unit) ==="
 
-    if ! command -v jq &>/dev/null; then
-        skip_test "state unit tests (jq not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     set +u
     source "$LIB_DIR/config.sh"
@@ -78,12 +72,6 @@ test_state() {
 test_state_integration() {
     $SUMMARY_MODE || echo "=== Testing state.sh (integration) ==="
 
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "state integration tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     set +u
     source "$LIB_DIR/config.sh"
@@ -102,12 +90,7 @@ test_state_integration() {
     session_name=$(set +u; agent_launch "$test_dir" "claude" "state test" 2>/dev/null)
     assert_not_empty "$session_name" "state integration: session created"
 
-    local pane_output=""
-    for _i in $(seq 1 20); do
-        pane_output=$(am_tmux capture-pane -pt "$session_name:.{top}" 2>/dev/null || true)
-        [[ "$pane_output" == *"stub-agent-ready"* ]] && break
-        sleep 0.2
-    done
+    wait_for_text "stub-agent-ready" am_tmux capture-pane -pt "$session_name:.{top}" >/dev/null
 
     local state
     state=$(agent_get_state "$session_name" 2>/dev/null || true)
@@ -138,7 +121,6 @@ test_state_integration() {
 
     # Stub tmux_session_exists + bypass shell check.
     _state_pane_is_shell_bulk() { return 1; }
-    _state_pane_is_shell() { return 1; }
     tmux_session_exists() { [[ "$1" == "$mock_session" ]] && return 0 || return 1; }
     registry_get_field() { echo ""; }
 
@@ -153,7 +135,7 @@ test_state_integration() {
     assert_eq "unknown" "$unknown_state" "agent_get_state: hook silent + agent alive → unknown"
 
     # Restore originals by re-sourcing.
-    unset -f _state_pane_is_shell_bulk _state_pane_is_shell tmux_session_exists registry_get_field
+    unset -f _state_pane_is_shell_bulk tmux_session_exists registry_get_field
     rm -rf "$mock_state_dir"
     unset AM_STATE_DIR
     set +u
@@ -166,14 +148,7 @@ test_state_integration() {
     local status_json
     status_json=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
         "$PROJECT_DIR/am" status --json "$session_name" 2>/dev/null || true)
-    if echo "$status_json" | jq . >/dev/null 2>&1; then
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: am status --json: valid JSON"
-    else
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: am status --json: invalid JSON (got: $status_json)"
-        FAIL_DETAILS+=("FAIL: am status --json: invalid JSON (got: $status_json)")
-    fi
+    assert_cmd_succeeds "am status --json: valid JSON" jq . <<< "$status_json"
     local status_state
     status_state=$(echo "$status_json" | jq -r '.state // empty' 2>/dev/null || true)
     assert_not_empty "$status_state" "am status --json: state field present"
@@ -263,14 +238,21 @@ test_agent_wait_state_stable_idle() {
     [[ -n "$saved_date" ]] && eval "$saved_date" || unset -f date
 }
 
+# tmux session_created timestamps have 1-second resolution and
+# am_session_order sorts by them, so consecutive launches must land in
+# distinct seconds. Wait until the wall clock has moved past the given
+# session's creation second (cheaper than a fixed sleep 1.1 — usually
+# ~0.5s, and free when the launch itself took >1s).
+_wait_past_creation_second() {
+    local created
+    created=$(tmux_get_created "$1" 2>/dev/null || echo 0)
+    while (( $(date +%s) <= created )); do
+        sleep 0.1
+    done
+}
+
 test_am_session_order() {
     $SUMMARY_MODE || echo "=== Testing am_session_order ==="
-
-    if ! command -v tmux &>/dev/null; then
-        skip_test "am_session_order tests (tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -288,9 +270,9 @@ test_am_session_order() {
 
     local s1 s2 s3
     s1=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
-    sleep 1.1
+    _wait_past_creation_second "$s1"
     s2=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
-    sleep 1.1
+    _wait_past_creation_second "$s2"
     s3=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
 
     local result count

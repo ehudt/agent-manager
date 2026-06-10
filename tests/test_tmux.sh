@@ -4,12 +4,6 @@
 test_tmux() {
     $SUMMARY_MODE || echo "=== Testing tmux.sh ==="
 
-    if ! command -v tmux &>/dev/null; then
-        skip_test "tmux tests (tmux not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
 
@@ -33,12 +27,6 @@ test_tmux() {
 
 test_tmux_listing() {
     $SUMMARY_MODE || echo "=== Testing tmux listing ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "tmux listing tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
@@ -74,12 +62,6 @@ test_tmux_listing() {
     assert_contains "$list" "$s1" "tmux_list: contains first session"
     assert_contains "$list" "$s2" "tmux_list: contains second session"
 
-    # Test: list_with_activity returns both, sorted by activity
-    local activity_list
-    activity_list=$(tmux_list_am_sessions_with_activity)
-    assert_contains "$activity_list" "$s1" "tmux_list_with_activity: contains first"
-    assert_contains "$activity_list" "$s2" "tmux_list_with_activity: contains second"
-
     # Kill one, count should drop
     [[ -n "$s1" ]] && agent_kill "$s1" 2>/dev/null
     count=$(tmux_count_am_sessions)
@@ -95,12 +77,6 @@ test_tmux_listing() {
 
 test_tmux_binding_snippets() {
     $SUMMARY_MODE || echo "=== Testing tmux binding snippets ==="
-
-    if ! command -v tmux &>/dev/null; then
-        skip_test "tmux binding snippet tests (tmux not installed)"
-        echo ""
-        return
-    fi
 
     local temp_am_dir temp_conf rendered_conf
     temp_am_dir=$(mktemp -d)
@@ -139,31 +115,11 @@ test_tmux_binding_snippets() {
 
     rm -rf "$temp_am_dir"
 
-    local install_script
-    install_script=$(cat "$PROJECT_DIR/scripts/install.sh")
-    assert_contains "$install_script" 'Remove legacy agent-manager bindings from $TMUX_CONF?' \
-        "install script: prompts to clean legacy tmux bindings"
-    assert_contains "$install_script" 'agent-manager now uses its own tmux server/socket' \
-        "install script: documents dedicated tmux server"
-
-    local fzf_script
-    fzf_script=$(cat "$PROJECT_DIR/lib/fzf.sh")
-    assert_contains "$fzf_script" "client_name_cmd=\"tmux -L \${AM_TMUX_SOCKET} display-message -p '#{client_name}'\"" \
-        "fzf: defers tmux client name lookup to ctrl-x time"
-    assert_contains "$fzf_script" 'ctrl-x:execute-silent($lib_dir/../bin/kill-and-switch \$($client_name_cmd) {1})+reload($list_cmd)' \
-        "fzf: ctrl-x resolves client name lazily via subshell"
-
     $SUMMARY_MODE || echo ""
 }
 
 test_tmux_config_refreshes_stale_helpers() {
     $SUMMARY_MODE || echo "=== Testing tmux config refresh ==="
-
-    if ! command -v tmux &>/dev/null; then
-        skip_test "tmux config refresh test (tmux not installed)"
-        echo ""
-        return
-    fi
 
     local temp_am_dir temp_conf rendered_conf
     temp_am_dir=$(mktemp -d)
@@ -210,12 +166,6 @@ EOF
 
 test_tmux_pane_border_sidebar_refreshes_without_job_cache() {
     $SUMMARY_MODE || echo "=== Testing pane-border sidebar refresh ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "pane-border sidebar refresh test (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/config.sh"

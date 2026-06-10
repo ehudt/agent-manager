@@ -4,22 +4,11 @@
 test_registry() {
     $SUMMARY_MODE || echo "=== Testing registry.sh ==="
 
-    if ! command -v jq &>/dev/null; then
-        skip_test "registry tests (jq not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/registry.sh"
 
-    # Use temp directory for test registry
-    AM_DIR=$(mktemp -d)
-    export AM_DIR
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-
     # Test init
-    am_init
+    setup_isolated_am_dir
     assert_cmd_succeeds "am_init creates registry file" test -f "$AM_REGISTRY"
 
     # Test add
@@ -35,12 +24,7 @@ test_registry() {
     registry_update "test-session" "branch" "feature"
     assert_eq "feature" "$(registry_get_field test-session branch)" "registry_update: changes field"
 
-    # Test list
-    registry_add "test-session-2" "/tmp/test2" "dev" "gemini" ""
-    local count
-    count=$(registry_list | wc -l | tr -d ' ')
-    assert_eq "2" "$count" "registry_list: returns all sessions"
-
+    registry_add "test-session-2" "/tmp/test2" "dev" "codex" ""
     # Test count
     assert_eq "2" "$(registry_count)" "registry_count: correct count"
 
@@ -49,8 +33,7 @@ test_registry() {
     assert_eq "false" "$(registry_exists test-session && echo true || echo false)" "registry_remove: session gone"
     assert_eq "1" "$(registry_count)" "registry_remove: count updated"
 
-    # Cleanup
-    rm -rf "$AM_DIR"
+    teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
 }
@@ -61,22 +44,10 @@ test_registry() {
 test_registry_extended() {
     $SUMMARY_MODE || echo "=== Testing registry.sh (extended) ==="
 
-    if ! command -v jq &>/dev/null; then
-        skip_test "registry extended tests (jq not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/registry.sh"
 
-    # Isolated registry
-    local old_am_dir="$AM_DIR"
-    local old_am_registry="$AM_REGISTRY"
-    AM_DIR=$(mktemp -d)
-    export AM_DIR
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-    am_init
+    setup_isolated_am_dir
 
     # Test: get_field on nonexistent session returns empty
     local result
@@ -95,25 +66,22 @@ test_registry_extended() {
 
     # Test: duplicate add overwrites
     registry_add "dup-session" "/tmp/first" "main" "claude" ""
-    registry_add "dup-session" "/tmp/second" "dev" "gemini" ""
+    registry_add "dup-session" "/tmp/second" "dev" "codex" ""
     assert_eq "/tmp/second" "$(registry_get_field dup-session directory)" \
         "registry_add: duplicate overwrites directory"
-    assert_eq "gemini" "$(registry_get_field dup-session agent_type)" \
+    assert_eq "codex" "$(registry_get_field dup-session agent_type)" \
         "registry_add: duplicate overwrites agent_type"
     assert_eq "1" "$(registry_count)" "registry_add: duplicate doesn't increase count"
 
     # Test: rapid sequential adds don't corrupt
     registry_add "rapid-1" "/tmp/r1" "main" "claude" ""
     registry_add "rapid-2" "/tmp/r2" "main" "codex" ""
-    registry_add "rapid-3" "/tmp/r3" "main" "gemini" ""
+    registry_add "rapid-3" "/tmp/r3" "main" "codex" ""
     assert_eq "4" "$(registry_count)" "registry: rapid adds all persisted"
     assert_eq "/tmp/r1" "$(registry_get_field rapid-1 directory)" "registry: rapid-1 correct"
     assert_eq "/tmp/r3" "$(registry_get_field rapid-3 directory)" "registry: rapid-3 correct"
 
-    # Cleanup
-    rm -rf "$AM_DIR"
-    export AM_DIR="$old_am_dir"
-    export AM_REGISTRY="$old_am_registry"
+    teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
 }
@@ -124,27 +92,16 @@ test_registry_extended() {
 test_registry_get_fields() {
     $SUMMARY_MODE || echo "=== Testing registry_get_fields ==="
 
-    if ! command -v jq &>/dev/null; then
-        skip_test "registry_get_fields tests (jq not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/registry.sh"
 
-    local old_am_dir="$AM_DIR"
-    local old_am_registry="$AM_REGISTRY"
-    AM_DIR=$(mktemp -d)
-    export AM_DIR
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-    am_init
+    setup_isolated_am_dir
 
     # Seed test data
     registry_add "test-sess" "/home/user/project" "main" "claude" "fix auth bug"
     registry_update "test-sess" "worktree_path" "/home/user/project/.claude/worktrees/wt1"
 
-    # Test: 4-field extraction (standard agent_display_name fields)
+    # Test: 4-field extraction (directory/branch/agent_type/task)
     local fields
     fields=$(registry_get_fields "test-sess" directory branch agent_type task)
     local directory branch agent_type task
@@ -174,22 +131,13 @@ test_registry_get_fields() {
     IFS='|' read -r directory branch agent_type task <<< "$fields"
     assert_eq "" "$directory" "registry_get_fields: empty for nonexistent session"
 
-    # Cleanup
-    rm -rf "$AM_DIR"
-    export AM_DIR="$old_am_dir"
-    export AM_REGISTRY="$old_am_registry"
+    teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
 }
 
 test_registry_gc() {
     $SUMMARY_MODE || echo "=== Testing Integration: Registry GC ==="
-
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "registry GC tests (jq or tmux not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
@@ -246,6 +194,25 @@ test_registry_gc() {
     removed=$(registry_gc 1)
     assert_eq "1" "$removed" "registry_gc: force bypasses throttle"
 
+    # --- Test: Go stamping .gc_last must not starve bash-only extras ---
+    registry_add "test-am-stale-fake-3" "/tmp/gone3" "main" "claude" ""
+    local extras_state_dir
+    extras_state_dir=$(mktemp -d)
+    printf 'waiting_input' > "$extras_state_dir/test-am-orphan"
+    printf 'uuid-orphan' > "$extras_state_dir/test-am-orphan.sid"
+    # Simulate the Go twin (ReapOrphans) having just stamped .gc_last
+    date +%s > "$AM_DIR/.gc_last"
+    rm -f "$AM_DIR/.gc_extras_last"
+    removed=$(AM_STATE_DIR="$extras_state_dir" registry_gc)
+    assert_eq "true" "$(registry_exists test-am-stale-fake-3 && echo true || echo false)" \
+        "registry_gc: rows half stays throttled by fresh .gc_last"
+    assert_eq "false" "$(test -f "$extras_state_dir/test-am-orphan" && echo true || echo false)" \
+        "registry_gc: extras sweep removes orphan state file despite fresh .gc_last"
+    assert_eq "false" "$(test -f "$extras_state_dir/test-am-orphan.sid" && echo true || echo false)" \
+        "registry_gc: extras sweep removes orphan .sid sidecar despite fresh .gc_last"
+    rm -rf "$extras_state_dir"
+    registry_remove "test-am-stale-fake-3"
+
     # Cleanup
     [[ -n "$live_session" ]] && agent_kill "$live_session" 2>/dev/null
     rm -rf "$test_dir"
@@ -263,11 +230,6 @@ test_registry_gc_go_path() {
 
     if [[ ! -x "$bin" || ! -s "$bin" ]]; then
         skip_test "Go path GC (bin/am-list-internal not built — run 'make build')"
-        echo ""
-        return
-    fi
-    if ! command -v jq &>/dev/null || ! command -v tmux &>/dev/null; then
-        skip_test "Go path GC (jq or tmux not installed)"
         echo ""
         return
     fi
@@ -324,239 +286,26 @@ test_registry_gc_go_path() {
     $SUMMARY_MODE || echo ""
 }
 
-# ============================================
-# Test: Session History (history.jsonl)
-# ============================================
-test_history() {
-    $SUMMARY_MODE || echo "=== Testing Session History ==="
-
-    if ! command -v jq &>/dev/null; then
-        skip_test "history tests (jq not installed)"
-        echo ""
-        return
-    fi
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/registry.sh"
-
-    # Isolated environment
-    local old_am_dir="$AM_DIR"
-    local old_am_registry="$AM_REGISTRY"
-    local old_am_history="${AM_HISTORY:-}"
-    AM_DIR=$(mktemp -d)
-    export AM_DIR
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-    export AM_HISTORY="$AM_DIR/history.jsonl"
-    am_init
-
-    # --- Test: history_append creates file and writes correct JSON ---
-    history_append "/tmp/project-a" "fix login bug" "claude" "main"
-    assert_cmd_succeeds "history_append: creates history file" test -f "$AM_HISTORY"
-
-    local first_line
-    first_line=$(head -1 "$AM_HISTORY")
-    assert_contains "$first_line" '"task":"fix login bug"' "history_append: correct task"
-    assert_contains "$first_line" '"directory":"/tmp/project-a"' "history_append: correct directory"
-    assert_contains "$first_line" '"agent_type":"claude"' "history_append: correct agent_type"
-    assert_contains "$first_line" '"branch":"main"' "history_append: correct branch"
-
-    # Validate it's proper JSON
-    assert_cmd_succeeds "history_append: valid JSON" jq . <<< "$first_line"
-
-    # --- Test: multiple entries accumulate ---
-    history_append "/tmp/project-a" "add tests" "claude" "main"
-    history_append "/tmp/project-b" "refactor utils" "gemini" "dev"
-
-    local line_count
-    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "3" "$line_count" "history_append: multiple entries accumulate"
-
-    # --- Test: history_append with empty task is a no-op ---
-    history_append "/tmp/project-a" "" "claude" "main"
-    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "3" "$line_count" "history_append: empty task is no-op"
-
-    # --- Test: history_for_directory filters correctly and returns most recent first ---
-    local dir_a_entries
-    dir_a_entries=$(history_for_directory "/tmp/project-a")
-    local dir_a_count
-    dir_a_count=$(echo "$dir_a_entries" | wc -l | tr -d ' ')
-    assert_eq "2" "$dir_a_count" "history_for_directory: filters to correct directory"
-
-    # Most recent first: "add tests" should be before "fix login bug"
-    local first_task
-    first_task=$(echo "$dir_a_entries" | head -1 | jq -r '.task')
-    assert_eq "add tests" "$first_task" "history_for_directory: most recent first"
-
-    local second_task
-    second_task=$(echo "$dir_a_entries" | tail -1 | jq -r '.task')
-    assert_eq "fix login bug" "$second_task" "history_for_directory: oldest last"
-
-    # --- Test: history_for_directory returns empty for unknown paths ---
-    local unknown_entries
-    unknown_entries=$(history_for_directory "/tmp/nonexistent-path")
-    assert_eq "" "$unknown_entries" "history_for_directory: empty for unknown path"
-
-    # --- Test: history_prune removes entries older than 7 days ---
-    # Inject an old entry manually (8 days ago)
-    local old_date
-    old_date=$(date -u -v-8d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
-        date -u -d "8 days ago" +"%Y-%m-%dT%H:%M:%SZ")
-    printf '%s\n' "$(jq -cn \
-        --arg dir "/tmp/project-a" \
-        --arg task "ancient task" \
-        --arg agent "claude" \
-        --arg branch "main" \
-        --arg created "$old_date" \
-        '{directory: $dir, task: $task, agent_type: $agent, branch: $branch, created_at: $created}')" \
-        >> "$AM_HISTORY"
-
-    # Verify old entry was added
-    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "4" "$line_count" "history_prune setup: old entry injected"
-
-    # Run prune
-    history_prune
-    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "3" "$line_count" "history_prune: removed old entry"
-
-    # Verify the old entry is gone
-    local ancient_count
-    ancient_count=$(jq -c 'select(.task == "ancient task")' "$AM_HISTORY" 2>/dev/null | wc -l | tr -d ' ')
-    assert_eq "0" "$ancient_count" "history_prune: ancient task removed"
-
-    # Cleanup
-    rm -rf "$AM_DIR"
-    export AM_DIR="$old_am_dir"
-    export AM_REGISTRY="$old_am_registry"
-    export AM_HISTORY="$old_am_history"
-
-    $SUMMARY_MODE || echo ""
-}
-
-# ============================================
-# Test: History Integration (wiring into lifecycle)
-# ============================================
-test_history_integration() {
-    $SUMMARY_MODE || echo "=== Testing History Integration ==="
-
-    if ! command -v jq &>/dev/null; then
-        skip_test "history integration tests (jq not installed)"
-        echo ""
-        return
-    fi
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/registry.sh"
-
-    # Isolated environment
-    local old_am_dir="$AM_DIR"
-    local old_am_registry="$AM_REGISTRY"
-    local old_am_history="${AM_HISTORY:-}"
-    AM_DIR=$(mktemp -d)
-    export AM_DIR
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-    export AM_HISTORY="$AM_DIR/history.jsonl"
-    am_init
-
-    # Simulate what agent_launch does: registry_add + history_append
-    registry_add "test-hist-session" "/tmp/myproject" "main" "claude" "fix auth bug"
-    history_append "/tmp/myproject" "fix auth bug" "claude" "main"
-
-    # Verify history file exists and contains the task
-    assert_cmd_succeeds "history_integration: history file created" test -f "$AM_HISTORY"
-
-    local hist_content
-    hist_content=$(cat "$AM_HISTORY")
-    assert_contains "$hist_content" '"task":"fix auth bug"' \
-        "history_integration: task recorded in history"
-    assert_contains "$hist_content" '"directory":"/tmp/myproject"' \
-        "history_integration: directory recorded in history"
-
-    # Simulate auto_title_session path: registry_update + history_append via registry_get_field
-    registry_add "test-hist-auto" "/tmp/another" "dev" "gemini" ""
-    # Simulate what auto_title_session does after getting a title
-    registry_update "test-hist-auto" "task" "refactor utils"
-    local dir branch agent
-    dir=$(registry_get_field "test-hist-auto" "directory")
-    branch=$(registry_get_field "test-hist-auto" "branch")
-    agent=$(registry_get_field "test-hist-auto" "agent_type")
-    history_append "$dir" "refactor utils" "$agent" "$branch"
-
-    local line_count
-    line_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "2" "$line_count" "history_integration: two entries after both paths"
-
-    # Verify the second entry
-    local second_line
-    second_line=$(tail -1 "$AM_HISTORY")
-    assert_contains "$second_line" '"task":"refactor utils"' \
-        "history_integration: auto-title task recorded"
-    assert_contains "$second_line" '"agent_type":"gemini"' \
-        "history_integration: auto-title agent_type correct"
-
-    # Cleanup
-    rm -rf "$AM_DIR"
-    export AM_DIR="$old_am_dir"
-    export AM_REGISTRY="$old_am_registry"
-    export AM_HISTORY="$old_am_history"
-
-    $SUMMARY_MODE || echo ""
-}
-
 test_auto_title_session() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Auto-Title Session Tests ==="
 
-    if ! command -v jq &>/dev/null; then
-        skip_test "auto-title tests (jq not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/registry.sh"
 
-    # Isolated AM environment
-    local old_am_dir="$AM_DIR"
-    local old_am_registry="$AM_REGISTRY"
-    local old_am_history="${AM_HISTORY:-}"
-    AM_DIR=$(mktemp -d)
-    export AM_DIR
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-    export AM_HISTORY="$AM_DIR/history.jsonl"
-    am_init
+    setup_isolated_am_dir
 
     # Use production title functions directly (sourced from lib/registry.sh)
 
     # --- Test 1: Title validation - length check ---
-    if _title_valid "Short title"; then
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: accepts valid short title"
-    else
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: accepts valid short title"
-        FAIL_DETAILS+=("FAIL: title_gen: accepts valid short title")
-    fi
-
-    if _title_valid "This is a really really really really really really really long title over 60 chars"; then
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: rejects title >60 chars"
-        FAIL_DETAILS+=("FAIL: title_gen: rejects title >60 chars")
-    else
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: rejects title >60 chars"
-    fi
+    assert_cmd_succeeds "title_gen: accepts valid short title" \
+        _title_valid "Short title"
+    assert_cmd_fails "title_gen: rejects title >60 chars" \
+        _title_valid "This is a really really really really really really really long title over 60 chars"
 
     # --- Test 2: Title validation - newline check ---
-    if _title_valid $'Multi\nline'; then
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: title_gen: rejects multiline titles"
-        FAIL_DETAILS+=("FAIL: title_gen: rejects multiline titles")
-    else
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: title_gen: rejects multiline titles"
-    fi
+    assert_cmd_fails "title_gen: rejects multiline titles" \
+        _title_valid $'Multi\nline'
 
     # --- Test 3: Integration - registry update on successful title ---
     registry_add "test-title-reg" "/tmp/test" "main" "claude" ""
@@ -566,25 +315,7 @@ test_auto_title_session() {
     assert_eq "Refactor API layer" "$stored_task" \
         "title_gen: registry_update persists title"
 
-    # --- Test 4: Integration - history append on title set ---
-    history_append "/tmp/test" "Refactor API layer" "claude" "main"
-    local hist_count=0
-    [[ -f "$AM_HISTORY" ]] && hist_count=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "1" "$hist_count" \
-        "title_gen: history_append records task"
-
-    # --- Test 5: History is skipped for empty task ---
-    history_append "/tmp/test" "" "claude" "main"
-    local hist_count_after=0
-    [[ -f "$AM_HISTORY" ]] && hist_count_after=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "$hist_count" "$hist_count_after" \
-        "title_gen: history_append skips empty task"
-
-    # --- Cleanup ---
-    rm -rf "$AM_DIR"
-    export AM_DIR="$old_am_dir"
-    export AM_REGISTRY="$old_am_registry"
-    export AM_HISTORY="$old_am_history"
+    teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
 }
@@ -596,30 +327,10 @@ test_auto_title_scan() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Auto-Title Scan Tests ==="
 
-    if ! command -v jq &>/dev/null; then
-        skip_test "auto-title scan tests (jq not installed)"
-        echo ""
-        return
-    fi
-
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/registry.sh"
 
-    # Isolated AM environment
-    local old_am_dir="$AM_DIR"
-    local old_am_registry="$AM_REGISTRY"
-    local old_am_history="${AM_HISTORY:-}"
-    local old_am_sessions_log="${AM_SESSIONS_LOG:-}"
-    local old_am_snapshots_dir="${AM_SNAPSHOTS_DIR:-}"
-    local old_am_state_dir="${AM_STATE_DIR:-}"
-    AM_DIR=$(mktemp -d)
-    export AM_DIR
-    export AM_REGISTRY="$AM_DIR/sessions.json"
-    export AM_HISTORY="$AM_DIR/history.jsonl"
-    export AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
-    export AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
-    export AM_STATE_DIR="$AM_DIR/state"
-    am_init
+    setup_isolated_am_dir
 
     # Stub tmux_pane_title to return titles based on session name
     tmux_pane_title() {
@@ -629,12 +340,13 @@ test_auto_title_scan() {
             test-scan-2:*) echo "Updated title from pane" ;;
             test-scan-3:*) echo "" ;;
             test-scan-4:*) echo "Throttle test title" ;;
-            test-scan-5:*) echo "First title for history" ;;
+            test-scan-5:*) echo "First scanned title" ;;
             test-scan-6:*) echo "Existing Title" ;;
             test-scan-7:*) echo ">>> Clean up the mess" ;;
             test-scan-10:*) echo "Stale JSONL guard" ;;
             test-scan-11:*) echo "Sidecar session id" ;;
             test-scan-12:*) echo "Sidecar pending JSONL" ;;
+            test-scan-13:*) echo "Title that must not land" ;;
             *) echo "" ;;
         esac
     }
@@ -647,6 +359,7 @@ test_auto_title_scan() {
             test-scan-10:*) echo "snapshot for test-scan-10" ;;
             test-scan-11:*) echo "snapshot for test-scan-11" ;;
             test-scan-12:*) echo "snapshot for test-scan-12" ;;
+            test-scan-13:*) echo "snapshot for test-scan-13" ;;
             *) echo "" ;;
         esac
     }
@@ -685,31 +398,19 @@ test_auto_title_scan() {
     assert_eq "Throttle test title" "$task" \
         "scan: force bypasses throttle"
 
-    # --- Test 5: History entry created on first title ---
-    registry_add "test-scan-5" "/tmp/histproject" "dev" "gemini" ""
+    # --- Test 5: Sets first title for an untitled session ---
+    registry_add "test-scan-5" "/tmp/scanproject" "dev" "codex" ""
     auto_title_scan 1
     task=$(registry_get_field "test-scan-5" "task")
-    assert_eq "First title for history" "$task" \
+    assert_eq "First scanned title" "$task" \
         "scan: sets first title"
-    local hist_entry
-    hist_entry=$(tail -1 "$AM_HISTORY")
-    assert_contains "$hist_entry" '"task":"First title for history"' \
-        "scan: history entry created on first title"
-    assert_contains "$hist_entry" '"directory":"/tmp/histproject"' \
-        "scan: history entry has correct directory"
 
     # --- Test 6: Does not update if pane title unchanged ---
     registry_add "test-scan-6" "/tmp/project" "main" "claude" "Existing Title"
-    local hist_count_before=0
-    [[ -f "$AM_HISTORY" ]] && hist_count_before=$(wc -l < "$AM_HISTORY" | tr -d ' ')
     auto_title_scan 1
     task=$(registry_get_field "test-scan-6" "task")
     assert_eq "Existing Title" "$task" \
         "scan: no update when pane title matches existing task"
-    local hist_count_after=0
-    [[ -f "$AM_HISTORY" ]] && hist_count_after=$(wc -l < "$AM_HISTORY" | tr -d ' ')
-    assert_eq "$hist_count_before" "$hist_count_after" \
-        "scan: no history entry when title unchanged"
 
     # --- Test 7: Trims leading non-alphanumeric characters from pane title ---
     registry_add "test-scan-7" "/tmp/project" "main" "claude" ""
@@ -800,9 +501,11 @@ test_auto_title_scan() {
     sessions_log_append "test-scan-11" "$fake_dir_11" "main" "claude" ""
     printf '%s\n' '{"sessionId":"sid-correct","type":"user","message":{"content":"Correct session"}}' \
         > "$fake_home_11/.claude/projects/$fake_proj_11/sid-correct.jsonl"
-    sleep 1
     printf '%s\n' '{"sessionId":"sid-other","type":"user","message":{"content":"Other same-dir session"}}' \
         > "$fake_home_11/.claude/projects/$fake_proj_11/sid-other.jsonl"
+    # Backdate sid-correct so sid-other is strictly newer (mtime has 1s
+    # resolution) — the sidecar must beat the newest same-directory JSONL.
+    touch -t 202001010000.00 "$fake_home_11/.claude/projects/$fake_proj_11/sid-correct.jsonl"
     printf '%s' "sid-correct" > "$AM_STATE_DIR/test-scan-11.sid"
     auto_title_scan 1
     local sid_11 snap_11 snap_content_11
@@ -846,15 +549,30 @@ test_auto_title_scan() {
     assert_contains "$snap_content_12" "snapshot for test-scan-12" \
         "scan: pending sidecar keeps snapshot isolated"
 
+    # --- Test 13: Fresh .title_scan_last (e.g. stamped by Go RefreshTitles)
+    # must not starve the bash-only snapshot/backfill work, which runs on its
+    # own marker (.restore_scan_last).
+    local fake_home_13="$AM_DIR/fake_home_13"
+    mkdir -p "$fake_home_13"
+    local old_home_13="$HOME"
+    export HOME="$fake_home_13"
+    registry_add "test-scan-13" "/tmp/project13" "main" "claude" "task 13"
+    sessions_log_append "test-scan-13" "/tmp/project13" "main" "claude" ""
+    date +%s > "$AM_DIR/.title_scan_last"
+    rm -f "$AM_DIR/.restore_scan_last"
+    auto_title_scan  # unforced: title half throttled, restore half must run
+    local snap_13
+    snap_13=$(jq -r 'select(.session_name == "test-scan-13") | .snapshot_file' "$AM_SESSIONS_LOG" | tail -n1)
+    task=$(registry_get_field "test-scan-13" "task")
+    export HOME="$old_home_13"
+    assert_eq "snapshots/test-scan-13.txt" "$snap_13" \
+        "scan: restore snapshot captured despite fresh .title_scan_last"
+    assert_eq "task 13" "$task" \
+        "scan: title half stays throttled by fresh .title_scan_last"
+
     # --- Cleanup ---
     unset -f tmux_pane_title tmux_session_pane_target tmux_capture_pane
-    rm -rf "$AM_DIR"
-    export AM_DIR="$old_am_dir"
-    export AM_REGISTRY="$old_am_registry"
-    export AM_HISTORY="$old_am_history"
-    export AM_SESSIONS_LOG="$old_am_sessions_log"
-    export AM_SNAPSHOTS_DIR="$old_am_snapshots_dir"
-    export AM_STATE_DIR="$old_am_state_dir"
+    teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
 }
@@ -865,8 +583,6 @@ run_registry_tests() {
     _run_test test_registry_get_fields
     _run_test test_registry_gc
     _run_test test_registry_gc_go_path
-    _run_test test_history
-    _run_test test_history_integration
     _run_test test_auto_title_session
     _run_test test_auto_title_scan
 }

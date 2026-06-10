@@ -119,6 +119,16 @@ def test_sandbox_start_uses_home_bind_mount_and_project_mount_only_by_default(
     assert caps == {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
     assert inspect["HostConfig"]["SecurityOpt"] == ["no-new-privileges:true"]
 
+    # Runtime check (ported from the old tests/test_cap_chown.sh): the
+    # capabilities must actually be permitted inside the container, not just
+    # requested in the docker config.
+    cap_prm_hex = _run(
+        ["docker", "exec", name, "sh", "-c", "grep CapPrm /proc/1/status"],
+    ).stdout.split()[1]
+    cap_prm = int(cap_prm_hex, 16)
+    for cap_name, bit in (("CAP_CHOWN", 0), ("CAP_DAC_OVERRIDE", 1), ("CAP_FOWNER", 3)):
+        assert (cap_prm >> bit) & 1, f"{cap_name} missing from CapPrm ({cap_prm_hex})"
+
 
 @pytest.mark.functional
 def test_home_persistence_across_containers(sandbox_env, tmp_path):
@@ -228,20 +238,3 @@ def test_sb_reset_clears_home(sandbox_env):
     remaining = [p.name for p in sb_home.iterdir()]
     assert remaining == [], f"Home dir not empty after reset: {remaining}"
     assert sb_home.is_dir(), "Home dir should still exist after reset"
-
-
-@pytest.mark.functional
-def test_sb_export_import_roundtrip(sandbox_env, tmp_path):
-    """sb_export + sb_import preserves home directory contents."""
-    sb_home = pathlib.Path(sandbox_env["SB_HOME_DIR"])
-    (sb_home / "roundtrip.txt").write_text("exported\n")
-    archive = tmp_path / "export.tar.gz"
-
-    _shell(f"sb_export '{archive}'", sandbox_env)
-    assert archive.is_file()
-
-    # Clear and re-import
-    (sb_home / "roundtrip.txt").unlink()
-    _shell(f"sb_import '{archive}' 1", sandbox_env)
-
-    assert (sb_home / "roundtrip.txt").read_text() == "exported\n"

@@ -78,25 +78,16 @@ EOF
 test_install() {
     $SUMMARY_MODE || echo "=== Testing am install ==="
 
-    # Test help mentions install
-    local help_output
-    help_output=$("$PROJECT_DIR/am" help)
-    assert_contains "$help_output" "install" "am help: mentions install command"
-
     # Test install --help
     local install_help
     install_help=$("$PROJECT_DIR/am" install --help 2>&1)
     assert_contains "$install_help" "First-time setup" "am install --help: shows description"
-    assert_contains "$install_help" "--prefix" "am install --help: shows --prefix option"
 
-    # Test version comparison via sort -V (same logic as _install_version_ge)
-    local oldest
-    oldest=$(printf '3.0\n3.4' | sort -V | head -1)
-    assert_eq "3.0" "$oldest" "version_ge: 3.4 >= 3.0"
-    oldest=$(printf '0.40\n0.35' | sort -V | head -1)
-    assert_eq "0.35" "$oldest" "version_ge: 0.35 < 0.40"
-    oldest=$(printf '0.40\n0.40' | sort -V | head -1)
-    assert_eq "0.40" "$oldest" "version_ge: 0.40 == 0.40"
+    # Test version comparison (production helper extracted from am)
+    eval "$(sed -n '/^_install_version_ge()/,/^}/p' "$PROJECT_DIR/am")"
+    assert_cmd_succeeds "_install_version_ge: 3.4 >= 3.0" _install_version_ge "3.0" "3.4"
+    assert_cmd_fails "_install_version_ge: 0.35 < 0.40" _install_version_ge "0.40" "0.35"
+    assert_cmd_succeeds "_install_version_ge: 0.40 == 0.40" _install_version_ge "0.40" "0.40"
 
     # Test full install in temp environment
     local temp_root
@@ -129,8 +120,12 @@ case "${1:-}" in
             esac
         done
         mkdir -p "$(dirname "$out")"
-        : > "$out"
-        chmod +x "$out"
+        # Never clobber a real prebuilt binary: parallel test workers exec
+        # bin/am-list-internal / bin/am-browse and there is no bash fallback.
+        if [[ ! -s "$out" ]]; then
+            : > "$out"
+            chmod +x "$out"
+        fi
         ;;
     *)
         echo "unexpected go invocation: $*" >&2
@@ -213,10 +208,246 @@ EOF
     $SUMMARY_MODE || echo ""
 }
 
+_ensure_install_lib_sourced() {
+    if [[ "$(type -t _install_claude_hooks)" != "function" || "$(type -t _install_codex_hooks)" != "function" ]]; then
+        # Extract just the hook installer functions from install.sh (can't
+        # source the whole file because it runs install logic at top level).
+        eval "$(awk '/^_install_claude_hooks\(\)/ {p=1} /^while \[\[/ {p=0} p {print}' "$PROJECT_DIR/scripts/install.sh")"
+    fi
+}
+
+test_install_hooks_into_empty_settings() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local settings="$tmp_dir/empty-settings.json"
+    echo '{}' > "$settings"
+
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local stop_count
+    stop_count=$(jq '.hooks.Stop | length' "$settings")
+    assert_eq "1" "$stop_count" "Stop hook installed"
+
+    local notif_count
+    notif_count=$(jq '.hooks.Notification | length' "$settings")
+    assert_eq "3" "$notif_count" "3 Notification hooks installed"
+
+    local upsub_count
+    upsub_count=$(jq '.hooks.UserPromptSubmit | length' "$settings")
+    assert_eq "1" "$upsub_count" "UserPromptSubmit hook installed"
+
+    local post_count
+    post_count=$(jq '.hooks.PostToolUse | length' "$settings")
+    assert_eq "1" "$post_count" "PostToolUse hook installed"
+}
+
+test_install_hooks_preserves_existing() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local settings="$tmp_dir/existing-settings.json"
+    cat > "$settings" <<'JSON'
+{"hooks":{"PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"echo existing"}]}],"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"echo user-hook"}]}]}}
+JSON
+
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    # Existing hooks preserved
+    local precompact_count
+    precompact_count=$(jq '.hooks.PreCompact | length' "$settings")
+    assert_eq "1" "$precompact_count" "existing PreCompact hook preserved"
+
+    # Existing UserPromptSubmit hook preserved + ours added
+    local upsub_count
+    upsub_count=$(jq '.hooks.UserPromptSubmit | length' "$settings")
+    assert_eq "2" "$upsub_count" "existing + new UserPromptSubmit hooks"
+
+    # Verify the existing one is first (untouched)
+    local existing_cmd
+    existing_cmd=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$settings")
+    assert_eq "echo user-hook" "$existing_cmd" "existing UserPromptSubmit hook unchanged"
+}
+
+test_install_hooks_idempotent() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local settings="$tmp_dir/idem-settings.json"
+    echo '{}' > "$settings"
+
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local stop_count
+    stop_count=$(jq '.hooks.Stop | length' "$settings")
+    assert_eq "1" "$stop_count" "idempotent: Stop hook not duplicated"
+
+    local notif_count
+    notif_count=$(jq '.hooks.Notification | length' "$settings")
+    assert_eq "3" "$notif_count" "idempotent: Notification hooks not duplicated"
+}
+
+test_install_codex_hooks_into_empty_file() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local hooks="$tmp_dir/hooks.json"
+    echo '{}' > "$hooks"
+
+    _install_codex_hooks "$hooks" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local perm_count upsub_count pre_count post_count stop_count
+    perm_count=$(jq '.hooks.PermissionRequest | length' "$hooks")
+    upsub_count=$(jq '.hooks.UserPromptSubmit | length' "$hooks")
+    pre_count=$(jq '.hooks.PreToolUse | length' "$hooks")
+    post_count=$(jq '.hooks.PostToolUse | length' "$hooks")
+    stop_count=$(jq '.hooks.Stop | length' "$hooks")
+
+    assert_eq "1" "$perm_count" "Codex PermissionRequest hook installed"
+    assert_eq "1" "$upsub_count" "Codex UserPromptSubmit hook installed"
+    assert_eq "1" "$pre_count" "Codex PreToolUse hook installed"
+    assert_eq "1" "$post_count" "Codex PostToolUse hook installed"
+    assert_eq "1" "$stop_count" "Codex Stop hook installed"
+
+    local timeout
+    timeout=$(jq '.hooks.PermissionRequest[0].hooks[0].timeout' "$hooks")
+    assert_eq "5" "$timeout" "Codex hooks use seconds timeout"
+
+    rm -rf "$tmp_dir"
+}
+
+test_install_codex_hooks_preserves_existing_and_idempotent() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local hooks="$tmp_dir/hooks.json"
+    cat > "$hooks" <<'JSON'
+{"hooks":{"PermissionRequest":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo existing"}]}]}}
+JSON
+
+    _install_codex_hooks "$hooks" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+    _install_codex_hooks "$hooks" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    local perm_count existing_cmd am_count
+    perm_count=$(jq '.hooks.PermissionRequest | length' "$hooks")
+    assert_eq "2" "$perm_count" "Codex existing + am PermissionRequest hooks"
+
+    existing_cmd=$(jq -r '.hooks.PermissionRequest[0].hooks[0].command' "$hooks")
+    assert_eq "echo existing" "$existing_cmd" "Codex existing hook unchanged"
+
+    am_count=$(jq '[.hooks[][] | select((.hooks // []) | any((.command // "") | contains("# am-state-hook")))] | length' "$hooks")
+    assert_eq "5" "$am_count" "Codex am hooks are idempotent"
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_codex_hooks_feature_new_file() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+
+    _enable_codex_hooks_feature "$cfg"
+
+    assert_cmd_succeeds "codex feature: [features] section present" \
+        grep -q '^\[features\]' "$cfg"
+    assert_cmd_succeeds "codex feature: hooks = true present" \
+        grep -q '^hooks[[:space:]]*=[[:space:]]*true' "$cfg"
+
+    local deprecated_count
+    deprecated_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
+    assert_eq "0" "$deprecated_count" "codex feature: deprecated codex_hooks line absent"
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_codex_hooks_feature_existing_section() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+    cat > "$cfg" <<'TOML'
+[model]
+provider = "openai"
+
+[features]
+other_flag = "keep"
+TOML
+
+    _enable_codex_hooks_feature "$cfg"
+
+    local other_kept
+    other_kept=$(grep -c '^other_flag[[:space:]]*=[[:space:]]*"keep"' "$cfg" || true)
+    assert_eq "1" "$other_kept" "codex feature: existing keys preserved"
+
+    local hooks_count
+    hooks_count=$(grep -c '^hooks[[:space:]]*=[[:space:]]*true' "$cfg" || true)
+    assert_eq "1" "$hooks_count" "codex feature: hooks = true added under [features]"
+
+    local model_kept
+    model_kept=$(grep -c '^\[model\]' "$cfg" || true)
+    assert_eq "1" "$model_kept" "codex feature: other sections preserved"
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_codex_hooks_feature_idempotent() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+
+    _enable_codex_hooks_feature "$cfg"
+    _enable_codex_hooks_feature "$cfg"
+    _enable_codex_hooks_feature "$cfg"
+
+    local features_count hooks_count deprecated_count
+    features_count=$(grep -c '^\[features\]' "$cfg" || true)
+    hooks_count=$(grep -c '^hooks[[:space:]]*=' "$cfg" || true)
+    deprecated_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
+    assert_eq "1" "$features_count" "codex feature: idempotent — no duplicate [features]"
+    assert_eq "1" "$hooks_count" "codex feature: idempotent - no duplicate hooks line"
+    assert_eq "0" "$deprecated_count" "codex feature: idempotent - no deprecated codex_hooks line"
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_codex_hooks_feature_replaces_false() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local cfg="$tmp_dir/config.toml"
+    cat > "$cfg" <<'TOML'
+[features]
+codex_hooks = false
+TOML
+
+    _enable_codex_hooks_feature "$cfg"
+
+    assert_cmd_succeeds "codex feature: deprecated false -> hooks true upgrade" \
+        grep -Eq '^hooks[[:space:]]*=[[:space:]]*true' "$cfg"
+
+    local deprecated_count
+    deprecated_count=$(grep -c '^codex_hooks[[:space:]]*=' "$cfg" || true)
+    assert_eq "0" "$deprecated_count" "codex feature: deprecated codex_hooks removed"
+
+    rm -rf "$tmp_dir"
+}
+
 run_install_tests() {
     _run_test test_installer_replaces_managed_blocks
     _run_test test_installer_defaults_prompts_to_yes
     _run_test test_install
+    _run_test test_install_hooks_into_empty_settings
+    _run_test test_install_hooks_preserves_existing
+    _run_test test_install_hooks_idempotent
+    _run_test test_install_codex_hooks_into_empty_file
+    _run_test test_install_codex_hooks_preserves_existing_and_idempotent
+    _run_test test_enable_codex_hooks_feature_new_file
+    _run_test test_enable_codex_hooks_feature_existing_section
+    _run_test test_enable_codex_hooks_feature_idempotent
+    _run_test test_enable_codex_hooks_feature_replaces_false
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

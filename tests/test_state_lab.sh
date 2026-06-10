@@ -3,13 +3,11 @@
 #
 # Runs every script under tests/state_lab/cases/*.sh and asserts they all
 # pass. Each lab case is a self-contained scenario that exercises the
-# state-detection layers (hook / jsonl / pane / resolver) via the harness
-# in tests/state_lab/lab.sh.
+# state-detection layers (hook / pane / resolver) via the harness in
+# tests/state_lab/lab.sh.
 #
-# Locks in:
-#   - Phase 1 bug fixes (cases 01, 01b, 05)
-#   - Phase 1.3 hook-running-with-permission (case 10)
-#   - Phase 2 single _state_resolve consensus (cases 03, 11)
+# Current cases: 04 (hook Stop-then-tool race), 09 (duplicate-cwd
+# resolution), 12 (unknown state fallback).
 
 test_state_lab_cases() {
     local lab_runner="$SCRIPT_DIR/state_lab/run.sh"

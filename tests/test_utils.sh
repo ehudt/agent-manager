@@ -64,14 +64,8 @@ test_utils_extended() {
     h3=$(generate_hash "different-input")
     assert_eq "$h1" "$h2" "generate_hash: same input same output"
     # Different inputs SHOULD produce different hashes (not guaranteed but overwhelmingly likely)
-    if [[ "$h1" != "$h3" ]]; then
-        ((TESTS_RUN++)); ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: generate_hash: different inputs different output"
-    else
-        ((TESTS_RUN++)); ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: generate_hash: different inputs produced same hash"
-        FAIL_DETAILS+=("FAIL: generate_hash: different inputs produced same hash")
-    fi
+    assert_cmd_succeeds "generate_hash: different inputs different output" \
+        test "$h1" != "$h3"
 
     # abspath: with real directories
     local tmpd
@@ -84,12 +78,6 @@ test_utils_extended() {
 
 test_claude_first_user_message() {
     $SUMMARY_MODE || echo "=== Testing claude_first_user_message ==="
-
-    if ! command -v jq &>/dev/null; then
-        skip_test "claude_first_user_message tests (jq not installed)"
-        echo ""
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
 

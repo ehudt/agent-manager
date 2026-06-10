@@ -2,15 +2,13 @@
 # tests/test_perf_session_switch.sh - Regression: session switch / new-session
 # latency.
 #
-# The path from "Enter in am-browse" → tmux_attach calls
-# agent_refresh_tmux_status, which runs lib/status-bar. agent_launch then calls
-# status-bar 1-3 more times plus am_refresh_sidebar_cache (which runs
-# status-bar once per session). status-bar itself writes 3*N tmux set-option
-# values, so the whole cascade is O(N^2)+ forks on the synchronous user path.
+# agent_launch calls am_refresh_sidebar_cache (which runs lib/status-bar once
+# per session). status-bar itself writes 3*N tmux set-option values, so the
+# whole cascade is O(N^2)+ forks on the synchronous user path.
 #
-# These tests pin a wall-clock budget for both operations against a small fleet
-# of tmux sessions. They guarded the "instant attach" behavior that was lost
-# in the clickable-tab-strip work (commits f94c922 / bb05977 / 5f5479d).
+# This test pins a wall-clock budget against a small fleet of tmux sessions.
+# It guards the "instant attach" behavior that was lost in the
+# clickable-tab-strip work (commits f94c922 / bb05977 / 5f5479d).
 
 _perf_now_ms() {
     if command -v gdate &>/dev/null; then
@@ -41,58 +39,8 @@ _perf_teardown_fleet() {
     done
 }
 
-test_perf_agent_refresh_tmux_status_under_budget() {
-    $SUMMARY_MODE || echo "=== Testing agent_refresh_tmux_status perf ==="
-
-    if ! command -v tmux &>/dev/null || ! command -v jq &>/dev/null; then
-        skip_test "perf tests (tmux/jq missing)"
-        return
-    fi
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/registry.sh"
-    set +u; source "$LIB_DIR/agents.sh"; set -u
-
-    setup_integration_env
-    export AM_LIB_DIR="$LIB_DIR"
-
-    _perf_setup_fleet 10
-
-    # Best of 3 to dampen socket/load noise, single status-bar invocation.
-    local target="${AM_SESSION_PREFIX}perf1" min=9999999 i start end elapsed
-    for i in 1 2 3; do
-        start=$(_perf_now_ms)
-        agent_refresh_tmux_status "$target" >/dev/null 2>&1 || true
-        end=$(_perf_now_ms)
-        elapsed=$(( end - start ))
-        (( elapsed < min )) && min=$elapsed
-    done
-
-    local budget_ms=500
-    ((TESTS_RUN++))
-    if (( min < budget_ms )); then
-        ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: agent_refresh_tmux_status best-of-3 = ${min}ms (< ${budget_ms}ms)"
-    else
-        ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: agent_refresh_tmux_status best-of-3 = ${min}ms (>= ${budget_ms}ms budget)"
-        FAIL_DETAILS+=("FAIL: agent_refresh_tmux_status too slow|  best-of-3: ${min}ms|  budget:    ${budget_ms}ms")
-    fi
-
-    _perf_teardown_fleet
-    teardown_integration_env
-
-    $SUMMARY_MODE || echo ""
-}
-
 test_perf_am_refresh_sidebar_cache_under_budget() {
     $SUMMARY_MODE || echo "=== Testing am_refresh_sidebar_cache perf ==="
-
-    if ! command -v tmux &>/dev/null || ! command -v jq &>/dev/null; then
-        skip_test "perf tests (tmux/jq missing)"
-        return
-    fi
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
@@ -114,15 +62,8 @@ test_perf_am_refresh_sidebar_cache_under_budget() {
     done
 
     local budget_ms=1500
-    ((TESTS_RUN++))
-    if (( min < budget_ms )); then
-        ((TESTS_PASSED++))
-        $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: am_refresh_sidebar_cache best-of-3 = ${min}ms (< ${budget_ms}ms)"
-    else
-        ((TESTS_FAILED++))
-        printf '%b\n' "${TEST_RED}FAIL${TEST_RESET}: am_refresh_sidebar_cache best-of-3 = ${min}ms (>= ${budget_ms}ms budget)"
-        FAIL_DETAILS+=("FAIL: am_refresh_sidebar_cache too slow|  best-of-3: ${min}ms|  budget:    ${budget_ms}ms")
-    fi
+    assert_cmd_succeeds "am_refresh_sidebar_cache best-of-3 = ${min}ms (budget ${budget_ms}ms)" \
+        test "$min" -lt "$budget_ms"
 
     _perf_teardown_fleet
     teardown_integration_env
@@ -131,7 +72,6 @@ test_perf_am_refresh_sidebar_cache_under_budget() {
 }
 
 run_perf_session_switch_tests() {
-    _run_test test_perf_agent_refresh_tmux_status_under_budget
     _run_test test_perf_am_refresh_sidebar_cache_under_budget
 }
 

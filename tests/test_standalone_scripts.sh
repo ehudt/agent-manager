@@ -28,9 +28,8 @@ test_standalone_preview() {
 
     local session_name
     session_name=$(set +u; agent_launch "$test_dir" bash "test task" ""; set -u) 2>/dev/null
-    sleep 0.5
 
-    if [[ -z "$session_name" ]] || ! tmux_session_exists "$session_name"; then
+    if [[ -z "$session_name" ]] || ! wait_for_cmd tmux_session_exists "$session_name"; then
         skip_test "preview: session creation failed"
         rm -rf "$test_dir"
         teardown_integration_env
@@ -148,7 +147,7 @@ test_standalone_status_bar() {
     s1=$(set +u; agent_launch "$test_dir1" bash "task1" ""; set -u) 2>/dev/null
     s2=$(set +u; agent_launch "$test_dir2" bash "task2" ""; set -u) 2>/dev/null
     s3=$(set +u; agent_launch "$test_dir3" bash "task3" ""; set -u) 2>/dev/null
-    sleep 0.5
+    [[ -n "$s3" ]] && wait_for_cmd tmux_session_exists "$s3"
 
     rc=0
     output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
@@ -161,11 +160,6 @@ test_standalone_status_bar() {
     rc=0
     output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
     assert_eq "0" "$rc" "status-bar: exits 0 with mixed states"
-
-    [[ -n "$output" ]] || output="(empty)"
-    $SUMMARY_MODE || printf '%b\n' "${TEST_GREEN}PASS${TEST_RESET}: status-bar: produces output format (content: $output)"
-    ((TESTS_PASSED++))
-    ((TESTS_RUN++))
 
     # Missing hook + agent alive (non-shell pane) → status-bar renders '?' (unknown).
     local test_dir4 s4 old_claude_cmd

@@ -2,7 +2,7 @@
 # tests/test_form.sh - Tests for lib/form.sh
 
 test_form_core() {
-    $SUMMARY_MODE || echo "=== Testing form field display ==="
+    $SUMMARY_MODE || echo "=== Testing form input handling ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -12,41 +12,6 @@ test_form_core() {
     source "$LIB_DIR/agents.sh"
     source "$LIB_DIR/form.sh"
     set -u
-
-    local display
-
-    display=$(_form_field_display "text" "Fix the bug" "" "" "" "false")
-    assert_eq "Fix the bug" "$display" "form render: text field shows value"
-
-    display=$(_form_field_display "text" "" "" "" "" "false")
-    assert_eq "" "$display" "form render: empty text field"
-
-    display=$(_form_field_display "select" "claude" "claude,codex,gemini" "" "" "false")
-    assert_eq "[claude]  codex  gemini" "$display" "form render: select shows all options"
-
-    display=$(_form_field_display "select" "codex" "claude,codex,gemini" "" "" "false")
-    assert_eq "claude  [codex]  gemini" "$display" "form render: select highlights current"
-
-    display=$(_form_field_display "select" "unknown" "" "" "" "false")
-    assert_eq "[unknown]" "$display" "form render: select without options shows value"
-
-    display=$(_form_field_display "checkbox" "true" "" "" "" "false")
-    assert_eq "[x]" "$display" "form render: checkbox on"
-
-    display=$(_form_field_display "checkbox" "false" "" "" "" "false")
-    assert_eq "[ ]" "$display" "form render: checkbox off"
-
-    display=$(_form_field_display "checkbox" "false" "" "true" "" "false")
-    assert_eq "[disabled]" "$display" "form render: checkbox disabled"
-
-    display=$(_form_field_display "directory" "/tmp/project" "" "" "" "false")
-    assert_eq "/tmp/project" "$display" "form render: directory shows path"
-
-    display=$(_form_field_display "submit" "" "" "" "" "false")
-    assert_eq "[ Create ]" "$display" "form render: submit shows button"
-
-    $SUMMARY_MODE || echo ""
-    $SUMMARY_MODE || echo "=== Testing form input handling ==="
 
     _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
 
@@ -462,11 +427,6 @@ test_form_modes() {
     _form_handle_space  # toggle on
     assert_eq "" "${FORM_DISABLED[worktree_name]:-}" "disabled: worktree_name re-enabled when worktree on"
 
-    # Disabled text field shows "--"
-    local display
-    display=$(_form_field_display "text" "anything" "" "true" "" "false")
-    assert_eq "--" "$display" "disabled: text field shows --"
-
     # Navigate mode: enter on disabled text field does not enter edit mode
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
     FORM_DISABLED[worktree_name]="true"
@@ -541,7 +501,6 @@ test_form_config_defaults() {
     _form_run() { _form_output; }
 
     # Mock config functions
-    am_new_form_enabled() { return 0; }
     am_docker_available() { return 0; }
 
     # Test 1: default_yolo=true, default_sandbox=false

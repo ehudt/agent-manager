@@ -3,12 +3,10 @@
 
 set -uo pipefail
 
-# Parse test runner flags before anything else
-SUMMARY_MODE=false
+# Parse runner-only flags (--summary/-s is parsed by test_helpers.sh)
 INCLUDE_SLOW=true
 for _arg in "$@"; do
     case "$_arg" in
-        --summary|-s) SUMMARY_MODE=true ;;
         --include-slow) INCLUDE_SLOW=true ;;
         --no-include-slow) INCLUDE_SLOW=false ;;
     esac
@@ -16,7 +14,8 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Source shared test infrastructure (assertions, helpers, integration env)
+# Source shared test infrastructure (assertions, helpers, integration env).
+# Also sets SUMMARY_MODE from "$@".
 source "$SCRIPT_DIR/test_helpers.sh"
 
 # Check required tools
@@ -67,7 +66,6 @@ run_worker() {
             _basename="$(basename "$_test_file")"
             case "$_basename" in
                 test_all.sh|test_helpers.sh) continue ;;
-                test_cap_chown.sh) continue ;;
             esac
             # shellcheck source=/dev/null
             source "$_test_file"
@@ -151,7 +149,7 @@ replay_output() {
 }
 
 # ============================================
-# Worker definitions — balanced by measured runtime
+# Worker plan — balanced by measured runtime
 #
 # Solo times (ms):
 #   utils=393 config=437 form=441 fzf=419 install=636 sandbox=418
@@ -159,67 +157,28 @@ replay_output() {
 #   cli=6980 bin_helpers=4768 standalone_scripts=5028
 #
 # Note: tmux-heavy tests incur ~1.5x contention when running in
-# parallel due to concurrent socket I/O. The 7-worker split below
-# keeps each worker under ~8s solo, yielding ~10-14s wall time
-# depending on system load (vs ~42s sequential).
+# parallel due to concurrent socket I/O. The split below keeps each
+# fast worker under ~8s solo, yielding ~10-14s wall time depending
+# on system load (vs ~42s sequential).
+#
+# Format: "<worker_id>:<fast|slow>:<test functions...>"
+# Slow workers run only with INCLUDE_SLOW=true (the default); they are
+# the Docker sandbox pytest groups, sharded by marker to avoid one
+# long pole.
 # ============================================
 
-# Worker 1: Pure function tests + install + sandbox (~3s solo)
-worker1_tests() {
-    run_utils_tests
-    run_config_tests
-    run_form_tests
-    run_fzf_tests
-    run_sandbox_tests
-    run_install_tests
-    run_state_hooks_tests
-}
-
-# Worker 8-10: Sandbox slow tests, sharded by marker to avoid one long pole
-worker8_tests() {
-    $INCLUDE_SLOW && run_sandbox_slow_security_tests || true
-}
-
-worker9_tests() {
-    $INCLUDE_SLOW && run_sandbox_slow_functional_tests || true
-}
-
-worker10_tests() {
-    $INCLUDE_SLOW && run_sandbox_slow_ux_tests || true
-}
-
-# Worker 2: Registry + tmux (~4s solo)
-worker2_tests() {
-    run_registry_tests
-    run_tmux_tests
-}
-
-# Worker 3: Agents (~7.5s solo)
-worker3_tests() {
-    run_agents_tests
-}
-
-# Worker 4: State (~7.5s solo) + state_lab regression gate
-worker4_tests() {
-    run_state_tests
-    run_state_lab_tests
-}
-
-# Worker 5: CLI (~7s solo)
-worker5_tests() {
-    run_cli_tests
-}
-
-# Worker 6: Bin helpers (~5s solo)
-worker6_tests() {
-    run_bin_helpers_tests
-}
-
-# Worker 7: Standalone scripts + session-switch perf regression (~5s solo)
-worker7_tests() {
-    run_standalone_scripts_tests
-    run_perf_session_switch_tests
-}
+WORKER_PLAN=(
+    "1:fast:run_utils_tests run_config_tests run_form_tests run_fzf_tests run_sandbox_tests run_install_tests run_state_hooks_tests"
+    "2:fast:run_registry_tests run_tmux_tests"
+    "3:fast:run_agents_tests"
+    "4:fast:run_state_tests run_state_lab_tests"
+    "5:fast:run_cli_tests"
+    "6:fast:run_bin_helpers_tests"
+    "7:fast:run_standalone_scripts_tests run_perf_session_switch_tests"
+    "8:slow:run_sandbox_slow_security_tests"
+    "9:slow:run_sandbox_slow_functional_tests"
+    "10:slow:run_sandbox_slow_ux_tests"
+)
 
 # ============================================
 # Docker cleanup — remove containers and networks left by sandbox tests
@@ -251,32 +210,28 @@ main() {
     $SUMMARY_MODE || echo "========================================"
     $SUMMARY_MODE || echo ""
 
-    local worker_ids=(1 2 3 4 5 6 7 8 9 10)
+    local worker_ids=()
     local pids=()
 
     # Launch workers in parallel, each with its own tmux socket
     # PID in socket name allows concurrent test_all.sh runs
     local _run_id=$$
-    run_worker 1 "am-test-${_run_id}-w1" worker1_tests &
-    pids+=($!)
-    run_worker 2 "am-test-${_run_id}-w2" worker2_tests &
-    pids+=($!)
-    run_worker 3 "am-test-${_run_id}-w3" worker3_tests &
-    pids+=($!)
-    run_worker 4 "am-test-${_run_id}-w4" worker4_tests &
-    pids+=($!)
-    run_worker 5 "am-test-${_run_id}-w5" worker5_tests &
-    pids+=($!)
-    run_worker 6 "am-test-${_run_id}-w6" worker6_tests &
-    pids+=($!)
-    run_worker 7 "am-test-${_run_id}-w7" worker7_tests &
-    pids+=($!)
-    run_worker 8 "am-test-${_run_id}-w8" worker8_tests &
-    pids+=($!)
-    run_worker 9 "am-test-${_run_id}-w9" worker9_tests &
-    pids+=($!)
-    run_worker 10 "am-test-${_run_id}-w10" worker10_tests &
-    pids+=($!)
+    local entry worker_id rest speed funcs
+    for entry in "${WORKER_PLAN[@]}"; do
+        worker_id="${entry%%:*}"
+        rest="${entry#*:}"
+        speed="${rest%%:*}"
+        funcs="${rest#*:}"
+        # Skipped slow workers still run as no-ops so they write results
+        # files and aggregation sees a clean status for every worker id.
+        if [[ "$speed" == "slow" ]] && ! $INCLUDE_SLOW; then
+            funcs=":"
+        fi
+        worker_ids+=("$worker_id")
+        # shellcheck disable=SC2086 # funcs is a space-separated function list
+        run_worker "$worker_id" "am-test-${_run_id}-w${worker_id}" $funcs &
+        pids+=($!)
+    done
 
     # Wait for all workers
     local _wait_rc

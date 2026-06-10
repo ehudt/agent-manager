@@ -1,42 +1,48 @@
 #!/usr/bin/env bash
 # tests/test_bin_helpers.sh - Tests for bin/kill-and-switch, bin/switch-last
 
-test_symlinked_kill_and_switch() {
-    $SUMMARY_MODE || echo "=== Testing symlinked kill-and-switch ==="
-
-    # shellcheck disable=SC2034  # tmux_stub used by sourced code
-    local temp_root bin_dir linked_bin tmux_stub am_dir
-    temp_root=$(mktemp -d)
-    bin_dir="$temp_root/bin"
-    linked_bin="$temp_root/.local/bin"
-    am_dir="$temp_root/am-data"
-    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
-
-cat > "$bin_dir/tmux" <<'EOF'
+# Write a tmux stub binary to PATH_ARG that mimics the handful of tmux
+# commands the bin/ helpers use. Behavior is configured per-invocation via
+# environment variables on the command under test:
+#   STUB_TMUX_LOG=FILE       append each invocation ("$*") to FILE
+#   STUB_TMUX_CURRENT=NAME   session printed by display-message (default am-16fdf3)
+#   STUB_TMUX_CLIENT=NAME    value printed for `display-message -p #{client_name}`
+#   STUB_TMUX_SESSIONS=LINES output of list-sessions (newline-separated; default empty)
+#   STUB_TMUX_NO_SWITCH=1    make switch-client fail loudly (asserts it is never called)
+# Usage: _make_tmux_stub <path>
+_make_tmux_stub() {
+    local stub_path="$1"
+    cat > "$stub_path" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+[[ -n "${STUB_TMUX_LOG:-}" ]] && printf '%s\n' "$*" >> "$STUB_TMUX_LOG"
 
 if [[ "${1:-}" == "-L" ]]; then
     shift 2
 fi
+if [[ "${1:-}" == "-f" ]]; then
+    shift 2
+fi
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
 
 case "${1:-}" in
-    -c)
-        shift 2
-        case "${1:-}" in
-            display-message)
-                printf '%s\n' "am-16fdf3"
-                ;;
-            switch-client)
-                exit 0
-                ;;
-            *)
-                exit 0
-                ;;
-        esac
-        ;;
     display-message)
-        printf '%s\n' "am-16fdf3"
+        shift
+        if [[ -n "${STUB_TMUX_CLIENT:-}" && "${1:-}" == "-p" && "${2:-}" == '#{client_name}' ]]; then
+            printf '%s\n' "$STUB_TMUX_CLIENT"
+            exit 0
+        fi
+        if [[ "${1:-}" == "-c" ]]; then
+            shift 2
+        fi
+        printf '%s\n' "${STUB_TMUX_CURRENT:-am-16fdf3}"
+        ;;
+    list-sessions)
+        [[ -n "${STUB_TMUX_SESSIONS:-}" ]] && printf '%s\n' "$STUB_TMUX_SESSIONS"
+        exit 0
         ;;
     has-session)
         exit 0
@@ -44,7 +50,11 @@ case "${1:-}" in
     kill-session)
         exit 0
         ;;
-    list-sessions)
+    switch-client)
+        if [[ "${STUB_TMUX_NO_SWITCH:-}" == "1" ]]; then
+            printf '%s\n' "unexpected switch-client call" >&2
+            exit 1
+        fi
         exit 0
         ;;
     *)
@@ -52,13 +62,33 @@ case "${1:-}" in
         ;;
 esac
 EOF
-    chmod +x "$bin_dir/tmux"
+    chmod +x "$stub_path"
+}
+
+# Create the shared stub fixture layout. Sets temp_root, bin_dir, linked_bin,
+# am_dir, log_file in the caller's scope (declare them local first).
+_stub_fixture_init() {
+    temp_root=$(mktemp -d)
+    bin_dir="$temp_root/bin"
+    linked_bin="$temp_root/.local/bin"
+    am_dir="$temp_root/am-data"
+    log_file="$temp_root/tmux.log"
+    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
+    _make_tmux_stub "$bin_dir/tmux"
+}
+
+test_symlinked_kill_and_switch() {
+    $SUMMARY_MODE || echo "=== Testing symlinked kill-and-switch ==="
+
+    local temp_root bin_dir linked_bin am_dir log_file
+    _stub_fixture_init
 
     ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
     printf '{"sessions":{"am-16fdf3":{"name":"am-16fdf3"}}}\n' > "$am_dir/sessions.json"
 
     assert_cmd_succeeds "symlinked helper: resolves repo libs and exits cleanly" \
-        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "client-1" "am-16fdf3"
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" \
+        "$linked_bin/kill-and-switch" "client-1" "am-16fdf3"
 
     rm -rf "$temp_root"
     $SUMMARY_MODE || echo ""
@@ -68,63 +98,16 @@ test_kill_and_switch_switches_client_before_kill() {
     $SUMMARY_MODE || echo "=== Testing kill-and-switch switch ordering ==="
 
     local temp_root bin_dir linked_bin am_dir log_file
-    temp_root=$(mktemp -d)
-    bin_dir="$temp_root/bin"
-    linked_bin="$temp_root/.local/bin"
-    am_dir="$temp_root/am-data"
-    log_file="$temp_root/tmux.log"
-    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
-
-    cat > "$bin_dir/tmux" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-log_file="$log_file"
-printf '%s\n' "\$*" >> "\$log_file"
-
-if [[ "\${1:-}" == "-L" ]]; then
-    shift 2
-fi
-
-case "\${1:-}" in
-    -f)
-        shift 2
-        ;;
-esac
-
-case "\${1:-}" in
-    display-message)
-        shift
-        if [[ "\${1:-}" == "-c" ]]; then
-            shift 2
-        fi
-        printf '%s\n' "am-111111"
-        ;;
-    list-sessions)
-        printf '%s\n' "200 am-222222"
-        printf '%s\n' "100 am-111111"
-        ;;
-    has-session)
-        exit 0
-        ;;
-    switch-client)
-        exit 0
-        ;;
-    kill-session)
-        exit 0
-        ;;
-    *)
-        exit 0
-        ;;
-esac
-EOF
-    chmod +x "$bin_dir/tmux"
+    _stub_fixture_init
 
     ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
     printf '{"sessions":{"am-111111":{"name":"am-111111"},"am-222222":{"name":"am-222222"}}}\n' > "$am_dir/sessions.json"
 
     assert_cmd_succeeds "kill-and-switch: current client switches before kill" \
-        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "client-1" "am-111111"
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" \
+            STUB_TMUX_LOG="$log_file" STUB_TMUX_CURRENT="am-111111" \
+            STUB_TMUX_SESSIONS=$'200 am-222222\n100 am-111111' \
+        "$linked_bin/kill-and-switch" "client-1" "am-111111"
 
     local tmux_log switch_line kill_line
     tmux_log=$(cat "$log_file")
@@ -148,69 +131,22 @@ test_kill_and_switch_no_alternate_session() {
     $SUMMARY_MODE || echo "=== Testing kill-and-switch with no alternate session ==="
 
     local temp_root bin_dir linked_bin am_dir log_file
-    temp_root=$(mktemp -d)
-    bin_dir="$temp_root/bin"
-    linked_bin="$temp_root/.local/bin"
-    am_dir="$temp_root/am-data"
-    log_file="$temp_root/tmux.log"
-    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
-
-    cat > "$bin_dir/tmux" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-log_file="$log_file"
-printf '%s\n' "\$*" >> "\$log_file"
-
-if [[ "\${1:-}" == "-L" ]]; then
-    shift 2
-fi
-
-case "\${1:-}" in
-    -f)
-        shift 2
-        ;;
-esac
-
-case "\${1:-}" in
-    display-message)
-        shift
-        if [[ "\${1:-}" == "-c" ]]; then
-            shift 2
-        fi
-        printf '%s\n' "am-111111"
-        ;;
-    list-sessions)
-        printf '%s\n' "100 am-111111"
-        ;;
-    has-session)
-        exit 0
-        ;;
-    kill-session)
-        exit 0
-        ;;
-    switch-client)
-        printf '%s\n' "unexpected switch-client call" >&2
-        exit 1
-        ;;
-    *)
-        exit 0
-        ;;
-esac
-EOF
-    chmod +x "$bin_dir/tmux"
+    _stub_fixture_init
 
     ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
     printf '{"sessions":{"am-111111":{"name":"am-111111"}}}\n' > "$am_dir/sessions.json"
 
     assert_cmd_succeeds "kill-and-switch: no alternate session only kills target" \
-        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "client-1" "am-111111"
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" \
+            STUB_TMUX_LOG="$log_file" STUB_TMUX_CURRENT="am-111111" \
+            STUB_TMUX_SESSIONS='100 am-111111' STUB_TMUX_NO_SWITCH=1 \
+        "$linked_bin/kill-and-switch" "client-1" "am-111111"
 
     local tmux_log
     tmux_log=$(cat "$log_file")
     assert_contains "$tmux_log" 'kill-session -t am-111111' \
         "kill-and-switch: still kills target when no alternate exists"
-    assert_eq "false" "$([[ "$tmux_log" == *'switch-client'* ]] && echo true || echo false)" \
+    assert_not_contains "$tmux_log" 'switch-client' \
         "kill-and-switch: does not switch when no alternate exists"
 
     rm -rf "$temp_root"
@@ -221,67 +157,17 @@ test_kill_and_switch_legacy_single_arg() {
     $SUMMARY_MODE || echo "=== Testing kill-and-switch legacy one-arg mode ==="
 
     local temp_root bin_dir linked_bin am_dir log_file
-    temp_root=$(mktemp -d)
-    bin_dir="$temp_root/bin"
-    linked_bin="$temp_root/.local/bin"
-    am_dir="$temp_root/am-data"
-    log_file="$temp_root/tmux.log"
-    mkdir -p "$bin_dir" "$linked_bin" "$am_dir"
-
-    cat > "$bin_dir/tmux" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-log_file="$log_file"
-printf '%s\n' "\$*" >> "\$log_file"
-
-if [[ "\${1:-}" == "-L" ]]; then
-    shift 2
-fi
-
-case "\${1:-}" in
-    -f)
-        shift 2
-        ;;
-esac
-
-case "\${1:-}" in
-    display-message)
-        shift
-        if [[ "\${1:-}" == "-p" && "\${2:-}" == '#{client_name}' ]]; then
-            printf '%s\n' "client-legacy"
-            exit 0
-        fi
-        if [[ "\${1:-}" == "-c" ]]; then
-            shift 2
-        fi
-        printf '%s\n' "am-111111"
-        ;;
-    list-sessions)
-        printf '%s\n' "200 am-222222"
-        printf '%s\n' "100 am-111111"
-        ;;
-    has-session)
-        exit 0
-        ;;
-    switch-client)
-        exit 0
-        ;;
-    kill-session)
-        exit 0
-        ;;
-    *)
-        exit 0
-        ;;
-esac
-EOF
-    chmod +x "$bin_dir/tmux"
+    _stub_fixture_init
 
     ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
     printf '{"sessions":{"am-111111":{"name":"am-111111"},"am-222222":{"name":"am-222222"}}}\n' > "$am_dir/sessions.json"
 
     assert_cmd_succeeds "kill-and-switch: legacy one-arg form still works" \
-        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/kill-and-switch" "am-111111"
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" \
+            STUB_TMUX_LOG="$log_file" STUB_TMUX_CURRENT="am-111111" \
+            STUB_TMUX_CLIENT="client-legacy" \
+            STUB_TMUX_SESSIONS=$'200 am-222222\n100 am-111111' \
+        "$linked_bin/kill-and-switch" "am-111111"
 
     local tmux_log
     tmux_log=$(cat "$log_file")
@@ -299,42 +185,15 @@ EOF
 test_switch_last_no_alternate_session() {
     $SUMMARY_MODE || echo "=== Testing switch-last with no alternate session ==="
 
-    local temp_root bin_dir linked_bin
-    temp_root=$(mktemp -d)
-    bin_dir="$temp_root/bin"
-    linked_bin="$temp_root/.local/bin"
-    mkdir -p "$bin_dir" "$linked_bin"
-
-    cat > "$bin_dir/tmux" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-if [[ "${1:-}" == "-L" ]]; then
-    shift 2
-fi
-
-case "${1:-}" in
-    display-message)
-        printf '%s\n' "am-16fdf3"
-        ;;
-    list-sessions)
-        printf '%s\n' "123 am-16fdf3"
-        ;;
-    switch-client)
-        printf '%s\n' "unexpected switch-client call" >&2
-        exit 1
-        ;;
-    *)
-        exit 0
-        ;;
-esac
-EOF
-    chmod +x "$bin_dir/tmux"
+    local temp_root bin_dir linked_bin am_dir log_file
+    _stub_fixture_init
 
     ln -s "$PROJECT_DIR/bin/switch-last" "$linked_bin/switch-last"
 
     assert_cmd_succeeds "switch-last: no alternate session is a no-op" \
-        env PATH="$bin_dir:$PATH" "$linked_bin/switch-last"
+        env PATH="$bin_dir:$PATH" \
+            STUB_TMUX_SESSIONS='123 am-16fdf3' STUB_TMUX_NO_SWITCH=1 \
+        "$linked_bin/switch-last"
 
     rm -rf "$temp_root"
     $SUMMARY_MODE || echo ""
@@ -353,9 +212,8 @@ test_standalone_switch_last_errors() {
     test_dir2=$(mktemp -d)
     s1=$(set +u; agent_launch "$test_dir1" bash "task1" ""; set -u) 2>/dev/null
     s2=$(set +u; agent_launch "$test_dir2" bash "task2" ""; set -u) 2>/dev/null
-    sleep 0.5
 
-    if [[ -z "$s1" ]] || ! am_tmux has-session -t "$s1" 2>/dev/null; then
+    if [[ -z "$s1" ]] || ! wait_for_cmd am_tmux has-session -t "$s1"; then
         skip_test "switch-last error handling: session creation failed"
         teardown_integration_env
         rm -rf "$test_dir1" "$test_dir2"
@@ -404,9 +262,8 @@ test_standalone_kill_and_switch_errors() {
     local test_dir s1
     test_dir=$(mktemp -d)
     s1=$(set +u; agent_launch "$test_dir" bash "task" ""; set -u) 2>/dev/null
-    sleep 0.5
 
-    if [[ -z "$s1" ]] || ! am_tmux has-session -t "$s1" 2>/dev/null; then
+    if [[ -z "$s1" ]] || ! wait_for_cmd am_tmux has-session -t "$s1"; then
         skip_test "kill-and-switch: session creation failed"
         teardown_integration_env
         rm -rf "$test_dir"
