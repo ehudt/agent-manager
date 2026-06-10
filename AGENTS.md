@@ -265,7 +265,7 @@ am restore
 - Flags: `--preview-cmd`, `--kill-cmd`, `--client-name`, `--benchmark`
 
 **fzf helpers (lib/fzf.sh):**
-- `fzf_main()` - Launches am-browse; errors if the binary is not built (run `make`)
+- `fzf_main()` - Launches am-browse; errors if the binary is not built (run make)
 - `fzf_list_json()` - JSON output of sessions for `am list --json`
 - `fzf_list_simple()` - Plain text session list for `am list`
 - `fzf_pick_directory()` - Directory picker with git-branch annotations and path completion
