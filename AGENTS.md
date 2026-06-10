@@ -18,7 +18,7 @@ Architecture reference for AI agents working with this codebase.
 
 ## Gotchas
 
-- `SCRIPT_DIR` is overwritten when sourcing `lib/agents.sh` — if you need a stable reference, save it before sourcing
+- Sourced libs derive their own dir as `_<MODULE>_LIB_DIR` from `AM_LIB_DIR` (exported by the `am` entry point); standalone scripts like `lib/status-bar` set their own `SCRIPT_DIR`
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
 - Sandbox containers always run as the `ubuntu` user (UID/GID aligned to host). Use `SB_CONTAINER_HOME` for container-side path expansion, not `$HOME`
 - Agents in sandbox can `sudo apt-get install` without a password. Full sudo requires `SB_UNSAFE_ROOT=1`
@@ -29,14 +29,14 @@ Architecture reference for AI agents working with this codebase.
 |------|---------|
 | `am` | Main entry point. Handles CLI args, routes to commands. |
 | `lib/utils.sh` | Shared: colors, logging, time formatting, paths, Claude JSONL extraction |
-| `lib/registry.sh` | JSON storage for session metadata, persistent session history, auto-titling |
+| `lib/registry.sh` | JSON storage for session metadata, sessions log (restore), auto-titling |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
-| `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit), gated by `new_form` config flag |
+| `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit) |
 | `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
 | `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
-| `lib/fzf.sh` | fzf fallback UI, directory picker, restore picker, list helpers |
+| `lib/fzf.sh` | Browser launcher (`fzf_main`), directory picker, restore picker, `am list` helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
 | `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch, task, age). Also writes `@am_sidebar` (compact pane-border variant) and `@am_attention` (status-right counter). |
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
@@ -59,10 +59,9 @@ Architecture reference for AI agents working with this codebase.
 
 ```
 am → fzf_main() → am-browse (Go TUI) → stdout protocol → tmux_attach()
-am → fzf_main() → fzf (fallback when am-browse not built) → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
 am list-internal → am-list-internal (Go binary) → stdout
-Ctrl-N in browser → am_new_session_form() → _form_run() (if new_form) or fzf_new_session_form() (legacy)
+Ctrl-N in browser → am_new_session_form() → _form_run()
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
@@ -97,9 +96,9 @@ process/tmux checks which are already reliable.
 
 - `AM_STATE_DEBUG=1` — `_state_resolve` appends one line per call to
   `$AM_DIR/.state-debug.log` (`<iso8601>\t<session>\t<agent>\t<source>\t<state>`)
-  recording which layer (`shell` / `hook` / `pane` / `jsonl` / `fallback` /
-  `classify_exit`) produced the answer. Use for empirical data on which
-  fallbacks are still load-bearing before cutting them.
+  recording which layer (`shell` / `hook` / `fallback` / `classify_exit`)
+  produced the answer. Use for empirical data on which fallbacks are still
+  load-bearing before cutting them.
 - `AM_HOOK_DEBUG=1` — `state-hook.sh` appends to `$AM_DIR/.hook-debug.log`
   every time a hook fires but exits without writing state (registry miss,
   missing `AM_SESSION_NAME`, cwd mismatch). Surfaces vanished-session bugs
@@ -154,7 +153,7 @@ am peek --pane shell --history --grep "ERROR|FAIL" --lines 50 am-abc123
 - Default pane is `agent` (top pane). `--pane shell` targets the lower shell pane.
 - Plain `am peek` returns a snapshot using tmux pane capture.
 - `am peek --follow` prefers streamed pane logs when available and falls back to polling tmux output.
-- `am peek --pane shell --history` reads the full streamed scrollback from `/tmp/am-logs/<session>/shell.log` instead of the viewport. Supports `--lines N` (default 200) and `--grep PAT` (filtered via `grep -E` then `tail`). Output is already ANSI-stripped. Mutually exclusive with `--follow` / `--json`. See `skills/am-peek/SKILL.md` for context-conserving usage patterns.
+- `am peek --pane shell --history` reads the full streamed scrollback from `/tmp/am-logs/<session>/shell.log` instead of the viewport. Supports `--lines N` (default 200) and `--grep PAT` (filtered via `grep -E` then `tail`). Output is already ANSI-stripped. Mutually exclusive with `--follow`. See `skills/am-peek/SKILL.md` for context-conserving usage patterns.
 - This follow contract is the right primitive for a future web wrapper: CLI and web can share the same snapshot/stream model.
 
 ### Recommended automation pattern
@@ -194,24 +193,20 @@ am restore
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
-- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker.
+- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
 
 **Title helpers:**
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)
 
 **Registry (JSON metadata):**
-- `registry_add/get_field/get_fields/update/remove/list` - CRUD for sessions.json
-- `registry_gc()` - Remove entries for dead tmux sessions (uses `tmux_session_exists`). Mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.gc_last` throttle marker. Go reap covers registry rows + hook state files only; sandbox containers stay with the bash GC's `sandbox_gc_orphans`.
-
-**Session history (JSONL):**
-- `history_append(dir, task, agent_type, branch)` - Append entry to `~/.agent-manager/history.jsonl` (prune throttled to once/hour)
-- `history_prune()` - Remove entries older than 7 days
-- `history_for_directory(path)` - Get recent sessions for a directory, newest first
+- `registry_add/get_field/get_fields/update/remove` - CRUD for sessions.json
+- `registry_gc()` - Remove entries for dead tmux sessions. Two independently throttled halves: registry rows + hook state files (incl. `.sid` sidecars) on `$AM_DIR/.gc_last`, mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; bash-only extras (`sandbox_gc_orphans`, `sessions_log_gc`, orphan state-file sweep) on `$AM_DIR/.gc_extras_last` so Go stamping `.gc_last` can't starve them.
 
 **Sessions log (for restore):**
 - `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
 - `sessions_log_update(session_name, field, value)` - Update field in most recent log entry for a session
 - `sessions_log_snapshot(session_name, [snapshot_key])` - Capture pane text to `~/.agent-manager/snapshots/`
+- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`
 - `sessions_log_gc()` - Remove entries whose Claude JSONL no longer exists
 - `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
 - `_sessions_log_detect_id(directory)` - Detect Claude session UUID from JSONL filename
@@ -222,10 +217,8 @@ am restore
 - `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state → unknown fallback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
-- `_state_from_hook(session_name)` - Read state from hook state file (primary source for Claude sessions)
-- `_state_hook_read(session, out_var [, now_epoch])` - Nameref variant of `_state_from_hook`; no subshell, used inside `_state_resolve`
-- `_state_pane_is_shell(session)` - Detect whether top pane is a plain shell (vs an agent process)
-- `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Nameref bulk variant of `_state_pane_is_shell`
+- `_state_hook_read(session, out_var [, now_epoch])` - Read state from hook state file into a nameref (primary source for Claude sessions); no subshell, used inside `_state_resolve`
+- `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Detect whether top pane is a plain shell (vs an agent process) from nameref bulk maps
 
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
@@ -238,7 +231,6 @@ am restore
 - `tmux_enable_pipe_pane(session, pane, file)` - Stream pane output to log file
 - `tmux_cleanup_logs(name)` - Remove log directory for a session
 - `tmux_list_am_sessions()` - List all am-* session names
-- `tmux_list_am_sessions_with_activity()` - List sessions with activity timestamps
 - `tmux_send_keys(session, keys)` - Send keys to a tmux pane
 - `tmux_pane_title(target)` - Read pane title set by the application
 - `tmux_count_am_sessions()` - Count active sessions
@@ -254,12 +246,12 @@ am restore
 - `sandbox_status(session_name)` - Show container state and event log
 - `sandbox_gc_orphans()` - Remove containers whose tmux session no longer exists
 - `sb_build([no_cache])` - Build Docker image from sandbox directory
-- `sb_ps()` / `sb_prune()` / `sb_reset()` / `sb_export()` / `sb_import()` - Manage sandbox containers and the shared home directory
+- `sb_ps()` / `sb_prune()` / `sb_reset()` - Manage sandbox containers and the shared home directory
 - `sb_prune()` - Force-remove all sandbox containers (running + stopped) and their proxies
 
 
 **Form (lib/form.sh):**
-- `am_new_session_form(...)` - Dispatch: picks tput form or legacy fzf form based on the new_form config flag
+- `am_new_session_form(...)` - Entry point: parses prefill values, then runs the tput form
 - `_form_init(directory, agent, task, mode, yolo, sandbox, worktree_enabled, worktree_name, docker_available)` - Initialize form state, fields, submit row
 - `_form_run()` - Main loop: draw → read key → dispatch (navigate/edit) → repeat. Returns tab-delimited output on stdout
 - `_form_process_key(key, [extra_seq])` - Route to `_form_process_key_navigate` or `_form_process_key_edit` based on `_FORM_MODE`
@@ -272,13 +264,12 @@ am restore
 - Output protocol: session name (attach), `__NEW__`, `__RESTORE__`, or empty (cancel)
 - Flags: `--preview-cmd`, `--kill-cmd`, `--client-name`, `--benchmark`
 
-**fzf (fallback + helpers):**
-- `fzf_main()` - Tries am-browse first; falls back to fzf when binary not built
-- `fzf_list_sessions()` - Format: `session|display_name` (fallback-only, used by fzf path)
+**fzf helpers (lib/fzf.sh):**
+- `fzf_main()` - Launches am-browse; errors if the binary is not built (run `make`)
 - `fzf_list_json()` - JSON output of sessions for `am list --json`
 - `fzf_list_simple()` - Plain text session list for `am list`
-- `fzf_pick_directory()` - Directory picker with history annotations and path completion
-- `_annotate_directory(path)` - Annotate path with recent session history (agent, task, age)
+- `fzf_pick_directory()` - Directory picker with git-branch annotations and path completion
+- `_annotate_directory(path)` - Annotate path with its current git branch
 - `fzf_restore_picker()` - Browse closed sessions, select to resume via `claude --resume`
 
 **Config:**
@@ -300,13 +291,12 @@ Display: `dirname/branch [agent] task (Xm ago)`
 |------|-------|
 | Add agent type | `lib/agents.sh` → `AGENT_COMMANDS` associative array |
 | Add CLI command | `am` → `case "$cmd"` in `main()` |
-| Change browser keybindings | `cmd/am-browse/main.go` (primary), `lib/fzf.sh` → `fzf_main()` (fallback) |
-| Modify session display | `lib/agents.sh` → `agent_display_name()` |
+| Change browser keybindings | `cmd/am-browse/main.go` |
+| Modify session display | `internal/sessions/sessions.go` → `FormatDisplayBase()` |
 | Add metadata field | `lib/registry.sh` → `registry_add()` |
 | Change preview content | `lib/preview` (session), `lib/dir-preview` (directory picker) |
 | Change title source | `lib/registry.sh` → `auto_title_scan()` |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
-| Add history integration | `lib/registry.sh` → `history_append()` |
 | Change sandbox config | `lib/sandbox.sh`, `sandbox/Dockerfile` |
 | Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |

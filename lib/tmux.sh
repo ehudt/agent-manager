@@ -293,17 +293,6 @@ am_refresh_sidebar_cache() {
     am_tmux refresh-client -S 2>/dev/null || true
 }
 
-# List all agent-manager sessions with activity info
-# Usage: tmux_list_am_sessions_with_activity
-# Returns: "name activity_timestamp" per line, sorted by activity (most recent first)
-tmux_list_am_sessions_with_activity() {
-    am_tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null \
-        | grep " ${AM_SESSION_PREFIX}" \
-        | sort -rn \
-        | awk '{print $2, $1}' \
-        || true
-}
-
 # Send keys to a tmux session
 # Usage: tmux_send_keys <name> <keys...>
 tmux_send_keys() {
@@ -320,13 +309,6 @@ tmux_paste_text() {
 
     printf '%s' "$text" | am_tmux load-buffer -
     am_tmux paste-buffer -d -t "$target"
-}
-
-# Return the current command running in a pane.
-# Usage: tmux_pane_current_command <target-pane>
-tmux_pane_current_command() {
-    local target="$1"
-    am_tmux display-message -p -t "$target" '#{pane_current_command}'
 }
 
 # Return the title of a pane (set by the application via escape sequences).

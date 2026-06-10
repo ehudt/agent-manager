@@ -78,7 +78,7 @@ func ListTmuxSessions(socket, prefix string) []TmuxSession {
 	}
 
 	var sessions []TmuxSession
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
 		}
@@ -115,36 +115,7 @@ func ReadRegistry(path string) Registry {
 
 // FormatDisplay produces the display portion of a session line (no pipe prefix).
 func FormatDisplay(s TmuxSession, meta Session, now int64) string {
-	var display strings.Builder
-	display.WriteString(s.Name)
-
-	if meta.Directory != "" {
-		display.WriteByte(' ')
-		display.WriteString(filepath.Base(meta.Directory))
-	}
-	if meta.Branch != "" {
-		display.WriteByte('/')
-		display.WriteString(meta.Branch)
-	}
-
-	display.WriteString(" [")
-	if meta.AgentType != "" {
-		display.WriteString(meta.AgentType)
-	} else {
-		display.WriteString("unknown")
-	}
-	display.WriteByte(']')
-
-	if meta.Task != "" {
-		display.WriteByte(' ')
-		display.WriteString(meta.Task)
-	}
-
-	display.WriteString(" (")
-	display.WriteString(FormatTimeAgo(now - s.Activity))
-	display.WriteByte(')')
-
-	return display.String()
+	return FormatDisplayBase(s, meta) + " (" + FormatTimeAgo(now-s.Activity) + ")"
 }
 
 // FormatDisplayBase produces the display string without the trailing time-ago portion.
@@ -205,11 +176,6 @@ func FormatRestorableDisplayBase(log SessionLogEntry) string {
 	}
 
 	return display.String()
-}
-
-// FormatLine produces one pipe-delimited output line: session_name|display
-func FormatLine(s TmuxSession, meta Session, now int64) string {
-	return s.Name + "|" + FormatDisplay(s, meta, now)
 }
 
 // FormatTimeAgo matches the bash inline time formatting exactly.

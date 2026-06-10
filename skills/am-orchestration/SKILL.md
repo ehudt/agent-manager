@@ -32,10 +32,10 @@ am wait "$session"                         # blocks until waiting_input, idle, o
 # 3. Send follow-up instructions (safe — won't interrupt mid-execution)
 am send --wait "$session" "Additional instructions"
 
-# 4. Monitor via structured events or snapshot
-am events "$session"                       # JSONL stream of state transitions
-am peek --json "$session"                  # structured snapshot with state field
-am peek --follow "$session"               # raw stream (legacy)
+# 4. Monitor via snapshot or stream
+am peek "$session"                         # pane snapshot
+am status --json "$session"                # machine-readable state
+am peek --follow "$session"                # raw stream
 
 # 5. Hand to user when done
 am attach "$session"
@@ -45,7 +45,7 @@ am attach "$session"
 
 - As of 2026-03-16, `printf '...\n' | am new --detach --print-session <dir>` is broken for Codex sessions in at least one local setup: Codex exits the launch prompt path with `Error: stdin is not a terminal`.
 - As of 2026-03-16, `am send --wait <session> "..."` is also unreliable for sandboxed Codex sessions: the text can appear in the Codex TUI input box without being submitted, leaving the session in `waiting_input`.
-- If you hit either behavior, inspect with `am peek --json <session>` before assuming the worker is actually running.
+- If you hit either behavior, inspect with `am peek <session>` and `am status --json <session>` before assuming the worker is actually running.
 
 ## Writing Good Dispatch Prompts
 
@@ -82,12 +82,9 @@ Use superpowers:systematic-debugging skill.
 | `am wait --state waiting_input <session>` | Block until agent awaits input |
 | `am wait --state idle,dead <session>` | Block until agent exits |
 | `am wait --timeout 120 <session>` | Wait with custom timeout (seconds) |
-| `am events <session>` | Stream state-change events as JSONL |
-| `am events --follow <session>` | Stream events without stopping at idle |
 | `am status --json <session>` | Machine-readable state for one session |
 | `am list --json` | All sessions as JSON (includes `state` field) |
 | `am peek <session>` | Snapshot of agent pane (raw) |
-| `am peek --json <session>` | Snapshot with state field as JSON |
 | `am peek --pane shell <session>` | Snapshot of shell pane |
 | `am peek --follow <session>` | Stream agent output (tail -f style) |
 | `am interrupt <session>` | Send Ctrl-C to agent pane |
@@ -125,18 +122,6 @@ am wait --state idle,dead "$session"
 am kill "$session"
 ```
 
-**Event-driven monitoring** — react to state transitions:
-```bash
-am events "$session" | while IFS= read -r line; do
-    event=$(printf '%s' "$line" | jq -r .event)
-    state=$(printf '%s' "$line" | jq -r .state)
-    if [[ "$event" == "ended" ]]; then
-        printf 'Session finished: %s\n' "$state"
-        break
-    fi
-done
-```
-
 **Parallel workers** — launch multiple, collect results:
 ```bash
 s1=$(printf 'Run backend tests\n' | am new --detach --print-session ~/repo)
@@ -145,8 +130,8 @@ s2=$(printf 'Run frontend tests\n' | am new --detach --print-session ~/repo)
 am wait --state idle,dead "$s1"
 am wait --state idle,dead "$s2"
 
-am peek --json "$s1" | jq -r '.lines[-5:][]'
-am peek --json "$s2" | jq -r '.lines[-5:][]'
+am peek "$s1" | tail -n 5
+am peek "$s2" | tail -n 5
 ```
 
 **Handle permission prompts** — detect and respond:
@@ -198,6 +183,6 @@ tail -f /tmp/am-logs/$session/agent.log   # direct log access (no tmux)
 | Launching without `--print-session` | Always capture the session ID |
 | Forgetting `--detach` | Without it, your terminal attaches to the new session |
 | `am send` while agent is still running | Use `am send --wait` or `am wait` first |
-| Monitoring too aggressively | `am wait` + `am peek --json` once is cleaner than polling |
+| Monitoring too aggressively | `am wait` + one `am peek` is cleaner than polling |
 | Not telling the user | Always report session ID and how to attach |
 | Leaving finished sessions running | Kill sessions no longer needed with `am kill <session>` |

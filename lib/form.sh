@@ -109,61 +109,6 @@ _form_add_field() {
     FORM_VALUES[$name]="$value"
 }
 
-# Get the currently selected field name
-_form_current_field() {
-    echo "${FORM_FIELDS[$FORM_CURSOR]}"
-}
-
-# Field type display formatter (used by tests and _form_render_field)
-# Usage: _form_field_display <type> <value> <options> <disabled> <label> <focused>
-_form_field_display() {
-    local type="$1"
-    local value="$2"
-    local disabled="${4:-}"
-    local focused="${6:-false}"
-
-    case "$type" in
-        text|directory)
-            if [[ "$disabled" == "true" ]]; then
-                echo "--"
-            else
-                echo "$value"
-            fi
-            ;;
-        select)
-            local options_str="$3"
-            if [[ -n "$options_str" ]]; then
-                local -a _ffd_opts
-                IFS=',' read -ra _ffd_opts <<< "$options_str"
-                local _ffd_parts=""
-                local _ffd_opt
-                for _ffd_opt in "${_ffd_opts[@]}"; do
-                    if [[ "$_ffd_opt" == "$value" ]]; then
-                        _ffd_parts+="[${_ffd_opt}]  "
-                    else
-                        _ffd_parts+="${_ffd_opt}  "
-                    fi
-                done
-                echo "${_ffd_parts%  }"
-            else
-                echo "[$value]"
-            fi
-            ;;
-        checkbox)
-            if [[ "$disabled" == "true" ]]; then
-                echo "[disabled]"
-            elif [[ "$value" == "true" ]]; then
-                echo "[x]"
-            else
-                echo "[ ]"
-            fi
-            ;;
-        submit)
-            echo "[ Create ]"
-            ;;
-    esac
-}
-
 # Render a single field line directly to the output buffer (no subshell).
 # Appends to the _FORM_BUF variable.
 _form_render_field() {

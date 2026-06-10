@@ -76,18 +76,6 @@ func TestFormatRestorableDisplayBase(t *testing.T) {
 	}
 }
 
-func TestFormatLine(t *testing.T) {
-	s := TmuxSession{Name: "am-test", Activity: 100}
-	meta := Session{
-		Directory: "/tmp/proj",
-		AgentType: "claude",
-	}
-	line := FormatLine(s, meta, 130)
-	if line != "am-test|am-test proj [claude] (30s ago)" {
-		t.Errorf("FormatLine got: %q", line)
-	}
-}
-
 func TestReadRegistryMissing(t *testing.T) {
 	reg := ReadRegistry("/nonexistent/path.json")
 	if reg.Sessions == nil {

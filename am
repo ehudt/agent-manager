@@ -528,34 +528,30 @@ cmd_attach() {
         return 1
     fi
 
-    # Try exact or prefixed match. No sync status-bar refresh — attaching does
-    # not change the session set, so precomputed options are still correct.
+    # Exact, prefixed, or single fuzzy match. No sync status-bar refresh —
+    # attaching does not change the session set, so precomputed options are
+    # still correct.
     local resolved
-    if resolved=$(resolve_session "$name"); then
+    if resolved=$(resolve_session_fuzzy "$name"); then
         tmux_attach "$resolved"
         return 0
     fi
 
-    # Fuzzy match
+    # Zero or multiple fuzzy matches
     local matches
     matches=$(tmux_list_am_sessions | grep -i "$name" || true)
-    local count
-    count=$(echo "$matches" | grep -c . || echo 0)
-
-    if [[ $count -eq 0 ]]; then
+    if [[ -z "$matches" ]]; then
         log_error "No session found matching: $name"
         return 1
-    elif [[ $count -eq 1 ]]; then
-        tmux_attach "$matches"
-    else
-        log_info "Multiple matches found:"
-        echo "$matches" >&2
-        echo "" >&2
-        echo -n "Enter session name: " >&2
-        read -r selected
-        if [[ -n "$selected" ]]; then
-            tmux_attach "$selected"
-        fi
+    fi
+
+    log_info "Multiple matches found:"
+    echo "$matches" >&2
+    echo "" >&2
+    echo -n "Enter session name: " >&2
+    read -r selected
+    if [[ -n "$selected" ]]; then
+        tmux_attach "$selected"
     fi
 }
 
@@ -574,8 +570,13 @@ cmd_send() {
                 shift 2
                 ;;
             -h|--help)
-                echo "Usage: am send <session-name> [prompt]"
+                echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
                 echo "Read prompt text from argv or stdin and inject it into the running agent pane."
+                echo ""
+                echo "Options:"
+                echo "  --wait       Wait until the agent is ready for input (waiting_input,"
+                echo "               waiting_permission, waiting_custom, or idle) before sending"
+                echo "  --timeout N  Seconds to wait with --wait before giving up (default: 600)"
                 return 0
                 ;;
             -*)
@@ -593,7 +594,7 @@ cmd_send() {
 
     if [[ -z "$name" ]]; then
         log_error "Session name required"
-        echo "Usage: am send <session-name> [prompt]"
+        echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
         return 1
     fi
 
@@ -602,7 +603,7 @@ cmd_send() {
 
     if [[ -z "$prompt" ]]; then
         log_error "Prompt required via argv or stdin"
-        echo "Usage: am send <session-name> [prompt]"
+        echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
         return 1
     fi
 

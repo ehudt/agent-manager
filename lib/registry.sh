@@ -90,90 +90,95 @@ registry_remove() {
     jq --arg name "$name" 'del(.sessions[$name])' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
 }
 
-# List all sessions in the registry
-# Usage: registry_list
-# Returns newline-separated session names
-registry_list() {
-    jq -r '.sessions | keys[]' "$AM_REGISTRY" 2>/dev/null
-}
-
 # Garbage collection: remove registry entries for sessions that no longer exist in tmux
 # Usage: registry_gc [force]
-# Runs at most once per 60 seconds unless force=1
+# Two independently throttled halves (60s each, unless force=1):
+#   - Registry rows + hook state files: marker .gc_last, shared with the Go
+#     twin (internal/sessions ReapOrphans) which does the same work.
+#   - Bash-only extras (sandbox containers, sessions log GC, orphan state-file
+#     sweep): marker .gc_extras_last. The Go twin never does this work, so it
+#     must not be skipped just because Go stamped .gc_last first.
 registry_gc() {
     local force="${1:-0}"
-
-    # Time-based throttling: only run every 60 seconds
-    local gc_marker="$AM_DIR/.gc_last"
     local now
     now=$(date +%s)
-
-    if [[ "$force" != "1" && -f "$gc_marker" ]]; then
-        local last_gc
-        last_gc=$(cat "$gc_marker" 2>/dev/null || echo 0)
-        if (( now - last_gc < 60 )); then
-            echo "0"
-            return 0
-        fi
-    fi
-
-    # Update marker
-    echo "$now" > "$gc_marker"
-
     local removed=0
-    local orphaned_containers=0
 
-    if [[ "$(type -t sandbox_gc_orphans)" == "function" ]]; then
-        orphaned_containers=$(sandbox_gc_orphans)
-        removed=$((removed + orphaned_containers))
+    local run_rows=1 run_extras=1
+    if [[ "$force" != "1" ]]; then
+        local last
+        last=$(cat "$AM_DIR/.gc_last" 2>/dev/null || echo 0)
+        (( now - last < 60 )) && run_rows=0
+        last=$(cat "$AM_DIR/.gc_extras_last" 2>/dev/null || echo 0)
+        (( now - last < 60 )) && run_extras=0
+    fi
+    if (( !run_rows && !run_extras )); then
+        echo "0"
+        return 0
     fi
 
-    # Bulk-read live tmux sessions and registry in parallel (avoids N+1 tmux calls)
+    # Bulk-read live tmux sessions once (avoids N+1 tmux calls)
     local -A live_sessions
     local _sname
     while IFS= read -r _sname; do
         live_sessions[$_sname]=1
     done < <(tmux_list_am_sessions)
 
-    # Bulk-read container_name for all registry entries (one jq call)
-    local -A reg_containers
-    local _rname _rcontainer
-    while IFS='|' read -r _rname _rcontainer; do
-        reg_containers[$_rname]=$_rcontainer
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.container_name // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+    # --- Registry rows + hook state files (Go twin: ReapOrphans) ---
+    if (( run_rows )); then
+        echo "$now" > "$AM_DIR/.gc_last"
 
-    local name
-    for name in "${!reg_containers[@]}"; do
-        if [[ -z "${live_sessions[$name]:-}" ]]; then
-            # Clean up sandbox container if one exists
-            if [[ -n "${reg_containers[$name]}" ]]; then
-                sandbox_remove "$name"
-            fi
-            registry_remove "$name"
-            rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name" \
-                  "${AM_STATE_DIR:-/tmp/am-state}/$name.sid"
-            ((removed++))
-        fi
-    done
+        # Bulk-read container_name for all registry entries (one jq call)
+        local -A reg_containers
+        local _rname _rcontainer
+        while IFS='|' read -r _rname _rcontainer; do
+            reg_containers[$_rname]=$_rcontainer
+        done < <(jq -r '.sessions | to_entries[] | [.key, .value.container_name // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
-    # Clean up orphan hook state files and sidecars (session gone but file remains).
-    # State file is "<session>", sidecar is "<session>.sid" — strip the suffix
-    # before checking liveness so live sessions don't lose their sidecar.
-    local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
-    if [[ -d "$state_dir" ]]; then
-        local state_file sname
-        for state_file in "$state_dir"/${AM_SESSION_PREFIX}*; do
-            [[ -f "$state_file" ]] || continue
-            sname=$(basename "$state_file")
-            sname="${sname%.sid}"
-            if [[ -z "${live_sessions[$sname]:-}" ]]; then
-                rm -f "$state_file"
+        local name
+        for name in "${!reg_containers[@]}"; do
+            if [[ -z "${live_sessions[$name]:-}" ]]; then
+                # Clean up sandbox container if one exists
+                if [[ -n "${reg_containers[$name]}" ]]; then
+                    sandbox_remove "$name"
+                fi
+                registry_remove "$name"
+                rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name" \
+                      "${AM_STATE_DIR:-/tmp/am-state}/$name.sid"
+                ((removed++))
             fi
         done
     fi
 
-    # Prune sessions log (for restore)
-    sessions_log_gc 2>/dev/null || true
+    # --- Bash-only extras (no Go twin) ---
+    if (( run_extras )); then
+        echo "$now" > "$AM_DIR/.gc_extras_last"
+
+        if [[ "$(type -t sandbox_gc_orphans)" == "function" ]]; then
+            local orphaned_containers
+            orphaned_containers=$(sandbox_gc_orphans)
+            removed=$((removed + orphaned_containers))
+        fi
+
+        # Clean up orphan hook state files and sidecars (session gone but file remains).
+        # State file is "<session>", sidecar is "<session>.sid" — strip the suffix
+        # before checking liveness so live sessions don't lose their sidecar.
+        local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+        if [[ -d "$state_dir" ]]; then
+            local state_file sname
+            for state_file in "$state_dir"/${AM_SESSION_PREFIX}*; do
+                [[ -f "$state_file" ]] || continue
+                sname=$(basename "$state_file")
+                sname="${sname%.sid}"
+                if [[ -z "${live_sessions[$sname]:-}" ]]; then
+                    rm -f "$state_file"
+                fi
+            done
+        fi
+
+        # Prune sessions log (for restore)
+        sessions_log_gc 2>/dev/null || true
+    fi
 
     if (( removed > 0 )); then
         log_info "Cleaned up $removed stale registry entries"
@@ -202,7 +207,9 @@ auto_title_scan() {
 
     _titler_log() { echo "$(date '+%H:%M:%S') $*" >> "$_log" 2>/dev/null; }
 
-    # Throttle
+    # Throttle. The Go twin (internal/sessions RefreshTitles) shares this
+    # marker but never does the restore-log work, so on the throttled path we
+    # still run sessions_log_scan (it has its own marker).
     local marker="$AM_DIR/.title_scan_last"
     local now
     now=$(date +%s)
@@ -211,6 +218,7 @@ auto_title_scan() {
         last=$(cat "$marker" 2>/dev/null || echo 0)
         if (( now - last < 60 )); then
             _titler_log "throttled ($(( now - last ))s since last scan)"
+            sessions_log_scan "$force"
             return 0
         fi
     fi
@@ -219,15 +227,13 @@ auto_title_scan() {
     _titler_log "scan start (force=$force)"
 
     # Bulk-read all sessions with their fields in one jq call (avoids N+1 registry reads)
-    local -A reg_task reg_dir reg_branch reg_agent reg_created
-    local _rname _rtask _rdir _rbranch _ragent _rcreated
-    while IFS='|' read -r _rname _rtask _rdir _rbranch _ragent _rcreated; do
+    local -A reg_task reg_dir reg_agent
+    local _rname _rtask _rdir _ragent
+    while IFS='|' read -r _rname _rtask _rdir _ragent; do
         reg_task[$_rname]=$_rtask
         reg_dir[$_rname]=$_rdir
-        reg_branch[$_rname]=$_rbranch
         reg_agent[$_rname]=$_ragent
-        reg_created[$_rname]=$_rcreated
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.branch // "", .value.agent_type // "", .value.created_at // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
     local name title scanned=0 updated=0
     for name in "${!reg_task[@]}"; do
@@ -264,65 +270,98 @@ auto_title_scan() {
         _titler_log "  $name: title=\"$title\""
     done
 
-    # --- Rolling snapshots + session_id backfill (Claude sessions only) ---
-    if [[ -f "$AM_SESSIONS_LOG" ]]; then
-        # Build lookup of sessions_log entries (bulk parse — one jq call)
-        local -A slog_sid slog_snap
-        local _sl_sname _sl_sid _sl_snap
-        while IFS='|' read -r _sl_sname _sl_sid _sl_snap; do
-            [[ -z "$_sl_sname" ]] && continue
-            # Keep last entry per session_name (later lines overwrite)
-            slog_sid[$_sl_sname]="$_sl_sid"
-            slog_snap[$_sl_sname]="$_sl_snap"
-        done < <(jq -r '[.session_name // "", .session_id // "", .snapshot_file // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null)
-
-        local snap_count=0
-        for name in "${!reg_agent[@]}"; do
-            [[ "${reg_agent[$name]}" == "claude" ]] || continue
-            # Only process sessions that have a log entry
-            [[ -n "${slog_sid[$name]+x}" ]] || continue
-
-            local sid="${slog_sid[$name]}"
-
-            # Backfill session_id if empty
-            if [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
-                sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}")
-                if [[ -n "$sid" ]]; then
-                    sessions_log_update "$name" "session_id" "$sid"
-                    slog_sid[$name]="$sid"
-                    _titler_log "  $name: backfilled session_id=$sid"
-                    # Rename snapshot file from session_name to session_id
-                    if [[ -f "$AM_SNAPSHOTS_DIR/${name}.txt" ]]; then
-                        command mv "$AM_SNAPSHOTS_DIR/${name}.txt" "$AM_SNAPSHOTS_DIR/${sid}.txt" 2>/dev/null || true
-                        sessions_log_update "$name" "snapshot_file" "snapshots/${sid}.txt"
-                    fi
-                fi
-            fi
-
-            # Capture pane snapshot
-            local snap_key="${sid:-$name}"
-            local snap_file
-            snap_file=$(sessions_log_snapshot "$name" "$snap_key")
-            if [[ -n "$snap_file" ]]; then
-                # Update snapshot_file in log if changed
-                if [[ "$snap_file" != "${slog_snap[$name]}" ]]; then
-                    sessions_log_update "$name" "snapshot_file" "$snap_file"
-                fi
-                ((snap_count++))
-            fi
-        done
-        _titler_log "  snapshots captured: $snap_count"
-
-        # Also update task in sessions log if title changed
-        for name in "${!reg_agent[@]}"; do
-            [[ "${reg_agent[$name]}" == "claude" ]] || continue
-            [[ -n "${slog_sid[$name]+x}" ]] || continue
-            local current_task="${reg_task[$name]}"
-            [[ -n "$current_task" ]] && sessions_log_update "$name" "task" "$current_task"
-        done
-    fi
+    sessions_log_scan "$force"
 
     _titler_log "scan done: $scanned scanned, $updated updated"
+}
+
+# Rolling snapshots + session_id backfill + sessions-log task sync (Claude
+# sessions only). Bash-only restore plumbing with no Go twin, so it runs on
+# its own throttle marker (.restore_scan_last) — the Go title scanner stamping
+# .title_scan_last must not starve it.
+# Usage: sessions_log_scan [force]
+sessions_log_scan() {
+    local force="${1:-0}"
+    [[ -f "$AM_SESSIONS_LOG" ]] || return 0
+
+    local _log="$AM_DIR/titler.log"
+    _titler_log() { echo "$(date '+%H:%M:%S') $*" >> "$_log" 2>/dev/null; }
+
+    # Throttle (independent of .title_scan_last)
+    local marker="$AM_DIR/.restore_scan_last"
+    local now
+    now=$(date +%s)
+    if [[ "$force" != "1" && -f "$marker" ]]; then
+        local last
+        last=$(cat "$marker" 2>/dev/null || echo 0)
+        (( now - last < 60 )) && return 0
+    fi
+    echo "$now" > "$marker"
+
+    # Bulk-read registry fields (one jq call)
+    local -A reg_task reg_dir reg_agent reg_created
+    local _rname _rtask _rdir _ragent _rcreated
+    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated; do
+        reg_task[$_rname]=$_rtask
+        reg_dir[$_rname]=$_rdir
+        reg_agent[$_rname]=$_ragent
+        reg_created[$_rname]=$_rcreated
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+
+    # Build lookup of sessions_log entries (bulk parse — one jq call)
+    local -A slog_sid slog_snap
+    local _sl_sname _sl_sid _sl_snap
+    while IFS='|' read -r _sl_sname _sl_sid _sl_snap; do
+        [[ -z "$_sl_sname" ]] && continue
+        # Keep last entry per session_name (later lines overwrite)
+        slog_sid[$_sl_sname]="$_sl_sid"
+        slog_snap[$_sl_sname]="$_sl_snap"
+    done < <(jq -r '[.session_name // "", .session_id // "", .snapshot_file // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null)
+
+    local name snap_count=0
+    for name in "${!reg_agent[@]}"; do
+        [[ "${reg_agent[$name]}" == "claude" ]] || continue
+        # Only process sessions that have a log entry
+        [[ -n "${slog_sid[$name]+x}" ]] || continue
+
+        local sid="${slog_sid[$name]}"
+
+        # Backfill session_id if empty
+        if [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
+            sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}")
+            if [[ -n "$sid" ]]; then
+                sessions_log_update "$name" "session_id" "$sid"
+                slog_sid[$name]="$sid"
+                _titler_log "  $name: backfilled session_id=$sid"
+                # Rename snapshot file from session_name to session_id
+                if [[ -f "$AM_SNAPSHOTS_DIR/${name}.txt" ]]; then
+                    command mv "$AM_SNAPSHOTS_DIR/${name}.txt" "$AM_SNAPSHOTS_DIR/${sid}.txt" 2>/dev/null || true
+                    sessions_log_update "$name" "snapshot_file" "snapshots/${sid}.txt"
+                fi
+            fi
+        fi
+
+        # Capture pane snapshot
+        local snap_key="${sid:-$name}"
+        local snap_file
+        snap_file=$(sessions_log_snapshot "$name" "$snap_key")
+        if [[ -n "$snap_file" ]]; then
+            # Update snapshot_file in log if changed
+            if [[ "$snap_file" != "${slog_snap[$name]}" ]]; then
+                sessions_log_update "$name" "snapshot_file" "$snap_file"
+            fi
+            ((snap_count++))
+        fi
+    done
+    _titler_log "  snapshots captured: $snap_count"
+
+    # Also sync task into the sessions log
+    for name in "${!reg_agent[@]}"; do
+        [[ "${reg_agent[$name]}" == "claude" ]] || continue
+        [[ -n "${slog_sid[$name]+x}" ]] || continue
+        local current_task="${reg_task[$name]}"
+        [[ -n "$current_task" ]] && sessions_log_update "$name" "task" "$current_task"
+    done
 }
 
 # --- Sessions Log (for session restore) ---
@@ -407,7 +446,8 @@ sessions_log_snapshot() {
 }
 
 # Encode a path as a Claude project directory name (/ and . become -).
-# Local copy of _state_encode_dir to avoid depending on state.sh.
+# Mirrored in Go (internal/sessions encodedClaudeProjectDir) and inline in
+# utils.sh claude_first_user_message.
 _slog_encode_dir() {
     echo "$1" | sed -E 's|[/.]|-|g'
 }

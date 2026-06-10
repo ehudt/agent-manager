@@ -105,7 +105,7 @@ fzf_pick_directory() {
     initial_list=$(_list_directories | grep -v '^$')
 
     # Run fzf with dynamic completion
-    local dir_preview_cmd="$SCRIPT_DIR/dir-preview"
+    local dir_preview_cmd="$_FZF_LIB_DIR/dir-preview"
 
     local selected
     selected=$(echo "$initial_list" | fzf \
@@ -359,17 +359,7 @@ fzf_restore_picker() {
         display="${display} [${agent}]"
         [[ -n "$task" ]] && display="${display} ${task}"
 
-        # Inline format_time_ago (avoids function call per session)
-        local _ago
-        if (( age < 0 )); then _ago="just now"
-        elif (( age < 60 )); then _ago="${age}s ago"
-        elif (( age < 3600 )); then _ago="$(( age / 60 ))m ago"
-        elif (( age < 86400 )); then
-            local _h=$(( age / 3600 )) _m=$(( (age % 3600) / 60 ))
-            if (( _m == 0 )); then _ago="${_h}h ago"; else _ago="${_h}h ${_m}m ago"; fi
-        else _ago="$(( age / 86400 ))d ago"
-        fi
-        display="${display} ($_ago)"
+        display="${display} ($(format_time_ago "$age"))"
 
         # Resolve snapshot to absolute path for preview
         local snap_path="${AM_DIR}/${snap}"

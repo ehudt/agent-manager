@@ -56,13 +56,6 @@ _state_hook_read() {
     esac
 }
 
-# Compatibility wrapper for callers that want stdout.
-_state_from_hook() {
-    local _hs
-    _state_hook_read "$1" _hs
-    [[ -n "$_hs" ]] && echo "$_hs"
-}
-
 # ---------------------------------------------------------------------------
 # Pane / process tree
 # ---------------------------------------------------------------------------
@@ -89,24 +82,6 @@ _state_pane_is_shell_bulk() {
         esac
     done
     return 0
-}
-
-# Build size-1 bulk fixtures and call the bulk variant. Used by tests that
-# probe single sessions directly. Returns: 0 if shell, 1 otherwise.
-_state_pane_is_shell() {
-    local session="$1"
-    local -A __ps_top=() __ps_comm=() __ps_child=()
-    local pane_pid
-    pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
-    [[ -z "$pane_pid" ]] && return 1
-    __ps_top[$session]=$pane_pid
-    local _p _pp _c
-    while read -r _p _pp _c; do
-        [[ -z "$_p" || "$_p" == "PID" ]] && continue
-        __ps_comm[$_p]=$_c
-        __ps_child[$_pp]="${__ps_child[$_pp]:-} $_p"
-    done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
-    _state_pane_is_shell_bulk "$session" __ps_top __ps_comm __ps_child
 }
 
 # Classify a session whose top pane process is a shell.

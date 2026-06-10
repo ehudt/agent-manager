@@ -403,60 +403,6 @@ agent_send_prompt() {
     tmux_send_keys "$pane_target" Enter
 }
 
-# Get display name for a session (for fzf listing)
-# Usage: agent_display_name <session_name> [activity_ts]
-# Returns: "am-xxxxxx dirname/branch [type] (Xm ago)"
-# Pass activity_ts to avoid an extra tmux subprocess per session.
-agent_display_name() {
-    local session_name="$1"
-    local activity="${2:-}"
-
-    local fields
-    fields=$(registry_get_fields "$session_name" directory branch agent_type task)
-
-    local directory branch agent_type task
-    IFS='|' read -r directory branch agent_type task <<< "$fields"
-
-    # Use pre-fetched activity or fetch from tmux
-    if [[ -z "$activity" ]]; then
-        activity=$(tmux_get_activity "$session_name")
-    fi
-    local now
-    now=$(epoch_now)
-    local idle=0
-    if [[ -n "$activity" ]]; then
-        idle=$((now - activity))
-    fi
-
-    # Build display name
-    local display=""
-
-    display="$session_name"
-
-    # Directory basename
-    if [[ -n "$directory" ]]; then
-        display="${display} $(dir_basename "$directory")"
-    fi
-
-    # Add branch if available
-    if [[ -n "$branch" ]]; then
-        display="${display}/${branch}"
-    fi
-
-    # Add agent type
-    display="${display} [${agent_type:-unknown}]"
-
-    # Add task/title if available
-    if [[ -n "$task" ]]; then
-        display="${display} ${task}"
-    fi
-
-    # Add activity
-    display="${display} ($(format_time_ago "$idle"))"
-
-    echo "$display"
-}
-
 # Get full info about a session for preview header
 # Usage: agent_info <session_name>
 agent_info() {
@@ -511,14 +457,15 @@ agent_kill() {
     local session_name="$1"
     local rc=0
 
+    # Bulk-read registry fields (one jq call instead of four)
+    local agent_type dir created_at container_name
+    IFS='|' read -r agent_type dir created_at container_name \
+        <<< "$(registry_get_fields "$session_name" agent_type directory created_at container_name)"
+
     # Final snapshot + close timestamp for session restore (before killing tmux)
-    local agent_type
-    agent_type=$(registry_get_field "$session_name" "agent_type")
     if [[ "$agent_type" == "claude" ]] && tmux_session_exists "$session_name"; then
         # Detect session_id if not yet backfilled
-        local dir sid created_at
-        dir=$(registry_get_field "$session_name" "directory")
-        created_at=$(registry_get_field "$session_name" "created_at")
+        local sid
         sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$created_at" 2>/dev/null || true)
         local snap_file
         if [[ -n "$sid" ]]; then
@@ -534,8 +481,6 @@ agent_kill() {
     fi
 
     # Remove sandbox container if session had one
-    local container_name
-    container_name=$(registry_get_field "$session_name" "container_name")
     if [[ -n "$container_name" ]]; then
         [[ "$(type -t sandbox_remove)" != "function" ]] && source "$_AGENTS_LIB_DIR/sandbox.sh"
         sandbox_remove "$session_name"
