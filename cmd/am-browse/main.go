@@ -482,7 +482,9 @@ func (m model) View() string {
 	b.WriteString("\n\n")
 
 	// Calculate layout: list gets 25% of space, preview gets 75% (like fzf config)
-	headerLines := 7 // blank + title + separator + keybinds + blank + filter + blank
+	// 8 = blank + title + separator + keybinds + blank + filter + blank,
+	// plus the blank line emitted between the list and the preview separator.
+	headerLines := 8
 	available := m.height - headerLines
 	if available < 1 {
 		available = 1

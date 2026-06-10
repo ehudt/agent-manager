@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -92,6 +93,41 @@ func TestEnterInactiveOutputsRestoreProtocol(t *testing.T) {
 	want := "__RESTORE__\x1f/tmp/my-site\x1fsid-123"
 	if got != want {
 		t.Errorf("inactive enter output = %q, want %q", got, want)
+	}
+}
+
+// View must never render more lines than the terminal height: a taller view
+// makes the popup jump a line up and down as the preview content length flips
+// between the 1-line "Loading preview..." placeholder and a full pane capture.
+func TestViewFitsTerminalHeight(t *testing.T) {
+	m := newModel()
+	m.width = 80
+	m.height = 30
+	m.loading = false
+	for i := range 20 {
+		name := "am-active" + string(rune('a'+i))
+		m.entries = append(m.entries, sessions.Entry{
+			TmuxSession: sessions.TmuxSession{Name: name},
+			Kind:        sessions.EntryActive,
+			Display:     name + " proj [claude] task (1m ago)",
+			DisplayBase: name + " proj [claude] task",
+			TimeAgo:     "1m ago",
+		})
+	}
+	m.applyFilter()
+
+	longPreview := strings.Repeat("preview line\n", 100)
+	for _, preview := range []string{"", "Loading preview...", longPreview} {
+		for cursor := 0; cursor < len(m.entries); cursor++ {
+			m.cursor = cursor
+			m.preview = preview
+			m.previewFor = m.selectedPreviewKey()
+			view := m.View()
+			if got := strings.Count(view, "\n") + 1; got > m.height {
+				t.Fatalf("cursor=%d previewLines=%d: view is %d lines, terminal height is %d",
+					cursor, strings.Count(preview, "\n"), got, m.height)
+			}
+		}
 	}
 }
 
