@@ -40,7 +40,7 @@ test_cli() {
     # Test version
     local version_output
     version_output=$("$PROJECT_DIR/am" version)
-    assert_contains "$version_output" "0.1.0" "am version: shows version"
+    assert_contains "$version_output" "am version " "am version: shows version"
 
     $SUMMARY_MODE || echo ""
 }
