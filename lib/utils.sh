@@ -167,10 +167,19 @@ generate_hash() {
 }
 
 # Extract first meaningful user message from Claude session JSONL
-# Usage: claude_first_user_message <directory>
+# Usage: claude_first_user_message <directory> [session_id] [strict]
+# When session_id is given, reads that exact JSONL — this disambiguates
+# multiple sessions sharing one directory (otherwise the newest JSONL wins,
+# so an older session would inherit a newer session's first message).
+# When session_id is empty/missing: by default falls back to the newest JSONL.
+# In strict mode (strict=1), the newest fallback is only used when the
+# directory holds exactly one JSONL — with two or more it's ambiguous which
+# belongs to this session, so we return nothing rather than guess wrong.
 # Returns: cleaned text of the first user message with >10 chars, or empty
 claude_first_user_message() {
     local directory="$1"
+    local session_id="${2:-}"
+    local strict="${3:-0}"
 
     # Convert directory to Claude's project path format (/ and . become -)
     local project_path="${directory//\//-}"
@@ -179,8 +188,17 @@ claude_first_user_message() {
 
     [[ -d "$claude_project_dir" ]] || return 0
 
-    local session_file
-    session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
+    local session_file=""
+    if [[ -n "$session_id" && -f "$claude_project_dir/$session_id.jsonl" ]]; then
+        session_file="$claude_project_dir/$session_id.jsonl"
+    elif [[ "$strict" == "1" ]]; then
+        # Ambiguous unless there's exactly one JSONL — don't guess.
+        local _jsonls=("$claude_project_dir"/*.jsonl)
+        [[ ${#_jsonls[@]} -eq 1 && -f "${_jsonls[0]}" ]] || return 0
+        session_file="${_jsonls[0]}"
+    else
+        session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
+    fi
     [[ -n "$session_file" && -f "$session_file" ]] || return 0
 
     local line content cleaned

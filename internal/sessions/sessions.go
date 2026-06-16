@@ -27,6 +27,7 @@ type Session struct {
 	Branch    string `json:"branch"`
 	AgentType string `json:"agent_type"`
 	Task      string `json:"task"`
+	CreatedAt string `json:"created_at"`
 }
 
 // TmuxSession holds parsed tmux list-sessions output.

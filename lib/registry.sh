@@ -227,13 +227,14 @@ auto_title_scan() {
     _titler_log "scan start (force=$force)"
 
     # Bulk-read all sessions with their fields in one jq call (avoids N+1 registry reads)
-    local -A reg_task reg_dir reg_agent
-    local _rname _rtask _rdir _ragent
-    while IFS='|' read -r _rname _rtask _rdir _ragent; do
+    local -A reg_task reg_dir reg_agent reg_created
+    local _rname _rtask _rdir _ragent _rcreated
+    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated; do
         reg_task[$_rname]=$_rtask
         reg_dir[$_rname]=$_rdir
         reg_agent[$_rname]=$_ragent
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+        reg_created[$_rname]=$_rcreated
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
     local name title scanned=0 updated=0
     for name in "${!reg_task[@]}"; do
@@ -250,7 +251,14 @@ auto_title_scan() {
             # legacy sessions created before auto-titling existed.
             local fallback=""
             if [[ "${reg_agent[$name]}" == "claude" && -n "${reg_dir[$name]}" ]]; then
-                fallback=$(claude_first_user_message "${reg_dir[$name]}" 2>/dev/null || true)
+                # Resolve THIS session's Claude id (sidecar, else mtime>=created)
+                # so two sessions in one directory don't share the newest JSONL's
+                # first message as their title.
+                local _sid
+                _sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}" 2>/dev/null || true)
+                # strict=1: if we can't pin this session's id, don't guess from
+                # a directory with multiple JSONLs (would inherit a sibling's task).
+                fallback=$(claude_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
                 fallback="${fallback:0:60}"
             fi
             if [[ -n "$fallback" ]] && _title_valid "$fallback"; then

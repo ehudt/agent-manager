@@ -183,7 +183,11 @@ test_standalone_status_bar() {
             rc=0
             output=$("$LIB_DIR/status-bar" --print "" 2>&1) || rc=$?
             assert_eq "0" "$rc" "status-bar: exits 0 when hook state is missing"
-            assert_contains "$output" "? $(basename "$test_dir4")" \
+            # Match glyph + label prefix only: with several sessions the
+            # status-bar shrinks per-tab budgets to keep all tabs visible, so
+            # the dir basename may be truncated. The '?' glyph is the assertion.
+            local _label4="$(basename "$test_dir4")"
+            assert_contains "$output" "? ${_label4:0:6}" \
                 "status-bar: hook silent + agent alive → unknown glyph"
         else
             skip_test "status-bar: fallback state test (agent process did not start)"

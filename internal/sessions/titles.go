@@ -44,6 +44,9 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 		return
 	}
 
+	home := homeDir()
+	stateDir := EnvOr("AM_STATE_DIR", "/tmp/am-state")
+
 	var updated bool
 	for _, s := range sessions {
 		meta, ok := registry.Sessions[s.Name]
@@ -55,7 +58,13 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 		title = leadingNonAlnum.ReplaceAllString(title, "")
 		if !titleValid(title) {
 			if meta.AgentType == "claude" && meta.Directory != "" {
-				fallback := claudeFirstUserMessage(meta.Directory)
+				// Resolve THIS session's Claude id so two sessions sharing
+				// one directory don't both inherit the newest JSONL's first
+				// message as their title.
+				sid := resolveClaudeSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
+				// strict: when the id can't be pinned, don't guess from a
+				// directory with multiple JSONLs (would inherit a sibling's task).
+				fallback := claudeFirstUserMessage(meta.Directory, sid, true)
 				if len(fallback) > titleMaxLen {
 					fallback = fallback[:titleMaxLen]
 				}
@@ -133,37 +142,56 @@ func writeRegistryAtomic(path string, reg Registry) {
 }
 
 // claudeFirstUserMessage mirrors lib/utils.sh:claude_first_user_message.
-// Returns the first user-message text (>10 chars) from the newest Claude
-// JSONL for the given directory, with tags stripped and whitespace collapsed.
-func claudeFirstUserMessage(directory string) string {
+// Returns the first user-message text (>10 chars) from a Claude JSONL for the
+// given directory, with tags stripped and whitespace collapsed. When sessionID
+// is given and its JSONL exists, that exact file is read (disambiguating
+// multiple sessions in one directory); otherwise the newest JSONL is used.
+func claudeFirstUserMessage(directory, sessionID string, strict bool) string {
 	projectPath := strings.ReplaceAll(directory, "/", "-")
 	projectPath = strings.ReplaceAll(projectPath, ".", "-")
 	claudeDir := filepath.Join(homeDir(), ".claude", "projects", projectPath)
 
-	entries, err := os.ReadDir(claudeDir)
-	if err != nil {
-		return ""
-	}
-	var newest string
-	var newestMod time.Time
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
+	var target string
+	if sessionID != "" {
+		cand := filepath.Join(claudeDir, sessionID+".jsonl")
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			target = cand
 		}
-		info, err := e.Info()
+	}
+
+	if target == "" {
+		entries, err := os.ReadDir(claudeDir)
 		if err != nil {
-			continue
+			return ""
 		}
-		if newest == "" || info.ModTime().After(newestMod) {
-			newest = filepath.Join(claudeDir, e.Name())
-			newestMod = info.ModTime()
+		var jsonls []os.DirEntry
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+				jsonls = append(jsonls, e)
+			}
+		}
+		// strict: only fall back when there's exactly one JSONL — otherwise
+		// it's ambiguous which belongs to this session.
+		if strict && len(jsonls) != 1 {
+			return ""
+		}
+		var newestMod time.Time
+		for _, e := range jsonls {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			if target == "" || info.ModTime().After(newestMod) {
+				target = filepath.Join(claudeDir, e.Name())
+				newestMod = info.ModTime()
+			}
 		}
 	}
-	if newest == "" {
+	if target == "" {
 		return ""
 	}
 
-	f, err := os.Open(newest)
+	f, err := os.Open(target)
 	if err != nil {
 		return ""
 	}
@@ -235,3 +263,52 @@ func homeDir() string {
 	return h
 }
 
+var validSessionID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// resolveClaudeSessionID mirrors lib/registry.sh:_sessions_log_detect_id_for_session.
+// Prefers the hook-written .sid sidecar (authored by the agent pane itself);
+// falls back to the newest directory JSONL whose mtime is at or after the am
+// session's creation time. Older same-directory JSONLs belong to prior
+// sessions, so they're skipped. Returns "" when nothing matches (caller then
+// falls back to the newest JSONL).
+func resolveClaudeSessionID(home, stateDir, sessionName, dir, createdAt string) string {
+	sidPath := filepath.Join(stateDir, sessionName+".sid")
+	if b, err := os.ReadFile(sidPath); err == nil {
+		sid := strings.TrimSpace(string(b))
+		if validSessionID.MatchString(sid) && claudeJSONLExists(home, dir, sid) {
+			return sid
+		}
+		// Sidecar present but stale/invalid: do not guess from mtime.
+		return ""
+	}
+
+	projectDir := filepath.Join(home, ".claude", "projects", encodedClaudeProjectDir(dir))
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return ""
+	}
+	minTime := parseSessionLogTime(createdAt)
+	var best string
+	var bestMod time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if !minTime.IsZero() && info.ModTime().Before(minTime) {
+			continue
+		}
+		sid := strings.TrimSuffix(e.Name(), ".jsonl")
+		if !validSessionID.MatchString(sid) {
+			continue
+		}
+		if best == "" || info.ModTime().After(bestMod) {
+			best = sid
+			bestMod = info.ModTime()
+		}
+	}
+	return best
+}

@@ -128,6 +128,23 @@ fi
 
 now=$(date +%s)
 
+# Available width for the tab strip. tmux clips status-left at the terminal
+# width (minus whatever status-right renders), so with 5+ sessions the right-
+# most tabs fall off the edge. Use the narrowest attached client so the strip
+# fits every client; _build_strip measures real geometry and shrinks per-tab
+# budgets only as much as needed (wide terminals keep full labels + tasks).
+# Falls back to a sane default when no client is attached (e.g. precompute
+# during session creation).
+_AVAIL_WIDTH=0
+while IFS= read -r _cw; do
+    [[ "$_cw" =~ ^[0-9]+$ ]] || continue
+    if (( _AVAIL_WIDTH == 0 || _cw < _AVAIL_WIDTH )); then
+        _AVAIL_WIDTH=$_cw
+    fi
+done < <(am_tmux list-clients -F '#{client_width}' 2>/dev/null || true)
+(( _AVAIL_WIDTH == 0 )) && _AVAIL_WIDTH=200
+(( _AVAIL_WIDTH < 40 )) && _AVAIL_WIDTH=40
+
 # Bulk pane-pid fetch: one tmux list-panes call indexes the top pane for each
 # session. Replaces N `display-message #{pane_pid}` forks inside the loop.
 declare -A SESSION_TOP_PID=()
@@ -196,6 +213,28 @@ for i in "${!session_meta[@]}"; do
     esac
 done
 
+# Total VISIBLE width (ANSI-free cols) of the strip from perspective p_idx with
+# the given caps. Mirrors the body layout in _build_strip exactly so the fit
+# search converges on real geometry instead of a guess. Writes to `_STW`.
+_strip_total() {
+    local p_idx="$1" cl="$2" ct="$3" nl="$4" nt="$5" show_task="$6"
+    local i total=0 idx lcap tcap ll tt
+    for i in "${!S_NAME[@]}"; do
+        idx=$((i + 1))
+        if (( i == p_idx )); then lcap=$cl; tcap=$ct; else lcap=$nl; tcap=$nt; fi
+        ll=${#S_LABEL[$i]}; (( ll > lcap )) && ll=$lcap
+        # "${idx}|${glyph} " = idx + 3, then label, then " body " padding = 2
+        total=$(( total + ${#idx} + 3 + ll + 2 ))
+        if [[ "$show_task" == "true" ]]; then
+            tt=${#S_TASK[$i]}; (( tt > tcap )) && tt=$tcap
+            total=$(( total + 3 + tt ))                                # " · " + task
+            [[ -n "${S_AGE[$i]}" ]] && total=$(( total + 3 + ${#S_AGE[$i]} ))  # " (age)"
+        fi
+    done
+    (( ${#S_NAME[@]} > 1 )) && total=$(( total + 2 * (${#S_NAME[@]} - 1) ))   # "  " separators
+    _STW=$total
+}
+
 # Build a strip from perspective P (P_idx is the "current" tab index).
 # Writes to `_STRIP` (no $() fork on caller side).
 _build_strip() {
@@ -203,6 +242,63 @@ _build_strip() {
     local strip="" first=true
     local i idx state color glyph label task age label_t task_t age_part
     local body cur_fg entry
+
+    # Fit the strip to the available width by MEASURING real geometry (not a
+    # per-tab estimate): wide terminals keep full labels + tasks (no needless
+    # shrink); narrow ones degrade gracefully — trim tasks, then drop task/age,
+    # then trim labels, never below readable floors. The compact sidebar
+    # (pane border, label-only) is fit to the full pane width the same way.
+    local cur_label=$CURRENT_LABEL_MAX cur_task=$CURRENT_TASK_MAX
+    local non_label=$NON_CURRENT_LABEL_MAX non_task=$NON_CURRENT_TASK_MAX
+    local drop_task=false show_task=true avail
+    if [[ "$want_compact" == "true" ]]; then
+        show_task=false
+        drop_task=true
+        avail=$(( _AVAIL_WIDTH - 2 ))
+    else
+        avail=$(( _AVAIL_WIDTH - 18 ))   # reserve for status-right (attention + clock)
+    fi
+    (( avail < 24 )) && avail=24
+
+    _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" "$show_task"
+
+    if [[ "$show_task" == "true" ]] && (( _STW > avail )); then
+        # Phase 1: trim task budgets (keep current ~2x non, floor non at 6).
+        while (( _STW > avail )) && (( non_task > 6 )); do
+            non_task=$(( non_task - 1 ))
+            cur_task=$(( non_task * 2 )); (( cur_task > CURRENT_TASK_MAX )) && cur_task=$CURRENT_TASK_MAX
+            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" true
+        done
+        # Phase 2: trim labels while keeping tasks (floor 6) — preferred over
+        # dropping tasks, which would jump to a much narrower strip and waste
+        # the space in between.
+        while (( _STW > avail )) && (( non_label > 6 )); do
+            non_label=$(( non_label - 1 ))
+            cur_label=$(( non_label + 6 )); (( cur_label > CURRENT_LABEL_MAX )) && cur_label=$CURRENT_LABEL_MAX
+            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" true
+        done
+        # Phase 3: still over → drop tasks/ages entirely. Reset labels back to
+        # their full caps first; without tasks there's room to widen them again,
+        # and Phase 4 re-trims from the top so we don't strand the strip far
+        # below the available width.
+        if (( _STW > avail )); then
+            show_task=false
+            drop_task=true
+            cur_label=$CURRENT_LABEL_MAX
+            non_label=$NON_CURRENT_LABEL_MAX
+            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" false
+        fi
+    fi
+
+    if [[ "$show_task" == "false" ]] && (( _STW > avail )); then
+        # Phase 4: trim labels (floor 4; keep current a touch larger).
+        while (( _STW > avail )) && (( non_label > 4 )); do
+            non_label=$(( non_label - 1 ))
+            cur_label=$(( non_label + 6 )); (( cur_label > CURRENT_LABEL_MAX )) && cur_label=$CURRENT_LABEL_MAX
+            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" false
+        done
+    fi
+
     for i in "${!S_NAME[@]}"; do
         idx=$((i + 1))
         state="${S_STATE[$i]}"
@@ -213,17 +309,17 @@ _build_strip() {
         age="${S_AGE[$i]}"
 
         if (( i == p_idx )); then
-            _trunc "$label" "$CURRENT_LABEL_MAX"; label_t="$_T"
-            _trunc "$task" "$CURRENT_TASK_MAX"; task_t="$_T"
+            _trunc "$label" "$cur_label"; label_t="$_T"
+            _trunc "$task" "$cur_task"; task_t="$_T"
         else
-            _trunc "$label" "$NON_CURRENT_LABEL_MAX"; label_t="$_T"
-            _trunc "$task" "$NON_CURRENT_TASK_MAX"; task_t="$_T"
+            _trunc "$label" "$non_label"; label_t="$_T"
+            _trunc "$task" "$non_task"; task_t="$_T"
         fi
 
         age_part=""
         [[ -n "$age" ]] && age_part=" (${age})"
 
-        if [[ "$want_compact" == "true" ]]; then
+        if [[ "$drop_task" == "true" ]]; then
             body="${idx}|${glyph} ${label_t}"
         else
             body="${idx}|${glyph} ${label_t} · ${task_t}${age_part}"
