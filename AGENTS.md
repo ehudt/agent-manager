@@ -9,6 +9,18 @@ Architecture reference for AI agents working with this codebase.
 - Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
 
+## Versioning
+
+SemVer (`MAJOR.MINOR.PATCH`). Single source of truth: `AM_VERSION` in `am` (help text and `am --version` both read it — never hardcode a version string elsewhere).
+
+When to bump (pre-1.0, so `MAJOR` stays `0`):
+
+- **PATCH** (`0.2.0` → `0.2.1`) — bug fixes, doc/test/skill tweaks, internal refactors with no user-facing behavior change.
+- **MINOR** (`0.2.0` → `0.3.0`) — new user-facing capability: a new `am` command/flag, a new pane/UI mode, sandbox/restore/skill features, or a behavior change a user would notice.
+- **MAJOR** — reserved; bump to `1.0.0` only on the first stability commitment.
+
+How to bump: edit `AM_VERSION` in `am` in the same commit as the change that earns it; mention the bump in the commit body. Accumulate several small changes under one bump rather than bumping per-commit — bump when cutting a coherent batch.
+
 ## Code Style
 
 - Libs in `lib/` are sourced, not executed — no shebang, no `set -euo pipefail` (the entry point `am` sets it)

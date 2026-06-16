@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.1.0"
+AM_VERSION="0.2.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -25,8 +25,8 @@ AM_LIB_DIR="$AM_SCRIPT_DIR/lib"
 
 # Usage information (no dependencies needed)
 usage() {
+    echo "am - Agent Manager v$AM_VERSION"
     cat <<'EOF'
-am - Agent Manager v0.1.0
 
 Manage multiple AI coding agent sessions with an interactive fzf interface.
 
@@ -1380,12 +1380,18 @@ EOF
 
             if [[ -L "$skill_target" ]]; then
                 existing=$(readlink "$skill_target")
-                if [[ "$existing" == "$skill_src" ]]; then
+                # Compare resolved real paths, not raw link text: an existing
+                # link may be relative (or stale) yet still point at skill_src.
+                local existing_real
+                existing_real=$(cd "$(dirname "$skill_target")" 2>/dev/null && cd "$existing" 2>/dev/null && pwd -P)
+                if [[ "$existing_real" == "$skill_src" ]]; then
                     log_success "  Symlink already exists: $skill_target"
                     steps_done+=("Skill $skill_name: verified")
                 else
-                    log_warn "  $skill_target -> $existing (expected $skill_src)"
-                    (( warnings += 1 ))
+                    # Re-point to the known-correct absolute path.
+                    ln -sfn "$skill_src" "$skill_target"
+                    log_success "  Re-pointed: $skill_target -> $skill_src"
+                    steps_done+=("Skill $skill_name: re-pointed")
                 fi
             elif [[ -e "$skill_target" ]]; then
                 log_warn "  Target exists but is not a symlink: $skill_target"
