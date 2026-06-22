@@ -96,7 +96,7 @@ test_state_integration() {
     state=$(agent_get_state "$session_name" 2>/dev/null || true)
     assert_not_empty "$state" "agent_get_state: returns non-empty state for live session"
 
-    local valid_states="starting running waiting_input waiting_permission waiting_custom idle unknown dead"
+    local valid_states="starting running waiting_input waiting_permission waiting_custom waiting_background idle unknown dead"
     local state_valid=false
     local s
     for s in $valid_states; do
@@ -182,6 +182,101 @@ test_state_integration() {
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
     rm -rf "$test_dir"
     teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
+test_state_background_wait() {
+    $SUMMARY_MODE || echo "=== Testing waiting_background detection ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/state.sh"
+    set -u
+
+    local tmp_state_dir
+    tmp_state_dir=$(mktemp -d)
+    AM_STATE_DIR="$tmp_state_dir"
+
+    # Mock the agent pane: am_tmux capture-pane echoes $MOCK_PANE. Other tmux
+    # subcommands the resolver calls (display-message for pane_pid) return empty
+    # so the shell check finds no top pid; we also stub the shell check below.
+    local MOCK_PANE=""
+    am_tmux() {
+        case "${1:-}" in
+            capture-pane) printf '%s\n' "$MOCK_PANE" ;;
+            *) return 0 ;;
+        esac
+    }
+
+    # --- _state_pane_has_background_wait: regex coverage ---
+    MOCK_PANE=$'doing things\n✻ Waiting for 1 background agent to finish\n> '
+    assert_cmd_succeeds "_state_pane_has_bg: singular agent banner" \
+        _state_pane_has_background_wait am-bg
+    MOCK_PANE='Waiting for 3 background agents to finish'
+    assert_cmd_succeeds "_state_pane_has_bg: plural agents" \
+        _state_pane_has_background_wait am-bg
+    MOCK_PANE='Waiting for 2 background tasks to finish'
+    assert_cmd_succeeds "_state_pane_has_bg: background tasks" \
+        _state_pane_has_background_wait am-bg
+    MOCK_PANE='Waiting for 1 background workflow to finish'
+    assert_cmd_succeeds "_state_pane_has_bg: background workflow" \
+        _state_pane_has_background_wait am-bg
+    MOCK_PANE=$'normal output\n> waiting for your reply'
+    assert_cmd_fails "_state_pane_has_bg: unrelated text ignored" \
+        _state_pane_has_background_wait am-bg
+    MOCK_PANE=''
+    assert_cmd_fails "_state_pane_has_bg: empty pane" \
+        _state_pane_has_background_wait am-bg
+
+    # --- resolver wiring (bypass shell check so we reach the hook layer) ---
+    _state_pane_is_shell_bulk() { return 1; }
+
+    local st
+    printf 'waiting_input' > "$tmp_state_dir/am-bg"
+    MOCK_PANE='✻ Waiting for 1 background agent to finish'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_background" "$st" \
+        "_state_resolve: waiting_input + banner (claude) -> waiting_background"
+
+    st=$(_state_resolve am-bg codex /tmp)
+    assert_eq "waiting_input" "$st" \
+        "_state_resolve: banner not scanned for non-claude agent"
+
+    MOCK_PANE='> ready for input'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_input" "$st" \
+        "_state_resolve: waiting_input + no banner stays waiting_input"
+
+    # running hook is busy by definition — never scanned, even with a stale banner
+    printf 'running' > "$tmp_state_dir/am-bg"
+    MOCK_PANE='✻ Waiting for 1 background agent to finish'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "running" "$st" \
+        "_state_resolve: running hook not refined to waiting_background"
+
+    # hook silent + banner -> waiting_background (fallback path)
+    rm -f "$tmp_state_dir/am-bg"
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_background" "$st" \
+        "_state_resolve: hook silent + banner -> waiting_background"
+
+    # hook silent + no banner -> unknown
+    MOCK_PANE=''
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "unknown" "$st" \
+        "_state_resolve: hook silent + no banner -> unknown"
+
+    unset -f am_tmux _state_pane_is_shell_bulk
+    rm -rf "$tmp_state_dir"
+    unset AM_STATE_DIR
+    set +u
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/state.sh"
+    set -u
 
     $SUMMARY_MODE || echo ""
 }
@@ -302,6 +397,7 @@ test_am_session_order() {
 run_state_tests() {
     _run_test test_state
     _run_test test_state_integration
+    _run_test test_state_background_wait
     _run_test test_agent_wait_state_stable_idle
     _run_test test_am_session_order
 }

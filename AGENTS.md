@@ -87,7 +87,8 @@ fires lifecycle hooks (`Stop`, `Notification`, `UserPromptSubmit`, `PostToolUse`
 that call `lib/hooks/state-hook.sh`. The script maps the event to an am state
 and writes it to `/tmp/am-state/<session_name>`.
 
-State detection priority: **shell pane check → hook state file → unknown**.
+State detection priority: **shell pane check → hook state file (with Claude
+background-banner refinement) → pane-banner fallback → unknown**.
 
 Hooks are installed via `am install` into `~/.claude/settings.json`. State
 files are cleaned up on session kill and during registry GC.
@@ -103,6 +104,17 @@ files are cleaned up on session kill and during registry GC.
 
 States not covered by hooks (`starting`, `idle`, `dead`) use existing
 process/tmux checks which are already reliable.
+
+`waiting_background` (Claude's main turn ended but a background agent/task/
+workflow is still running) has no dedicated hook — Claude's `Stop` fires
+immediately and looks like `waiting_input`. It is detected by scanning the
+agent pane for Claude's on-screen banner (`Waiting for N background … to
+finish`) in `_state_pane_has_background_wait`. The scan is gated to Claude
+sessions that already resolve to `waiting_input` (or a hook-silent fallback),
+so busy `running` and non-Claude sessions never pay the `capture-pane` fork.
+It is self-healing: when the banner clears, the next resolve returns
+`waiting_input`. Not counted in the status-bar attention counter (no user
+action required).
 
 ### Debug instrumentation
 
@@ -225,12 +237,13 @@ am restore
 - `_sessions_log_jsonl_exists(directory, session_id)` - Check if Claude JSONL still exists
 
 **State detection (lib/state.sh):**
-- `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, idle, unknown, dead
-- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state → unknown fallback
+- `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, waiting_background, idle, unknown, dead
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state (Claude waiting_input refined to waiting_background via pane-banner scan) → pane-banner fallback → unknown fallback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_hook_read(session, out_var [, now_epoch])` - Read state from hook state file into a nameref (primary source for Claude sessions); no subshell, used inside `_state_resolve`
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Detect whether top pane is a plain shell (vs an agent process) from nameref bulk maps
+- `_state_pane_has_background_wait(session)` - Capture the agent pane and match Claude's "Waiting for N background … to finish" banner (fork-free bash regex). Drives the waiting_background refinement; gated by `_state_resolve` to idle-looking Claude sessions
 
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)

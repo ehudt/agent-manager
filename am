@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.2.0"
+AM_VERSION="0.3.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -1084,7 +1084,8 @@ cmd_wait() {
             -h|--help)
                 echo "Usage: am wait [--state <states>] [--timeout N] [--json] <session-name>"
                 echo "  states: comma-separated list of: starting,running,waiting_input,"
-                echo "          waiting_permission,waiting_custom,idle,unknown,dead"
+                echo "          waiting_permission,waiting_custom,waiting_background,idle,"
+                echo "          unknown,dead"
                 return 0
                 ;;
             -*)

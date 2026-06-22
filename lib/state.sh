@@ -4,10 +4,11 @@
 # State sources:
 #   1. tmux + ps process tree   -> starting / idle / dead
 #   2. hook file ($AM_STATE_DIR) -> running / waiting_input / waiting_permission / waiting_custom
-#   3. fallback                  -> unknown (agent alive, hook silent)
+#   3. pane banner scan          -> waiting_background (Claude: turn done, bg work running)
+#   4. fallback                  -> unknown (agent alive, hook silent)
 #
 # States: starting | running | waiting_input | waiting_permission |
-#         waiting_custom | idle | unknown | dead
+#         waiting_custom | waiting_background | idle | unknown | dead
 
 _STATE_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ -z "$AM_DIR" ]] && source "$_STATE_LIB_DIR/utils.sh"
@@ -92,6 +93,22 @@ agent_classify_exit() {
     echo "idle"
 }
 
+# Detect Claude's "Waiting for N background <agent|task|workflow> to finish"
+# banner in the session's agent (top) pane. Claude pins this line above the
+# input box when the main turn has ended but backgrounded work is still in
+# flight — the session looks idle (Stop fired -> waiting_input) but isn't truly
+# ready. Captures the current viewport (one fork) and matches with a fork-free
+# bash regex tolerant of the trailing noun and pluralization.
+#
+# Callers gate this to idle-looking Claude sessions so busy/running and non-
+# Claude sessions never pay the capture-pane fork.
+# Usage: _state_pane_has_background_wait <session>   (0 = banner present)
+_state_pane_has_background_wait() {
+    local session="$1" pane
+    pane=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null) || return 1
+    [[ "$pane" =~ [Ww]aiting\ for\ [0-9]+\ background\ [a-zA-Z]+\ to\ finish ]]
+}
+
 # ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
@@ -103,8 +120,9 @@ agent_classify_exit() {
 #
 # Pipeline:
 #   1. shell check  -> starting (created<5s, non-bulk) / idle / dead
-#   2. hook file    -> running / waiting_*
-#   3. fallback     -> unknown (pane is agent, hook silent or stale)
+#   2. hook file    -> running / waiting_* (Claude waiting_input is refined to
+#                      waiting_background when the bg-work banner is on screen)
+#   3. fallback     -> waiting_background (Claude banner) / unknown
 #
 # Usage:
 #   _state_resolve <session> <agent_type> <dir>
@@ -165,12 +183,29 @@ _state_resolve() {
     local hook_state=""
     _state_hook_read "$session" hook_state "$now_val"
     if [[ -n "$hook_state" ]]; then
+        # Claude's main turn can stop (waiting_input) while background agents /
+        # tasks keep running. The hook can't see that; the on-screen banner can.
+        # Scanning only waiting_input Claude sessions keeps busy/running and
+        # non-Claude sessions fork-free.
+        if [[ "$hook_state" == "waiting_input" && "$agent_type" == "claude" ]] \
+            && _state_pane_has_background_wait "$session"; then
+            _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
+            echo "waiting_background"
+            return
+        fi
         _state_debug "$_dbg_session" "$_dbg_agent" hook "$hook_state"
         echo "$hook_state"
         return
     fi
 
-    # 3. Fallback: agent alive, hook silent or stale -> honest "no signal"
+    # 3. Fallback: agent alive, hook silent or stale. A Claude session blocked
+    #    on background work can land here if Stop never wrote a terminal state;
+    #    the banner is the last honest signal before "unknown".
+    if [[ "$agent_type" == "claude" ]] && _state_pane_has_background_wait "$session"; then
+        _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
+        echo "waiting_background"
+        return
+    fi
     _state_debug "$_dbg_session" "$_dbg_agent" fallback unknown
     echo "unknown"
 }
