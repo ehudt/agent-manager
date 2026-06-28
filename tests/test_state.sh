@@ -251,6 +251,21 @@ test_state_background_wait() {
     assert_cmd_fails "_state_pane_has_bg: stale banner in scrollback ignored" \
         _state_pane_has_background_wait am-bg
 
+    # --- background-shell counter (mode line below the input box) and the
+    #     session-artifact line, which must NOT affect state. ---
+    local _foot='  opus | blue-wekapp/ehud-network-mix-setup | 180k (18%) · ⚡ 167k +13k · $176.9'
+    # "N shell" in the mode line -> background work running.
+    MOCK_PANE=$'⏺ done\n✻ Brewed for 1m 2s\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on · 1 shell  ← for agents\n🗀 netmix-coverage'
+    assert_cmd_succeeds "_state_pane_has_bg: '1 shell' in mode line -> background" \
+        _state_pane_has_background_wait am-bg
+    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n  ⏵⏵ auto mode on · 2 shells  ← for agents'
+    assert_cmd_succeeds "_state_pane_has_bg: '2 shells' plural -> background" \
+        _state_pane_has_background_wait am-bg
+    # No shell, no live banner, just a session artifact -> not background.
+    MOCK_PANE=$'⏺ all done\n✻ Brewed for 1m 2s\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on  ← for agents\n🗀 netmix-coverage'
+    assert_cmd_fails "_state_pane_has_bg: session artifact alone -> not background" \
+        _state_pane_has_background_wait am-bg
+
     # --- resolver wiring (bypass shell check so we reach the hook layer) ---
     _state_pane_is_shell_bulk() { return 1; }
 
@@ -276,6 +291,18 @@ test_state_background_wait() {
     st=$(_state_resolve am-bg claude /tmp)
     assert_eq "waiting_input" "$st" \
         "_state_resolve: stale banner in scrollback stays waiting_input"
+
+    # waiting_input + background shell counter -> waiting_background.
+    MOCK_PANE=$'⏺ done\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on · 1 shell  ← for agents'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_background" "$st" \
+        "_state_resolve: waiting_input + '1 shell' -> waiting_background"
+
+    # A session-artifact line must not affect state -> stays waiting_input.
+    MOCK_PANE=$'⏺ done\n✻ Brewed for 1m\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on  ← for agents\n🗀 netmix-coverage'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_input" "$st" \
+        "_state_resolve: session artifact alone stays waiting_input"
 
     # running hook is busy by definition — never scanned, even with a stale banner
     printf 'running' > "$tmp_state_dir/am-bg"

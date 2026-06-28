@@ -104,32 +104,50 @@ _state_line_is_box_chrome() {
     return 1
 }
 
-# Detect Claude's "Waiting for N background <agent|task|workflow> to finish"
-# banner as the *live* status in the session's agent (top) pane. Claude pins
-# this line directly above the input box while the main turn has ended but
-# backgrounded work is still in flight — the session looks idle (Stop fired ->
-# waiting_input) but isn't truly ready.
+# Banner Claude pins directly above the input box when the main turn has ended
+# but a background agent/task/workflow is still in flight.
+_STATE_BG_BANNER_RE='[Ww]aiting for [0-9]+ background [a-zA-Z]+ to finish'
+# Background-shell counter in Claude's bottom mode line, e.g.
+# "⏵⏵ auto mode on · 1 shell  ← for agents" — a digit-prefixed shell token.
+_STATE_BG_SHELL_RE='[0-9]+ shells?([^[:alpha:]]|$)'
+
+# Detect whether the session's agent (top) pane shows that background work is
+# still running while the main turn looks idle (Stop fired -> waiting_input).
+# Two on-screen signals, either of which means waiting_background:
 #
-# The banner text persists in scrollback after the work finishes: Claude then
-# prints completion output ("⏺ … finished") and a fresh status line ("✻ Brewed
-# for 2m 22s") *below* the old banner and re-renders the input box at the
-# bottom. A naive "banner appears anywhere in the viewport" match therefore
-# stays stuck on waiting_background long after the wait is over. So we only
-# count the banner when it is still the current status: anchor on the input box
+#   A. The "Waiting for N background <agent|task|workflow> to finish" banner,
+#      pinned directly above the input box while the turn blocks on background
+#      agents/tasks/workflows.
+#   B. The "N shell(s)" counter in the bottom mode line, shown while background
+#      shells launched this turn are still running.
+#
+# Signal A's banner text persists in scrollback after the work finishes: Claude
+# then prints completion output ("⏺ … finished") and a fresh status line
+# ("✻ Brewed for 2m 22s") *below* the old banner and re-renders the input box at
+# the bottom. A naive "banner appears anywhere in the viewport" match therefore
+# stays stuck on waiting_background long after the wait is over. So we only count
+# the banner when it is still the current status: anchor on the input box
 # (bottom-most prompt / full-width rule), then scan upward past blank lines, box
 # chrome, and the right-aligned hint line ("new task? /clear …"). The first
 # substantive line decides — the banner means live; any other left-aligned
 # transcript/status line means the banner has scrolled into history.
 #
+# Signal B's counter renders in the mode line *below* the input box, alongside
+# the footer and any session-artifact line ("🗀 name"). There is no transcript
+# below the box, so a "N shell" token there is always the live count; the
+# artifact line carries no such token and so never affects state. Signal B is a
+# live count maintained by Claude, so it is self-healing — no stale-scrollback
+# problem.
+#
 # Captures the current viewport (one fork); the scan itself is fork-free bash.
 # Callers gate this to idle-looking Claude sessions so busy/running and non-
 # Claude sessions never pay the capture-pane fork.
-# Usage: _state_pane_has_background_wait <session>   (0 = banner is live)
+# Usage: _state_pane_has_background_wait <session>   (0 = background work live)
 _state_pane_has_background_wait() {
     local session="$1" pane line
     pane=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null) || return 1
-    # Fast path: no banner text at all -> skip the line-by-line scan.
-    [[ "$pane" =~ [Ww]aiting\ for\ [0-9]+\ background\ [a-zA-Z]+\ to\ finish ]] || return 1
+    # Fast path: neither signal anywhere in the pane -> skip the line scan.
+    [[ "$pane" =~ $_STATE_BG_BANNER_RE || "$pane" =~ $_STATE_BG_SHELL_RE ]] || return 1
 
     local -a lines=()
     while IFS= read -r line; do lines+=("$line"); done <<< "$pane"
@@ -142,9 +160,17 @@ _state_pane_has_background_wait() {
         if _state_line_is_box_chrome "${lines[i]}"; then box=$i; break; fi
     done
 
+    # Signal B — background-shell counter in the mode line (below the box).
+    if (( box < n )); then
+        for (( i = box + 1; i < n; i++ )); do
+            [[ "${lines[i]}" =~ $_STATE_BG_SHELL_RE ]] && return 0
+        done
+    fi
+
+    # Signal A — live "Waiting for N background … to finish" banner (above box).
     for (( i = box - 1; i >= 0; i-- )); do
         line="${lines[i]}"
-        [[ "$line" =~ [Ww]aiting\ for\ [0-9]+\ background\ [a-zA-Z]+\ to\ finish ]] && return 0
+        [[ "$line" =~ $_STATE_BG_BANNER_RE ]] && return 0
         [[ -z "${line//[[:space:]]/}" ]] && continue        # blank line
         _state_line_is_box_chrome "$line" && continue        # box rule / prompt
         # Left-aligned content below the banner -> banner has scrolled away.
@@ -229,9 +255,10 @@ _state_resolve() {
     _state_hook_read "$session" hook_state "$now_val"
     if [[ -n "$hook_state" ]]; then
         # Claude's main turn can stop (waiting_input) while background agents /
-        # tasks keep running. The hook can't see that; the on-screen banner can.
-        # Scanning only waiting_input Claude sessions keeps busy/running and
-        # non-Claude sessions fork-free.
+        # tasks / shells keep running. The hook can't see that; the on-screen
+        # banner or the mode-line "N shell" counter can. Scanning only
+        # waiting_input Claude sessions keeps busy/running and non-Claude
+        # sessions fork-free.
         if [[ "$hook_state" == "waiting_input" && "$agent_type" == "claude" ]] \
             && _state_pane_has_background_wait "$session"; then
             _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
