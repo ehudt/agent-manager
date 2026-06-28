@@ -93,20 +93,65 @@ agent_classify_exit() {
     echo "idle"
 }
 
+# Is this pane line part of Claude's input-box chrome (a full-width rule or the
+# prompt line)? Used to anchor the live-status scan below. The prompt pattern
+# lives in a variable so the literal '>' isn't parsed as redirection by [[ ]].
+_STATE_PROMPT_RE='^[[:space:]]*[❯>][^[:alnum:]]*$'
+_state_line_is_box_chrome() {
+    local l="$1"
+    [[ "$l" == *──────* ]] && return 0                # full-width box rule
+    [[ "$l" =~ $_STATE_PROMPT_RE ]] && return 0        # prompt line
+    return 1
+}
+
 # Detect Claude's "Waiting for N background <agent|task|workflow> to finish"
-# banner in the session's agent (top) pane. Claude pins this line above the
-# input box when the main turn has ended but backgrounded work is still in
-# flight — the session looks idle (Stop fired -> waiting_input) but isn't truly
-# ready. Captures the current viewport (one fork) and matches with a fork-free
-# bash regex tolerant of the trailing noun and pluralization.
+# banner as the *live* status in the session's agent (top) pane. Claude pins
+# this line directly above the input box while the main turn has ended but
+# backgrounded work is still in flight — the session looks idle (Stop fired ->
+# waiting_input) but isn't truly ready.
 #
+# The banner text persists in scrollback after the work finishes: Claude then
+# prints completion output ("⏺ … finished") and a fresh status line ("✻ Brewed
+# for 2m 22s") *below* the old banner and re-renders the input box at the
+# bottom. A naive "banner appears anywhere in the viewport" match therefore
+# stays stuck on waiting_background long after the wait is over. So we only
+# count the banner when it is still the current status: anchor on the input box
+# (bottom-most prompt / full-width rule), then scan upward past blank lines, box
+# chrome, and the right-aligned hint line ("new task? /clear …"). The first
+# substantive line decides — the banner means live; any other left-aligned
+# transcript/status line means the banner has scrolled into history.
+#
+# Captures the current viewport (one fork); the scan itself is fork-free bash.
 # Callers gate this to idle-looking Claude sessions so busy/running and non-
 # Claude sessions never pay the capture-pane fork.
-# Usage: _state_pane_has_background_wait <session>   (0 = banner present)
+# Usage: _state_pane_has_background_wait <session>   (0 = banner is live)
 _state_pane_has_background_wait() {
-    local session="$1" pane
+    local session="$1" pane line
     pane=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null) || return 1
-    [[ "$pane" =~ [Ww]aiting\ for\ [0-9]+\ background\ [a-zA-Z]+\ to\ finish ]]
+    # Fast path: no banner text at all -> skip the line-by-line scan.
+    [[ "$pane" =~ [Ww]aiting\ for\ [0-9]+\ background\ [a-zA-Z]+\ to\ finish ]] || return 1
+
+    local -a lines=()
+    while IFS= read -r line; do lines+=("$line"); done <<< "$pane"
+    local n=${#lines[@]} i
+
+    # Find the input box (bottom-most chrome line); fall back to scanning the
+    # whole pane if none is visible (e.g. minimal test fixtures).
+    local box=$n
+    for (( i = n - 1; i >= 0; i-- )); do
+        if _state_line_is_box_chrome "${lines[i]}"; then box=$i; break; fi
+    done
+
+    for (( i = box - 1; i >= 0; i-- )); do
+        line="${lines[i]}"
+        [[ "$line" =~ [Ww]aiting\ for\ [0-9]+\ background\ [a-zA-Z]+\ to\ finish ]] && return 0
+        [[ -z "${line//[[:space:]]/}" ]] && continue        # blank line
+        _state_line_is_box_chrome "$line" && continue        # box rule / prompt
+        # Left-aligned content below the banner -> banner has scrolled away.
+        [[ "$line" =~ ^[[:space:]]{0,3}[^[:space:]] ]] && return 1
+        # else: a right-aligned hint line -> keep scanning upward.
+    done
+    return 1
 }
 
 # ---------------------------------------------------------------------------

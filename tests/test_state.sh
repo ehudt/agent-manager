@@ -232,6 +232,25 @@ test_state_background_wait() {
     assert_cmd_fails "_state_pane_has_bg: empty pane" \
         _state_pane_has_background_wait am-bg
 
+    # --- live vs. stale banner: the banner persists in scrollback after the
+    #     background work finishes, so a match only counts when the banner is
+    #     still the current status line (pinned just above the input box). ---
+    local _rule='────────────────────────'
+    # Live: banner pinned directly above the input box.
+    MOCK_PANE=$'⏺ working\n✻ Waiting for 1 background agent to finish\n'"$_rule"$'\n❯ \n'"$_rule"
+    assert_cmd_succeeds "_state_pane_has_bg: live banner above input box" \
+        _state_pane_has_background_wait am-bg
+    # Live: banner + right-aligned hint line still counts.
+    MOCK_PANE=$'⏺ working\n✻ Waiting for 2 background tasks to finish\n                                        new task? /clear to save 5k tokens\n'"$_rule"$'\n❯ \n'"$_rule"
+    assert_cmd_succeeds "_state_pane_has_bg: live banner above hint+box" \
+        _state_pane_has_background_wait am-bg
+    # Stale: work finished — completion output and a fresh status line sit
+    # between the old banner and the input box (regression for the stuck
+    # waiting_background bug).
+    MOCK_PANE=$'⏺ starting\n✻ Waiting for 1 background agent to finish\n⏺ Agent "x" finished · 52s\n⏺ Verdict: done\n✻ Brewed for 2m 22s\n'"$_rule"$'\n❯ \n'"$_rule"
+    assert_cmd_fails "_state_pane_has_bg: stale banner in scrollback ignored" \
+        _state_pane_has_background_wait am-bg
+
     # --- resolver wiring (bypass shell check so we reach the hook layer) ---
     _state_pane_is_shell_bulk() { return 1; }
 
@@ -250,6 +269,13 @@ test_state_background_wait() {
     st=$(_state_resolve am-bg claude /tmp)
     assert_eq "waiting_input" "$st" \
         "_state_resolve: waiting_input + no banner stays waiting_input"
+
+    # Stale banner left in scrollback must not pin the session in
+    # waiting_background after the work has finished.
+    MOCK_PANE=$'✻ Waiting for 1 background agent to finish\n⏺ Agent "x" finished · 52s\n────────────────────────\n❯ \n────────────────────────'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_input" "$st" \
+        "_state_resolve: stale banner in scrollback stays waiting_input"
 
     # running hook is busy by definition — never scanned, even with a stale banner
     printf 'running' > "$tmp_state_dir/am-bg"
