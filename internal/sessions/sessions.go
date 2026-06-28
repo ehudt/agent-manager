@@ -64,6 +64,7 @@ type Entry struct {
 	Display     string // formatted display string (without session_name| prefix)
 	DisplayBase string // display without the trailing time-ago portion
 	TimeAgo     string // e.g. "3m ago" — split out for right-alignment in TUI
+	RecencyUnix int64  // unix recency key (active: tmux activity; inactive: closed_at)
 
 	// Inactive restore rows.
 	RestoreSessionID string
@@ -284,6 +285,7 @@ func loadActiveEntries(amDir, socket string, tmuxSessions []TmuxSession, now tim
 			Display:     FormatDisplay(s, meta, nowUnix),
 			DisplayBase: FormatDisplayBase(s, meta),
 			TimeAgo:     timeAgo,
+			RecencyUnix: s.Activity,
 		}
 	}
 	return entries
@@ -354,8 +356,10 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 			ref = parseSessionLogTime(log.CreatedAt)
 		}
 		age := int64(0)
+		recency := int64(0)
 		if !ref.IsZero() {
-			age = now.Unix() - ref.Unix()
+			recency = ref.Unix()
+			age = now.Unix() - recency
 		}
 		timeAgo := FormatTimeAgo(age)
 
@@ -379,6 +383,7 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 			Display:          base + " (" + timeAgo + ")",
 			DisplayBase:      base,
 			TimeAgo:          timeAgo,
+			RecencyUnix:      recency,
 			RestoreSessionID: log.SessionID,
 			SnapshotPath:     snapshotPath,
 		})

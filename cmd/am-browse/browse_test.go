@@ -34,6 +34,90 @@ func TestFuzzyMatch(t *testing.T) {
 	}
 }
 
+func TestMatchTier(t *testing.T) {
+	const text = "myproject/main [claude] fix bug (5m ago)"
+	tests := []struct {
+		query string
+		want  int
+	}{
+		{"myproject", 4}, // prefix of the whole display
+		{"main", 3},      // word-boundary prefix (after '/')
+		{"claude", 3},    // word-boundary prefix (after '[')
+		{"fix", 3},       // word-boundary prefix (after ' ')
+		{"lau", 2},       // substring, not at a word boundary
+		{"mpfix", 1},     // subsequence only
+		{"zzz", 0},       // no match
+	}
+	for _, tt := range tests {
+		if got := matchTier(text, tt.query); got != tt.want {
+			t.Errorf("matchTier(%q, %q) = %d, want %d", text, tt.query, got, tt.want)
+		}
+	}
+}
+
+func TestWordPrefix(t *testing.T) {
+	tests := []struct {
+		text, query string
+		want        bool
+	}{
+		{"a/proj", "proj", true},  // after '/'
+		{"x [proj]", "proj", true}, // after '['
+		{"foo-proj", "proj", true}, // after '-'
+		{"foo proj", "proj", true}, // after ' '
+		{"aprojx", "proj", false},  // mid-word
+	}
+	for _, tt := range tests {
+		if got := wordPrefix(tt.text, tt.query); got != tt.want {
+			t.Errorf("wordPrefix(%q, %q) = %v, want %v", tt.text, tt.query, got, tt.want)
+		}
+	}
+}
+
+// applyFilter ranks matches by coarse tier first, then by recency (most recent
+// wins ties) — within the active list here.
+func TestApplyFilterRanksByTierThenRecency(t *testing.T) {
+	m := newModel()
+	m.entries = []sessions.Entry{
+		{Kind: sessions.EntryActive, Display: "proj-old [c]", RecencyUnix: 100},   // tier 4
+		{Kind: sessions.EntryActive, Display: "proj-new [c]", RecencyUnix: 500},   // tier 4, more recent
+		{Kind: sessions.EntryActive, Display: "x/proj mid [c]", RecencyUnix: 300}, // tier 3
+		{Kind: sessions.EntryActive, Display: "aprojx [c]", RecencyUnix: 999},     // tier 2, recent but worse tier
+	}
+	m.filter.SetValue("proj")
+	m.applyFilter()
+
+	wantOrder := []string{"proj-new [c]", "proj-old [c]", "x/proj mid [c]", "aprojx [c]"}
+	gotOrder := make([]string, len(m.filtered))
+	for i, idx := range m.filtered {
+		gotOrder[i] = m.entries[idx].Display
+	}
+	if strings.Join(gotOrder, "|") != strings.Join(wantOrder, "|") {
+		t.Errorf("ranked order = %v, want %v", gotOrder, wantOrder)
+	}
+}
+
+// The active/inactive split is preserved even when an inactive entry matches
+// better: all active hits precede all inactive hits (so the divider stays put).
+func TestApplyFilterKeepsActiveInactiveSplit(t *testing.T) {
+	m := newModel()
+	m.entries = []sessions.Entry{
+		{Kind: sessions.EntryActive, Display: "p_qr_os_j [c]", RecencyUnix: 100},  // tier 1 (subsequence)
+		{Kind: sessions.EntryInactive, Display: "proj-restore [c]", RecencyUnix: 999}, // tier 4
+	}
+	m.filter.SetValue("proj")
+	m.applyFilter()
+
+	if len(m.filtered) != 2 {
+		t.Fatalf("filtered len = %d, want 2", len(m.filtered))
+	}
+	if got := m.entries[m.filtered[0]].Kind; got != sessions.EntryActive {
+		t.Errorf("first result kind = %v, want active (split must be preserved)", got)
+	}
+	if got := m.entries[m.filtered[1]].Kind; got != sessions.EntryInactive {
+		t.Errorf("second result kind = %v, want inactive", got)
+	}
+}
+
 func TestHelpText(t *testing.T) {
 	h := helpText()
 	if h == "" {

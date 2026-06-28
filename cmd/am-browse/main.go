@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -317,19 +318,104 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) applyFilter() {
 	query := strings.ToLower(m.filter.Value())
-	m.filtered = nil
+	m.filtered = m.filtered[:0]
+
+	// Empty query: keep the canonical order (active by activity, then inactive),
+	// which already places all actives before all inactives for the divider.
+	if query == "" {
+		for i := range m.entries {
+			m.filtered = append(m.filtered, i)
+		}
+		m.clampCursor()
+		return
+	}
+
+	// Rank active and inactive as two independent lists so the active/inactive
+	// split (and the inactive divider) is preserved. Within each list: coarse
+	// match tier first, then recency (most recent wins ties).
+	type hit struct {
+		idx  int
+		tier int
+		rec  int64
+	}
+	var active, inactive []hit
 	for i, e := range m.entries {
 		haystack := strings.ToLower(e.Display)
 		if e.Kind == sessions.EntryInactive {
 			haystack += " inactive restore closed"
 		}
-		if query == "" || fuzzyMatch(haystack, query) {
-			m.filtered = append(m.filtered, i)
+		tier := matchTier(haystack, query)
+		if tier == 0 {
+			continue
+		}
+		h := hit{idx: i, tier: tier, rec: e.RecencyUnix}
+		if e.Kind == sessions.EntryInactive {
+			inactive = append(inactive, h)
+		} else {
+			active = append(active, h)
 		}
 	}
+
+	byScore := func(s []hit) func(a, b int) bool {
+		return func(a, b int) bool {
+			if s[a].tier != s[b].tier {
+				return s[a].tier > s[b].tier
+			}
+			return s[a].rec > s[b].rec
+		}
+	}
+	sort.SliceStable(active, byScore(active))
+	sort.SliceStable(inactive, byScore(inactive))
+
+	for _, h := range active {
+		m.filtered = append(m.filtered, h.idx)
+	}
+	for _, h := range inactive {
+		m.filtered = append(m.filtered, h.idx)
+	}
+	m.clampCursor()
+}
+
+func (m *model) clampCursor() {
 	if m.cursor >= len(m.filtered) {
 		m.cursor = maxInt(0, len(m.filtered)-1)
 	}
+}
+
+// matchTier returns a coarse match quality for query against text (both already
+// lowercased): 4=prefix, 3=word-boundary prefix, 2=substring, 1=subsequence,
+// 0=no match. Higher is a better match.
+func matchTier(text, query string) int {
+	switch {
+	case strings.HasPrefix(text, query):
+		return 4
+	case wordPrefix(text, query):
+		return 3
+	case strings.Contains(text, query):
+		return 2
+	case fuzzyMatch(text, query):
+		return 1
+	default:
+		return 0
+	}
+}
+
+// wordPrefix reports whether query starts a word in text, where word boundaries
+// are the separators that appear in display strings: space, '/', '[', '-'.
+func wordPrefix(text, query string) bool {
+	for i := 0; i+len(query) <= len(text); i++ {
+		if i > 0 {
+			switch text[i-1] {
+			case ' ', '/', '[', '-':
+			default:
+				continue
+			}
+		}
+		if strings.HasPrefix(text[i:], query) {
+			return true
+		}
+	}
+	return false
 }
 
 func maxInt(a, b int) int {
