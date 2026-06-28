@@ -133,7 +133,7 @@ _STATE_BG_SHELL_RE='[0-9]+ shells?([^[:alpha:]]|$)'
 # transcript/status line means the banner has scrolled into history.
 #
 # Signal B's counter renders in the mode line *below* the input box, alongside
-# the footer and any session-artifact line ("🗀 name"). There is no transcript
+# the footer and any session-artifact line ("⧉ name"). There is no transcript
 # below the box, so a "N shell" token there is always the live count; the
 # artifact line carries no such token and so never affects state. Signal B is a
 # live count maintained by Claude, so it is self-healing — no stale-scrollback

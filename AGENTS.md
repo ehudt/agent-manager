@@ -115,7 +115,7 @@ above the input box, or (B) the `N shell(s)` counter in the bottom mode line
 after the work finishes, so it only counts when it is still the live status
 line (anchored relative to the input box) — a stale copy buried above newer
 transcript/status output is ignored. Signal B reads the mode line *below* the
-input box, where the session-artifact line (`🗀 name`) also renders; the
+input box, where the session-artifact line (`⧉ name`) also renders; the
 artifact carries no shell token and so never affects state. The scan is gated
 to Claude sessions that already resolve to `waiting_input` (or a hook-silent
 fallback), so busy `running` and non-Claude sessions never pay the
