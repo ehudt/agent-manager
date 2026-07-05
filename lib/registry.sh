@@ -334,19 +334,34 @@ sessions_log_scan() {
 
         local sid="${slog_sid[$name]}"
 
-        # Backfill session_id if empty
-        if [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
+        # The hook sidecar is authoritative — it was written by the agent pane
+        # itself. Correct the logged sid whenever it disagrees (heals wrong
+        # mtime-based guesses and tracks forked resumes); fall back to
+        # directory detection only while no sidecar exists yet.
+        local sidecar_sid=""
+        if [[ -n "${reg_dir[$name]}" ]]; then
+            sidecar_sid=$(_sessions_log_sidecar_id "$name")
+            if [[ -n "$sidecar_sid" ]] && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid"; then
+                sidecar_sid=""
+            fi
+        fi
+        if [[ -n "$sidecar_sid" && "$sidecar_sid" != "$sid" ]]; then
+            sessions_log_update "$name" "session_id" "$sidecar_sid"
+            _titler_log "  $name: session_id ${sid:-<empty>} -> $sidecar_sid (sidecar)"
+            sid="$sidecar_sid"
+            slog_sid[$name]="$sid"
+        elif [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
             sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}")
             if [[ -n "$sid" ]]; then
                 sessions_log_update "$name" "session_id" "$sid"
                 slog_sid[$name]="$sid"
                 _titler_log "  $name: backfilled session_id=$sid"
-                # Rename snapshot file from session_name to session_id
-                if [[ -f "$AM_SNAPSHOTS_DIR/${name}.txt" ]]; then
-                    command mv "$AM_SNAPSHOTS_DIR/${name}.txt" "$AM_SNAPSHOTS_DIR/${sid}.txt" 2>/dev/null || true
-                    sessions_log_update "$name" "snapshot_file" "snapshots/${sid}.txt"
-                fi
             fi
+        fi
+        # Migrate a snapshot still keyed by session_name once the sid is known
+        if [[ -n "$sid" && -f "$AM_SNAPSHOTS_DIR/${name}.txt" ]]; then
+            command mv "$AM_SNAPSHOTS_DIR/${name}.txt" "$AM_SNAPSHOTS_DIR/${sid}.txt" 2>/dev/null || true
+            sessions_log_update "$name" "snapshot_file" "snapshots/${sid}.txt"
         fi
 
         # Capture pane snapshot
@@ -489,6 +504,33 @@ _sessions_log_sidecar_id() {
     fi
 }
 
+# Read a field from the most recent sessions log entry for a session.
+# Usage: _sessions_log_field <session_name> <field>
+_sessions_log_field() {
+    local session_name="$1"
+    local field="$2"
+    [[ -f "$AM_SESSIONS_LOG" ]] || return 0
+
+    jq -rs --arg sname "$session_name" --arg field "$field" \
+        '[.[] | select(.session_name == $sname)] | last | .[$field] // empty' \
+        "$AM_SESSIONS_LOG" 2>/dev/null || true
+}
+
+# True when another registered Claude session shares the directory.
+# Usage: _sessions_log_dir_is_shared <session_name> <directory>
+_sessions_log_dir_is_shared() {
+    local session_name="$1"
+    local dir="$2"
+    [[ -f "$AM_REGISTRY" ]] || return 1
+
+    local count
+    count=$(jq -r --arg name "$session_name" --arg dir "$dir" \
+        '[.sessions | to_entries[]
+          | select(.key != $name and .value.agent_type == "claude" and .value.directory == $dir)]
+         | length' "$AM_REGISTRY" 2>/dev/null) || return 1
+    [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 ))
+}
+
 # Detect the Claude session ID for a specific am session.
 # Prefer the hook sidecar, because it was written by the agent pane itself.
 # Fall back to directory scanning only for JSONLs updated after this am session
@@ -504,6 +546,14 @@ _sessions_log_detect_id_for_session() {
         if [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid"; then
             echo "$sid"
         fi
+        return 0
+    fi
+
+    # The mtime fallback below guesses "newest JSONL in this directory", which
+    # binds the wrong conversation whenever another am session shares the
+    # directory. Skip it then: a missing sid gets retried on the next scan,
+    # a wrong one sticks forever.
+    if _sessions_log_dir_is_shared "$session_name" "$dir"; then
         return 0
     fi
 

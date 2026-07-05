@@ -464,9 +464,20 @@ agent_kill() {
 
     # Final snapshot + close timestamp for session restore (before killing tmux)
     if [[ "$agent_type" == "claude" ]] && tmux_session_exists "$session_name"; then
-        # Detect session_id if not yet backfilled
+        # Bind the conversation id: sidecar (authoritative) → already-logged
+        # sid → guarded directory detection. A kill-time guess must never
+        # overwrite a binding established while hooks were alive.
         local sid
-        sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$created_at" 2>/dev/null || true)
+        sid=$(_sessions_log_sidecar_id "$session_name" 2>/dev/null || true)
+        if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid"; then
+            sid=""
+        fi
+        if [[ -z "$sid" ]]; then
+            sid=$(_sessions_log_field "$session_name" "session_id" 2>/dev/null || true)
+        fi
+        if [[ -z "$sid" ]]; then
+            sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$created_at" 2>/dev/null || true)
+        fi
         local snap_file
         if [[ -n "$sid" ]]; then
             sessions_log_update "$session_name" "session_id" "$sid"

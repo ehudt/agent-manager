@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.5.0"
+AM_VERSION="0.5.1"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -252,6 +252,10 @@ cmd_restore_internal() {
     session_name=$(agent_launch "$directory" "claude" "" "" "--resume" "$session_id")
 
     if [[ -n "$session_name" ]]; then
+        # Pre-seed the resumed conversation id so the entry never needs the
+        # directory-scan guess; the sidecar-authoritative scan corrects it if
+        # Claude forks the resume to a new id.
+        sessions_log_update "$session_name" "session_id" "$session_id"
         tmux_attach "$session_name"
     fi
 }

@@ -360,6 +360,7 @@ test_auto_title_scan() {
             test-scan-11:*) echo "snapshot for test-scan-11" ;;
             test-scan-12:*) echo "snapshot for test-scan-12" ;;
             test-scan-13:*) echo "snapshot for test-scan-13" ;;
+            test-scan-14:*) echo "snapshot for test-scan-14" ;;
             *) echo "" ;;
         esac
     }
@@ -570,8 +571,123 @@ test_auto_title_scan() {
     assert_eq "task 13" "$task" \
         "scan: title half stays throttled by fresh .title_scan_last"
 
+    # --- Test 14: Sidecar corrects a wrong (previously guessed) session_id ---
+    local fake_home_14="$AM_DIR/fake_home_14"
+    local fake_dir_14="$AM_DIR/jsonl-correction-project"
+    local fake_real_14 fake_proj_14
+    mkdir -p "$fake_dir_14"
+    fake_real_14=$(cd "$fake_dir_14" && pwd -P)
+    fake_proj_14="${fake_real_14//\//-}"
+    fake_proj_14="${fake_proj_14//./-}"
+    mkdir -p "$fake_home_14/.claude/projects/$fake_proj_14" "$AM_STATE_DIR"
+    local old_home_14="$HOME"
+    export HOME="$fake_home_14"
+    registry_add "test-scan-14" "$fake_dir_14" "main" "claude" ""
+    sessions_log_append "test-scan-14" "$fake_dir_14" "main" "claude" ""
+    printf '%s\n' '{"sessionId":"sid-wrong","type":"user","message":{"content":"Wrong conversation"}}' \
+        > "$fake_home_14/.claude/projects/$fake_proj_14/sid-wrong.jsonl"
+    printf '%s\n' '{"sessionId":"sid-right","type":"user","message":{"content":"Right conversation"}}' \
+        > "$fake_home_14/.claude/projects/$fake_proj_14/sid-right.jsonl"
+    sessions_log_update "test-scan-14" "session_id" "sid-wrong"
+    printf '%s' "sid-right" > "$AM_STATE_DIR/test-scan-14.sid"
+    auto_title_scan 1
+    local sid_14 snap_14
+    sid_14=$(jq -r 'select(.session_name == "test-scan-14") | .session_id' "$AM_SESSIONS_LOG")
+    snap_14=$(jq -r 'select(.session_name == "test-scan-14") | .snapshot_file' "$AM_SESSIONS_LOG")
+    export HOME="$old_home_14"
+    assert_eq "sid-right" "$sid_14" \
+        "scan: sidecar corrects a wrong logged session_id"
+    assert_eq "snapshots/sid-right.txt" "$snap_14" \
+        "scan: snapshot re-keyed to the corrected session_id"
+
+    # --- Test 15: No mtime guess when another Claude session shares the directory ---
+    local fake_home_15="$AM_DIR/fake_home_15"
+    local fake_dir_15="$AM_DIR/jsonl-shared-project"
+    local fake_real_15 fake_proj_15
+    mkdir -p "$fake_dir_15"
+    fake_real_15=$(cd "$fake_dir_15" && pwd -P)
+    fake_proj_15="${fake_real_15//\//-}"
+    fake_proj_15="${fake_proj_15//./-}"
+    mkdir -p "$fake_home_15/.claude/projects/$fake_proj_15"
+    local old_home_15="$HOME"
+    export HOME="$fake_home_15"
+    registry_add "test-scan-15a" "$fake_dir_15" "main" "claude" ""
+    registry_add "test-scan-15b" "$fake_dir_15" "main" "claude" ""
+    sessions_log_append "test-scan-15a" "$fake_dir_15" "main" "claude" ""
+    # Fresh JSONL that the mtime fallback would otherwise claim for 15a —
+    # but it may belong to 15b, so no sidecar means no guess.
+    printf '%s\n' '{"sessionId":"sid-ambiguous","type":"user","message":{"content":"Whose is this?"}}' \
+        > "$fake_home_15/.claude/projects/$fake_proj_15/sid-ambiguous.jsonl"
+    auto_title_scan 1
+    local sid_15
+    sid_15=$(jq -r 'select(.session_name == "test-scan-15a") | .session_id' "$AM_SESSIONS_LOG")
+    export HOME="$old_home_15"
+    assert_eq "" "$sid_15" \
+        "scan: no session_id guess when the directory is shared by another Claude session"
+
     # --- Cleanup ---
     unset -f tmux_pane_title tmux_session_pane_target tmux_capture_pane
+    teardown_isolated_am_dir
+
+    $SUMMARY_MODE || echo ""
+}
+
+# ============================================
+# Test: agent_kill session-id binding
+# ============================================
+test_agent_kill_sid_binding() {
+    $SUMMARY_MODE || echo "=== Testing agent_kill session-id binding ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_isolated_am_dir
+    mkdir -p "$AM_STATE_DIR"
+
+    # Stub tmux + sidebar so agent_kill runs without a real tmux server
+    tmux_session_exists() { return 0; }
+    tmux_kill_session() { return 0; }
+    tmux_session_pane_target() { echo "$1:.{top}"; }
+    tmux_capture_pane() { echo "final pane content for kill test"; }
+    am_refresh_sidebar_cache() { return 0; }
+
+    local fake_home="$AM_DIR/fake_home_kill"
+    local fake_dir="$AM_DIR/kill-shared-project"
+    local fake_real fake_proj
+    mkdir -p "$fake_dir"
+    fake_real=$(cd "$fake_dir" && pwd -P)
+    fake_proj="${fake_real//\//-}"
+    fake_proj="${fake_proj//./-}"
+    mkdir -p "$fake_home/.claude/projects/$fake_proj"
+    local old_home="$HOME"
+    export HOME="$fake_home"
+
+    # Session with a correct logged sid whose sidecar has vanished; a strictly
+    # newer same-directory JSONL from another conversation is the bait the old
+    # kill-time detection used to swallow.
+    registry_add "test-kill-1" "$fake_dir" "main" "claude" ""
+    sessions_log_append "test-kill-1" "$fake_dir" "main" "claude" ""
+    printf '%s\n' '{"sessionId":"sid-mine","type":"user","message":{"content":"Mine"}}' \
+        > "$fake_home/.claude/projects/$fake_proj/sid-mine.jsonl"
+    printf '%s\n' '{"sessionId":"sid-other","type":"user","message":{"content":"Other"}}' \
+        > "$fake_home/.claude/projects/$fake_proj/sid-other.jsonl"
+    touch -t 202001010000.00 "$fake_home/.claude/projects/$fake_proj/sid-mine.jsonl"
+    sessions_log_update "test-kill-1" "session_id" "sid-mine"
+
+    agent_kill "test-kill-1" 2>/dev/null
+
+    local sid snap
+    sid=$(jq -r 'select(.session_name == "test-kill-1") | .session_id' "$AM_SESSIONS_LOG")
+    snap=$(jq -r 'select(.session_name == "test-kill-1") | .snapshot_file' "$AM_SESSIONS_LOG")
+    assert_eq "sid-mine" "$sid" \
+        "kill: logged session_id survives when the sidecar is gone"
+    assert_eq "snapshots/sid-mine.txt" "$snap" \
+        "kill: final snapshot keyed by the logged session_id"
+
+    export HOME="$old_home"
+    unset -f tmux_session_exists tmux_kill_session tmux_session_pane_target \
+        tmux_capture_pane am_refresh_sidebar_cache
     teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
@@ -585,6 +701,7 @@ run_registry_tests() {
     _run_test test_registry_gc_go_path
     _run_test test_auto_title_session
     _run_test test_auto_title_scan
+    _run_test test_agent_kill_sid_binding
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

@@ -237,10 +237,12 @@ am restore
 - `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
 - `sessions_log_update(session_name, field, value)` - Update field in most recent log entry for a session
 - `sessions_log_snapshot(session_name, [snapshot_key])` - Capture pane text to `~/.agent-manager/snapshots/`
-- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`
+- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. The hook sidecar is authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
 - `sessions_log_gc()` - Remove entries whose Claude JSONL no longer exists
 - `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
-- `_sessions_log_detect_id(directory)` - Detect Claude session UUID from JSONL filename
+- `_sessions_log_detect_id(directory)` - Detect Claude session UUID from JSONL filename (newest-mtime guess; callers must not use it when the directory hosts multiple sessions)
+- `_sessions_log_dir_is_shared(session_name, directory)` - True when another registered Claude session shares the directory; gates the mtime-based session-id guess in `_sessions_log_detect_id_for_session`
+- `_sessions_log_field(session_name, field)` - Read a field from the most recent sessions-log entry for a session
 - `_sessions_log_jsonl_exists(directory, session_id)` - Check if Claude JSONL still exists
 
 **State detection (lib/state.sh):**
