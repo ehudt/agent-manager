@@ -212,15 +212,16 @@ if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$sta
     esac
 fi
 
-# Write state to file. Same-state rewrites of waiting_* states are skipped so
-# the file's mtime pins the moment the wait began — the status bar shows
-# "waiting for you since" from it (repeated idle_prompt notifications and
-# background-work Stop re-fires would otherwise keep resetting it). running is
-# always rewritten: each tool hook is a liveness heartbeat for the staleness
-# gate in lib/state.sh.
+# Write state to file — only on a state *transition*. Same-state rewrites are
+# skipped so the file's mtime pins the moment the state was entered: the
+# status bar renders tab age from it ("waiting for you since" / "running
+# for"). Repeated idle_prompt notifications, background-work Stop re-fires,
+# and per-tool running rewrites would otherwise keep resetting it. Liveness
+# of a running session is covered by tmux session_activity (the staleness
+# gate in lib/state.sh measures against max(mtime, activity)), so the old
+# rewrite-as-heartbeat behavior is not needed.
 mkdir -p "$AM_STATE_DIR"
-if [[ "$am_state" != waiting_* ]] \
-    || [[ "$(head -1 "$state_file" 2>/dev/null || true)" != "$am_state" ]]; then
+if [[ "$(head -1 "$state_file" 2>/dev/null || true)" != "$am_state" ]]; then
     printf '%s' "$am_state" > "$state_file"
 fi
 

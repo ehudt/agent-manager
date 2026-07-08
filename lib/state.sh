@@ -38,12 +38,12 @@ _state_debug() {
 # Read session state from $AM_STATE_DIR/<session> into a caller-supplied var.
 # Terminal waiting_* states are persistent (no staleness gate). running gets a
 # 180s gate so a wedged agent falls through to 'unknown' instead of looking
-# busy forever — but the gate is measured against max(file mtime, tmux
-# session_activity), not the file alone. Hooks only fire on tool calls, so a
-# long pure-thinking stretch (minutes of LLM output, zero tools) legitimately
-# leaves the file stale while the agent is alive; Claude repaints its spinner
-# timer every second, so pane activity stays fresh for the whole turn. A
-# genuinely wedged agent stops repainting and ages out of both signals.
+# busy forever — measured against max(file mtime, tmux session_activity). The
+# hook only writes on state *transitions* (the mtime doubles as the state-
+# entry timestamp for tab ages), so for any turn longer than the gate the
+# mtime is stale by design; tmux activity is the liveness signal — Claude
+# repaints its spinner timer every second, keeping it fresh for the whole
+# turn, while a genuinely wedged agent stops repainting and ages out.
 # Usage: _state_hook_read <session> <out_var> [now_epoch] [activity_epoch]
 _state_hook_read() {
     local session="$1"

@@ -93,6 +93,19 @@ test_state_hooks() {
     assert_eq "$mtime_before" "$mtime_after" \
         "Stop re-fire over waiting_background: mtime pinned"
 
+    # running over running is also skipped: the mtime pins the moment the turn
+    # started ("running for" tab age). Liveness comes from tmux activity, not
+    # file rewrites, so the heartbeat is not needed.
+    printf 'running' > "$state_dir/am-abc123"
+    touch -t 202601010000 "$state_dir/am-abc123"
+    mtime_before=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    mtime_after=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    assert_eq "running" "$state" "PostToolUse over running: state unchanged"
+    assert_eq "$mtime_before" "$mtime_after" \
+        "PostToolUse over running: same-state rewrite skipped (mtime pinned)"
+
     # A genuine state *transition* between waiting states must still write.
     printf 'waiting_input' > "$state_dir/am-abc123"
     touch -t 202601010000 "$state_dir/am-abc123"
