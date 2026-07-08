@@ -6,14 +6,26 @@
 # writes the state to $AM_STATE_DIR/<session_name>.
 #
 # Supported events:
-#   Stop (stop_hook_active != true)  → waiting_input
-#   Notification[idle_prompt]        → waiting_input
+#   Stop (stop_hook_active != true)  → waiting_input, or waiting_background
+#                                      when the payload's background_tasks
+#                                      array lists work still running
+#   Notification[idle_prompt]        → waiting_input (same background_tasks
+#                                      refinement, when the field is present)
 #   Notification[permission_prompt]  → waiting_permission
 #   Notification[elicitation_dialog] → waiting_custom
 #   UserPromptSubmit                 → running
 #   PreToolUse                       → running
 #   PermissionRequest                → waiting_permission
 #   PostToolUse                      → running
+#
+# background_tasks: Claude Code ≥2.1 includes a background_tasks array in the
+# Stop payload — one entry per still-running background item ({id, type
+# (subagent|shell), status, description, …}), pruned to [] once everything
+# finishes. It is a fresh snapshot at each Stop, and Stop re-fires when
+# background work completes (the completion re-invokes Claude for a wrap-up
+# turn), so the state is self-healing without any pane scraping. Older CLIs
+# and Codex simply lack the field → the jq filter counts 0 → waiting_input,
+# and the pane-scan fallback in lib/state.sh still applies.
 #
 # Environment overrides (for testing):
 #   AM_REGISTRY   — path to sessions.json (default: ~/.agent-manager/sessions.json)
@@ -63,16 +75,28 @@ if [[ "$hook_type" == "Stop" ]]; then
     fi
 fi
 
+# Idle states are refined to waiting_background when the payload reports
+# background work (subagents / background shells) still running.
+_bg_running_count() {
+    printf '%s' "$hook_input" \
+        | jq '[.background_tasks[]? | select(.status == "running")] | length' 2>/dev/null \
+        || echo 0
+}
+
 # Map hook event to am state
 am_state=""
 case "$hook_type" in
     Stop)
         am_state="waiting_input"
+        [[ "$(_bg_running_count)" =~ ^[1-9] ]] && am_state="waiting_background"
         ;;
     Notification)
         notification_type=$(printf '%s' "$hook_input" | jq -r '.notification_type // empty' 2>/dev/null || true)
         case "$notification_type" in
-            idle_prompt)        am_state="waiting_input" ;;
+            idle_prompt)
+                am_state="waiting_input"
+                [[ "$(_bg_running_count)" =~ ^[1-9] ]] && am_state="waiting_background"
+                ;;
             permission_prompt)  am_state="waiting_permission" ;;
             elicitation_dialog) am_state="waiting_custom" ;;
             *)                  exit 0 ;;
@@ -152,6 +176,14 @@ fi
 # so a late tool hook must not flip it back to running. Only UserPromptSubmit
 # (explicit user action) may transition waiting_input → running.
 #
+# waiting_background gets the same protection, and needs it even more: a
+# background subagent's own tool calls fire PreToolUse/PostToolUse in this
+# session for as long as it runs, and without the guard the first one would
+# flip the state to running and erase the background refinement. The state
+# still moves forward on its own — Stop re-fires when the background work
+# completes (with a pruned background_tasks) — and UserPromptSubmit remains
+# the user-driven exit.
+#
 # waiting_permission and waiting_custom are explicitly *transient*: they unblock
 # when the user answers, after which Claude/Codex resumes work and fires
 # PreToolUse/PostToolUse. Those hooks MUST move the state forward to running,
@@ -160,7 +192,7 @@ state_file="$AM_STATE_DIR/$session_name"
 if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
     case "$current" in
-        waiting_input) exit 0 ;;
+        waiting_input|waiting_background) exit 0 ;;
     esac
 fi
 

@@ -105,12 +105,21 @@ test_state_hooks() {
     # --- PostToolUse does NOT clobber waiting_input (race protection) ---
     # Claude Code may deliver a delayed PostToolUse from a previous turn after
     # Stop has already written waiting_input. That must not revert the state.
-    # waiting_input is the only terminal state worth protecting — the agent is
-    # idle and the user is in the loop. A late tool hook must not flip it back.
+    # The agent is idle and the user is in the loop; a late tool hook must not
+    # flip it back.
     printf 'waiting_input' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "waiting_input" "$state" "PostToolUse: does not clobber waiting_input"
+
+    # --- PostToolUse does NOT clobber waiting_background either ---
+    # A background subagent's own tool calls fire PreToolUse/PostToolUse in
+    # this session for as long as it runs; without the guard the first one
+    # would erase the background refinement.
+    printf 'waiting_background' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_background" "$state" "PostToolUse: does not clobber waiting_background"
 
     # --- PostToolUse DOES transition waiting_permission -> running ---
     # After the user grants a permission prompt, the tool runs and PostToolUse
@@ -140,6 +149,52 @@ test_state_hooks() {
     run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "UserPromptSubmit: overrides waiting_input"
+
+    # --- UserPromptSubmit DOES override waiting_background too ---
+    printf 'waiting_background' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "running" "$state" "UserPromptSubmit: overrides waiting_background"
+
+    # --- Stop with running background_tasks writes waiting_background ---
+    # Claude Code ≥2.1 Stop payload carries a background_tasks array — one
+    # entry per still-running background item. Payload shapes below mirror
+    # real captures (subagent and background shell).
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"a9596f8935c90b6cf\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"Sleep then reply OK\",\"agent_type\":\"general-purpose\"}]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_background" "$state" "Stop + running subagent in background_tasks: writes waiting_background"
+
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"b6p7gc49c\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"Sleep 20s then echo done\",\"command\":\"sleep 20 && echo done\"}]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_background" "$state" "Stop + running shell in background_tasks: writes waiting_background"
+
+    # --- Stop with empty background_tasks writes waiting_input ---
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_input" "$state" "Stop + empty background_tasks: writes waiting_input"
+
+    # --- Stop with only non-running background_tasks writes waiting_input ---
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"x\",\"type\":\"shell\",\"status\":\"completed\",\"description\":\"done already\"}]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_input" "$state" "Stop + completed-only background_tasks: writes waiting_input"
+
+    # --- Stop clears a previous waiting_background once work finishes ---
+    # Stop re-fires when background work completes (the completion re-invokes
+    # Claude for a wrap-up turn) with a pruned background_tasks.
+    printf 'waiting_background' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_input" "$state" "Stop + empty background_tasks: clears waiting_background"
+
+    # --- Notification[idle_prompt] honors background_tasks when present ---
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"y\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"bg\"}]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_background" "$state" "Notification[idle_prompt] + running background_tasks: writes waiting_background"
 
     # --- Duplicate cwd: AM_SESSION_NAME disambiguates which session to update ---
     # Two am sessions can share a cwd (e.g., multiple Claude instances in the

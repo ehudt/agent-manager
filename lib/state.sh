@@ -3,8 +3,12 @@
 #
 # State sources:
 #   1. tmux + ps process tree   -> starting / idle / dead
-#   2. hook file ($AM_STATE_DIR) -> running / waiting_input / waiting_permission / waiting_custom
-#   3. pane banner scan          -> waiting_background (Claude: turn done, bg work running)
+#   2. hook file ($AM_STATE_DIR) -> running / waiting_input / waiting_permission /
+#                                   waiting_custom / waiting_background (the hook
+#                                   writes it directly from the Stop payload's
+#                                   background_tasks on Claude Code ≥2.1)
+#   3. pane banner scan          -> waiting_background (fallback for CLIs whose
+#                                   Stop payload lacks background_tasks)
 #   4. fallback                  -> unknown (agent alive, hook silent)
 #
 # States: starting | running | waiting_input | waiting_permission |
@@ -49,7 +53,7 @@ _state_hook_read() {
     local line=""
     IFS= read -r line < "$state_file" 2>/dev/null || true
     case "$line" in
-        waiting_input|waiting_permission|waiting_custom)
+        waiting_input|waiting_permission|waiting_custom|waiting_background)
             __out="$line" ;;
         running)
             (( now_epoch - mtime > 180 )) && return 0
@@ -306,8 +310,10 @@ _state_resolve() {
     _state_hook_read "$session" hook_state "$now_val"
     if [[ -n "$hook_state" ]]; then
         # Claude's main turn can stop (waiting_input) while background agents /
-        # tasks / shells keep running. The hook can't see that; the on-screen
-        # banner or the mode-line "N shell" counter can. Scanning only
+        # tasks / shells keep running. On Claude Code ≥2.1 the hook writes
+        # waiting_background itself (Stop payload background_tasks) and that
+        # state passes straight through below; this pane scan is the fallback
+        # for CLIs whose Stop payload lacks the field. Scanning only
         # waiting_input Claude sessions keeps busy/running and non-Claude
         # sessions fork-free.
         if [[ "$hook_state" == "waiting_input" && "$agent_type" == "claude" ]] \

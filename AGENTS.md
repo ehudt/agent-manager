@@ -95,8 +95,8 @@ files are cleaned up on session kill and during registry GC.
 
 | Hook Event | Matcher | am State |
 |---|---|---|
-| `Stop` | — | `waiting_input` |
-| `Notification` | `idle_prompt` | `waiting_input` |
+| `Stop` | — | `waiting_input`, or `waiting_background` when the payload's `background_tasks` lists running work |
+| `Notification` | `idle_prompt` | `waiting_input` (same `background_tasks` refinement) |
 | `Notification` | `permission_prompt` | `waiting_permission` |
 | `Notification` | `elicitation_dialog` | `waiting_custom` |
 | `UserPromptSubmit` | — | `running` |
@@ -106,24 +106,38 @@ States not covered by hooks (`starting`, `idle`, `dead`) use existing
 process/tmux checks which are already reliable.
 
 `waiting_background` (Claude's main turn ended but a background agent/task/
-workflow/shell is still running) has no dedicated hook — Claude's `Stop` fires
-immediately and looks like `waiting_input`. It is detected by scanning the
-agent pane in `_state_pane_has_background_wait` for either of two on-screen
-signals: (A) the `Waiting for N background … to finish` banner pinned just
-above the input box, or (B) the `N shell(s)` / `N monitor(s)` counter in the
-bottom mode line (`⏵⏵ … · 1 shell · ← for agents`, `⏵⏵ … · 1 monitor · ← for
-agents`; "monitor" is Claude's counter for auto-mode background agents). Signal
-A's banner text lingers in scrollback after the work finishes, so it only counts
-when it is still the live status line (anchored relative to the input box) — a
-stale copy buried above newer transcript/status output is ignored. Signal B
-reads the mode line *below* the input box, where the session-artifact line
-(`⧉ name`) also renders; the artifact carries no shell/monitor token and so
-never affects state. The scan is gated
-to Claude sessions that already resolve to `waiting_input` (or a hook-silent
-fallback), so busy `running` and non-Claude sessions never pay the
-`capture-pane` fork. It is self-healing: when the banner/counter clears, the
-next resolve returns `waiting_input`. Not counted in the status-bar attention
-counter (no user action required).
+workflow/shell is still running) is written directly by the hook on Claude
+Code ≥2.1: the `Stop` payload carries a `background_tasks` array — one entry
+per still-running background item (`{id, type (subagent|shell), status,
+description, …}`), pruned to `[]` once everything finishes — and the hook
+writes `waiting_background` when any entry has `status == "running"`. `Stop`
+re-fires when background work completes (the completion re-invokes Claude for
+a wrap-up turn), so the state self-heals without any pane involvement. The
+race guard in `state-hook.sh` protects `waiting_background` like
+`waiting_input`: a background subagent's own tool calls fire
+`PreToolUse`/`PostToolUse` in the session, and must not flip the state to
+`running`; only `UserPromptSubmit` or the next `Stop` moves it forward.
+
+For CLIs whose `Stop` payload lacks `background_tasks` (older Claude Code,
+hook-silent fallback), detection falls back to scanning the agent pane in
+`_state_pane_has_background_wait` for any of three on-screen signals: (A) the
+`Waiting for N background … to finish` banner pinned just above the input box,
+(B) the `N shell(s)` / `N monitor(s)` counter in the bottom mode line (`⏵⏵ … ·
+1 shell · ← for agents`; "monitor" is Claude's counter for auto-mode
+background agents), or (C) a hollow-bullet line in the agent-context panel
+below the mode line (`○ general-purpose  Reading foo.py`) listing a spawned
+agent still tracked alongside the filled-bullet `● main` line. Signal A's
+banner text lingers in scrollback after the work finishes, so it only counts
+when it is still the live status line (anchored relative to the input box,
+skipping box chrome and the todo/task-list widget) — a stale copy buried above
+newer transcript/status output is ignored. Signals B and C read the footer
+region *below* the input box, where the session-artifact line (`⧉ name`) also
+renders; the artifact carries no matching token and so never affects state.
+The scan is gated to Claude sessions that already resolve to `waiting_input`
+(or a hook-silent fallback), so busy `running` and non-Claude sessions never
+pay the `capture-pane` fork. It is self-healing: when the banner/counter/panel
+clears, the next resolve returns `waiting_input`. Not counted in the
+status-bar attention counter (no user action required).
 
 ### Debug instrumentation
 
@@ -249,12 +263,12 @@ am restore
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, waiting_background, idle, unknown, dead
-- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state (Claude waiting_input refined to waiting_background via pane-banner scan) → pane-banner fallback → unknown fallback
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch])` - **Single source of truth** for state derivation. Without bulk fixtures (last 4 args), forks per-session for tmux/ps; with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state (waiting_background passes through directly; Claude waiting_input refined to waiting_background via pane scan for CLIs whose Stop payload lacks background_tasks) → pane-banner fallback → unknown fallback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_hook_read(session, out_var [, now_epoch])` - Read state from hook state file into a nameref (primary source for Claude sessions); no subshell, used inside `_state_resolve`
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Detect whether top pane is a plain shell (vs an agent process) from nameref bulk maps
-- `_state_pane_has_background_wait(session)` - Capture the agent pane and detect live background work via either the "Waiting for N background … to finish" banner (only when it is still the live line above the input box, not a stale scrollback copy) or the "N shell(s)" / "N monitor(s)" counter in the bottom mode line. Ignores the session-artifact line. Fork-free bash scan (one `capture-pane` fork). Drives the waiting_background refinement; gated by `_state_resolve` to idle-looking Claude sessions
+- `_state_pane_has_background_wait(session)` - Capture the agent pane and detect live background work via any of: the "Waiting for N background … to finish" banner (only when it is still the live line above the input box, not a stale scrollback copy), the "N shell(s)" / "N monitor(s)" counter in the bottom mode line, or a hollow-bullet agent-panel line ("○ general-purpose …") below it. Ignores the session-artifact line. Fork-free bash scan (one `capture-pane` fork). Fallback for CLIs whose Stop payload lacks the background_tasks field; gated by `_state_resolve` to idle-looking Claude sessions
 - `_state_line_is_box_chrome(line)` - True when a pane line is Claude input-box chrome (full-width rule or prompt). Anchors the background-wait scan to the input box
 
 **Utils:**

@@ -353,6 +353,14 @@ test_state_background_wait() {
     assert_eq "waiting_input" "$st" \
         "_state_resolve: session artifact alone stays waiting_input"
 
+    # Hook-written waiting_background (Stop payload background_tasks) passes
+    # straight through — no pane signal needed (empty pane would fail the scan).
+    printf 'waiting_background' > "$tmp_state_dir/am-bg"
+    MOCK_PANE=''
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_background" "$st" \
+        "_state_resolve: hook waiting_background passes through without pane scan"
+
     # running hook is busy by definition — never scanned, even with a stale banner
     printf 'running' > "$tmp_state_dir/am-bg"
     MOCK_PANE='✻ Waiting for 1 background agent to finish'
