@@ -69,6 +69,38 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "waiting_input" "$state" "Notification[idle_prompt]: writes waiting_input"
 
+    # --- same-state waiting_* rewrites are skipped: the file mtime pins the
+    #     moment the wait began (the status bar shows "waiting since" from it).
+    #     A repeated idle_prompt Notification must not reset it. ---
+    local mtime_before mtime_after
+    printf 'waiting_input' > "$state_dir/am-abc123"
+    touch -t 202601010000 "$state_dir/am-abc123"
+    mtime_before=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
+    mtime_after=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    assert_eq "$mtime_before" "$mtime_after" \
+        "idle_prompt over waiting_input: same-state rewrite skipped (mtime pinned)"
+
+    # Stop re-fires while background work drains: waiting_background over
+    # waiting_background must also keep the original mtime.
+    printf 'waiting_background' > "$state_dir/am-abc123"
+    touch -t 202601010000 "$state_dir/am-abc123"
+    mtime_before=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"b1\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"x\"}]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    mtime_after=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    assert_eq "waiting_background" "$state" "Stop re-fire keeps waiting_background"
+    assert_eq "$mtime_before" "$mtime_after" \
+        "Stop re-fire over waiting_background: mtime pinned"
+
+    # A genuine state *transition* between waiting states must still write.
+    printf 'waiting_input' > "$state_dir/am-abc123"
+    touch -t 202601010000 "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_permission" "$state" \
+        "waiting_input -> waiting_permission transition still writes"
+
     # --- UserPromptSubmit writes running ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"

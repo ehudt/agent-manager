@@ -194,9 +194,23 @@ for i in "${!session_meta[@]}"; do
         SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now" "$activity")
     [[ -z "$state" ]] && state="idle"
 
+    # Tab age. For waiting_* states show how long the session has been waiting
+    # for the user (state-file mtime = the moment the wait began; the hook
+    # skips same-state rewrites to keep it pinned). tmux session_activity is
+    # useless there — viewing the tab refreshes it, so it reads as "since I
+    # last looked". Other states keep activity (running ≈ now = "active").
     age=""
-    if [[ -n "$activity" && "$activity" =~ ^[0-9]+$ ]]; then
-        _compact_age_set $(( now - activity ))
+    _age_ref=""
+    if [[ "$state" == waiting_* ]]; then
+        _age_ref=$(stat -c %Y "$AM_STATE_DIR/$session" 2>/dev/null \
+            || stat -f %m "$AM_STATE_DIR/$session" 2>/dev/null || true)
+        [[ "$_age_ref" =~ ^[0-9]+$ ]] || _age_ref=""
+    fi
+    if [[ -z "$_age_ref" && "$activity" =~ ^[0-9]+$ ]]; then
+        _age_ref=$activity
+    fi
+    if [[ -n "$_age_ref" ]]; then
+        _compact_age_set $(( now - _age_ref ))
         age="$_A"
     fi
 

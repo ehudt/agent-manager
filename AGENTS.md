@@ -50,7 +50,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
 | `lib/fzf.sh` | Browser launcher (`fzf_main`), directory picker, restore picker, `am list` helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
-| `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch, task, age). Also writes `@am_sidebar` (compact pane-border variant) and `@am_attention` (status-right counter). |
+| `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch, task, age). Tab age is "waiting for you since" (state-file mtime) for waiting_* sessions, tmux activity otherwise. Also writes `@am_sidebar` (compact pane-border variant) and `@am_attention` (status-right counter). |
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
@@ -92,6 +92,13 @@ background-banner refinement) → pane-banner fallback → unknown**.
 
 Hooks are installed via `am install` into `~/.claude/settings.json`. State
 files are cleaned up on session kill and during registry GC.
+
+The state file's mtime doubles as the state-entry timestamp for waiting_*
+states: the hook skips same-state rewrites (repeated `idle_prompt`
+notifications, Stop re-fires while background work drains), so the mtime pins
+the moment the wait began. The status bar renders each waiting tab's age from
+it ("waiting for you since"); `running` is always rewritten because each tool
+hook doubles as a liveness heartbeat for the staleness gate.
 
 | Hook Event | Matcher | am State |
 |---|---|---|

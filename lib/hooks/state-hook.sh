@@ -212,9 +212,17 @@ if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$sta
     esac
 fi
 
-# Write state to file
+# Write state to file. Same-state rewrites of waiting_* states are skipped so
+# the file's mtime pins the moment the wait began — the status bar shows
+# "waiting for you since" from it (repeated idle_prompt notifications and
+# background-work Stop re-fires would otherwise keep resetting it). running is
+# always rewritten: each tool hook is a liveness heartbeat for the staleness
+# gate in lib/state.sh.
 mkdir -p "$AM_STATE_DIR"
-printf '%s' "$am_state" > "$state_file"
+if [[ "$am_state" != waiting_* ]] \
+    || [[ "$(head -1 "$state_file" 2>/dev/null || true)" != "$am_state" ]]; then
+    printf '%s' "$am_state" > "$state_file"
+fi
 
 # Persist the Claude/Codex conversation id alongside the state when the hook
 # payload exposes it. This lets restore snapshots bind to the exact pane that
