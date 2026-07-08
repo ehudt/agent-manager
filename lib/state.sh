@@ -157,23 +157,34 @@ _state_pane_has_background_wait() {
     while IFS= read -r line; do lines+=("$line"); done <<< "$pane"
     local n=${#lines[@]} i
 
-    # Find the input box (bottom-most chrome line); fall back to scanning the
-    # whole pane if none is visible (e.g. minimal test fixtures).
-    local box=$n
+    # Anchor on the input box. box_bottom = bottom-most chrome line (the box's
+    # bottom rule, or a bare prompt in rule-less fixtures); Signal B scans below
+    # it. When the box is delimited by full-width rules it may hold TYPED text
+    # between them ("❯ continue …"), which must not be mistaken for transcript
+    # that scrolled the banner away — so box_top climbs past the box interior to
+    # the top rule, and Signal A scans from above it. Fall back to scanning the
+    # whole pane when no chrome is visible (minimal test fixtures).
+    local box_bottom=$n box_top=$n
     for (( i = n - 1; i >= 0; i-- )); do
-        if _state_line_is_box_chrome "${lines[i]}"; then box=$i; break; fi
+        if _state_line_is_box_chrome "${lines[i]}"; then box_bottom=$i; break; fi
     done
+    box_top=$box_bottom
+    if [[ "${lines[box_bottom]:-}" == *──────* ]]; then
+        for (( i = box_bottom - 1; i >= 0; i-- )); do
+            if [[ "${lines[i]}" == *──────* ]]; then box_top=$i; break; fi
+        done
+    fi
 
     # Signal B — background-work counter (shell/monitor) in the mode line
     # (below the box).
-    if (( box < n )); then
-        for (( i = box + 1; i < n; i++ )); do
+    if (( box_bottom < n )); then
+        for (( i = box_bottom + 1; i < n; i++ )); do
             [[ "${lines[i]}" =~ $_STATE_BG_COUNTER_RE ]] && return 0
         done
     fi
 
     # Signal A — live "Waiting for N background … to finish" banner (above box).
-    for (( i = box - 1; i >= 0; i-- )); do
+    for (( i = box_top - 1; i >= 0; i-- )); do
         line="${lines[i]}"
         [[ "$line" =~ $_STATE_BG_BANNER_RE ]] && return 0
         [[ -z "${line//[[:space:]]/}" ]] && continue        # blank line

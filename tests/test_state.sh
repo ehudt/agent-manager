@@ -236,6 +236,7 @@ test_state_background_wait() {
     #     background work finishes, so a match only counts when the banner is
     #     still the current status line (pinned just above the input box). ---
     local _rule='────────────────────────'
+    local _foot='  opus | blue-wekapp/ehud-network-mix-setup | 180k (18%) · ⚡ 167k +13k · $176.9'
     # Live: banner pinned directly above the input box.
     MOCK_PANE=$'⏺ working\n✻ Waiting for 1 background agent to finish\n'"$_rule"$'\n❯ \n'"$_rule"
     assert_cmd_succeeds "_state_pane_has_bg: live banner above input box" \
@@ -243,6 +244,18 @@ test_state_background_wait() {
     # Live: banner + right-aligned hint line still counts.
     MOCK_PANE=$'⏺ working\n✻ Waiting for 2 background tasks to finish\n                                        new task? /clear to save 5k tokens\n'"$_rule"$'\n❯ \n'"$_rule"
     assert_cmd_succeeds "_state_pane_has_bg: live banner above hint+box" \
+        _state_pane_has_background_wait am-bg
+    # Live: banner above the box, but the input box holds TYPED text. The typed
+    # line sits between the two box rules and must be treated as box interior,
+    # not as transcript that scrolled the banner away (regression: typed input
+    # aborted the upward scan -> green session with agents still running).
+    MOCK_PANE=$'⏺ working\n✻ Waiting for 2 background agents to finish\n'"$_rule"$'\n❯ continue with the remaining items\n'"$_rule"
+    assert_cmd_succeeds "_state_pane_has_bg: live banner above box with typed input" \
+        _state_pane_has_background_wait am-bg
+    # Live: real auto-mode capture — banner above, typed input in the box, and
+    # the auto-mode agent panel listed below (no "N monitor" counter token).
+    MOCK_PANE=$'✻ Waiting for 2 background agents to finish\n                                                    ✘ Auto-update failed · Run /doctor\n'"$_rule"$'\n❯ continue with the remaining items\n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n  ⏺ main\n  ◯ general-purpose  Compiling reggie.py                    9m 53s · ↓ 145.0k tokens'
+    assert_cmd_succeeds "_state_pane_has_bg: banner + typed input + auto-mode agent panel" \
         _state_pane_has_background_wait am-bg
     # Stale: work finished — completion output and a fresh status line sit
     # between the old banner and the input box (regression for the stuck
@@ -253,7 +266,6 @@ test_state_background_wait() {
 
     # --- background-shell counter (mode line below the input box) and the
     #     session-artifact line, which must NOT affect state. ---
-    local _foot='  opus | blue-wekapp/ehud-network-mix-setup | 180k (18%) · ⚡ 167k +13k · $176.9'
     # "N shell" in the mode line -> background work running.
     MOCK_PANE=$'⏺ done\n✻ Brewed for 1m 2s\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on · 1 shell  ← for agents\n🗀 netmix-coverage'
     assert_cmd_succeeds "_state_pane_has_bg: '1 shell' in mode line -> background" \
