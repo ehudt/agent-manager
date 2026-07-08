@@ -107,9 +107,12 @@ _state_line_is_box_chrome() {
 # Banner Claude pins directly above the input box when the main turn has ended
 # but a background agent/task/workflow is still in flight.
 _STATE_BG_BANNER_RE='[Ww]aiting for [0-9]+ background [a-zA-Z]+ to finish'
-# Background-shell counter in Claude's bottom mode line, e.g.
-# "⏵⏵ auto mode on · 1 shell  ← for agents" — a digit-prefixed shell token.
-_STATE_BG_SHELL_RE='[0-9]+ shells?([^[:alpha:]]|$)'
+# Background-work counter in Claude's bottom mode line, e.g.
+# "⏵⏵ auto mode on · 1 shell  ← for agents" or "… · 1 monitor · ← for agents"
+# — a digit-prefixed shell/monitor token. "monitor" is the counter Claude shows
+# for auto-mode background agents; either token means background work is live.
+# The digit prefix keeps prose ("when the monitor fires …") from matching.
+_STATE_BG_COUNTER_RE='[0-9]+ (shells?|monitors?)([^[:alpha:]]|$)'
 
 # Detect whether the session's agent (top) pane shows that background work is
 # still running while the main turn looks idle (Stop fired -> waiting_input).
@@ -118,8 +121,9 @@ _STATE_BG_SHELL_RE='[0-9]+ shells?([^[:alpha:]]|$)'
 #   A. The "Waiting for N background <agent|task|workflow> to finish" banner,
 #      pinned directly above the input box while the turn blocks on background
 #      agents/tasks/workflows.
-#   B. The "N shell(s)" counter in the bottom mode line, shown while background
-#      shells launched this turn are still running.
+#   B. The "N shell(s)" / "N monitor(s)" counter in the bottom mode line, shown
+#      while background shells or auto-mode background agents ("monitors")
+#      launched this turn are still running.
 #
 # Signal A's banner text persists in scrollback after the work finishes: Claude
 # then prints completion output ("⏺ … finished") and a fresh status line
@@ -134,10 +138,10 @@ _STATE_BG_SHELL_RE='[0-9]+ shells?([^[:alpha:]]|$)'
 #
 # Signal B's counter renders in the mode line *below* the input box, alongside
 # the footer and any session-artifact line ("⧉ name"). There is no transcript
-# below the box, so a "N shell" token there is always the live count; the
-# artifact line carries no such token and so never affects state. Signal B is a
-# live count maintained by Claude, so it is self-healing — no stale-scrollback
-# problem.
+# below the box, so a "N shell"/"N monitor" token there is always the live
+# count; the artifact line carries no such token and so never affects state.
+# Signal B is a live count maintained by Claude, so it is self-healing — no
+# stale-scrollback problem.
 #
 # Captures the current viewport (one fork); the scan itself is fork-free bash.
 # Callers gate this to idle-looking Claude sessions so busy/running and non-
@@ -147,7 +151,7 @@ _state_pane_has_background_wait() {
     local session="$1" pane line
     pane=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null) || return 1
     # Fast path: neither signal anywhere in the pane -> skip the line scan.
-    [[ "$pane" =~ $_STATE_BG_BANNER_RE || "$pane" =~ $_STATE_BG_SHELL_RE ]] || return 1
+    [[ "$pane" =~ $_STATE_BG_BANNER_RE || "$pane" =~ $_STATE_BG_COUNTER_RE ]] || return 1
 
     local -a lines=()
     while IFS= read -r line; do lines+=("$line"); done <<< "$pane"
@@ -160,10 +164,11 @@ _state_pane_has_background_wait() {
         if _state_line_is_box_chrome "${lines[i]}"; then box=$i; break; fi
     done
 
-    # Signal B — background-shell counter in the mode line (below the box).
+    # Signal B — background-work counter (shell/monitor) in the mode line
+    # (below the box).
     if (( box < n )); then
         for (( i = box + 1; i < n; i++ )); do
-            [[ "${lines[i]}" =~ $_STATE_BG_SHELL_RE ]] && return 0
+            [[ "${lines[i]}" =~ $_STATE_BG_COUNTER_RE ]] && return 0
         done
     fi
 

@@ -261,6 +261,20 @@ test_state_background_wait() {
     MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n  ⏵⏵ auto mode on · 2 shells  ← for agents'
     assert_cmd_succeeds "_state_pane_has_bg: '2 shells' plural -> background" \
         _state_pane_has_background_wait am-bg
+    # "N monitor" in the mode line -> background work running. Monitors are the
+    # mode-line counter Claude shows for auto-mode background agents; the status
+    # line above the box ("… · 1 monitor still running") also mentions it but the
+    # below-box mode-line token is the authoritative live count.
+    MOCK_PANE=$'⏺ done\n✻ Baked for 4m 5s · 1 monitor still running\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on · 1 monitor · ← for agents'
+    assert_cmd_succeeds "_state_pane_has_bg: '1 monitor' in mode line -> background" \
+        _state_pane_has_background_wait am-bg
+    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n  ⏵⏵ auto mode on · 2 monitors · ← for agents'
+    assert_cmd_succeeds "_state_pane_has_bg: '2 monitors' plural -> background" \
+        _state_pane_has_background_wait am-bg
+    # "monitor" in prose (no digit prefix) must NOT trigger background.
+    MOCK_PANE=$'when the monitor fires Ready → quarantine\n'"$_rule"$'\n❯ \n'"$_rule"$'\n  ⏵⏵ auto mode on  ← for agents'
+    assert_cmd_fails "_state_pane_has_bg: prose 'monitor' (no count) -> not background" \
+        _state_pane_has_background_wait am-bg
     # No shell, no live banner, just a session artifact -> not background.
     MOCK_PANE=$'⏺ all done\n✻ Brewed for 1m 2s\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on  ← for agents\n🗀 netmix-coverage'
     assert_cmd_fails "_state_pane_has_bg: session artifact alone -> not background" \
@@ -297,6 +311,12 @@ test_state_background_wait() {
     st=$(_state_resolve am-bg claude /tmp)
     assert_eq "waiting_background" "$st" \
         "_state_resolve: waiting_input + '1 shell' -> waiting_background"
+
+    # waiting_input + background monitor counter -> waiting_background.
+    MOCK_PANE=$'⏺ done\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on · 1 monitor · ← for agents'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_background" "$st" \
+        "_state_resolve: waiting_input + '1 monitor' -> waiting_background"
 
     # A session-artifact line must not affect state -> stays waiting_input.
     MOCK_PANE=$'⏺ done\n✻ Brewed for 1m\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on  ← for agents\n🗀 netmix-coverage'
