@@ -88,7 +88,21 @@ that call `lib/hooks/state-hook.sh`. The script maps the event to an am state
 and writes it to `/tmp/am-state/<session_name>`.
 
 State detection priority: **shell pane check → hook state file (with Claude
-background-banner refinement) → pane-banner fallback → unknown**.
+background-banner refinement, and end-of-turn pane classification when a
+`running` state is past its mtime gate) → pane fallback (end-of-turn
+classifier, then background-wait scan) → unknown**.
+
+Hooks can go silent mid-session: once a turn is backgrounded (ctrl-b /
+"Backgrounding after the current tool finishes"), its lifecycle events fire
+from a bg session context (`stop_hook_summary` shows `sessionKind: bg` and a
+different `session_id`) whose environment doesn't resolve to the am session —
+the turn's end then writes nothing and the state file stays `running`. The
+end-of-turn pane classifier (`_state_pane_end_of_turn_state`) covers this:
+the completed-turn status pinned above the input box ("✻ Baked for 5m 25s",
+optionally "· 1 shell still running") proves the turn is over even when the
+hook state claims otherwise, while a live turn's spinner status ("· Billowing…
+(10s · …)") blocks the scan. tmux activity cannot break this tie because user
+presence (viewing/typing) keeps it fresh.
 
 Hooks are installed via `am install` into `~/.claude/settings.json`. State
 files are cleaned up on session kill and during registry GC.
@@ -277,12 +291,13 @@ am restore
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, waiting_background, idle, unknown, dead
-- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch [, activity_epoch]])` - **Single source of truth** for state derivation. Without bulk fixtures (last args), forks per-session for tmux/ps (fetching pane_pid + session_activity in one call); with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place, plus an optional per-session activity epoch. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state (waiting_background passes through directly; Claude waiting_input refined to waiting_background via pane scan for CLIs whose Stop payload lacks background_tasks) → pane-banner fallback → unknown fallback
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch [, activity_epoch]])` - **Single source of truth** for state derivation. Without bulk fixtures (last args), forks per-session for tmux/ps (fetching pane_pid + session_activity in one call); with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place, plus an optional per-session activity epoch. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state (waiting_background passes through directly; Claude waiting_input refined to waiting_background via pane scan for CLIs whose Stop payload lacks background_tasks; a mtime-stale Claude running state is checked against the end-of-turn pane classifier, since a backgrounded turn's end writes nothing) → pane fallback (end-of-turn classifier, then background-wait scan) → unknown fallback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_hook_read(session, out_var [, now_epoch [, activity_epoch]])` - Read state from hook state file into a nameref (primary source for Claude sessions); no subshell, used inside `_state_resolve`. waiting_* states are persistent; the running state gets a 180s staleness gate measured against max(file mtime, tmux session_activity) — hooks only fire on tool calls, so a long pure-thinking stretch leaves the file stale while the spinner keeps pane activity fresh; a wedged agent ages out of both and falls to the unknown state
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Detect whether top pane is a plain shell (vs an agent process) from nameref bulk maps
-- `_state_pane_has_background_wait(session)` - Capture the agent pane and detect live background work via any of: the "Waiting for N background … to finish" banner (only when it is still the live line above the input box, not a stale scrollback copy), the "N shell(s)" / "N monitor(s)" counter in the bottom mode line, or a hollow-bullet agent-panel line ("○ general-purpose …") below it. Ignores the session-artifact line. Fork-free bash scan (one `capture-pane` fork). Fallback for CLIs whose Stop payload lacks the background_tasks field; gated by `_state_resolve` to idle-looking Claude sessions
+- `_state_pane_has_background_wait(session)` - Capture the agent pane and detect live background work via any of: the "Waiting for N background … to finish" banner (only when it is still the live line above the input box, not a stale scrollback copy), the completed-turn "N shell(s)/monitor(s) still running" status, the "N shell(s)" / "N monitor(s)" counter in the bottom mode line, or a hollow-bullet agent-panel line ("○ general-purpose …") below it. Ignores the session-artifact line. Fork-free bash scan (one `capture-pane` fork). Fallback for CLIs whose Stop payload lacks the background_tasks field; gated by `_state_resolve` to idle-looking Claude sessions
+- `_state_pane_end_of_turn_state(session)` - Classify the live status line pinned above the input box: banner or "still running" done-status → waiting_background; bare completed-turn status ("✻ Baked for 5m 25s") → waiting_input; live spinner / anything else → empty (inconclusive). Used for a mtime-stale running hook state and in the hook-silent fallback — covers backgrounded turns whose lifecycle hooks fire from a bg session context and never write. Only end-of-turn signals classify; the mode-line counter and agent panel render during live turns too and are ignored here
 - `_state_line_is_box_chrome(line)` - True when a pane line is Claude input-box chrome (full-width rule or prompt). Anchors the background-wait scan to the input box
 
 **Utils:**

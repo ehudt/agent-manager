@@ -403,6 +403,43 @@ test_state_background_wait() {
     assert_eq "unknown" "$st" \
         "_state_resolve: hook silent + no banner -> unknown"
 
+    # --- _state_pane_end_of_turn_state: classifies the live status line above
+    #     the input box. Used when the hook state can't be trusted (a
+    #     backgrounded turn's Stop never resolves to the am session). Only
+    #     end-of-turn signals count: mode-line counter (B) and agent panel (C)
+    #     render during live turns too, so they must NOT classify here. ---
+    local _foot2='  Fable 5 | pink-wekapp/WEKAPP-000 | 400k (40%) · ↑401k ↓125 · 5h33m'
+    # Completed-turn status with live background shell -> waiting_background.
+    MOCK_PANE=$'⏺ Committed the install fixes.\n✻ Worked for 1m 2s · 1 shell still running\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on · ← for agents · 1 shell'
+    assert_eq "waiting_background" "$(_state_pane_end_of_turn_state am-bg)" \
+        "_state_pane_eot: 'still running' done-status -> waiting_background"
+    # The waiting banner is end-of-turn by nature -> waiting_background.
+    MOCK_PANE=$'⏺ done\n✻ Waiting for 1 background agent to finish\n'"$_rule"$'\n❯ \n'"$_rule"
+    assert_eq "waiting_background" "$(_state_pane_end_of_turn_state am-bg)" \
+        "_state_pane_eot: waiting banner -> waiting_background"
+    # Completed-turn status without background work -> waiting_input. Typed
+    # (unsent) text inside the box must not affect the scan. Real capture.
+    MOCK_PANE=$'⏺ done with everything.\n✻ Baked for 5m 25s\n'"$_rule"$'\n❯ create a real jira ticket and update the branch\n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents'
+    assert_eq "waiting_input" "$(_state_pane_end_of_turn_state am-bg)" \
+        "_state_pane_eot: bare done-status -> waiting_input"
+    # Live turn: spinner status above the box, "1 shell" in the mode line.
+    # B must not classify and the spinner line blocks the scan -> inconclusive.
+    MOCK_PANE=$'⏺ working on it\n· Billowing… (10s · ↓ 289 tokens)\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on · ← for agents · 1 shell'
+    assert_eq "" "$(_state_pane_end_of_turn_state am-bg)" \
+        "_state_pane_eot: live turn + mode-line counter -> inconclusive"
+    # C (hollow-bullet agent panel) must not classify either.
+    MOCK_PANE=$'⏺ working\n· Improvising… (2m 1s)\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on · ← for agents\n● main\n○ general-purpose  Reading foo.py'
+    assert_eq "" "$(_state_pane_end_of_turn_state am-bg)" \
+        "_state_pane_eot: live turn + agent panel -> inconclusive"
+    # A done-status buried under newer transcript is stale -> inconclusive.
+    MOCK_PANE=$'✻ Baked for 5m 25s\n⏺ new turn output below the old status\n'"$_rule"$'\n❯ \n'"$_rule"
+    assert_eq "" "$(_state_pane_end_of_turn_state am-bg)" \
+        "_state_pane_eot: done-status buried in scrollback -> inconclusive"
+    # D also counts for the plain background-wait scan (waiting_input hooks).
+    MOCK_PANE=$'⏺ done\n✻ Baked for 4m 5s · 1 monitor still running\n'"$_rule"$'\n❯ \n'"$_rule"
+    assert_cmd_succeeds "_state_pane_has_bg: 'still running' done-status -> background" \
+        _state_pane_has_background_wait am-bg
+
     # --- bulk path: fresh session activity keeps a stale running file alive
     #     (long thinking stretch — no tool hooks, spinner repaints keep tmux
     #     activity current). Stale activity -> unknown (wedged agent). ---
@@ -413,13 +450,47 @@ test_state_background_wait() {
         || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')
     printf 'running' > "$tmp_state_dir/am-bg"
     touch -t "$_t_backdated" "$tmp_state_dir/am-bg"
+    MOCK_PANE=''   # no end-of-turn evidence in the pane
     st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
     assert_eq "running" "$st" \
         "_state_resolve bulk: stale running file + fresh activity -> running"
     st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 600 ))")
     assert_eq "unknown" "$st" \
         "_state_resolve bulk: stale running file + stale activity -> unknown"
+
+    # --- stale running + fresh activity + end-of-turn evidence in the pane ->
+    #     the classifier's verdict. Covers backgrounded turns (ctrl-b) whose
+    #     Stop fires from a bg session context and never writes: the file
+    #     stays 'running' and user presence keeps tmux activity fresh
+    #     (viewing/typing bumps it), so without the pane check the session
+    #     shows running forever after the turn ends. ---
+    printf 'running' > "$tmp_state_dir/am-bg"
+    touch -t "$_t_backdated" "$tmp_state_dir/am-bg"
+    MOCK_PANE=$'⏺ done.\n✻ Worked for 1m 2s · 1 shell still running\n────────────────────────\n❯ \n────────────────────────'
+    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
+    assert_eq "waiting_background" "$st" \
+        "_state_resolve: stale running + done-status-with-bg pane -> waiting_background"
+    MOCK_PANE=$'⏺ done.\n✻ Baked for 5m 25s\n────────────────────────\n❯ \n────────────────────────'
+    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
+    assert_eq "waiting_input" "$st" \
+        "_state_resolve: stale running + bare done-status pane -> waiting_input"
+    # Live turn (spinner above box): stays running.
+    MOCK_PANE=$'⏺ working\n· Billowing… (10s · ↓ 289 tokens)\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on · ← for agents · 1 shell'
+    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
+    assert_eq "running" "$st" \
+        "_state_resolve: stale running + live-turn pane stays running"
+    # Fresh running file: trusted, no pane scan (done-status on screen ignored).
+    printf 'running' > "$tmp_state_dir/am-bg"
+    MOCK_PANE=$'✻ Worked for 1m 2s · 1 shell still running'
+    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
+    assert_eq "running" "$st" \
+        "_state_resolve: fresh running not refined by done-status pane"
+    # Hook silent + bare done-status -> waiting_input via the fallback path.
     rm -f "$tmp_state_dir/am-bg"
+    MOCK_PANE=$'⏺ done.\n✻ Baked for 5m 25s\n────────────────────────\n❯ \n────────────────────────'
+    st=$(_state_resolve am-bg claude /tmp)
+    assert_eq "waiting_input" "$st" \
+        "_state_resolve: hook silent + bare done-status -> waiting_input"
 
     unset -f am_tmux _state_pane_is_shell_bulk
     rm -rf "$tmp_state_dir"
