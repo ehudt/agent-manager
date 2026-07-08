@@ -104,6 +104,20 @@ _state_line_is_box_chrome() {
     return 1
 }
 
+# Claude pins a persistent todo/task-list widget (header + one checkbox line
+# per task) near the input box while any tasks are tracked. It can render
+# between the background-wait banner and the box, so the upward scan in
+# _state_pane_has_background_wait must skip it like other chrome instead of
+# treating it as scrolled-away transcript.
+_STATE_TODO_HEADER_RE='^[[:space:]]*[0-9]+ tasks?[[:space:]]*\(.*\)[[:space:]]*$'
+_STATE_TODO_ITEM_RE='^[[:space:]]*[✓✔☑☒✗✘■□▪▫☐○●][[:space:]].*$'
+_state_line_is_todo_widget() {
+    local l="$1"
+    [[ "$l" =~ $_STATE_TODO_HEADER_RE ]] && return 0
+    [[ "$l" =~ $_STATE_TODO_ITEM_RE ]] && return 0
+    return 1
+}
+
 # Banner Claude pins directly above the input box when the main turn has ended
 # but a background agent/task/workflow is still in flight.
 _STATE_BG_BANNER_RE='[Ww]aiting for [0-9]+ background [a-zA-Z]+ to finish'
@@ -113,10 +127,19 @@ _STATE_BG_BANNER_RE='[Ww]aiting for [0-9]+ background [a-zA-Z]+ to finish'
 # for auto-mode background agents; either token means background work is live.
 # The digit prefix keeps prose ("when the monitor fires …") from matching.
 _STATE_BG_COUNTER_RE='[0-9]+ (shells?|monitors?)([^[:alpha:]]|$)'
+# Live agent-context panel below the mode line: a filled-bullet "main" line
+# (the foreground context) plus one hollow-bullet line per spawned agent still
+# being tracked, e.g. "● main" / "○ general-purpose  Reading foo.py". Any
+# hollow-bullet line means a background agent context is still live. The
+# anchored form is for the per-line box scan; bash's [[ =~ ]] anchors '^' to
+# the whole captured-pane string, not per embedded newline, so an unanchored
+# twin is used for the whole-pane fast-path substring check.
+_STATE_BG_AGENT_LINE_RE='^[[:space:]]*[○◯◦][[:space:]]+[[:alnum:]_-]+'
+_STATE_BG_AGENT_LINE_ANY_RE='[○◯◦][[:space:]]+[[:alnum:]_-]'
 
 # Detect whether the session's agent (top) pane shows that background work is
 # still running while the main turn looks idle (Stop fired -> waiting_input).
-# Two on-screen signals, either of which means waiting_background:
+# Three on-screen signals, any of which means waiting_background:
 #
 #   A. The "Waiting for N background <agent|task|workflow> to finish" banner,
 #      pinned directly above the input box while the turn blocks on background
@@ -124,6 +147,9 @@ _STATE_BG_COUNTER_RE='[0-9]+ (shells?|monitors?)([^[:alpha:]]|$)'
 #   B. The "N shell(s)" / "N monitor(s)" counter in the bottom mode line, shown
 #      while background shells or auto-mode background agents ("monitors")
 #      launched this turn are still running.
+#   C. A hollow-bullet line in the agent-context panel below the mode line
+#      (e.g. "○ general-purpose  Reading foo.py"), listing a spawned agent
+#      still tracked alongside the filled-bullet "● main" foreground line.
 #
 # Signal A's banner text persists in scrollback after the work finishes: Claude
 # then prints completion output ("⏺ … finished") and a fresh status line
@@ -132,9 +158,10 @@ _STATE_BG_COUNTER_RE='[0-9]+ (shells?|monitors?)([^[:alpha:]]|$)'
 # stays stuck on waiting_background long after the wait is over. So we only count
 # the banner when it is still the current status: anchor on the input box
 # (bottom-most prompt / full-width rule), then scan upward past blank lines, box
-# chrome, and the right-aligned hint line ("new task? /clear …"). The first
-# substantive line decides — the banner means live; any other left-aligned
-# transcript/status line means the banner has scrolled into history.
+# chrome, the live todo/task-list widget, and the right-aligned hint line ("new
+# task? /clear …"). The first substantive line decides — the banner means live;
+# any other left-aligned transcript/status line means the banner has scrolled
+# into history.
 #
 # Signal B's counter renders in the mode line *below* the input box, alongside
 # the footer and any session-artifact line ("⧉ name"). There is no transcript
@@ -143,6 +170,11 @@ _STATE_BG_COUNTER_RE='[0-9]+ (shells?|monitors?)([^[:alpha:]]|$)'
 # Signal B is a live count maintained by Claude, so it is self-healing — no
 # stale-scrollback problem.
 #
+# Signal C's agent panel renders in that same below-box footer region, right
+# alongside Signal B's counter, so it shares the same self-healing property —
+# Claude drops the hollow-bullet line once the agent finishes, no scrollback
+# staleness to guard against.
+#
 # Captures the current viewport (one fork); the scan itself is fork-free bash.
 # Callers gate this to idle-looking Claude sessions so busy/running and non-
 # Claude sessions never pay the capture-pane fork.
@@ -150,8 +182,9 @@ _STATE_BG_COUNTER_RE='[0-9]+ (shells?|monitors?)([^[:alpha:]]|$)'
 _state_pane_has_background_wait() {
     local session="$1" pane line
     pane=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null) || return 1
-    # Fast path: neither signal anywhere in the pane -> skip the line scan.
-    [[ "$pane" =~ $_STATE_BG_BANNER_RE || "$pane" =~ $_STATE_BG_COUNTER_RE ]] || return 1
+    # Fast path: no signal anywhere in the pane -> skip the line scan.
+    [[ "$pane" =~ $_STATE_BG_BANNER_RE || "$pane" =~ $_STATE_BG_COUNTER_RE \
+        || "$pane" =~ $_STATE_BG_AGENT_LINE_ANY_RE ]] || return 1
 
     local -a lines=()
     while IFS= read -r line; do lines+=("$line"); done <<< "$pane"
@@ -175,11 +208,12 @@ _state_pane_has_background_wait() {
         done
     fi
 
-    # Signal B — background-work counter (shell/monitor) in the mode line
-    # (below the box).
+    # Signal B/C — background-work counter (shell/monitor) or a hollow-bullet
+    # agent-panel line, both in the mode line / footer region below the box.
     if (( box_bottom < n )); then
         for (( i = box_bottom + 1; i < n; i++ )); do
             [[ "${lines[i]}" =~ $_STATE_BG_COUNTER_RE ]] && return 0
+            [[ "${lines[i]}" =~ $_STATE_BG_AGENT_LINE_RE ]] && return 0
         done
     fi
 
@@ -189,6 +223,7 @@ _state_pane_has_background_wait() {
         [[ "$line" =~ $_STATE_BG_BANNER_RE ]] && return 0
         [[ -z "${line//[[:space:]]/}" ]] && continue        # blank line
         _state_line_is_box_chrome "$line" && continue        # box rule / prompt
+        _state_line_is_todo_widget "$line" && continue       # todo/task list widget
         # Left-aligned content below the banner -> banner has scrolled away.
         [[ "$line" =~ ^[[:space:]]{0,3}[^[:space:]] ]] && return 1
         # else: a right-aligned hint line -> keep scanning upward.

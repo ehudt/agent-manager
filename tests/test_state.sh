@@ -257,6 +257,12 @@ test_state_background_wait() {
     MOCK_PANE=$'✻ Waiting for 2 background agents to finish\n                                                    ✘ Auto-update failed · Run /doctor\n'"$_rule"$'\n❯ continue with the remaining items\n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n  ⏺ main\n  ◯ general-purpose  Compiling reggie.py                    9m 53s · ↓ 145.0k tokens'
     assert_cmd_succeeds "_state_pane_has_bg: banner + typed input + auto-mode agent panel" \
         _state_pane_has_background_wait am-bg
+    # Live: banner above, but a todo/task-list widget (header + checkbox lines)
+    # renders between the banner and the input box (regression: the widget was
+    # mistaken for scrolled-away transcript, marking a live wait as stale).
+    MOCK_PANE=$'⏺ Implementation is underway.\n* Waiting for 1 background agent to finish\n\n  5 tasks (1 done, 1 in progress, 3 open)\n  ✓ Create feature branch for static-cluster support\n  ■ Implement StaticCluster env + spec loading\n  □ Review diff and run python lint\n  □ Offline smoke test of spec resolution\n  □ Live validation on a real cluster\n\n❯ \n'"$_rule"
+    assert_cmd_succeeds "_state_pane_has_bg: live banner above todo widget + box" \
+        _state_pane_has_background_wait am-bg
     # Stale: work finished — completion output and a fresh status line sit
     # between the old banner and the input box (regression for the stuck
     # waiting_background bug).
@@ -290,6 +296,17 @@ test_state_background_wait() {
     # No shell, no live banner, just a session artifact -> not background.
     MOCK_PANE=$'⏺ all done\n✻ Brewed for 1m 2s\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on  ← for agents\n🗀 netmix-coverage'
     assert_cmd_fails "_state_pane_has_bg: session artifact alone -> not background" \
+        _state_pane_has_background_wait am-bg
+
+    # --- agent-context panel (mode line footer): a hollow-bullet entry other
+    #     than "main" means a spawned agent is still tracked -> background.
+    #     No banner, no shell/monitor counter — the panel alone must be enough.
+    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n● main\n○ general-purpose  Grepping subcommands/lab.py for options builder'
+    assert_cmd_succeeds "_state_pane_has_bg: hollow-bullet agent line alone -> background" \
+        _state_pane_has_background_wait am-bg
+    # "main" alone (no other agent line) must NOT trigger background.
+    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on  ← for agents\n● main'
+    assert_cmd_fails "_state_pane_has_bg: 'main' alone -> not background" \
         _state_pane_has_background_wait am-bg
 
     # --- resolver wiring (bypass shell check so we reach the hook layer) ---
