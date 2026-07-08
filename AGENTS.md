@@ -113,10 +113,15 @@ description, …}`), pruned to `[]` once everything finishes — and the hook
 writes `waiting_background` when any entry has `status == "running"`. `Stop`
 re-fires when background work completes (the completion re-invokes Claude for
 a wrap-up turn), so the state self-heals without any pane involvement. The
-race guard in `state-hook.sh` protects `waiting_background` like
-`waiting_input`: a background subagent's own tool calls fire
-`PreToolUse`/`PostToolUse` in the session, and must not flip the state to
-`running`; only `UserPromptSubmit` or the next `Stop` moves it forward.
+race guard in `state-hook.sh` protects `waiting_background` unconditionally: a
+background subagent's own tool calls fire `PreToolUse`/`PostToolUse` in the
+session for as long as it runs, and must not flip the state to `running`; only
+`UserPromptSubmit` or the next `Stop` moves it forward. `waiting_input` gets a
+*bounded* guard instead (grace window, `AM_STATE_GUARD_SECS`, default 10s):
+the trailing-hook race it absorbs is milliseconds-scale, and a turn can resume
+without `UserPromptSubmit` (answering an in-turn question dialog continues the
+same turn), so tool hooks arriving after the window are genuine activity and
+flip the state back to `running`.
 
 For CLIs whose `Stop` payload lacks `background_tasks` (older Claude Code,
 hook-silent fallback), detection falls back to scanning the agent pane in

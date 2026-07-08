@@ -28,8 +28,10 @@
 # and the pane-scan fallback in lib/state.sh still applies.
 #
 # Environment overrides (for testing):
-#   AM_REGISTRY   — path to sessions.json (default: ~/.agent-manager/sessions.json)
-#   AM_STATE_DIR  — directory for state files (default: /tmp/am-state/)
+#   AM_REGISTRY          — path to sessions.json (default: ~/.agent-manager/sessions.json)
+#   AM_STATE_DIR         — directory for state files (default: /tmp/am-state/)
+#   AM_STATE_GUARD_SECS  — grace window (s) during which tool hooks may not
+#                          flip waiting_input back to running (default: 10)
 #
 # Session identification (in order of preference):
 #   1. $AM_SESSION_NAME (exported by am when launching the agent) — exact match
@@ -173,16 +175,24 @@ fi
 # Race protection: a late PostToolUse can arrive after Stop has already
 # written waiting_input (hooks run concurrently, slow tool hook finishes last).
 # waiting_input is terminal — the agent is idle and the user is in the loop —
-# so a late tool hook must not flip it back to running. Only UserPromptSubmit
-# (explicit user action) may transition waiting_input → running.
+# so a late tool hook must not flip it back to running.
 #
-# waiting_background gets the same protection, and needs it even more: a
-# background subagent's own tool calls fire PreToolUse/PostToolUse in this
-# session for as long as it runs, and without the guard the first one would
-# flip the state to running and erase the background refinement. The state
-# still moves forward on its own — Stop re-fires when the background work
-# completes (with a pruned background_tasks) — and UserPromptSubmit remains
-# the user-driven exit.
+# The waiting_input guard is bounded by a grace window (AM_STATE_GUARD_SECS
+# after the write, default 10s) because a turn can *resume without
+# UserPromptSubmit*: an in-turn question dialog (AskUserQuestion) idles long
+# enough for Notification[idle_prompt] to write waiting_input, and answering
+# it continues the same turn — no new prompt event, only PreToolUse/
+# PostToolUse. An unconditional guard swallowed those forever, pinning the
+# session at waiting_input while it was actively working. The trailing-hook
+# race it exists for is a milliseconds-scale problem, so a short window
+# absorbs it while letting genuine resumed activity flip to running.
+#
+# waiting_background is guarded *unconditionally*: a background subagent's
+# own tool calls fire PreToolUse/PostToolUse in this session for as long as
+# it runs (minutes), so any time window would eventually let them erase the
+# refinement. The state still moves forward on its own — Stop re-fires when
+# the background work completes (with a pruned background_tasks) — and
+# UserPromptSubmit remains the user-driven exit.
 #
 # waiting_permission and waiting_custom are explicitly *transient*: they unblock
 # when the user answers, after which Claude/Codex resumes work and fires
@@ -192,7 +202,13 @@ state_file="$AM_STATE_DIR/$session_name"
 if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
     case "$current" in
-        waiting_input|waiting_background) exit 0 ;;
+        waiting_background) exit 0 ;;
+        waiting_input)
+            state_mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null || echo 0)
+            if (( $(date +%s) - state_mtime <= ${AM_STATE_GUARD_SECS:-10} )); then
+                exit 0
+            fi
+            ;;
     esac
 fi
 

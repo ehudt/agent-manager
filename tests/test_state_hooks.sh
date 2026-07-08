@@ -102,24 +102,41 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "PostToolUse: writes running"
 
-    # --- PostToolUse does NOT clobber waiting_input (race protection) ---
-    # Claude Code may deliver a delayed PostToolUse from a previous turn after
-    # Stop has already written waiting_input. That must not revert the state.
-    # The agent is idle and the user is in the loop; a late tool hook must not
-    # flip it back.
+    # --- PostToolUse does NOT clobber a fresh waiting_input (race protection) ---
+    # Claude Code may deliver a delayed PostToolUse from a previous turn
+    # milliseconds after Stop has already written waiting_input. Within the
+    # grace window (AM_STATE_GUARD_SECS) that must not revert the state.
     printf 'waiting_input' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "PostToolUse: does not clobber waiting_input"
+    assert_eq "waiting_input" "$state" "PostToolUse: does not clobber fresh waiting_input"
 
-    # --- PostToolUse does NOT clobber waiting_background either ---
+    # --- PostToolUse DOES flip an aged waiting_input back to running ---
+    # A turn can resume without UserPromptSubmit (answering an in-turn
+    # question dialog continues the same turn), so tool hooks arriving after
+    # the grace window are genuine new activity, not the trailing-hook race.
+    # An unconditional guard pinned such sessions at waiting_input forever.
+    printf 'waiting_input' > "$state_dir/am-abc123"
+    touch -t 202601010000 "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "running" "$state" "PostToolUse: flips aged waiting_input to running (resumed turn)"
+
+    # --- PostToolUse does NOT clobber waiting_background, fresh OR aged ---
     # A background subagent's own tool calls fire PreToolUse/PostToolUse in
-    # this session for as long as it runs; without the guard the first one
-    # would erase the background refinement.
+    # this session for as long as it runs (minutes), so waiting_background is
+    # guarded unconditionally — no grace window. Stop re-fires when the work
+    # completes, so the state cannot stick.
     printf 'waiting_background' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_background" "$state" "PostToolUse: does not clobber waiting_background"
+    assert_eq "waiting_background" "$state" "PostToolUse: does not clobber fresh waiting_background"
+
+    printf 'waiting_background' > "$state_dir/am-abc123"
+    touch -t 202601010000 "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_background" "$state" "PostToolUse: does not clobber aged waiting_background"
 
     # --- PostToolUse DOES transition waiting_permission -> running ---
     # After the user grants a permission prompt, the tool runs and PostToolUse
