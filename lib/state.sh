@@ -37,13 +37,19 @@ _state_debug() {
 
 # Read session state from $AM_STATE_DIR/<session> into a caller-supplied var.
 # Terminal waiting_* states are persistent (no staleness gate). running gets a
-# 180s gate so a crashed mid-tool-call agent falls through to 'unknown' instead
-# of looking busy forever.
-# Usage: _state_hook_read <session> <out_var> [now_epoch]
+# 180s gate so a wedged agent falls through to 'unknown' instead of looking
+# busy forever — but the gate is measured against max(file mtime, tmux
+# session_activity), not the file alone. Hooks only fire on tool calls, so a
+# long pure-thinking stretch (minutes of LLM output, zero tools) legitimately
+# leaves the file stale while the agent is alive; Claude repaints its spinner
+# timer every second, so pane activity stays fresh for the whole turn. A
+# genuinely wedged agent stops repainting and ages out of both signals.
+# Usage: _state_hook_read <session> <out_var> [now_epoch] [activity_epoch]
 _state_hook_read() {
     local session="$1"
     local -n __out="$2"
     local now_epoch="${3:-}"
+    local activity_epoch="${4:-}"
     __out=""
     local state_file="$AM_STATE_DIR/$session"
     [[ -f "$state_file" ]] || return 0
@@ -56,7 +62,10 @@ _state_hook_read() {
         waiting_input|waiting_permission|waiting_custom|waiting_background)
             __out="$line" ;;
         running)
-            (( now_epoch - mtime > 180 )) && return 0
+            local fresh_ref=$mtime
+            [[ "$activity_epoch" =~ ^[0-9]+$ ]] && (( activity_epoch > fresh_ref )) \
+                && fresh_ref=$activity_epoch
+            (( now_epoch - fresh_ref > 180 )) && return 0
             __out="$line" ;;
     esac
 }
@@ -252,19 +261,21 @@ _state_pane_has_background_wait() {
 #
 # Usage:
 #   _state_resolve <session> <agent_type> <dir>
-#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch>
+#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch> [activity_epoch]
 _state_resolve() {
     local session="$1" agent_type="${2:-}" dir="${3:-}"
 
-    local top_name comm_name child_name now_val
+    local top_name comm_name child_name now_val activity_val=""
     local -A __auto_top=() __auto_comm=() __auto_child=()
     local skip_classifier=false
     if (( $# >= 7 )); then
         top_name="$4"; comm_name="$5"; child_name="$6"; now_val="$7"
+        activity_val="${8:-}"
         skip_classifier=true
     else
         local pane_pid
-        pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
+        read -r pane_pid activity_val <<< "$(am_tmux display-message -p \
+            -t "${session}:.{top}" '#{pane_pid} #{session_activity}' 2>/dev/null || true)"
         [[ -n "$pane_pid" ]] && __auto_top[$session]=$pane_pid
         local _p _pp _c
         while read -r _p _pp _c; do
@@ -307,7 +318,7 @@ _state_resolve() {
 
     # 2. Hook file
     local hook_state=""
-    _state_hook_read "$session" hook_state "$now_val"
+    _state_hook_read "$session" hook_state "$now_val" "$activity_val"
     if [[ -n "$hook_state" ]]; then
         # Claude's main turn can stop (waiting_input) while background agents /
         # tasks / shells keep running. On Claude Code ≥2.1 the hook writes

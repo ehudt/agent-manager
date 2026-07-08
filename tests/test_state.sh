@@ -45,6 +45,29 @@ test_state() {
     _state_hook_read "am-foo" got
     assert_eq "" "$got" "_state_hook_read: stale running drops"
 
+    # --- running + fresh pane activity survives a stale state file. A turn can
+    #     run for many minutes with zero tool calls (long thinking stretch), so
+    #     no hook refreshes the file — but Claude repaints its spinner timer
+    #     every second, keeping tmux session_activity fresh. Staleness is
+    #     measured against max(file mtime, activity). ---
+    local now_epoch
+    now_epoch=$(date +%s)
+    printf 'running' > "$tmp_state_dir/am-foo"
+    touch -t "$backdated" "$tmp_state_dir/am-foo"
+    got=""
+    _state_hook_read "am-foo" got "$now_epoch" "$(( now_epoch - 3 ))"
+    assert_eq "running" "$got" "_state_hook_read: stale file + fresh activity stays running"
+
+    # Activity as stale as the file -> still drops (wedged agent).
+    got=""
+    _state_hook_read "am-foo" got "$now_epoch" "$(( now_epoch - 600 ))"
+    assert_eq "" "$got" "_state_hook_read: stale file + stale activity drops"
+
+    # Non-numeric / missing activity falls back to mtime-only behavior.
+    got=""
+    _state_hook_read "am-foo" got "$now_epoch" ""
+    assert_eq "" "$got" "_state_hook_read: stale file + empty activity drops"
+
     # --- waiting_* survives staleness (terminal states are persistent) ---
     printf 'waiting_input' > "$tmp_state_dir/am-foo"
     touch -t "$backdated" "$tmp_state_dir/am-foo"
@@ -379,6 +402,24 @@ test_state_background_wait() {
     st=$(_state_resolve am-bg claude /tmp)
     assert_eq "unknown" "$st" \
         "_state_resolve: hook silent + no banner -> unknown"
+
+    # --- bulk path: fresh session activity keeps a stale running file alive
+    #     (long thinking stretch — no tool hooks, spinner repaints keep tmux
+    #     activity current). Stale activity -> unknown (wedged agent). ---
+    local -A _T_TOP=() _T_COMM=() _T_CHILD=()
+    local _t_now _t_backdated
+    _t_now=$(date +%s)
+    _t_backdated=$(date -v-5M '+%Y%m%d%H%M.%S' 2>/dev/null \
+        || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')
+    printf 'running' > "$tmp_state_dir/am-bg"
+    touch -t "$_t_backdated" "$tmp_state_dir/am-bg"
+    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
+    assert_eq "running" "$st" \
+        "_state_resolve bulk: stale running file + fresh activity -> running"
+    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 600 ))")
+    assert_eq "unknown" "$st" \
+        "_state_resolve bulk: stale running file + stale activity -> unknown"
+    rm -f "$tmp_state_dir/am-bg"
 
     unset -f am_tmux _state_pane_is_shell_bulk
     rm -rf "$tmp_state_dir"

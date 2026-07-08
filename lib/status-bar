@@ -191,7 +191,7 @@ for i in "${!session_meta[@]}"; do
     fi
 
     state=$(_state_resolve "$session" "$agent_type" "$dir" \
-        SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now")
+        SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now" "$activity")
     [[ -z "$state" ]] && state="idle"
 
     age=""
