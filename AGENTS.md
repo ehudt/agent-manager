@@ -129,7 +129,7 @@ for waiting_* tabs, "running for" on running tabs.
 | Hook Event | Matcher | am State |
 |---|---|---|
 | `Stop` | — | `waiting_input`, or `waiting_background` when the payload's `background_tasks` lists running work |
-| `Notification` | `idle_prompt` | `waiting_input` (same `background_tasks` refinement) |
+| `Notification` | `idle_prompt` | `waiting_input` (same `background_tasks` refinement; without the field it cannot downgrade `waiting_background` — idle_prompt's payload omits it) |
 | `Notification` | `permission_prompt` | `waiting_permission` |
 | `Notification` | `elicitation_dialog` | `waiting_custom` |
 | `UserPromptSubmit` | — | `running` |

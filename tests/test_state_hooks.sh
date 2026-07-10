@@ -258,6 +258,30 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "waiting_background" "$state" "Notification[idle_prompt] + running background_tasks: writes waiting_background"
 
+    # --- Notification[idle_prompt] WITHOUT the background_tasks field must
+    #     not downgrade waiting_background. idle_prompt fires ~60s into an
+    #     idle wait with no background_tasks in its payload — it knows
+    #     nothing about background work (observed live: it flipped
+    #     waiting_background to waiting_input exactly 60s after every Stop
+    #     while the background shell/agent was still running). ---
+    printf 'waiting_background' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_background" "$state" "Notification[idle_prompt] without background_tasks: keeps waiting_background"
+
+    # With the field present and pruned, the downgrade is legitimate.
+    printf 'waiting_background' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\",\"background_tasks\":[]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_input" "$state" "Notification[idle_prompt] + empty background_tasks: downgrades to waiting_input"
+
+    # Field-less idle_prompt over a plain waiting_input is still a same-state
+    # no-op write path (nothing to protect).
+    printf 'waiting_input' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "waiting_input" "$state" "Notification[idle_prompt] without background_tasks over waiting_input: unchanged"
+
     # --- Duplicate cwd: AM_SESSION_NAME disambiguates which session to update ---
     # Two am sessions can share a cwd (e.g., multiple Claude instances in the
     # same repo). Without AM_SESSION_NAME the hook would blindly pick the first

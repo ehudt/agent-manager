@@ -10,7 +10,9 @@
 #                                      when the payload's background_tasks
 #                                      array lists work still running
 #   Notification[idle_prompt]        → waiting_input (same background_tasks
-#                                      refinement, when the field is present)
+#                                      refinement when the field is present;
+#                                      without it, never downgrades
+#                                      waiting_background)
 #   Notification[permission_prompt]  → waiting_permission
 #   Notification[elicitation_dialog] → waiting_custom
 #   UserPromptSubmit                 → running
@@ -83,6 +85,15 @@ _bg_running_count() {
     printf '%s' "$hook_input" \
         | jq '[.background_tasks[]? | select(.status == "running")] | length' 2>/dev/null \
         || echo 0
+}
+
+# Does the payload carry the background_tasks field at all? Events that lack
+# it (Notification idle_prompt fires without it) know nothing about
+# background work and must not downgrade waiting_background — only an event
+# that positively reports the field pruned/empty (Stop) may move it to
+# waiting_input.
+_bg_field_present() {
+    printf '%s' "$hook_input" | jq -e 'has("background_tasks")' >/dev/null 2>&1
 }
 
 # Map hook event to am state
@@ -210,6 +221,21 @@ if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$sta
             fi
             ;;
     esac
+fi
+
+# waiting_background may only be downgraded to waiting_input by an event
+# whose payload actually carries the background_tasks field (Stop always
+# does; it re-fires with a pruned array when the work finishes). Events
+# without the field — Notification[idle_prompt] fires ~60s into an idle
+# wait with no background_tasks — carry no information about background
+# work and must not clobber the state (observed live: idle_prompt flipped
+# waiting_background to waiting_input exactly 60s after every Stop while
+# the background shell/agent was still running).
+if [[ "$am_state" == "waiting_input" && -f "$state_file" ]]; then
+    current=$(head -1 "$state_file" 2>/dev/null || true)
+    if [[ "$current" == "waiting_background" ]] && ! _bg_field_present; then
+        exit 0
+    fi
 fi
 
 # Write state to file — only on a state *transition*. Same-state rewrites are
