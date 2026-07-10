@@ -147,14 +147,16 @@ done < <(am_tmux list-clients -F '#{client_width}' 2>/dev/null || true)
 (( _AVAIL_WIDTH == 0 )) && _AVAIL_WIDTH=200
 (( _AVAIL_WIDTH < 40 )) && _AVAIL_WIDTH=40
 
-# Bulk pane-pid fetch: one tmux list-panes call indexes the top pane for each
-# session. Replaces N `display-message #{pane_pid}` forks inside the loop.
-declare -A SESSION_TOP_PID=()
-while IFS='|' read -r _bp_sess _bp_top _bp_pid; do
+# Bulk pane-pid + pane-title fetch: one tmux list-panes call indexes the top
+# pane for each session. Replaces N `display-message` forks inside the loop.
+# Title is the last field so embedded '|' in a title cannot shift the parse.
+declare -A SESSION_TOP_PID=() SESSION_TITLE=()
+while IFS='|' read -r _bp_sess _bp_top _bp_pid _bp_title; do
     [[ "$_bp_top" == "1" ]] || continue
     [[ "$_bp_sess" == "${AM_SESSION_PREFIX}"* ]] || continue
     SESSION_TOP_PID[$_bp_sess]=$_bp_pid
-done < <(am_tmux list-panes -a -F '#{session_name}|#{pane_at_top}|#{pane_pid}' 2>/dev/null || true)
+    SESSION_TITLE[$_bp_sess]=$_bp_title
+done < <(am_tmux list-panes -a -F '#{session_name}|#{pane_at_top}|#{pane_pid}|#{pane_title}' 2>/dev/null || true)
 
 # Bulk process-table fetch: one ps -eo call yields comm + children for every
 # pid. Replaces ~3 ps forks per session in _state_pane_is_shell.
@@ -191,7 +193,7 @@ for i in "${!session_meta[@]}"; do
     fi
 
     state=$(_state_resolve "$session" "$agent_type" "$dir" \
-        SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now" "$activity")
+        SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now" "$activity" SESSION_TITLE)
     [[ -z "$state" ]] && state="idle"
 
     # Tab age = time in current state. The hook state file's mtime is the

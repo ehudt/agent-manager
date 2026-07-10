@@ -199,6 +199,18 @@ probe_resolve_bulk() {
         __PB_TOP __PB_COMM __PB_CHILD "$__PB_NOW" 2>/dev/null || true
 }
 
+# Bulk path with an injected pane title (Claude's self-maintained glyph
+# title). Drives the title-glyph layer without a real tmux pane.
+# Usage: probe_resolve_titled <session> <agent> <dir> <title>
+probe_resolve_titled() {
+    declare -A __PT_TOP=() __PT_COMM=() __PT_CHILD=() __PT_TITLE=()
+    __PT_TITLE[$1]="$4"
+    local __PT_NOW
+    __PT_NOW=$(date +%s)
+    _state_resolve "$1" "$2" "$3" \
+        __PT_TOP __PT_COMM __PT_CHILD "$__PT_NOW" "" __PT_TITLE 2>/dev/null || true
+}
+
 lab_report() {
     local total=$LAB_TESTS_RUN pass=$LAB_TESTS_PASSED fail=$LAB_TESTS_FAILED
     printf '\n' >&2

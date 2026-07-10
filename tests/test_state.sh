@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test_state.sh - Tests for lib/state.sh (hook + ps tree only)
+# tests/test_state.sh - Tests for lib/state.sh (title glyph + hook + ps tree)
 
 test_state() {
     $SUMMARY_MODE || echo "=== Testing state.sh (unit) ==="
@@ -209,8 +209,8 @@ test_state_integration() {
     $SUMMARY_MODE || echo ""
 }
 
-test_state_background_wait() {
-    $SUMMARY_MODE || echo "=== Testing waiting_background detection ==="
+test_state_title_glyph() {
+    $SUMMARY_MODE || echo "=== Testing title-glyph state detection ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -224,275 +224,147 @@ test_state_background_wait() {
     tmp_state_dir=$(mktemp -d)
     AM_STATE_DIR="$tmp_state_dir"
 
-    # Mock the agent pane: am_tmux capture-pane echoes $MOCK_PANE. Other tmux
-    # subcommands the resolver calls (display-message for pane_pid) return empty
-    # so the shell check finds no top pid; we also stub the shell check below.
-    local MOCK_PANE=""
-    am_tmux() {
-        case "${1:-}" in
-            capture-pane) printf '%s\n' "$MOCK_PANE" ;;
-            *) return 0 ;;
-        esac
+    # --- _state_title_signal: glyph classification ---
+    local sig
+    local frame
+    for frame in "⠂" "⠐" "⠋" "⣿" "⠀"; do
+        _state_title_signal "${frame} Fixing the bug" sig
+        assert_eq "busy" "$sig" "_state_title_signal: braille frame '${frame}' -> busy"
+    done
+    _state_title_signal "✳ Fix the bug" sig
+    assert_eq "attention" "$sig" "_state_title_signal: ✳ -> attention"
+    _state_title_signal "✳ Claude Code" sig
+    assert_eq "attention" "$sig" "_state_title_signal: fresh-session '✳ Claude Code' -> attention"
+    _state_title_signal "myhost.local" sig
+    assert_eq "none" "$sig" "_state_title_signal: hostname title -> none"
+    _state_title_signal "" sig
+    assert_eq "none" "$sig" "_state_title_signal: empty title -> none"
+    _state_title_signal "~/code/agent-manager" sig
+    assert_eq "none" "$sig" "_state_title_signal: shell path title -> none"
+    _state_title_signal "✻ Baked for 5m" sig
+    assert_eq "none" "$sig" "_state_title_signal: other decoration (✻) -> none"
+
+    # --- resolver decision table (bulk path; empty maps bypass the shell
+    #     check, title injected via the title map) ---
+    local -A _T_TOP=() _T_COMM=() _T_CHILD=() _T_TITLE=()
+    local _t_now _t_backdated st
+    _t_now=$(date +%s)
+    _t_backdated=$(date -v-10M '+%Y%m%d%H%M.%S' 2>/dev/null \
+        || date -d '10 minutes ago' '+%Y%m%d%H%M.%S')
+
+    _resolve() {  # session agent -> state (bulk, stale activity by default)
+        _state_resolve "$1" "$2" /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 600 ))" _T_TITLE
     }
 
-    # --- _state_pane_has_background_wait: regex coverage ---
-    MOCK_PANE=$'doing things\n✻ Waiting for 1 background agent to finish\n> '
-    assert_cmd_succeeds "_state_pane_has_bg: singular agent banner" \
-        _state_pane_has_background_wait am-bg
-    MOCK_PANE='Waiting for 3 background agents to finish'
-    assert_cmd_succeeds "_state_pane_has_bg: plural agents" \
-        _state_pane_has_background_wait am-bg
-    MOCK_PANE='Waiting for 2 background tasks to finish'
-    assert_cmd_succeeds "_state_pane_has_bg: background tasks" \
-        _state_pane_has_background_wait am-bg
-    MOCK_PANE='Waiting for 1 background workflow to finish'
-    assert_cmd_succeeds "_state_pane_has_bg: background workflow" \
-        _state_pane_has_background_wait am-bg
-    MOCK_PANE=$'normal output\n> waiting for your reply'
-    assert_cmd_fails "_state_pane_has_bg: unrelated text ignored" \
-        _state_pane_has_background_wait am-bg
-    MOCK_PANE=''
-    assert_cmd_fails "_state_pane_has_bg: empty pane" \
-        _state_pane_has_background_wait am-bg
+    # busy glyph: trust Claude's own indicator
+    _T_TITLE[am-g]="⠂ Fixing the bug"
+    printf 'running' > "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: busy + fresh running -> running"
 
-    # --- live vs. stale banner: the banner persists in scrollback after the
-    #     background work finishes, so a match only counts when the banner is
-    #     still the current status line (pinned just above the input box). ---
-    local _rule='────────────────────────'
-    local _foot='  opus | blue-wekapp/ehud-network-mix-setup | 180k (18%) · ⚡ 167k +13k · $176.9'
-    # Live: banner pinned directly above the input box.
-    MOCK_PANE=$'⏺ working\n✻ Waiting for 1 background agent to finish\n'"$_rule"$'\n❯ \n'"$_rule"
-    assert_cmd_succeeds "_state_pane_has_bg: live banner above input box" \
-        _state_pane_has_background_wait am-bg
-    # Live: banner + right-aligned hint line still counts.
-    MOCK_PANE=$'⏺ working\n✻ Waiting for 2 background tasks to finish\n                                        new task? /clear to save 5k tokens\n'"$_rule"$'\n❯ \n'"$_rule"
-    assert_cmd_succeeds "_state_pane_has_bg: live banner above hint+box" \
-        _state_pane_has_background_wait am-bg
-    # Live: banner above the box, but the input box holds TYPED text. The typed
-    # line sits between the two box rules and must be treated as box interior,
-    # not as transcript that scrolled the banner away (regression: typed input
-    # aborted the upward scan -> green session with agents still running).
-    MOCK_PANE=$'⏺ working\n✻ Waiting for 2 background agents to finish\n'"$_rule"$'\n❯ continue with the remaining items\n'"$_rule"
-    assert_cmd_succeeds "_state_pane_has_bg: live banner above box with typed input" \
-        _state_pane_has_background_wait am-bg
-    # Live: real auto-mode capture — banner above, typed input in the box, and
-    # the auto-mode agent panel listed below (no "N monitor" counter token).
-    MOCK_PANE=$'✻ Waiting for 2 background agents to finish\n                                                    ✘ Auto-update failed · Run /doctor\n'"$_rule"$'\n❯ continue with the remaining items\n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n  ⏺ main\n  ◯ general-purpose  Compiling reggie.py                    9m 53s · ↓ 145.0k tokens'
-    assert_cmd_succeeds "_state_pane_has_bg: banner + typed input + auto-mode agent panel" \
-        _state_pane_has_background_wait am-bg
-    # Live: banner above, but a todo/task-list widget (header + checkbox lines)
-    # renders between the banner and the input box (regression: the widget was
-    # mistaken for scrolled-away transcript, marking a live wait as stale).
-    MOCK_PANE=$'⏺ Implementation is underway.\n* Waiting for 1 background agent to finish\n\n  5 tasks (1 done, 1 in progress, 3 open)\n  ✓ Create feature branch for static-cluster support\n  ■ Implement StaticCluster env + spec loading\n  □ Review diff and run python lint\n  □ Offline smoke test of spec resolution\n  □ Live validation on a real cluster\n\n❯ \n'"$_rule"
-    assert_cmd_succeeds "_state_pane_has_bg: live banner above todo widget + box" \
-        _state_pane_has_background_wait am-bg
-    # Stale: work finished — completion output and a fresh status line sit
-    # between the old banner and the input box (regression for the stuck
-    # waiting_background bug).
-    MOCK_PANE=$'⏺ starting\n✻ Waiting for 1 background agent to finish\n⏺ Agent "x" finished · 52s\n⏺ Verdict: done\n✻ Brewed for 2m 22s\n'"$_rule"$'\n❯ \n'"$_rule"
-    assert_cmd_fails "_state_pane_has_bg: stale banner in scrollback ignored" \
-        _state_pane_has_background_wait am-bg
+    # THE regression case: long quiet tool call — state file AND tmux activity
+    # both >180s stale while the turn is live. Old resolver fell to pane
+    # heuristics / unknown and flapped; the glyph keeps it running.
+    printf 'running' > "$tmp_state_dir/am-g"
+    touch -t "$_t_backdated" "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: busy + stale running + stale activity -> running (no flap)"
 
-    # --- background-shell counter (mode line below the input box) and the
-    #     session-artifact line, which must NOT affect state. ---
-    # "N shell" in the mode line -> background work running.
-    MOCK_PANE=$'⏺ done\n✻ Brewed for 1m 2s\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on · 1 shell  ← for agents\n🗀 netmix-coverage'
-    assert_cmd_succeeds "_state_pane_has_bg: '1 shell' in mode line -> background" \
-        _state_pane_has_background_wait am-bg
-    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n  ⏵⏵ auto mode on · 2 shells  ← for agents'
-    assert_cmd_succeeds "_state_pane_has_bg: '2 shells' plural -> background" \
-        _state_pane_has_background_wait am-bg
-    # "N monitor" in the mode line -> background work running. Monitors are the
-    # mode-line counter Claude shows for auto-mode background agents; the status
-    # line above the box ("… · 1 monitor still running") also mentions it but the
-    # below-box mode-line token is the authoritative live count.
-    MOCK_PANE=$'⏺ done\n✻ Baked for 4m 5s · 1 monitor still running\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on · 1 monitor · ← for agents'
-    assert_cmd_succeeds "_state_pane_has_bg: '1 monitor' in mode line -> background" \
-        _state_pane_has_background_wait am-bg
-    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n  ⏵⏵ auto mode on · 2 monitors · ← for agents'
-    assert_cmd_succeeds "_state_pane_has_bg: '2 monitors' plural -> background" \
-        _state_pane_has_background_wait am-bg
-    # "monitor" in prose (no digit prefix) must NOT trigger background.
-    MOCK_PANE=$'when the monitor fires Ready → quarantine\n'"$_rule"$'\n❯ \n'"$_rule"$'\n  ⏵⏵ auto mode on  ← for agents'
-    assert_cmd_fails "_state_pane_has_bg: prose 'monitor' (no count) -> not background" \
-        _state_pane_has_background_wait am-bg
-    # No shell, no live banner, just a session artifact -> not background.
-    MOCK_PANE=$'⏺ all done\n✻ Brewed for 1m 2s\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on  ← for agents\n🗀 netmix-coverage'
-    assert_cmd_fails "_state_pane_has_bg: session artifact alone -> not background" \
-        _state_pane_has_background_wait am-bg
+    # wrap-up turn after background work: file still waiting_input, spinner up
+    printf 'waiting_input' > "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: busy + waiting_input -> running (turn resumed / wrap-up)"
 
-    # --- agent-context panel (mode line footer): a hollow-bullet entry other
-    #     than "main" means a spawned agent is still tracked -> background.
-    #     No banner, no shell/monitor counter — the panel alone must be enough.
-    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n● main\n○ general-purpose  Grepping subcommands/lab.py for options builder'
-    assert_cmd_succeeds "_state_pane_has_bg: hollow-bullet agent line alone -> background" \
-        _state_pane_has_background_wait am-bg
-    # "main" alone (no other agent line) must NOT trigger background.
-    MOCK_PANE=$'⏺ done\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot"$'\n  ⏵⏵ auto mode on  ← for agents\n● main'
-    assert_cmd_fails "_state_pane_has_bg: 'main' alone -> not background" \
-        _state_pane_has_background_wait am-bg
+    # pending dialogs need the user even if a spinner frame lingers
+    printf 'waiting_permission' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_permission" "$(_resolve am-g claude)" \
+        "resolve: busy + waiting_permission passes through"
+    printf 'waiting_custom' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_custom" "$(_resolve am-g claude)" \
+        "resolve: busy + waiting_custom passes through"
 
-    # --- resolver wiring (bypass shell check so we reach the hook layer) ---
-    _state_pane_is_shell_bulk() { return 1; }
+    # hook never fired (first turn just started)
+    rm -f "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: busy + no hook file -> running"
 
-    local st
-    printf 'waiting_input' > "$tmp_state_dir/am-bg"
-    MOCK_PANE='✻ Waiting for 1 background agent to finish'
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_background" "$st" \
-        "_state_resolve: waiting_input + banner (claude) -> waiting_background"
+    # attention glyph: waiting_* flavors pass through from the hook
+    _T_TITLE[am-g]="✳ Fixing the bug"
+    printf 'waiting_input' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_input" "$(_resolve am-g claude)" \
+        "resolve: attention + waiting_input -> waiting_input"
+    printf 'waiting_background' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_background" "$(_resolve am-g claude)" \
+        "resolve: attention + waiting_background passes through (no pane scan)"
+    printf 'waiting_permission' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_permission" "$(_resolve am-g claude)" \
+        "resolve: attention + waiting_permission passes through"
 
-    st=$(_state_resolve am-bg codex /tmp)
-    assert_eq "waiting_input" "$st" \
-        "_state_resolve: banner not scanned for non-claude agent"
+    # attention + 'running' left behind: backgrounded turn whose lifecycle
+    # hooks never resolved here. Resolves waiting_input AND self-heals the
+    # file so its mtime stamps the waiting-entry time for tab ages.
+    printf 'running' > "$tmp_state_dir/am-g"
+    touch -t "$_t_backdated" "$tmp_state_dir/am-g"
+    assert_eq "waiting_input" "$(_resolve am-g claude)" \
+        "resolve: attention + stale running -> waiting_input"
+    assert_eq "waiting_input" "$(head -1 "$tmp_state_dir/am-g")" \
+        "resolve: attention + running self-heals the state file"
 
-    MOCK_PANE='> ready for input'
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_input" "$st" \
-        "_state_resolve: waiting_input + no banner stays waiting_input"
+    # fresh session: Claude idle at the first prompt, no hook ever fired.
+    # Old resolver showed 'unknown' until the first prompt; glyph fixes it.
+    rm -f "$tmp_state_dir/am-g"
+    assert_eq "waiting_input" "$(_resolve am-g claude)" \
+        "resolve: attention + no hook file -> waiting_input (fresh session)"
+    assert_eq "false" "$([[ -f "$tmp_state_dir/am-g" ]] && echo true || echo false)" \
+        "resolve: no-hook case does not fabricate a state file"
 
-    # Stale banner left in scrollback must not pin the session in
-    # waiting_background after the work has finished.
-    MOCK_PANE=$'✻ Waiting for 1 background agent to finish\n⏺ Agent "x" finished · 52s\n────────────────────────\n❯ \n────────────────────────'
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_input" "$st" \
-        "_state_resolve: stale banner in scrollback stays waiting_input"
-
-    # waiting_input + background shell counter -> waiting_background.
-    MOCK_PANE=$'⏺ done\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on · 1 shell  ← for agents'
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_background" "$st" \
-        "_state_resolve: waiting_input + '1 shell' -> waiting_background"
-
-    # waiting_input + background monitor counter -> waiting_background.
-    MOCK_PANE=$'⏺ done\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on · 1 monitor · ← for agents'
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_background" "$st" \
-        "_state_resolve: waiting_input + '1 monitor' -> waiting_background"
-
-    # A session-artifact line must not affect state -> stays waiting_input.
-    MOCK_PANE=$'⏺ done\n✻ Brewed for 1m\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on  ← for agents\n🗀 netmix-coverage'
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_input" "$st" \
-        "_state_resolve: session artifact alone stays waiting_input"
-
-    # Hook-written waiting_background (Stop payload background_tasks) passes
-    # straight through — no pane signal needed (empty pane would fail the scan).
-    printf 'waiting_background' > "$tmp_state_dir/am-bg"
-    MOCK_PANE=''
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_background" "$st" \
-        "_state_resolve: hook waiting_background passes through without pane scan"
-
-    # running hook is busy by definition — never scanned, even with a stale banner
-    printf 'running' > "$tmp_state_dir/am-bg"
-    MOCK_PANE='✻ Waiting for 1 background agent to finish'
-    st=$(_state_resolve am-bg claude /tmp)
+    # no glyph signal (claude still booting / titles unavailable): hook
+    # fallback with the staleness gate, else unknown
+    _T_TITLE[am-g]="myhost.local"
+    printf 'running' > "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: no glyph + fresh running -> running (fallback)"
+    touch -t "$_t_backdated" "$tmp_state_dir/am-g"
+    assert_eq "unknown" "$(_resolve am-g claude)" \
+        "resolve: no glyph + stale running + stale activity -> unknown (wedge gate)"
+    st=$(_state_resolve am-g claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))" _T_TITLE)
     assert_eq "running" "$st" \
-        "_state_resolve: running hook not refined to waiting_background"
+        "resolve: no glyph + stale running + fresh activity -> running"
+    printf 'waiting_input' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_input" "$(_resolve am-g claude)" \
+        "resolve: no glyph + waiting_input -> waiting_input (fallback)"
+    rm -f "$tmp_state_dir/am-g"
+    assert_eq "unknown" "$(_resolve am-g claude)" \
+        "resolve: no glyph + no hook -> unknown"
 
-    # hook silent + banner -> waiting_background (fallback path)
-    rm -f "$tmp_state_dir/am-bg"
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_background" "$st" \
-        "_state_resolve: hook silent + banner -> waiting_background"
+    # non-Claude agents never consult the title (codex out of scope: their
+    # CLIs own the title differently); pure hook fallback.
+    _T_TITLE[am-g]="⠂ busy-looking title"
+    printf 'waiting_input' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_input" "$(_resolve am-g codex)" \
+        "resolve: non-claude ignores busy-looking title, uses hook"
 
-    # hook silent + no banner -> unknown
-    MOCK_PANE=''
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "unknown" "$st" \
-        "_state_resolve: hook silent + no banner -> unknown"
+    # hook-written waiting_background with busy glyph: wrap-up turn is live ->
+    # running wins; Stop rewrites the file when it ends.
+    _T_TITLE[am-g]="⠐ Fixing the bug"
+    printf 'waiting_background' > "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: busy + waiting_background -> running (wrap-up turn live)"
 
-    # --- _state_pane_end_of_turn_state: classifies the live status line above
-    #     the input box. Used when the hook state can't be trusted (a
-    #     backgrounded turn's Stop never resolves to the am session). Only
-    #     end-of-turn signals count: mode-line counter (B) and agent panel (C)
-    #     render during live turns too, so they must NOT classify here. ---
-    local _foot2='  Fable 5 | pink-wekapp/WEKAPP-000 | 400k (40%) · ↑401k ↓125 · 5h33m'
-    # Completed-turn status with live background shell -> waiting_background.
-    MOCK_PANE=$'⏺ Committed the install fixes.\n✻ Worked for 1m 2s · 1 shell still running\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on · ← for agents · 1 shell'
-    assert_eq "waiting_background" "$(_state_pane_end_of_turn_state am-bg)" \
-        "_state_pane_eot: 'still running' done-status -> waiting_background"
-    # The waiting banner is end-of-turn by nature -> waiting_background.
-    MOCK_PANE=$'⏺ done\n✻ Waiting for 1 background agent to finish\n'"$_rule"$'\n❯ \n'"$_rule"
-    assert_eq "waiting_background" "$(_state_pane_end_of_turn_state am-bg)" \
-        "_state_pane_eot: waiting banner -> waiting_background"
-    # Completed-turn status without background work -> waiting_input. Typed
-    # (unsent) text inside the box must not affect the scan. Real capture.
-    MOCK_PANE=$'⏺ done with everything.\n✻ Baked for 5m 25s\n'"$_rule"$'\n❯ create a real jira ticket and update the branch\n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents'
-    assert_eq "waiting_input" "$(_state_pane_end_of_turn_state am-bg)" \
-        "_state_pane_eot: bare done-status -> waiting_input"
-    # Live turn: spinner status above the box, "1 shell" in the mode line.
-    # B must not classify and the spinner line blocks the scan -> inconclusive.
-    MOCK_PANE=$'⏺ working on it\n· Billowing… (10s · ↓ 289 tokens)\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on · ← for agents · 1 shell'
-    assert_eq "" "$(_state_pane_end_of_turn_state am-bg)" \
-        "_state_pane_eot: live turn + mode-line counter -> inconclusive"
-    # C (hollow-bullet agent panel) must not classify either.
-    MOCK_PANE=$'⏺ working\n· Improvising… (2m 1s)\n'"$_rule"$'\n❯ \n'"$_rule"$'\n'"$_foot2"$'\n  ⏵⏵ auto mode on · ← for agents\n● main\n○ general-purpose  Reading foo.py'
-    assert_eq "" "$(_state_pane_end_of_turn_state am-bg)" \
-        "_state_pane_eot: live turn + agent panel -> inconclusive"
-    # A done-status buried under newer transcript is stale -> inconclusive.
-    MOCK_PANE=$'✻ Baked for 5m 25s\n⏺ new turn output below the old status\n'"$_rule"$'\n❯ \n'"$_rule"
-    assert_eq "" "$(_state_pane_end_of_turn_state am-bg)" \
-        "_state_pane_eot: done-status buried in scrollback -> inconclusive"
-    # D also counts for the plain background-wait scan (waiting_input hooks).
-    MOCK_PANE=$'⏺ done\n✻ Baked for 4m 5s · 1 monitor still running\n'"$_rule"$'\n❯ \n'"$_rule"
-    assert_cmd_succeeds "_state_pane_has_bg: 'still running' done-status -> background" \
-        _state_pane_has_background_wait am-bg
-
-    # --- bulk path: fresh session activity keeps a stale running file alive
-    #     (long thinking stretch — no tool hooks, spinner repaints keep tmux
-    #     activity current). Stale activity -> unknown (wedged agent). ---
-    local -A _T_TOP=() _T_COMM=() _T_CHILD=()
-    local _t_now _t_backdated
-    _t_now=$(date +%s)
-    _t_backdated=$(date -v-5M '+%Y%m%d%H%M.%S' 2>/dev/null \
-        || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')
-    printf 'running' > "$tmp_state_dir/am-bg"
-    touch -t "$_t_backdated" "$tmp_state_dir/am-bg"
-    MOCK_PANE=''   # no end-of-turn evidence in the pane
-    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
+    # --- non-bulk path: title parsed from the display-message fetch ---
+    am_tmux() {
+        case "${1:-}" in
+            display-message) printf '999999 %s ⠂ Fixing the bug\n' "$(( $(date +%s) - 600 ))" ;;
+            *) return 1 ;;
+        esac
+    }
+    printf 'running' > "$tmp_state_dir/am-g"
+    touch -t "$_t_backdated" "$tmp_state_dir/am-g"
+    st=$(_state_resolve am-g claude /tmp)
     assert_eq "running" "$st" \
-        "_state_resolve bulk: stale running file + fresh activity -> running"
-    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 600 ))")
-    assert_eq "unknown" "$st" \
-        "_state_resolve bulk: stale running file + stale activity -> unknown"
+        "resolve non-bulk: title from display-message keeps stale running alive"
+    unset -f am_tmux
 
-    # --- stale running + fresh activity + end-of-turn evidence in the pane ->
-    #     the classifier's verdict. Covers backgrounded turns (ctrl-b) whose
-    #     Stop fires from a bg session context and never writes: the file
-    #     stays 'running' and user presence keeps tmux activity fresh
-    #     (viewing/typing bumps it), so without the pane check the session
-    #     shows running forever after the turn ends. ---
-    printf 'running' > "$tmp_state_dir/am-bg"
-    touch -t "$_t_backdated" "$tmp_state_dir/am-bg"
-    MOCK_PANE=$'⏺ done.\n✻ Worked for 1m 2s · 1 shell still running\n────────────────────────\n❯ \n────────────────────────'
-    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
-    assert_eq "waiting_background" "$st" \
-        "_state_resolve: stale running + done-status-with-bg pane -> waiting_background"
-    MOCK_PANE=$'⏺ done.\n✻ Baked for 5m 25s\n────────────────────────\n❯ \n────────────────────────'
-    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
-    assert_eq "waiting_input" "$st" \
-        "_state_resolve: stale running + bare done-status pane -> waiting_input"
-    # Live turn (spinner above box): stays running.
-    MOCK_PANE=$'⏺ working\n· Billowing… (10s · ↓ 289 tokens)\n────────────────────────\n❯ \n────────────────────────\n  ⏵⏵ auto mode on · ← for agents · 1 shell'
-    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
-    assert_eq "running" "$st" \
-        "_state_resolve: stale running + live-turn pane stays running"
-    # Fresh running file: trusted, no pane scan (done-status on screen ignored).
-    printf 'running' > "$tmp_state_dir/am-bg"
-    MOCK_PANE=$'✻ Worked for 1m 2s · 1 shell still running'
-    st=$(_state_resolve am-bg claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))")
-    assert_eq "running" "$st" \
-        "_state_resolve: fresh running not refined by done-status pane"
-    # Hook silent + bare done-status -> waiting_input via the fallback path.
-    rm -f "$tmp_state_dir/am-bg"
-    MOCK_PANE=$'⏺ done.\n✻ Baked for 5m 25s\n────────────────────────\n❯ \n────────────────────────'
-    st=$(_state_resolve am-bg claude /tmp)
-    assert_eq "waiting_input" "$st" \
-        "_state_resolve: hook silent + bare done-status -> waiting_input"
-
-    unset -f am_tmux _state_pane_is_shell_bulk
     rm -rf "$tmp_state_dir"
     unset AM_STATE_DIR
     set +u
@@ -619,7 +491,7 @@ test_am_session_order() {
 run_state_tests() {
     _run_test test_state
     _run_test test_state_integration
-    _run_test test_state_background_wait
+    _run_test test_state_title_glyph
     _run_test test_agent_wait_state_stable_idle
     _run_test test_am_session_order
 }

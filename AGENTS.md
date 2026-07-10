@@ -7,6 +7,7 @@ Architecture reference for AI agents working with this codebase.
 - Run tests: `./tests/test_all.sh`
 - Run tests (summary): `./tests/test_all.sh --summary` — suppresses PASS lines, shows only failures with details and a counts summary
 - Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
+- Run live state-detection lab: `./tests/live_lab/run.sh` — drives a real `claude --model haiku` through every state and records ground truth (hook payloads, pane titles, state transitions); not part of `test_all.sh` (spends tokens, ~8 min). Run after Claude Code updates or state.sh/state-hook.sh changes
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
 
 ## Versioning
@@ -54,7 +55,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
-| `lib/state.sh` | Session state detection: hook file + process tree, wait/poll |
+| `lib/state.sh` | Session state detection: title glyph + hook file + process tree, wait/poll |
+| `tests/live_lab/run.sh` | Empirical lab: drives a real Claude session through every state, records hook payloads / pane titles / transitions |
 | `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `lib/sandbox.sh` | Docker sandbox lifecycle and fleet ops |
@@ -80,29 +82,39 @@ agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sa
 am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, claude, --resume, session_id) → tmux_attach()
 ```
 
-## Hook-Based State Detection
+## State Detection (title glyph + hooks)
 
-Claude sessions use push-based hooks as the primary state source. Claude Code
-fires lifecycle hooks (`Stop`, `Notification`, `UserPromptSubmit`, `PostToolUse`)
-that call `lib/hooks/state-hook.sh`. The script maps the event to an am state
-and writes it to `/tmp/am-state/<session_name>`.
+Claude sessions are resolved from two complementary, documented-behavior
+signals — no pane-content scraping:
 
-State detection priority: **shell pane check → hook state file (with Claude
-background-banner refinement, and end-of-turn pane classification when a
-`running` state is past its mtime gate) → pane fallback (end-of-turn
-classifier, then background-wait scan) → unknown**.
+1. **Pane title glyph** (busy vs attention). Claude Code maintains the
+   terminal title itself: a braille spinner frame (`⠂` …, U+2800–U+28FF)
+   while a turn is running, `✳` when it needs the user. tmux exposes it as
+   `#{pane_title}`. It is event-driven, self-healing, survives detachment,
+   and never goes stale — verified empirically (tests/live_lab): tmux
+   `session_activity` and the hook file's mtime both go quiet for minutes
+   during long tool calls, the glyph does not. It also covers cases hooks
+   structurally miss: a fresh session idle at its first prompt (no hook has
+   fired yet) and a backgrounded turn whose lifecycle events fire from a bg
+   session context that never resolves to the am session.
+2. **Hook state file** (which *flavor* of waiting). Claude Code lifecycle
+   hooks (`Stop`, `Notification`, `UserPromptSubmit`, `PreToolUse`,
+   `PostToolUse`, `PermissionRequest`) call `lib/hooks/state-hook.sh`, which
+   maps the event to an am state and writes it to
+   `/tmp/am-state/<session_name>`.
 
-Hooks can go silent mid-session: once a turn is backgrounded (ctrl-b /
-"Backgrounding after the current tool finishes"), its lifecycle events fire
-from a bg session context (`stop_hook_summary` shows `sessionKind: bg` and a
-different `session_id`) whose environment doesn't resolve to the am session —
-the turn's end then writes nothing and the state file stays `running`. The
-end-of-turn pane classifier (`_state_pane_end_of_turn_state`) covers this:
-the completed-turn status pinned above the input box ("✻ Baked for 5m 25s",
-optionally "· 1 shell still running") proves the turn is over even when the
-hook state claims otherwise, while a live turn's spinner status ("· Billowing…
-(10s · …)") blocks the scan. tmux activity cannot break this tie because user
-presence (viewing/typing) keeps it fresh.
+State detection priority: **shell pane check → title glyph × hook state
+(decision table below) → gated hook state (no glyph signal) → unknown**.
+
+Glyph × hook decision table (`_state_resolve`, Claude sessions):
+
+| Glyph | Hook state | Result |
+|---|---|---|
+| busy (braille) | `waiting_permission` / `waiting_custom` | pass through — a pending dialog needs the user; approval fires `PreToolUse` which moves the file forward |
+| busy | anything else (incl. stale `running`, `waiting_input`, `waiting_background`, missing) | `running` — trust Claude's own indicator (covers hook-silent gaps, wrap-up turns after background work, turns resumed without `UserPromptSubmit`) |
+| attention (`✳`) | any `waiting_*` | pass through — the hook has the precise flavor |
+| attention | `running` / missing | `waiting_input`; a leftover `running` file is self-healed so its mtime stamps the waiting-entry time (backgrounded-turn ends, fresh sessions) |
+| none (hostname / booting / titles unavailable / non-Claude agent) | — | hook state with the 180s running-staleness gate, else `unknown` |
 
 Hooks are installed via `am install` into `~/.claude/settings.json`. State
 files are cleaned up on session kill and during registry GC.
@@ -112,9 +124,7 @@ writes on state *transitions*, skipping same-state rewrites (repeated
 `idle_prompt` notifications, Stop re-fires while background work drains,
 per-tool `running` rewrites), so the mtime pins the moment the state was
 entered. The status bar renders tab ages from it — "waiting for you since"
-for waiting_* tabs, "running for" on running tabs. Liveness of a running
-session comes from tmux session_activity, not file freshness: the staleness
-gate in `_state_hook_read` measures against max(mtime, activity).
+for waiting_* tabs, "running for" on running tabs.
 
 | Hook Event | Matcher | am State |
 |---|---|---|
@@ -129,51 +139,52 @@ States not covered by hooks (`starting`, `idle`, `dead`) use existing
 process/tmux checks which are already reliable.
 
 `waiting_background` (Claude's main turn ended but a background agent/task/
-workflow/shell is still running) is written directly by the hook on Claude
-Code ≥2.1: the `Stop` payload carries a `background_tasks` array — one entry
-per still-running background item (`{id, type (subagent|shell), status,
-description, …}`), pruned to `[]` once everything finishes — and the hook
-writes `waiting_background` when any entry has `status == "running"`. `Stop`
-re-fires when background work completes (the completion re-invokes Claude for
-a wrap-up turn), so the state self-heals without any pane involvement. The
-race guard in `state-hook.sh` protects `waiting_background` unconditionally: a
-background subagent's own tool calls fire `PreToolUse`/`PostToolUse` in the
-session for as long as it runs, and must not flip the state to `running`; only
-`UserPromptSubmit` or the next `Stop` moves it forward. `waiting_input` gets a
-*bounded* guard instead (grace window, `AM_STATE_GUARD_SECS`, default 10s):
-the trailing-hook race it absorbs is milliseconds-scale, and a turn can resume
-without `UserPromptSubmit` (answering an in-turn question dialog continues the
-same turn), so tool hooks arriving after the window are genuine activity and
-flip the state back to `running`.
+workflow/shell is still running) is written directly by the hook: the `Stop`
+payload carries a `background_tasks` array (documented; Claude Code ≥2.1) —
+one entry per still-running background item (`{id, type (subagent|shell),
+status, description, …}`), pruned to `[]` once everything finishes — and the
+hook writes `waiting_background` when any entry has `status == "running"`.
+`Stop` re-fires when background work completes (the completion re-invokes
+Claude for a wrap-up turn), so the state self-heals without any pane
+involvement. The race guard in `state-hook.sh` protects `waiting_background`
+unconditionally: a background subagent's own tool calls fire
+`PreToolUse`/`PostToolUse` in the session for as long as it runs, and must
+not flip the state to `running`; only `UserPromptSubmit` or the next `Stop`
+moves it forward. `waiting_input` gets a *bounded* guard instead (grace
+window, `AM_STATE_GUARD_SECS`, default 10s): the trailing-hook race it
+absorbs is milliseconds-scale, and a turn can resume without
+`UserPromptSubmit` (answering an in-turn question dialog continues the same
+turn), so tool hooks arriving after the window are genuine activity and flip
+the state back to `running`.
 
-For CLIs whose `Stop` payload lacks `background_tasks` (older Claude Code,
-hook-silent fallback), detection falls back to scanning the agent pane in
-`_state_pane_has_background_wait` for any of three on-screen signals: (A) the
-`Waiting for N background … to finish` banner pinned just above the input box,
-(B) the `N shell(s)` / `N monitor(s)` counter in the bottom mode line (`⏵⏵ … ·
-1 shell · ← for agents`; "monitor" is Claude's counter for auto-mode
-background agents), or (C) a hollow-bullet line in the agent-context panel
-below the mode line (`○ general-purpose  Reading foo.py`) listing a spawned
-agent still tracked alongside the filled-bullet `● main` line. Signal A's
-banner text lingers in scrollback after the work finishes, so it only counts
-when it is still the live status line (anchored relative to the input box,
-skipping box chrome and the todo/task-list widget) — a stale copy buried above
-newer transcript/status output is ignored. Signals B and C read the footer
-region *below* the input box, where the session-artifact line (`⧉ name`) also
-renders; the artifact carries no matching token and so never affects state.
-The scan is gated to Claude sessions that already resolve to `waiting_input`
-(or a hook-silent fallback), so busy `running` and non-Claude sessions never
-pay the `capture-pane` fork. It is self-healing: when the banner/counter/panel
-clears, the next resolve returns `waiting_input`. Not counted in the
-status-bar attention counter (no user action required).
+History note: earlier revisions scraped pane content for a fourth signal
+layer (background-wait banner, "N shell(s)" mode-line counters, hollow-bullet
+agent panels, end-of-turn status classification with box-chrome/todo-widget
+anchoring). That machinery misread live turns whose hook file and tmux
+activity had both gone stale (>180s quiet tool calls are routine) and flapped
+sessions through running/unknown/waiting_background hundreds of times a day.
+The title glyph replaced all of it; do not reintroduce pane-content
+heuristics for state. Empirical ground truth lives in `tests/live_lab/`.
+
+### Verifying against a real Claude
+
+`tests/live_lab/run.sh` drives a real `claude --model haiku` session in an
+isolated tmux/state sandbox through every state (fresh idle, running,
+permission dialog, background shell via `background_tasks`, AskUserQuestion
+dialog, ctrl-b backgrounded turn, >180s quiet tool call) and records hook
+payloads, state-file transitions, pane titles, and pane snapshots. Not part
+of `test_all.sh` (spends real tokens, ~8 min). Run it when Claude Code
+updates or when changing `lib/state.sh` / `lib/hooks/state-hook.sh`, and
+check `results/<ts>/report.txt` + `timeline.tsv` for glyph/hook/state
+agreement.
 
 ### Debug instrumentation
 
 - `AM_STATE_DEBUG=1` — `_state_resolve` appends one line per call to
   `$AM_DIR/.state-debug.log` (`<iso8601>\t<session>\t<agent>\t<source>\t<state>`)
-  recording which layer (`shell` / `hook` / `fallback` / `classify_exit`)
-  produced the answer. Use for empirical data on which fallbacks are still
-  load-bearing before cutting them.
+  recording which layer (`shell` / `title` / `hook` / `fallback` /
+  `classify_exit`) produced the answer. Use for empirical data on which
+  fallbacks are still load-bearing before cutting them.
 - `AM_HOOK_DEBUG=1` — `state-hook.sh` appends to `$AM_DIR/.hook-debug.log`
   every time a hook fires but exits without writing state (registry miss,
   missing `AM_SESSION_NAME`, cwd mismatch). Surfaces vanished-session bugs
@@ -291,14 +302,13 @@ am restore
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, waiting_background, idle, unknown, dead
-- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch [, activity_epoch]])` - **Single source of truth** for state derivation. Without bulk fixtures (last args), forks per-session for tmux/ps (fetching pane_pid + session_activity in one call); with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place, plus an optional per-session activity epoch. Used by both `agent_get_state` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → hook terminal state (waiting_background passes through directly; Claude waiting_input refined to waiting_background via pane scan for CLIs whose Stop payload lacks background_tasks; a mtime-stale Claude running state is checked against the end-of-turn pane classifier, since a backgrounded turn's end writes nothing) → pane fallback (end-of-turn classifier, then background-wait scan) → unknown fallback
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch [, activity_epoch [, title_map]]])` - **Single source of truth** for state derivation. Without bulk fixtures (last args), forks per-session for tmux/ps (fetching pane_pid + session_activity + pane_title in one call); with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place, plus optional per-session activity epoch and title map. Used by `agent_get_state` / `lib/fzf.sh` (non-bulk) and `lib/status-bar` (bulk). Canonical order: shell pane check → title glyph × hook state per the decision table in "State Detection" above → gated hook state when the title carries no signal → unknown
+- `_state_title_signal(title, out_var)` - Classify Claude's self-maintained pane title into busy (braille spinner frame, U+2800–U+28FF) / attention (✳) / none. Byte-oriented (LC_ALL=C) so it is locale-independent; fork-free
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
-- `_state_hook_read(session, out_var [, now_epoch [, activity_epoch]])` - Read state from hook state file into a nameref (primary source for Claude sessions); no subshell, used inside `_state_resolve`. waiting_* states are persistent; the running state gets a 180s staleness gate measured against max(file mtime, tmux session_activity) — hooks only fire on tool calls, so a long pure-thinking stretch leaves the file stale while the spinner keeps pane activity fresh; a wedged agent ages out of both and falls to the unknown state
+- `_state_hook_raw(session, out_var)` - Read the raw (ungated) hook state into a nameref; used by the title-glyph layer, which needs the flavor even when the file is stale
+- `_state_hook_read(session, out_var [, now_epoch [, activity_epoch]])` - Gated hook-file read for the no-glyph fallback path. waiting_* states are persistent; the running state gets a 180s staleness gate measured against max(file mtime, tmux session_activity) so a wedged agent falls to unknown instead of looking busy forever. Note: both mtime and activity routinely go stale during long quiet tool calls on a *live* turn — only the title glyph distinguishes that from a wedge, which is why this gate is fallback-only
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Detect whether top pane is a plain shell (vs an agent process) from nameref bulk maps
-- `_state_pane_has_background_wait(session)` - Capture the agent pane and detect live background work via any of: the "Waiting for N background … to finish" banner (only when it is still the live line above the input box, not a stale scrollback copy), the completed-turn "N shell(s)/monitor(s) still running" status, the "N shell(s)" / "N monitor(s)" counter in the bottom mode line, or a hollow-bullet agent-panel line ("○ general-purpose …") below it. Ignores the session-artifact line. Fork-free bash scan (one `capture-pane` fork). Fallback for CLIs whose Stop payload lacks the background_tasks field; gated by `_state_resolve` to idle-looking Claude sessions
-- `_state_pane_end_of_turn_state(session)` - Classify the live status line pinned above the input box: banner or "still running" done-status → waiting_background; bare completed-turn status ("✻ Baked for 5m 25s") → waiting_input; live spinner / anything else → empty (inconclusive). Used for a mtime-stale running hook state and in the hook-silent fallback — covers backgrounded turns whose lifecycle hooks fire from a bg session context and never write. Only end-of-turn signals classify; the mode-line counter and agent panel render during live turns too and are ignored here
-- `_state_line_is_box_chrome(line)` - True when a pane line is Claude input-box chrome (full-width rule or prompt). Anchors the background-wait scan to the input box
 
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)

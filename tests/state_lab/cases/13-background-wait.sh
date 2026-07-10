@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Case 13: Claude session whose main turn has stopped (hook wrote waiting_input)
-# but a background agent/task is still running. The agent pane pins a
-# "Waiting for N background … to finish" banner; the resolver must refine
-# waiting_input -> waiting_background for Claude sessions, and fall back to
-# waiting_background even when the hook went silent. Non-Claude agents and
-# running sessions are never scanned.
+# Case 13: background work + title glyph, end to end through the real hook
+# script. Claude Code ≥2.1 reports still-running background work in the Stop
+# payload's background_tasks array — the hook writes waiting_background
+# directly, and the resolver's title-glyph layer passes it through while the
+# attention glyph (✳) is up. When the background work finishes, Stop re-fires
+# with a pruned array and the state self-heals to waiting_input. No pane
+# content is ever scanned.
 
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lab.sh"
@@ -15,46 +16,50 @@ trap lab_cleanup EXIT
 DIR="$LAB_DIR/proj"
 real=$(lab_register lab-bg "$DIR")
 
-# Drive the banner scan: override the pane probe so this case controls whether
-# Claude's background banner is "on screen" without a real tmux pane.
-BANNER=false
-_state_pane_has_background_wait() { $BANNER; }
+TITLE_WAIT='✳ Implement the feature'
+TITLE_BUSY='⠂ Implement the feature'
 
-# 1. Stop fired (waiting_input) + banner on screen -> waiting_background.
+# 1. Stop with a running background shell -> hook writes waiting_background;
+#    attention glyph passes it through.
+lab_hook lab-bg '{"hook_event_name":"Stop","background_tasks":[{"id":"b1","type":"shell","status":"running","description":"sleep"}]}'
+lab_assert "waiting_background" "$(probe_hook lab-bg)" \
+    "Stop + running background_tasks -> hook file waiting_background"
+state=$(probe_resolve_titled lab-bg claude "$real" "$TITLE_WAIT")
+lab_assert "waiting_background" "$state" "attention glyph + waiting_background passes through"
+
+# 2. Background work finished: Stop re-fires with a pruned array -> self-heals.
+lab_hook lab-bg '{"hook_event_name":"Stop","background_tasks":[]}'
+state=$(probe_resolve_titled lab-bg claude "$real" "$TITLE_WAIT")
+lab_assert "waiting_input" "$state" "Stop re-fire with empty background_tasks -> waiting_input"
+
+# 3. Wrap-up turn: file still holds a waiting state but Claude's spinner is
+#    up (title busy) -> running wins; the next Stop rewrites the file.
+printf 'waiting_background' > "$AM_STATE_DIR/lab-bg"
+state=$(probe_resolve_titled lab-bg claude "$real" "$TITLE_BUSY")
+lab_assert "running" "$state" "busy glyph + waiting_background -> running (wrap-up turn)"
+
+# 4. Non-Claude agents never consult the title.
 printf 'waiting_input' > "$AM_STATE_DIR/lab-bg"
-BANNER=true
-state=$(probe_resolve lab-bg claude "$real")
-lab_assert "waiting_background" "$state" "waiting_input + banner -> waiting_background"
+state=$(probe_resolve_titled lab-bg codex "$real" "$TITLE_BUSY")
+lab_assert "waiting_input" "$state" "non-claude ignores busy title, uses hook"
 
-# Same via the bulk (status-bar) path.
-state=$(probe_resolve_bulk lab-bg claude "$real")
-lab_assert "waiting_background" "$state" "bulk: waiting_input + banner -> waiting_background"
-
-# 2. Banner gone (background work done) -> back to waiting_input.
-BANNER=false
-state=$(probe_resolve lab-bg claude "$real")
-lab_assert "waiting_input" "$state" "waiting_input + no banner -> waiting_input"
-
-# 3. Non-Claude agent: banner is Claude-specific, never scanned.
-BANNER=true
-state=$(probe_resolve lab-bg codex "$real")
-lab_assert "waiting_input" "$state" "non-claude agent not refined to waiting_background"
-
-# 4. Running session is busy by definition — banner ignored.
-printf 'running' > "$AM_STATE_DIR/lab-bg"
-BANNER=true
-state=$(probe_resolve lab-bg claude "$real")
-lab_assert "running" "$state" "running hook not refined to waiting_background"
-
-# 5. Hook silent + banner -> waiting_background (fallback path).
+# 5. Hook silent (fresh session at the first prompt) + attention glyph ->
+#    waiting_input instead of unknown.
 rm -f "$AM_STATE_DIR/lab-bg"
-BANNER=true
-state=$(probe_resolve lab-bg claude "$real")
-lab_assert "waiting_background" "$state" "hook silent + banner -> waiting_background"
+state=$(probe_resolve_titled lab-bg claude "$real" "$TITLE_WAIT")
+lab_assert "waiting_input" "$state" "hook silent + attention glyph -> waiting_input"
 
-# 6. Hook silent + no banner -> unknown.
-BANNER=false
-state=$(probe_resolve lab-bg claude "$real")
-lab_assert "unknown" "$state" "hook silent + no banner -> unknown"
+# 6. Hook silent + no glyph signal -> unknown (fallback preserved).
+state=$(probe_resolve_titled lab-bg claude "$real" "myhost.local")
+lab_assert "unknown" "$state" "hook silent + no glyph -> unknown"
+
+# 7. Stale 'running' left behind by a backgrounded turn + attention glyph ->
+#    waiting_input, and the file is self-healed so its mtime stamps the
+#    waiting-entry time.
+printf 'running' > "$AM_STATE_DIR/lab-bg"
+lab_hook_age lab-bg 600
+state=$(probe_resolve_titled lab-bg claude "$real" "$TITLE_WAIT")
+lab_assert "waiting_input" "$state" "attention glyph + stale running -> waiting_input"
+lab_assert "waiting_input" "$(probe_hook lab-bg)" "state file self-healed to waiting_input"
 
 lab_report

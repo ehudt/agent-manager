@@ -1,18 +1,38 @@
 # shellcheck shell=bash
-# state.sh - Session state detection (hook + ps tree only)
+# state.sh - Session state detection (title glyph + hook file + ps tree)
 #
-# State sources:
-#   1. tmux + ps process tree   -> starting / idle / dead
-#   2. hook file ($AM_STATE_DIR) -> running / waiting_input / waiting_permission /
-#                                   waiting_custom / waiting_background (the hook
-#                                   writes it directly from the Stop payload's
-#                                   background_tasks on Claude Code ≥2.1)
-#   3. pane banner scan          -> waiting_background (fallback for CLIs whose
-#                                   Stop payload lacks background_tasks)
-#   4. fallback                  -> unknown (agent alive, hook silent)
+# State sources, in order:
+#   1. tmux + ps process tree     -> starting / idle / dead
+#   2. pane title glyph (Claude)  -> busy vs attention. Claude Code maintains
+#      the terminal title itself: a braille spinner frame (U+2800-U+28FF)
+#      while a turn is running, "✳" when it needs the user. Event-driven,
+#      self-healing, works while detached, and — unlike hook files or tmux
+#      session_activity — never goes stale (verified empirically: activity
+#      stops updating during long quiet tool calls; the glyph does not).
+#   3. hook file ($AM_STATE_DIR)  -> which *flavor* of waiting: waiting_input /
+#      waiting_permission / waiting_custom / waiting_background (the hook
+#      writes waiting_background directly from the Stop payload's
+#      background_tasks on Claude Code ≥2.1)
+#   4. fallback (no glyph signal) -> hook state with staleness gate, else unknown
 #
 # States: starting | running | waiting_input | waiting_permission |
 #         waiting_custom | waiting_background | idle | unknown | dead
+#
+# Glyph x hook decision table (Claude sessions):
+#   busy      + waiting_permission/custom -> pass through (a pending dialog
+#               needs the user even if a spinner frame lingers; approval fires
+#               PreToolUse which flips the file to running)
+#   busy      + anything else             -> running (trust Claude's own
+#               indicator; covers hook-silent gaps, wrap-up turns after
+#               background work, turns resumed without UserPromptSubmit)
+#   attention + waiting_*                 -> pass through (hook has the flavor)
+#   attention + running/none              -> waiting_input; when the file says
+#               'running' the resolver self-heals it so the mtime stamps the
+#               waiting-entry time (tab ages). Covers backgrounded turns whose
+#               lifecycle hooks never resolved to this session, and fresh
+#               sessions before any hook has fired.
+#   no signal (title disabled / non-Claude agent / claude still booting)
+#             -> hook state with the 180s running-staleness gate, else unknown
 
 _STATE_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ -z "$AM_DIR" ]] && source "$_STATE_LIB_DIR/utils.sh"
@@ -32,30 +52,57 @@ _state_debug() {
 }
 
 # ---------------------------------------------------------------------------
+# Pane title glyph
+# ---------------------------------------------------------------------------
+
+# Classify Claude's self-maintained pane title into a liveness signal.
+# Byte-oriented (LC_ALL=C) so the match is identical under any caller locale:
+# braille spinner frames U+2800-U+28FF encode as E2 A0 80 .. E2 A3 BF, the
+# attention asterisk U+2733 as E2 9C B3. Anything else (hostname before
+# Claude boots, user-set titles, other agents) is "none" — callers then fall
+# back to the hook-file path.
+# Usage: _state_title_signal <title> <out_var>   (out: busy|attention|none)
+_state_title_signal() {
+    local LC_ALL=C
+    local -n __sig="$2"
+    case "$1" in
+        $'\xe2\xa0'*|$'\xe2\xa1'*|$'\xe2\xa2'*|$'\xe2\xa3'*) __sig="busy" ;;
+        $'\xe2\x9c\xb3'*)                                    __sig="attention" ;;
+        *)                                                   __sig="none" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Hook state file
 # ---------------------------------------------------------------------------
 
-# Read session state from $AM_STATE_DIR/<session> into a caller-supplied var.
-# Terminal waiting_* states are persistent (no staleness gate). running gets a
-# 180s gate so a wedged agent falls through to 'unknown' instead of looking
-# busy forever — measured against max(file mtime, tmux session_activity). The
-# hook only writes on state *transitions* (the mtime doubles as the state-
-# entry timestamp for tab ages), so for any turn longer than the gate the
-# mtime is stale by design; tmux activity is the liveness signal — Claude
-# repaints its spinner timer every second, keeping it fresh for the whole
-# turn, while a genuinely wedged agent stops repainting and ages out.
+# Read the raw hook state (ungated) into a caller-supplied var. Empty when
+# the file is missing/unreadable or holds an unrecognized value.
+# Usage: _state_hook_raw <session> <out_var>
+_state_hook_raw() {
+    local -n __raw="$2"
+    __raw=""
+    local line=""
+    IFS= read -r line < "$AM_STATE_DIR/$1" 2>/dev/null || true
+    case "$line" in
+        running|waiting_input|waiting_permission|waiting_custom|waiting_background)
+            __raw="$line" ;;
+    esac
+}
+
+# Read session state from $AM_STATE_DIR/<session> into a caller-supplied var,
+# with the staleness gate. Terminal waiting_* states are persistent. running
+# gets a 180s gate — measured against max(file mtime, tmux session_activity)
+# — so a wedged agent falls through to 'unknown' instead of looking busy
+# forever. Only the no-glyph fallback path uses this; when the title glyph is
+# readable it supersedes any staleness reasoning.
 # Usage: _state_hook_read <session> <out_var> [now_epoch] [activity_epoch]
-# Side channel: _STATE_HOOK_RUNNING_MTIME_STALE=1 when a returned 'running'
-# was rescued by fresh activity but its file mtime (= state-entry time) is
-# past the gate. Normal for any turn longer than the gate; the resolver uses
-# it to decide when the pane must corroborate that the turn is still live.
 _state_hook_read() {
     local session="$1"
     local -n __out="$2"
     local now_epoch="${3:-}"
     local activity_epoch="${4:-}"
     __out=""
-    _STATE_HOOK_RUNNING_MTIME_STALE=0
     local state_file="$AM_STATE_DIR/$session"
     [[ -f "$state_file" ]] || return 0
     local mtime
@@ -67,7 +114,6 @@ _state_hook_read() {
         waiting_input|waiting_permission|waiting_custom|waiting_background)
             __out="$line" ;;
         running)
-            (( now_epoch - mtime > 180 )) && _STATE_HOOK_RUNNING_MTIME_STALE=1
             local fresh_ref=$mtime
             [[ "$activity_epoch" =~ ^[0-9]+$ ]] && (( activity_epoch > fresh_ref )) \
                 && fresh_ref=$activity_epoch
@@ -112,224 +158,6 @@ agent_classify_exit() {
     echo "idle"
 }
 
-# Is this pane line part of Claude's input-box chrome (a full-width rule or the
-# prompt line)? Used to anchor the live-status scan below. The prompt pattern
-# lives in a variable so the literal '>' isn't parsed as redirection by [[ ]].
-_STATE_PROMPT_RE='^[[:space:]]*[❯>][^[:alnum:]]*$'
-_state_line_is_box_chrome() {
-    local l="$1"
-    [[ "$l" == *──────* ]] && return 0                # full-width box rule
-    [[ "$l" =~ $_STATE_PROMPT_RE ]] && return 0        # prompt line
-    return 1
-}
-
-# Claude pins a persistent todo/task-list widget (header + one checkbox line
-# per task) near the input box while any tasks are tracked. It can render
-# between the background-wait banner and the box, so the upward scan in
-# _state_pane_has_background_wait must skip it like other chrome instead of
-# treating it as scrolled-away transcript.
-_STATE_TODO_HEADER_RE='^[[:space:]]*[0-9]+ tasks?[[:space:]]*\(.*\)[[:space:]]*$'
-_STATE_TODO_ITEM_RE='^[[:space:]]*[✓✔☑☒✗✘■□▪▫☐○●][[:space:]].*$'
-_state_line_is_todo_widget() {
-    local l="$1"
-    [[ "$l" =~ $_STATE_TODO_HEADER_RE ]] && return 0
-    [[ "$l" =~ $_STATE_TODO_ITEM_RE ]] && return 0
-    return 1
-}
-
-# Banner Claude pins directly above the input box when the main turn has ended
-# but a background agent/task/workflow is still in flight.
-_STATE_BG_BANNER_RE='[Ww]aiting for [0-9]+ background [a-zA-Z]+ to finish'
-# Completed-turn status with background work still live, e.g.
-# "✻ Worked for 1m 2s · 1 shell still running". "still running" never appears
-# in a live turn's spinner status ("· Billowing… (10s · ↓ 289 tokens)"), so
-# this is end-of-turn evidence — usable even when the hook state claims the
-# session is busy (a backgrounded turn's Stop fires from a bg session context
-# that never resolves to the am session, leaving a stale 'running' behind).
-_STATE_BG_STILL_RUNNING_RE='[0-9]+ (shells?|monitors?|agents?|tasks?|workflows?) still running'
-# Completed-turn status without background work: spinner glyph, past-tense
-# verb, "for <duration>" — "✻ Baked for 5m 25s". The live counterpart is a
-# gerund with an ellipsis and parenthesized duration ("✻ Improvising… (2m 1s")
-# and never contains " for <digit>"; the '…' exclusion in the classifier
-# guards the distinction.
-_STATE_TURN_DONE_RE='^[[:space:]]*[^[:alnum:][:space:]][[:space:]]+[A-Z][a-z]+ for [0-9]'
-# Background-work counter in Claude's bottom mode line, e.g.
-# "⏵⏵ auto mode on · 1 shell  ← for agents" or "… · 1 monitor · ← for agents"
-# — a digit-prefixed shell/monitor token. "monitor" is the counter Claude shows
-# for auto-mode background agents; either token means background work is live.
-# The digit prefix keeps prose ("when the monitor fires …") from matching.
-_STATE_BG_COUNTER_RE='[0-9]+ (shells?|monitors?)([^[:alpha:]]|$)'
-# Live agent-context panel below the mode line: a filled-bullet "main" line
-# (the foreground context) plus one hollow-bullet line per spawned agent still
-# being tracked, e.g. "● main" / "○ general-purpose  Reading foo.py". Any
-# hollow-bullet line means a background agent context is still live. The
-# anchored form is for the per-line box scan; bash's [[ =~ ]] anchors '^' to
-# the whole captured-pane string, not per embedded newline, so an unanchored
-# twin is used for the whole-pane fast-path substring check.
-_STATE_BG_AGENT_LINE_RE='^[[:space:]]*[○◯◦][[:space:]]+[[:alnum:]_-]+'
-_STATE_BG_AGENT_LINE_ANY_RE='[○◯◦][[:space:]]+[[:alnum:]_-]'
-
-# Detect whether the session's agent (top) pane shows that background work is
-# still running while the main turn looks idle (Stop fired -> waiting_input).
-# Four on-screen signals, any of which means waiting_background:
-#
-#   A. The "Waiting for N background <agent|task|workflow> to finish" banner,
-#      pinned directly above the input box while the turn blocks on background
-#      agents/tasks/workflows.
-#   B. The "N shell(s)" / "N monitor(s)" counter in the bottom mode line, shown
-#      while background shells or auto-mode background agents ("monitors")
-#      launched this turn are still running.
-#   C. A hollow-bullet line in the agent-context panel below the mode line
-#      (e.g. "○ general-purpose  Reading foo.py"), listing a spawned agent
-#      still tracked alongside the filled-bullet "● main" foreground line.
-#   D. The completed-turn status line with a live background count, e.g.
-#      "✻ Worked for 1m 2s · 1 shell still running", pinned above the input
-#      box like Signal A.
-#
-# Signal A's banner text persists in scrollback after the work finishes: Claude
-# then prints completion output ("⏺ … finished") and a fresh status line
-# ("✻ Brewed for 2m 22s") *below* the old banner and re-renders the input box at
-# the bottom. A naive "banner appears anywhere in the viewport" match therefore
-# stays stuck on waiting_background long after the wait is over. So we only count
-# the banner when it is still the current status: anchor on the input box
-# (bottom-most prompt / full-width rule), then scan upward past blank lines, box
-# chrome, the live todo/task-list widget, and the right-aligned hint line ("new
-# task? /clear …"). The first substantive line decides — the banner means live;
-# any other left-aligned transcript/status line means the banner has scrolled
-# into history.
-#
-# Signal B's counter renders in the mode line *below* the input box, alongside
-# the footer and any session-artifact line ("⧉ name"). There is no transcript
-# below the box, so a "N shell"/"N monitor" token there is always the live
-# count; the artifact line carries no such token and so never affects state.
-# Signal B is a live count maintained by Claude, so it is self-healing — no
-# stale-scrollback problem.
-#
-# Signal C's agent panel renders in that same below-box footer region, right
-# alongside Signal B's counter, so it shares the same self-healing property —
-# Claude drops the hollow-bullet line once the agent finishes, no scrollback
-# staleness to guard against.
-#
-# Captures the current viewport (one fork); the scan itself is fork-free bash.
-# Callers gate this to idle-looking Claude sessions so busy/running and non-
-# Claude sessions never pay the capture-pane fork.
-# Usage: _state_pane_has_background_wait <session>   (0 = background work live)
-_state_pane_has_background_wait() {
-    local session="$1" pane line
-    pane=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null) || return 1
-    # Fast path: no signal anywhere in the pane -> skip the line scan.
-    [[ "$pane" =~ $_STATE_BG_BANNER_RE || "$pane" =~ $_STATE_BG_STILL_RUNNING_RE \
-        || "$pane" =~ $_STATE_BG_COUNTER_RE \
-        || "$pane" =~ $_STATE_BG_AGENT_LINE_ANY_RE ]] || return 1
-
-    local -a lines=()
-    while IFS= read -r line; do lines+=("$line"); done <<< "$pane"
-    local n=${#lines[@]} i
-
-    # Anchor on the input box. box_bottom = bottom-most chrome line (the box's
-    # bottom rule, or a bare prompt in rule-less fixtures); Signal B scans below
-    # it. When the box is delimited by full-width rules it may hold TYPED text
-    # between them ("❯ continue …"), which must not be mistaken for transcript
-    # that scrolled the banner away — so box_top climbs past the box interior to
-    # the top rule, and Signal A scans from above it. Fall back to scanning the
-    # whole pane when no chrome is visible (minimal test fixtures).
-    local box_bottom=$n box_top=$n
-    for (( i = n - 1; i >= 0; i-- )); do
-        if _state_line_is_box_chrome "${lines[i]}"; then box_bottom=$i; break; fi
-    done
-    box_top=$box_bottom
-    if [[ "${lines[box_bottom]:-}" == *──────* ]]; then
-        for (( i = box_bottom - 1; i >= 0; i-- )); do
-            if [[ "${lines[i]}" == *──────* ]]; then box_top=$i; break; fi
-        done
-    fi
-
-    # Signal B/C — background-work counter (shell/monitor) or a hollow-bullet
-    # agent-panel line, both in the mode line / footer region below the box.
-    if (( box_bottom < n )); then
-        for (( i = box_bottom + 1; i < n; i++ )); do
-            [[ "${lines[i]}" =~ $_STATE_BG_COUNTER_RE ]] && return 0
-            [[ "${lines[i]}" =~ $_STATE_BG_AGENT_LINE_RE ]] && return 0
-        done
-    fi
-
-    # Signal A/D — live "Waiting for N background … to finish" banner or the
-    # completed-turn "… still running" status (above box).
-    for (( i = box_top - 1; i >= 0; i-- )); do
-        line="${lines[i]}"
-        [[ "$line" =~ $_STATE_BG_BANNER_RE ]] && return 0
-        [[ "$line" =~ $_STATE_BG_STILL_RUNNING_RE ]] && return 0
-        [[ -z "${line//[[:space:]]/}" ]] && continue        # blank line
-        _state_line_is_box_chrome "$line" && continue        # box rule / prompt
-        _state_line_is_todo_widget "$line" && continue       # todo/task list widget
-        # Left-aligned content below the banner -> banner has scrolled away.
-        [[ "$line" =~ ^[[:space:]]{0,3}[^[:space:]] ]] && return 1
-        # else: a right-aligned hint line -> keep scanning upward.
-    done
-    return 1
-}
-
-# Classify whether the agent pane shows the turn is OVER, from the live status
-# line pinned directly above the input box. Echoes:
-#   waiting_background — banner (Signal A) or a completed-turn status carrying
-#                        a live background count ("… · 1 shell still running")
-#   waiting_input      — completed-turn status without background work
-#                        ("✻ Baked for 5m 25s")
-#   ""                 — inconclusive: live spinner ("· Billowing… (10s …"),
-#                        no status visible, or non-status transcript
-#
-# Used when the hook state cannot be trusted: a backgrounded turn (ctrl-b /
-# "Backgrounding after the current tool finishes") continues under a bg
-# session context whose hooks never resolve to the am session, so its turn
-# end writes nothing and the state file stays 'running'. tmux activity can't
-# break the tie — user presence (viewing/typing) keeps it fresh. Only the
-# end-of-turn signals count here: the mode-line counter and agent panel
-# (Signals B/C) also render during live turns, so they prove nothing, while
-# a live turn always pins its spinner status above the box, which stops this
-# scan before any stale scrollback can match. Same anchoring as the banner
-# scan; one capture-pane fork.
-# Usage: _state_pane_end_of_turn_state <session>
-_state_pane_end_of_turn_state() {
-    local session="$1" pane line
-    pane=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null) || return 0
-
-    local -a lines=()
-    while IFS= read -r line; do lines+=("$line"); done <<< "$pane"
-    local n=${#lines[@]} i
-
-    # Anchor on the input box (see _state_pane_has_background_wait).
-    local box_bottom=$n box_top=$n
-    for (( i = n - 1; i >= 0; i-- )); do
-        if _state_line_is_box_chrome "${lines[i]}"; then box_bottom=$i; break; fi
-    done
-    box_top=$box_bottom
-    if [[ "${lines[box_bottom]:-}" == *──────* ]]; then
-        for (( i = box_bottom - 1; i >= 0; i-- )); do
-            if [[ "${lines[i]}" == *──────* ]]; then box_top=$i; break; fi
-        done
-    fi
-
-    for (( i = box_top - 1; i >= 0; i-- )); do
-        line="${lines[i]}"
-        if [[ "$line" =~ $_STATE_BG_BANNER_RE || "$line" =~ $_STATE_BG_STILL_RUNNING_RE ]]; then
-            echo "waiting_background"
-            return 0
-        fi
-        if [[ "$line" =~ $_STATE_TURN_DONE_RE && "$line" != *…* ]]; then
-            echo "waiting_input"
-            return 0
-        fi
-        [[ -z "${line//[[:space:]]/}" ]] && continue        # blank line
-        _state_line_is_box_chrome "$line" && continue        # box rule / prompt
-        _state_line_is_todo_widget "$line" && continue       # todo/task list widget
-        # First substantive left-aligned line is not a completed-turn status:
-        # a live spinner or plain transcript -> inconclusive.
-        [[ "$line" =~ ^[[:space:]]{0,3}[^[:space:]] ]] && return 0
-        # else: a right-aligned hint line -> keep scanning upward.
-    done
-    return 0
-}
-
 # ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
@@ -337,31 +165,36 @@ _state_pane_end_of_turn_state() {
 # Resolve session state.
 #
 # Bulk fixtures (status-bar tick): pass map names by nameref to avoid per-
-# session forks. Without fixtures the resolver builds size-1 fixtures inline.
+# session forks. Without fixtures the resolver builds size-1 fixtures inline
+# (one tmux display-message fetches pane_pid, session_activity and pane_title
+# together; one ps -eo builds the process maps).
 #
 # Pipeline:
-#   1. shell check  -> starting (created<5s, non-bulk) / idle / dead
-#   2. hook file    -> running / waiting_* (Claude waiting_input is refined to
-#                      waiting_background when the bg-work banner is on screen)
-#   3. fallback     -> waiting_background (Claude banner) / unknown
+#   1. shell check   -> starting (created<5s, non-bulk) / idle / dead
+#   2. title glyph   -> running / waiting_* per the decision table above
+#   3. hook fallback -> gated hook state (no glyph signal), else unknown
 #
 # Usage:
 #   _state_resolve <session> <agent_type> <dir>
-#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch> [activity_epoch]
+#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch> [activity_epoch] [title_map]
 _state_resolve() {
     local session="$1" agent_type="${2:-}" dir="${3:-}"
 
-    local top_name comm_name child_name now_val activity_val=""
+    local top_name comm_name child_name now_val activity_val="" title_val=""
     local -A __auto_top=() __auto_comm=() __auto_child=()
     local skip_classifier=false
     if (( $# >= 7 )); then
         top_name="$4"; comm_name="$5"; child_name="$6"; now_val="$7"
         activity_val="${8:-}"
+        if [[ -n "${9:-}" ]]; then
+            local -n __TITLES="$9"
+            title_val="${__TITLES[$session]:-}"
+        fi
         skip_classifier=true
     else
         local pane_pid
-        read -r pane_pid activity_val <<< "$(am_tmux display-message -p \
-            -t "${session}:.{top}" '#{pane_pid} #{session_activity}' 2>/dev/null || true)"
+        read -r pane_pid activity_val title_val <<< "$(am_tmux display-message -p \
+            -t "${session}:.{top}" '#{pane_pid} #{session_activity} #{pane_title}' 2>/dev/null || true)"
         [[ -n "$pane_pid" ]] && __auto_top[$session]=$pane_pid
         local _p _pp _c
         while read -r _p _pp _c; do
@@ -402,63 +235,54 @@ _state_resolve() {
         return
     fi
 
-    # 2. Hook file
+    # 2. Title glyph (Claude maintains it; see decision table in the header)
+    if [[ "$agent_type" == "claude" ]]; then
+        local sig="none"
+        _state_title_signal "$title_val" sig
+        if [[ "$sig" != "none" ]]; then
+            local raw=""
+            _state_hook_raw "$session" raw
+            if [[ "$sig" == "busy" ]]; then
+                case "$raw" in
+                    waiting_permission|waiting_custom)
+                        # A pending dialog needs the user; approval fires
+                        # PreToolUse which moves the file forward.
+                        _state_debug "$_dbg_session" "$_dbg_agent" title "$raw"
+                        echo "$raw"
+                        return ;;
+                esac
+                _state_debug "$_dbg_session" "$_dbg_agent" title running
+                echo "running"
+                return
+            fi
+            # attention
+            case "$raw" in
+                waiting_input|waiting_permission|waiting_custom|waiting_background)
+                    _state_debug "$_dbg_session" "$_dbg_agent" title "$raw"
+                    echo "$raw"
+                    return ;;
+            esac
+            # Hook silent (fresh session) or a stale 'running' left behind by
+            # a turn whose lifecycle hooks never resolved to this session
+            # (backgrounded turn). Self-heal the file on the running case so
+            # its mtime stamps the waiting-entry moment for tab ages.
+            if [[ "$raw" == "running" ]]; then
+                printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+            fi
+            _state_debug "$_dbg_session" "$_dbg_agent" title waiting_input
+            echo "waiting_input"
+            return
+        fi
+    fi
+
+    # 3. Fallback: no glyph signal (title disabled, agent still booting, or a
+    #    non-Claude agent). Gated hook state, else unknown.
     local hook_state=""
     _state_hook_read "$session" hook_state "$now_val" "$activity_val"
     if [[ -n "$hook_state" ]]; then
-        # Claude's main turn can stop (waiting_input) while background agents /
-        # tasks / shells keep running. On Claude Code ≥2.1 the hook writes
-        # waiting_background itself (Stop payload background_tasks) and that
-        # state passes straight through below; this pane scan is the fallback
-        # for CLIs whose Stop payload lacks the field. Scanning only
-        # waiting_input Claude sessions keeps busy/running and non-Claude
-        # sessions fork-free.
-        if [[ "$hook_state" == "waiting_input" && "$agent_type" == "claude" ]] \
-            && _state_pane_has_background_wait "$session"; then
-            _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
-            echo "waiting_background"
-            return
-        fi
-        # A running state past the mtime gate survives only via fresh tmux
-        # activity — which user presence also bumps (viewing/typing). A
-        # backgrounded turn's end writes nothing (its Stop fires from a bg
-        # session context), leaving a wrong 'running' pinned while the user
-        # looks at the session. Demand end-of-turn evidence from the pane (a
-        # completed-turn status / banner; a live turn's spinner blocks the
-        # scan) before trusting it.
-        if [[ "$hook_state" == "running" && "$agent_type" == "claude" \
-            && "${_STATE_HOOK_RUNNING_MTIME_STALE:-0}" == "1" ]]; then
-            local _eot
-            _eot=$(_state_pane_end_of_turn_state "$session")
-            if [[ -n "$_eot" ]]; then
-                _state_debug "$_dbg_session" "$_dbg_agent" pane "$_eot"
-                echo "$_eot"
-                return
-            fi
-        fi
         _state_debug "$_dbg_session" "$_dbg_agent" hook "$hook_state"
         echo "$hook_state"
         return
-    fi
-
-    # 3. Fallback: agent alive, hook silent or stale. The pane is the last
-    #    honest signal before "unknown": a completed-turn status classifies
-    #    the session as waiting_input / waiting_background, and the broader
-    #    background-wait signals (mode-line counter, agent panel) still catch
-    #    a background wait whose status line isn't visible.
-    if [[ "$agent_type" == "claude" ]]; then
-        local _eot_fb
-        _eot_fb=$(_state_pane_end_of_turn_state "$session")
-        if [[ -n "$_eot_fb" ]]; then
-            _state_debug "$_dbg_session" "$_dbg_agent" pane "$_eot_fb"
-            echo "$_eot_fb"
-            return
-        fi
-        if _state_pane_has_background_wait "$session"; then
-            _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
-            echo "waiting_background"
-            return
-        fi
     fi
     _state_debug "$_dbg_session" "$_dbg_agent" fallback unknown
     echo "unknown"
@@ -470,7 +294,7 @@ _state_resolve() {
 
 # Return current state of a session.
 # Outputs one of: starting | running | waiting_input | waiting_permission |
-#                 waiting_custom | idle | unknown | dead
+#                 waiting_custom | waiting_background | idle | unknown | dead
 agent_get_state() {
     local session="$1"
 
