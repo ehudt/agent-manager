@@ -192,9 +192,6 @@ lifecycle (created in launch, removed in kill, orphans GC'd).
   exists (`_install_codex_hooks`), and Codex sessions have no title glyph
   (fallback path only), but which lifecycle events Codex actually fires —
   and thus how rich its states get in practice — is unverified.
-- **unknown** — *Doc drift risk*: `docs/state-architecture.html` predates
-  recent state work; whether it still agrees with `lib/state.sh` has not
-  been checked.
 - **inferred** — *The tuned constants* (180s staleness gate, 10s guard,
   60s throttles) are empirically tuned via live-lab observation, not
   derived from any Claude Code spec; expect retuning across CLI versions.
