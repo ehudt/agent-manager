@@ -197,10 +197,10 @@ cmd_browse() {
     result=$(fzf_main)
 
     if [[ "$result" == $'__RESTORE__\x1f'* ]]; then
-        # Parse: __RESTORE__<US>directory<US>session_id
-        local directory session_id
-        IFS=$'\x1f' read -r _tag directory session_id <<< "$result"
-        cmd_restore_internal "$directory" "$session_id"
+        # Parse: __RESTORE__<US>directory<US>session_id<US>agent_type
+        local directory session_id restore_agent
+        IFS=$'\x1f' read -r _tag directory session_id restore_agent <<< "$result"
+        cmd_restore_internal "$directory" "$session_id" "${restore_agent:-claude}"
     elif [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
         # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task<US>worktree_name
         local directory agent_type flags task worktree_name
@@ -237,24 +237,30 @@ cmd_new_internal() {
     fi
 }
 
-# Internal: restore a session by launching claude --resume
-# Usage: cmd_restore_internal <directory> <session_id>
+# Internal: restore a session by launching an agent with resume/session args
+# Usage: cmd_restore_internal <directory> <session_id> [agent_type]
 cmd_restore_internal() {
     local directory="$1"
     local session_id="$2"
+    local agent_type="${3:-claude}"
 
     if [[ ! -d "$directory" ]]; then
         log_error "Directory no longer exists: $directory"
         return 1
     fi
 
+    local resume_args=()
+    while IFS= read -r _arg; do
+        resume_args+=("$_arg")
+    done < <(agent_resume_args "$agent_type" "$session_id")
+
     local session_name
-    session_name=$(agent_launch "$directory" "claude" "" "" "--resume" "$session_id")
+    session_name=$(agent_launch "$directory" "$agent_type" "" "" "${resume_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         # Pre-seed the resumed conversation id so the entry never needs the
         # directory-scan guess; the sidecar-authoritative scan corrects it if
-        # Claude forks the resume to a new id.
+        # the agent forks the resume to a new id.
         sessions_log_update "$session_name" "session_id" "$session_id"
         tmux_attach "$session_name"
     fi
@@ -266,10 +272,10 @@ cmd_restore() {
         cat <<'EOF'
 Usage: am restore
 
-Browse recently closed Claude sessions and resume one.
+Browse recently closed Claude and pi sessions and resume one.
 Shows pane snapshots in the preview panel for visual recall.
 
-Sessions are available as long as their Claude conversation file exists.
+Sessions are available as long as their conversation file exists.
 EOF
         return 0
     fi
@@ -280,9 +286,9 @@ EOF
     fi
 
     if [[ "$result" == $'__RESTORE__\x1f'* ]]; then
-        local directory session_id
-        IFS=$'\x1f' read -r _tag directory session_id <<< "$result"
-        cmd_restore_internal "$directory" "$session_id"
+        local directory session_id restore_agent
+        IFS=$'\x1f' read -r _tag directory session_id restore_agent <<< "$result"
+        cmd_restore_internal "$directory" "$session_id" "${restore_agent:-claude}"
     fi
 }
 

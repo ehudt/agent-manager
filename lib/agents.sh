@@ -36,6 +36,17 @@ agent_get_yolo_flag() {
     esac
 }
 
+# Print the CLI args (one per line) that resume a conversation for an agent.
+# Usage: agent_resume_args <agent_type> <session_id>
+agent_resume_args() {
+    local agent_type="$1"
+    local session_id="$2"
+    case "$agent_type" in
+        pi) printf '%s\n' "--session" "$session_id" ;;
+        *)  printf '%s\n' "--resume" "$session_id" ;;
+    esac
+}
+
 # Get the command for an agent type
 # Usage: agent_get_command <type>
 agent_get_command() {

@@ -47,6 +47,12 @@ test_agents() {
         "agent_cli_manages_worktree: pi is am-managed"
     assert_eq "/tmp/x/.pi/worktrees" "$(agent_worktree_root /tmp/x pi)" "agent_worktree_root: pi"
 
+    # --- agent_resume_args ---
+    assert_eq "--resume|abc123" "$(agent_resume_args claude abc123 | paste -sd'|' -)" \
+        "agent_resume_args: claude"
+    assert_eq "--session|abc123" "$(agent_resume_args pi abc123 | paste -sd'|' -)" \
+        "agent_resume_args: pi"
+
     $SUMMARY_MODE || echo ""
 }
 

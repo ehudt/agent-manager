@@ -320,7 +320,7 @@ fzf_list_json() {
 
 # Restore picker: browse closed sessions and resume one
 # Usage: fzf_restore_picker
-# Returns: "__RESTORE__<US>directory<US>session_id" on success, or empty on cancel
+# Returns: "__RESTORE__<US>directory<US>session_id<US>agent_type" on success, or empty on cancel
 fzf_restore_picker() {
     local lib_dir
     lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -365,7 +365,7 @@ fzf_restore_picker() {
         local snap_path="${AM_DIR}/${snap}"
         [[ -z "$snap" || ! -f "$snap_path" ]] && snap_path=""
 
-        lines+="${sid}|${dir}|${display}|${snap_path}"$'\n'
+        lines+="${sid}|${dir}|${display}|${snap_path}|${agent}"$'\n'
     done <<< "$all_fields"
 
     [[ -z "$lines" ]] && return 1
@@ -391,9 +391,10 @@ fzf_restore_picker() {
 
     [[ -z "$selected" ]] && return 1
 
-    local selected_sid selected_dir
+    local selected_sid selected_dir selected_agent
     selected_sid=$(echo "$selected" | cut -d'|' -f1)
     selected_dir=$(echo "$selected" | cut -d'|' -f2)
+    selected_agent=$(echo "$selected" | cut -d'|' -f5)
 
-    printf '__RESTORE__\x1f%s\x1f%s\n' "$selected_dir" "$selected_sid"
+    printf '__RESTORE__\x1f%s\x1f%s\x1f%s\n' "$selected_dir" "$selected_sid" "${selected_agent:-claude}"
 }
