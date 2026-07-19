@@ -9,11 +9,14 @@
 #      self-healing, works while detached, and — unlike hook files or tmux
 #      session_activity — never goes stale (verified empirically: activity
 #      stops updating during long quiet tool calls; the glyph does not).
-#   3. hook file ($AM_STATE_DIR)  -> which *flavor* of waiting: waiting_input /
+#   3. hook file (pi)             -> ungated: the am-state extension is in-process,
+#      so its state file cannot go silently stale the way out-of-process hooks
+#      can. A dead pi drops the pane to a shell, which step 1 already catches.
+#   4. hook file ($AM_STATE_DIR)  -> which *flavor* of waiting: waiting_input /
 #      waiting_permission / waiting_custom / waiting_background (the hook
 #      writes waiting_background directly from the Stop payload's
 #      background_tasks on Claude Code ≥2.1)
-#   4. fallback (no glyph signal) -> hook state with staleness gate, else unknown
+#   5. fallback (no glyph signal) -> hook state with staleness gate, else unknown
 #
 # States: starting | running | waiting_input | waiting_permission |
 #         waiting_custom | waiting_background | idle | unknown | dead
@@ -275,8 +278,26 @@ _state_resolve() {
         fi
     fi
 
-    # 3. Fallback: no glyph signal (title disabled, agent still booting, or a
-    #    non-Claude agent). Gated hook state, else unknown.
+    # 3a. pi: the am-state extension is in-process, so its state file cannot
+    # go silently stale the way out-of-process hooks can — read it ungated.
+    # A dead pi drops the pane to a shell, which step 1 already catches, and
+    # long quiet tool calls must not flap a live turn to unknown (the exact
+    # failure the title glyph solves for Claude; pi has no glyph).
+    if [[ "$agent_type" == "pi" ]]; then
+        local pi_hook=""
+        _state_hook_raw "$session" pi_hook
+        if [[ -n "$pi_hook" ]]; then
+            _state_debug "$_dbg_session" "$_dbg_agent" hook "$pi_hook"
+            echo "$pi_hook"
+            return
+        fi
+        _state_debug "$_dbg_session" "$_dbg_agent" fallback unknown
+        echo "unknown"
+        return
+    fi
+
+    # 3b. Fallback: no glyph signal (title disabled, agent still booting, or a
+    #     non-Claude agent). Gated hook state, else unknown.
     local hook_state=""
     _state_hook_read "$session" hook_state "$now_val" "$activity_val"
     if [[ -n "$hook_state" ]]; then

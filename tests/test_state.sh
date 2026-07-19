@@ -365,6 +365,36 @@ test_state_title_glyph() {
         "resolve non-bulk: title from display-message keeps stale running alive"
     unset -f am_tmux
 
+    # --- pi: hook state trusted without staleness gate ---
+    printf 'running' > "$tmp_state_dir/am-pi1"
+    # backdate the state file far beyond the 180s gate
+    touch -t "$_t_backdated" "$tmp_state_dir/am-pi1"
+    # top pane process is a non-shell (the agent), no title signal
+    local -A pi_top_map=( [am-pi1]=99991 )
+    local -A pi_comm_map=( [99991]=node )
+    local -A pi_child_map=()
+    local -A pi_title_map=()
+    local pi_state
+    pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map pi_comm_map pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map)
+    assert_eq "running" "$pi_state" "_state_resolve: pi stale running stays running (ungated)"
+
+    printf 'waiting_input' > "$tmp_state_dir/am-pi1"
+    pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map pi_comm_map pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map)
+    assert_eq "waiting_input" "$pi_state" "_state_resolve: pi waiting_input"
+
+    rm -f "$tmp_state_dir/am-pi1"
+    pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map pi_comm_map pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map)
+    assert_eq "unknown" "$pi_state" "_state_resolve: pi no state file -> unknown"
+
+    # shell pane still wins over a pi state file
+    printf 'running' > "$tmp_state_dir/am-pi1"
+    local -A pi_top_map2=( [am-pi1]=99992 )
+    local -A pi_comm_map2=( [99992]=zsh )
+    local -A pi_title_map2=()
+    pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map2 pi_comm_map2 pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map2)
+    assert_eq "idle" "$pi_state" "_state_resolve: pi shell pane wins"
+    rm -f "$tmp_state_dir/am-pi1"
+
     rm -rf "$tmp_state_dir"
     unset AM_STATE_DIR
     set +u
