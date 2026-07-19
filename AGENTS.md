@@ -56,6 +56,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: title glyph + hook file + process tree, wait/poll |
+| `lib/hooks/am-state.ts` | Pi extension: lifecycle events → am state files (session_start/agent_settled → waiting_input, agent_start → running) |
 | `tests/live_lab/run.sh` | Empirical lab: drives a real Claude session through every state, records hook payloads / pane titles / transitions |
 | `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
@@ -79,7 +80,7 @@ Ctrl-N in browser → am_new_session_form() → _form_run()
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
-am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, claude, --resume, session_id) → tmux_attach()
+am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude → --resume, pi → --session)
 ```
 
 ## State Detection (title glyph + hooks)
@@ -166,6 +167,13 @@ sessions through running/unknown/waiting_background hundreds of times a day.
 The title glyph replaced all of it; do not reintroduce pane-content
 heuristics for state. Empirical ground truth lives in `tests/live_lab/`.
 
+**Pi sessions:** State comes from the in-process extension
+`lib/hooks/am-state.ts` (`session_start` / `agent_settled` → `waiting_input`,
+`agent_start` → `running`), read ungated by `_state_resolve` (in-process
+writes can't go silently stale; a dead pi drops the pane to a shell, which
+the shell-pane check catches). Pi never reports `waiting_permission` /
+`waiting_custom` / `waiting_background`.
+
 ### Verifying against a real Claude
 
 `tests/live_lab/run.sh` drives a real `claude --model haiku` session in an
@@ -173,10 +181,11 @@ isolated tmux/state sandbox through every state (fresh idle, running,
 permission dialog, background shell via `background_tasks`, AskUserQuestion
 dialog, ctrl-b backgrounded turn, >180s quiet tool call) and records hook
 payloads, state-file transitions, pane titles, and pane snapshots. Not part
-of `test_all.sh` (spends real tokens, ~8 min). Run it when Claude Code
-updates or when changing `lib/state.sh` / `lib/hooks/state-hook.sh`, and
-check `results/<ts>/report.txt` + `timeline.tsv` for glyph/hook/state
-agreement.
+of `test_all.sh` (spends real tokens, ~8 min). `tests/live_lab/run_pi.sh`
+verifies pi state detection (session_start, agent_start, agent_settled). Run
+the Claude lab when Claude Code updates or when changing `lib/state.sh` /
+`lib/hooks/state-hook.sh`, and check `results/<ts>/report.txt` +
+`timeline.tsv` for glyph/hook/state agreement.
 
 ### Debug instrumentation
 
@@ -279,7 +288,8 @@ am restore
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
-- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
+- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude and pi sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
+- `agent_resume_args(agent_type, session_id)` - Build agent-specific resume args (claude → --resume, pi → --session)
 
 **Title helpers:**
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)
@@ -292,13 +302,16 @@ am restore
 - `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
 - `sessions_log_update(session_name, field, value)` - Update field in most recent log entry for a session
 - `sessions_log_snapshot(session_name, [snapshot_key])` - Capture pane text to `~/.agent-manager/snapshots/`
-- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. The hook sidecar is authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
-- `sessions_log_gc()` - Remove entries whose Claude JSONL no longer exists
+- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude and pi sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. The hook sidecar is authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
+- `sessions_log_gc()` - Remove entries whose JSONL no longer exists
 - `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
-- `_sessions_log_detect_id(directory)` - Detect Claude session UUID from JSONL filename (newest-mtime guess; callers must not use it when the directory hosts multiple sessions)
-- `_sessions_log_dir_is_shared(session_name, directory)` - True when another registered Claude session shares the directory; gates the mtime-based session-id guess in `_sessions_log_detect_id_for_session`
+- `_sessions_log_detect_id(directory, [agent])` - Detect session UUID from JSONL filename (agent defaults to claude; newest-mtime guess; callers must not use it when the directory hosts multiple sessions)
+- `_sessions_log_dir_is_shared(session_name, directory, [agent])` - True when another registered session of the same agent type shares the directory; gates the mtime-based session-id guess in `_sessions_log_detect_id_for_session`
 - `_sessions_log_field(session_name, field)` - Read a field from the most recent sessions-log entry for a session
-- `_sessions_log_jsonl_exists(directory, session_id)` - Check if Claude JSONL still exists
+- `_sessions_log_jsonl_exists(directory, session_id, [agent])` - Check if JSONL still exists (agent defaults to claude)
+- `_slog_encode_pi_dir(directory)` - Encode directory path for pi session storage (base64url)
+- `_pi_sessions_root()` - Return pi sessions root (~/.pi/sessions)
+- `_pi_title_extract(raw_title)` - Extract task from pi pane title (strips cwd prefix)
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, waiting_background, idle, unknown, dead
@@ -313,6 +326,7 @@ am restore
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
 - `claude_first_user_message(dir)` - Extract first user message from Claude session JSONL
+- `pi_first_user_message(dir, [session_id], [strict])` - Extract first user message from pi session JSONL
 
 **tmux:**
 - `tmux_create_session(name, dir)` - New detached session
@@ -396,4 +410,5 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
 | Add/edit peek skill | `skills/am-peek/SKILL.md` |
 | Add new skill (auto-installed) | drop `skills/<name>/SKILL.md`; `am install` loops `skills/*/` |
-| Add restore agent support | `lib/registry.sh` → `sessions_log_restorable()` filter, `am` → `cmd_restore_internal()` |
+| Add restore agent support | `lib/agents.sh` → `agent_resume_args()`, `lib/registry.sh` → `sessions_log_restorable()` filter, `am` → `cmd_restore_internal()`, `internal/sessions` → Go mirrors |
+| Change pi state mapping | `lib/hooks/am-state.ts` → event-to-state mapping |
