@@ -209,7 +209,7 @@ EOF
 }
 
 _ensure_install_lib_sourced() {
-    if [[ "$(type -t _install_claude_hooks)" != "function" || "$(type -t _install_codex_hooks)" != "function" ]]; then
+    if [[ "$(type -t _install_claude_hooks)" != "function" || "$(type -t _install_codex_hooks)" != "function" || "$(type -t _install_pi_extension)" != "function" ]]; then
         # Extract just the hook installer functions from install.sh (can't
         # source the whole file because it runs install logic at top level).
         eval "$(awk '/^_install_claude_hooks\(\)/ {p=1} /^while \[\[/ {p=0} p {print}' "$PROJECT_DIR/scripts/install.sh")"
@@ -435,6 +435,25 @@ TOML
     rm -rf "$tmp_dir"
 }
 
+test_install_pi_extension() {
+    _ensure_install_lib_sourced
+
+    # --- _install_pi_extension ---
+    local pi_ext_dir
+    pi_ext_dir=$(mktemp -d)/extensions
+    _install_pi_extension "$pi_ext_dir" "$PROJECT_DIR/lib/hooks/am-state.ts"
+    [[ -L "$pi_ext_dir/am-state.ts" ]] \
+        && pass "_install_pi_extension: symlink created" \
+        || fail "_install_pi_extension: symlink created"
+    assert_eq "$PROJECT_DIR/lib/hooks/am-state.ts" "$(readlink "$pi_ext_dir/am-state.ts")" \
+        "_install_pi_extension: symlink target"
+    # idempotent re-run
+    _install_pi_extension "$pi_ext_dir" "$PROJECT_DIR/lib/hooks/am-state.ts"
+    [[ -L "$pi_ext_dir/am-state.ts" ]] \
+        && pass "_install_pi_extension: idempotent" \
+        || fail "_install_pi_extension: idempotent"
+}
+
 run_install_tests() {
     _run_test test_installer_replaces_managed_blocks
     _run_test test_installer_defaults_prompts_to_yes
@@ -448,6 +467,7 @@ run_install_tests() {
     _run_test test_enable_codex_hooks_feature_existing_section
     _run_test test_enable_codex_hooks_feature_idempotent
     _run_test test_enable_codex_hooks_feature_replaces_false
+    _run_test test_install_pi_extension
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

@@ -256,6 +256,18 @@ _install_codex_hooks() {
     ' "$hooks_file" > "$tmp_file" && mv "$tmp_file" "$hooks_file"
 }
 
+# Install the pi state-detection extension: symlink into pi's global
+# extensions directory (auto-discovered) so it stays version-fresh with the
+# repo checkout. Idempotent.
+# Usage: _install_pi_extension <pi_extensions_dir> <extension_source_path>
+_install_pi_extension() {
+    local ext_dir="$1"
+    local src="$2"
+    mkdir -p "$ext_dir"
+    ln -sfn "$src" "$ext_dir/am-state.ts"
+    log "Symlinked $ext_dir/am-state.ts -> $src"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
@@ -354,6 +366,19 @@ if confirm "Install state-detection hooks into Codex hooks ($CODEX_HOOKS)?"; the
     log "Enabled Codex hooks feature flag in $CODEX_CONFIG"
 else
     log "Skipped Codex hook installation"
+fi
+
+PI_EXT_DIR="${PI_EXT_DIR:-$HOME/.pi/agent/extensions}"
+PI_EXT_SRC="$REPO_DIR/lib/hooks/am-state.ts"
+
+if command -v pi >/dev/null 2>&1; then
+    if confirm "Install state-detection extension into pi ($PI_EXT_DIR)?"; then
+        _install_pi_extension "$PI_EXT_DIR" "$PI_EXT_SRC"
+    else
+        log "Skipped pi extension installation"
+    fi
+else
+    log "pi CLI not found -- skipped pi state extension"
 fi
 
 log "Installation complete"
