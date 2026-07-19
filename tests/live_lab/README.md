@@ -1,29 +1,37 @@
 # Live state-detection lab
 
-Drives a **real** Claude Code session (`claude --model haiku`) through every
-am state inside an isolated tmux server + state/registry sandbox, and records
-ground truth at 1s resolution. This is the empirical layer of state-detection
-testing — the fast layers (`tests/test_state.sh`, `tests/state_lab/`) encode
-what this lab observed.
+Drives a **real** Claude Code or pi session through every am state inside an
+isolated tmux server + state/registry sandbox, and records ground truth at 1s
+resolution. This is the empirical layer of state-detection testing — the fast
+layers (`tests/test_state.sh`, `tests/state_lab/`) encode what this lab observed.
 
-Not part of `test_all.sh`: it spends real tokens and ~8 minutes of wall time.
+Two runners:
+- `run.sh` — Claude Code (7 scenarios, ~8 min)
+- `run_pi.sh` — pi (4 scenarios, ~5 min)
+
+Not part of `test_all.sh`: they spend real tokens.
 
 ## When to run
 
-- Claude Code updated (verify the signal contract still holds: title glyphs,
-  hook events, `Stop` payload `background_tasks`)
-- Changing `lib/state.sh` or `lib/hooks/state-hook.sh` semantics
+- Agent updated (Claude Code or pi — verify signal contracts still hold)
+- Changing `lib/state.sh`, `lib/hooks/state-hook.sh`, or `lib/hooks/am-state.ts` semantics
 - Harvesting fresh pane/title fixtures for the unit tests
 
 ## Usage
 
 ```bash
+# Claude runner
 ./tests/live_lab/run.sh                    # all scenarios
 LAB_SCENARIOS="s2 s4" ./tests/live_lab/run.sh   # subset
 LAB_MODEL=sonnet ./tests/live_lab/run.sh        # different model
+
+# Pi runner
+./tests/live_lab/run_pi.sh                 # all scenarios
+LAB_SCENARIOS="p1 p3" ./tests/live_lab/run_pi.sh   # subset
+LAB_PI_ARGS="--provider anthropic --model claude-haiku-4-5" ./tests/live_lab/run_pi.sh
 ```
 
-## Scenarios
+## Scenarios (Claude — `run.sh`)
 
 | # | Drives | Verifies |
 |---|--------|----------|
@@ -44,6 +52,15 @@ LAB_MODEL=sonnet ./tests/live_lab/run.sh        # different model
 - `payloads.jsonl` — every hook payload Claude fired (tee'd via `--settings`)
 - `snapshots/` — full pane captures taken on every state/title transition
   (fixture source for unit tests)
+
+## Scenarios (Pi — `run_pi.sh`)
+
+| # | Drives | Verifies |
+|---|--------|----------|
+| p1 | fresh session, no prompt | `session_start` → `waiting_input` state file (no .sid with `--no-session`) |
+| p2 | prompt round-trip | `agent_start` → `running`, `agent_settled` → `waiting_input` |
+| p3 | `sleep 200` (> 180s quiet) | ungated hook read: resolved state NEVER leaves `running` during long tool call |
+| p4 | quit pi → shell | shell-pane check precedence: resolved state == `idle` despite stale hook file |
 
 ## Key empirical findings (2026-07-10, Claude Code 2.1.206)
 
