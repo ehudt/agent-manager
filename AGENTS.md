@@ -305,12 +305,12 @@ am restore
 - `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude and pi sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. The hook sidecar is authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
 - `sessions_log_gc()` - Remove entries whose JSONL no longer exists
 - `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
-- `_sessions_log_detect_id(directory, [agent])` - Detect session UUID from JSONL filename (agent defaults to claude; newest-mtime guess; callers must not use it when the directory hosts multiple sessions)
+- `_sessions_log_detect_id(directory, [not_before_iso], [agent])` - Detect session UUID from JSONL filename (agent defaults to claude; newest-mtime guess; callers must not use it when the directory hosts multiple sessions)
 - `_sessions_log_dir_is_shared(session_name, directory, [agent])` - True when another registered session of the same agent type shares the directory; gates the mtime-based session-id guess in `_sessions_log_detect_id_for_session`
 - `_sessions_log_field(session_name, field)` - Read a field from the most recent sessions-log entry for a session
 - `_sessions_log_jsonl_exists(directory, session_id, [agent])` - Check if JSONL still exists (agent defaults to claude)
-- `_slog_encode_pi_dir(directory)` - Encode directory path for pi session storage (base64url)
-- `_pi_sessions_root()` - Return pi sessions root (~/.pi/sessions)
+- `_slog_encode_pi_dir(directory)` - Encode directory path for pi session storage (strip leading slash, replace [/\:] with -, wrap with --)
+- `_pi_sessions_root()` - Return pi sessions root (~/.pi/agent/sessions)
 - `_pi_title_extract(raw_title)` - Extract task from pi pane title (strips cwd prefix)
 
 **State detection (lib/state.sh):**
