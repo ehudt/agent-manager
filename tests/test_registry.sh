@@ -106,6 +106,36 @@ test_registry_extended() {
         "$(_sessions_log_detect_id "$pi_dir" "" "pi")" "pi detect id: newest jsonl"
     unset AM_PI_SESSIONS_DIR
 
+    # --- _pi_title_extract ---
+    assert_eq "Refactor auth" "$(_pi_title_extract 'pi - Refactor auth - proj')" \
+        "_pi_title_extract: named session"
+    assert_eq "a - b" "$(_pi_title_extract 'pi - a - b - proj')" \
+        "_pi_title_extract: name containing dashes"
+    assert_eq "" "$(_pi_title_extract 'pi - proj')" "_pi_title_extract: unnamed"
+    assert_eq "" "$(_pi_title_extract 'pi')" "_pi_title_extract: bare"
+    assert_eq "plain title" "$(_pi_title_extract 'plain title')" "_pi_title_extract: non-pi shape"
+
+    # --- sessions_log_restorable accepts pi ---
+    local pr_home; pr_home=$(mktemp -d)
+    local pr_dir="$pr_home/proj"; mkdir -p "$pr_dir"
+    local pr_resolved; pr_resolved=$(cd "$pr_dir" && pwd -P)
+    export AM_PI_SESSIONS_DIR="$pr_home/sessions"
+    local pr_enc; pr_enc=$(_slog_encode_pi_dir "$pr_resolved")
+    mkdir -p "$AM_PI_SESSIONS_DIR/$pr_enc"
+    touch "$AM_PI_SESSIONS_DIR/$pr_enc/2026-07-19T08-00-00-000Z_0199bbbb-0000-0000-0000-000000000001.jsonl"
+    local pr_log; pr_log=$(mktemp)
+    printf '%s\n%s\n' \
+        '{"session_name":"am-pia01","session_id":"0199bbbb-0000-0000-0000-000000000001","directory":"'"$pr_dir"'","branch":"main","agent_type":"pi","task":"t1","created_at":"2026-07-19T08:00:00Z","closed_at":"2026-07-19T09:00:00Z","snapshot_file":""}' \
+        '{"session_name":"am-pia02","session_id":"0199bbbb-0000-0000-0000-000000000002","directory":"'"$pr_dir"'","branch":"main","agent_type":"pi","task":"t2","created_at":"2026-07-19T08:00:00Z","closed_at":"2026-07-19T09:00:00Z","snapshot_file":""}' \
+        > "$pr_log"
+    local pr_out
+    pr_out=$(AM_SESSIONS_LOG="$pr_log" sessions_log_restorable)
+    echo "$pr_out" | grep -q "am-pia01" && pass "restorable: pi with jsonl kept" \
+        || fail "restorable: pi with jsonl kept"
+    echo "$pr_out" | grep -q "am-pia02" && fail "restorable: pi without jsonl dropped" \
+        || pass "restorable: pi without jsonl dropped"
+    unset AM_PI_SESSIONS_DIR
+
     teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""

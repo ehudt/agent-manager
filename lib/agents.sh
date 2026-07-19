@@ -468,20 +468,20 @@ agent_kill() {
         <<< "$(registry_get_fields "$session_name" agent_type directory created_at container_name)"
 
     # Final snapshot + close timestamp for session restore (before killing tmux)
-    if [[ "$agent_type" == "claude" ]] && tmux_session_exists "$session_name"; then
+    if [[ ( "$agent_type" == "claude" || "$agent_type" == "pi" ) ]] && tmux_session_exists "$session_name"; then
         # Bind the conversation id: sidecar (authoritative) → already-logged
         # sid → guarded directory detection. A kill-time guess must never
         # overwrite a binding established while hooks were alive.
         local sid
         sid=$(_sessions_log_sidecar_id "$session_name" 2>/dev/null || true)
-        if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid"; then
+        if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent_type"; then
             sid=""
         fi
         if [[ -z "$sid" ]]; then
             sid=$(_sessions_log_field "$session_name" "session_id" 2>/dev/null || true)
         fi
         if [[ -z "$sid" ]]; then
-            sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$created_at" 2>/dev/null || true)
+            sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$created_at" "$agent_type" 2>/dev/null || true)
         fi
         local snap_file
         if [[ -n "$sid" ]]; then

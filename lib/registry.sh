@@ -196,6 +196,28 @@ _title_valid() {
     [[ -n "$t" && ${#t} -le 60 && "$t" != *$'\n'* ]]
 }
 
+# Extract a task candidate from pi's self-maintained terminal title.
+# Pi titles: "pi - <session name> - <cwd basename>" when the session is
+# named, "pi - <cwd basename>" otherwise. Named -> the middle part (the
+# name may itself contain " - "; strip only the first and last segments).
+# Unnamed/bare -> empty so the caller falls back to the JSONL first message.
+# Non-pi-shaped titles pass through unchanged.
+_pi_title_extract() {
+    local t="$1"
+    case "$t" in
+        "pi - "*" - "*)
+            t="${t#pi - }"
+            printf '%s\n' "${t% - *}"
+            ;;
+        "pi - "*|pi)
+            printf '\n'
+            ;;
+        *)
+            printf '%s\n' "$t"
+            ;;
+    esac
+}
+
 # Scan active sessions and update task from agent pane title.
 # Agents set the terminal title via escape sequences; tmux exposes it as #{pane_title}.
 # Throttled to once per 60s unless force=1.
@@ -245,20 +267,31 @@ auto_title_scan() {
         # Trim leading non-alphanumeric characters (escape artifacts, symbols)
         title=$(echo "$title" | sed -E 's/^[^[:alnum:]]*//')
 
+        # Pi maintains its own "pi - [name -] dir" title; extract the session
+        # name or blank it so the JSONL fallback kicks in.
+        if [[ "${reg_agent[$name]}" == "pi" ]]; then
+            title=$(_pi_title_extract "$title")
+        fi
+
         if ! _title_valid "$title"; then
-            # Fallback: for Claude sessions, derive task from JSONL first user message.
-            # Covers fresh sessions (title not painted yet), bash-only panes, and
-            # legacy sessions created before auto-titling existed.
+            # Fallback: for agent sessions with JSONL storage, derive task from
+            # the first user message. Covers fresh sessions (title not painted
+            # yet), bash-only panes, and legacy sessions created before
+            # auto-titling existed.
             local fallback=""
-            if [[ "${reg_agent[$name]}" == "claude" && -n "${reg_dir[$name]}" ]]; then
-                # Resolve THIS session's Claude id (sidecar, else mtime>=created)
-                # so two sessions in one directory don't share the newest JSONL's
-                # first message as their title.
+            if [[ ( "${reg_agent[$name]}" == "claude" || "${reg_agent[$name]}" == "pi" ) && -n "${reg_dir[$name]}" ]]; then
+                # Resolve THIS session's id (sidecar, else mtime>=created) so two
+                # sessions in one directory don't share the newest JSONL's first
+                # message as their title.
                 local _sid
-                _sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}" 2>/dev/null || true)
+                _sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}" "${reg_agent[$name]}" 2>/dev/null || true)
                 # strict=1: if we can't pin this session's id, don't guess from
                 # a directory with multiple JSONLs (would inherit a sibling's task).
-                fallback=$(claude_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
+                if [[ "${reg_agent[$name]}" == "pi" ]]; then
+                    fallback=$(pi_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
+                else
+                    fallback=$(claude_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
+                fi
                 fallback="${fallback:0:60}"
             fi
             if [[ -n "$fallback" ]] && _title_valid "$fallback"; then
@@ -328,7 +361,7 @@ sessions_log_scan() {
 
     local name snap_count=0
     for name in "${!reg_agent[@]}"; do
-        [[ "${reg_agent[$name]}" == "claude" ]] || continue
+        case "${reg_agent[$name]}" in claude|pi) ;; *) continue ;; esac
         # Only process sessions that have a log entry
         [[ -n "${slog_sid[$name]+x}" ]] || continue
 
@@ -341,7 +374,7 @@ sessions_log_scan() {
         local sidecar_sid=""
         if [[ -n "${reg_dir[$name]}" ]]; then
             sidecar_sid=$(_sessions_log_sidecar_id "$name")
-            if [[ -n "$sidecar_sid" ]] && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid"; then
+            if [[ -n "$sidecar_sid" ]] && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid" "${reg_agent[$name]}"; then
                 sidecar_sid=""
             fi
         fi
@@ -351,7 +384,7 @@ sessions_log_scan() {
             sid="$sidecar_sid"
             slog_sid[$name]="$sid"
         elif [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
-            sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}")
+            sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}" "${reg_agent[$name]}")
             if [[ -n "$sid" ]]; then
                 sessions_log_update "$name" "session_id" "$sid"
                 slog_sid[$name]="$sid"
@@ -380,7 +413,7 @@ sessions_log_scan() {
 
     # Also sync task into the sessions log
     for name in "${!reg_agent[@]}"; do
-        [[ "${reg_agent[$name]}" == "claude" ]] || continue
+        case "${reg_agent[$name]}" in claude|pi) ;; *) continue ;; esac
         [[ -n "${slog_sid[$name]+x}" ]] || continue
         local current_task="${reg_task[$name]}"
         [[ -n "$current_task" ]] && sessions_log_update "$name" "task" "$current_task"
@@ -693,11 +726,11 @@ sessions_log_gc() {
 
         local keep=true
 
-        if [[ "$agent" == "claude" && -n "$sid" && -n "$dir" ]]; then
-            if ! _sessions_log_jsonl_exists "$dir" "$sid"; then
+        if [[ ( "$agent" == "claude" || "$agent" == "pi" ) && -n "$sid" && -n "$dir" ]]; then
+            if ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent"; then
                 keep=false
             fi
-        elif [[ "$agent" == "claude" && -z "$sid" ]]; then
+        elif [[ ( "$agent" == "claude" || "$agent" == "pi" ) && -z "$sid" ]]; then
             # ISO 8601 UTC timestamps sort lexicographically
             if [[ -n "$created_at" && "$created_at" < "$cutoff_iso" ]]; then
                 keep=false
@@ -754,12 +787,12 @@ sessions_log_restorable() {
         local sname sid agent dir
         IFS='|' read -r sname sid agent dir <<< "${fields_arr[$i]}"
 
-        [[ "$agent" == "claude" ]] || continue
+        case "$agent" in claude|pi) ;; *) continue ;; esac
         [[ -n "$sid" ]] || continue
         [[ -z "${live_sessions[$sname]:-}" ]] || continue
         [[ -z "${seen_ids[$sid]:-}" ]] || continue
 
-        if _sessions_log_jsonl_exists "$dir" "$sid"; then
+        if _sessions_log_jsonl_exists "$dir" "$sid" "$agent"; then
             seen_ids[$sid]=1
             result+=("${lines[$i]}")
         fi
