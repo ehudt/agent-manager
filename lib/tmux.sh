@@ -30,6 +30,17 @@ if-shell '[ -f "$HOME/.tmux.conf" ]' 'source-file "$HOME/.tmux.conf"'
 set -g detach-on-destroy off
 set -g focus-events on
 
+# Extended keys: let Claude in the agent pane tell Shift+Enter (insert newline)
+# apart from Enter (submit), plus other modified keys. 'on' (not 'always') only
+# sends the CSI-u encoding to apps that request the mode, so shell-pane tools are
+# untouched. The terminal-features line tells tmux the outer terminal can carry
+# it (iTerm2/Ghostty/kitty/WezTerm do; Terminal.app doesn't — harmless there).
+set -g extended-keys on
+set -as terminal-features 'xterm*:extkeys'
+# Emit the CSI-u encoding (not the older xterm/modifyOtherKeys form). Agents
+# like Claude/Pi parse csi-u more reliably; server option, so use -s.
+set -s extended-keys-format csi-u
+
 # Restore tmux defaults for [/] (idempotent on reload — earlier versions of
 # this config rebound them to session cycling).
 bind [ copy-mode
