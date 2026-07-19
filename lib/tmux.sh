@@ -123,6 +123,12 @@ set -g pane-active-border-style 'fg=colour14'
 # Border-level click isn't possible — tmux doesn't populate mouse_x/mouse_y
 # for MouseDown1Border events.
 set -g mouse on
+
+# Double-click word selection copies to the next space, not the next
+# punctuation mark. tmux's default treats every punctuation char as a word
+# boundary, chopping /path/to/file, foo-bar, and URLs into pieces; using a
+# lone space as the only separator selects the whole space-delimited token.
+set -g word-separators ' '
 bind -n MouseDown1Status if-shell -F '#{!=:#{mouse_status_range},}' { run-shell "tmux switch-client -t '#{mouse_status_range}' ; tmux refresh-client -S" } { switch-client -t = }
 EOF
 )
