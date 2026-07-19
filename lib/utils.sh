@@ -227,6 +227,68 @@ claude_first_user_message() {
     done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
 }
 
+# Usage: pi_first_user_message <directory> [session_id] [strict]
+# Pi twin of claude_first_user_message. Pi stores sessions at
+# ~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl where the
+# encoded cwd is "--" + path minus leading slash with [/\:] -> "-" + "--"
+# (dots preserved). Message entries look like
+# {"type":"message",...,"message":{"role":"user","content":<string|blocks>}}.
+# Semantics of session_id/strict match the Claude version.
+pi_first_user_message() {
+    local directory="$1"
+    local session_id="${2:-}"
+    local strict="${3:-0}"
+
+    local resolved
+    resolved=$(cd "$directory" 2>/dev/null && pwd -P) || resolved="$directory"
+    local encoded="${resolved#/}"
+    encoded=$(printf '%s' "$encoded" | sed -E 's|[/\\:]|-|g')
+    local pi_project_dir="${AM_PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}/--${encoded}--"
+
+    [[ -d "$pi_project_dir" ]] || return 0
+
+    local session_file=""
+    if [[ -n "$session_id" ]]; then
+        local _matches=("$pi_project_dir"/*_"${session_id}".jsonl)
+        [[ -f "${_matches[0]}" ]] && session_file="${_matches[0]}"
+    fi
+    if [[ -z "$session_file" ]]; then
+        if [[ "$strict" == "1" ]]; then
+            local _jsonls=("$pi_project_dir"/*.jsonl)
+            [[ ${#_jsonls[@]} -eq 1 && -f "${_jsonls[0]}" ]] || return 0
+            session_file="${_jsonls[0]}"
+        else
+            session_file=$(command ls -t "$pi_project_dir"/*.jsonl 2>/dev/null | head -1)
+        fi
+    fi
+    [[ -n "$session_file" && -f "$session_file" ]] || return 0
+
+    local line content cleaned
+    while IFS= read -r line; do
+        content=$(echo "$line" | jq -r '
+            select(.type == "message") | .message |
+            select(.role == "user") | .content |
+            if type == "string" then .
+            elif type == "array" then
+                [.[] | select(.type == "text") | .text] | join(" ")
+            else empty
+            end
+        ' 2>/dev/null) || continue
+
+        [[ -z "$content" ]] && continue
+
+        cleaned=$(echo "$content" | \
+            sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
+            tr '\n' ' ' | \
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
+            echo "$cleaned"
+            return 0
+        fi
+    done < <(grep '"role":"user"' "$session_file" 2>/dev/null | head -10)
+}
+
 # TRACE=1 profiling — uses bash set -x with timestamped PS4.
 # Traces every line automatically, no per-function instrumentation needed.
 # Usage: TRACE=1 am list-internal

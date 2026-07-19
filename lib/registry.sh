@@ -475,6 +475,20 @@ _slog_encode_dir() {
     echo "$1" | sed -E 's|[/.]|-|g'
 }
 
+# Encode a path as a pi session directory name. Mirrors pi's session-manager
+# encoding: "--" + path minus leading slash, with / \ : replaced by -, + "--".
+# Unlike Claude's encoding, dots are preserved.
+_slog_encode_pi_dir() {
+    local p="${1#/}"
+    p=$(printf '%s' "$p" | sed -E 's|[/\\:]|-|g')
+    printf -- '--%s--\n' "$p"
+}
+
+# Root of pi's session storage (override: AM_PI_SESSIONS_DIR, for tests).
+_pi_sessions_root() {
+    echo "${AM_PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+}
+
 _slog_iso_epoch() {
     local value="$1"
     [[ -n "$value" ]] || return 1
@@ -521,17 +535,18 @@ _sessions_log_field() {
 _sessions_log_dir_is_shared() {
     local session_name="$1"
     local dir="$2"
+    local agent="${3:-claude}"
     [[ -f "$AM_REGISTRY" ]] || return 1
 
     local count
-    count=$(jq -r --arg name "$session_name" --arg dir "$dir" \
+    count=$(jq -r --arg name "$session_name" --arg dir "$dir" --arg agent "$agent" \
         '[.sessions | to_entries[]
-          | select(.key != $name and .value.agent_type == "claude" and .value.directory == $dir)]
+          | select(.key != $name and .value.agent_type == $agent and .value.directory == $dir)]
          | length' "$AM_REGISTRY" 2>/dev/null) || return 1
     [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 ))
 }
 
-# Detect the Claude session ID for a specific am session.
+# Detect the agent session ID for a specific am session.
 # Prefer the hook sidecar, because it was written by the agent pane itself.
 # Fall back to directory scanning only for JSONLs updated after this am session
 # was created; older same-directory JSONLs belong to previous sessions.
@@ -539,11 +554,12 @@ _sessions_log_detect_id_for_session() {
     local session_name="$1"
     local dir="$2"
     local created_at="${3:-}"
+    local agent="${4:-claude}"
 
     local sid sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
     sid=$(_sessions_log_sidecar_id "$session_name")
     if [[ -f "$sid_file" ]]; then
-        if [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid"; then
+        if [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid" "$agent"; then
             echo "$sid"
         fi
         return 0
@@ -553,31 +569,54 @@ _sessions_log_detect_id_for_session() {
     # binds the wrong conversation whenever another am session shares the
     # directory. Skip it then: a missing sid gets retried on the next scan,
     # a wrong one sticks forever.
-    if _sessions_log_dir_is_shared "$session_name" "$dir"; then
+    if _sessions_log_dir_is_shared "$session_name" "$dir" "$agent"; then
         return 0
     fi
 
-    _sessions_log_detect_id "$dir" "$created_at"
+    _sessions_log_detect_id "$dir" "$created_at" "$agent"
 }
 
-# Detect the Claude session ID for a directory.
-# Usage: _sessions_log_detect_id <directory> [not_before_iso]
+# Detect the agent session ID for a directory.
+# Usage: _sessions_log_detect_id <directory> [not_before_iso] [agent_type]
 # Returns the session UUID of the most recently modified JSONL file.
 # Returns: session UUID on stdout, or empty
 _sessions_log_detect_id() {
     local dir="$1"
     local not_before="${2:-}"
+    local agent="${3:-claude}"
 
-    local resolved encoded project_dir
+    local resolved
     resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
-    encoded=$(_slog_encode_dir "$resolved")
-    project_dir="$HOME/.claude/projects/$encoded"
-    [[ -d "$project_dir" ]] || return 0
 
     local min_epoch=0
     if [[ -n "$not_before" ]]; then
         min_epoch=$(_slog_iso_epoch "$not_before" 2>/dev/null || echo 0)
     fi
+
+    if [[ "$agent" == "pi" ]]; then
+        local pi_dir
+        pi_dir="$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"
+        [[ -d "$pi_dir" ]] || return 0
+        local jsonl_path base sid mtime
+        while IFS= read -r jsonl_path; do
+            [[ -n "$jsonl_path" && -f "$jsonl_path" ]] || continue
+            if (( min_epoch > 0 )); then
+                mtime=$(_slog_file_mtime "$jsonl_path" 2>/dev/null || echo 0)
+                (( mtime > 0 && mtime < min_epoch )) && continue
+            fi
+            base=$(basename "$jsonl_path" .jsonl)
+            sid="${base##*_}"
+            _sessions_log_valid_id "$sid" || continue
+            echo "$sid"
+            return 0
+        done < <(command ls -t "$pi_dir"/*.jsonl 2>/dev/null)
+        return 0
+    fi
+
+    local encoded project_dir
+    encoded=$(_slog_encode_dir "$resolved")
+    project_dir="$HOME/.claude/projects/$encoded"
+    [[ -d "$project_dir" ]] || return 0
 
     local jsonl_path mtime sid
     while IFS= read -r jsonl_path; do
@@ -593,14 +632,25 @@ _sessions_log_detect_id() {
     done < <(command ls -t "$project_dir"/*.jsonl 2>/dev/null)
 }
 
-# Check if a Claude JSONL file still exists for a given directory and session_id.
-# Usage: _sessions_log_jsonl_exists <directory> <session_id>
+# Check if an agent conversation JSONL still exists for a directory + sid.
+# Usage: _sessions_log_jsonl_exists <directory> <session_id> [agent_type]
 _sessions_log_jsonl_exists() {
     local dir="$1"
     local session_id="$2"
+    local agent="${3:-claude}"
 
-    local resolved encoded project_dir
+    local resolved
     resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
+
+    if [[ "$agent" == "pi" ]]; then
+        local pi_dir
+        pi_dir="$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"
+        local matches=("$pi_dir"/*_"${session_id}".jsonl)
+        [[ -f "${matches[0]}" ]]
+        return
+    fi
+
+    local encoded project_dir
     encoded=$(_slog_encode_dir "$resolved")
     project_dir="$HOME/.claude/projects/$encoded"
     [[ -f "$project_dir/${session_id}.jsonl" ]]

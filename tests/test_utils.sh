@@ -124,10 +124,60 @@ test_claude_first_user_message() {
     $SUMMARY_MODE || echo ""
 }
 
+test_pi_first_user_message() {
+    $SUMMARY_MODE || echo "=== Testing pi_first_user_message ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    # --- pi_first_user_message ---
+    local pfum_home
+    pfum_home=$(mktemp -d)
+    local pfum_dir="$pfum_home/proj"
+    mkdir -p "$pfum_dir"
+    local pfum_resolved pfum_enc
+    pfum_resolved=$(cd "$pfum_dir" && pwd -P)
+    pfum_enc="--${pfum_resolved#/}--"
+    pfum_enc="${pfum_enc//\//-}"
+    export AM_PI_SESSIONS_DIR="$pfum_home/sessions"
+    mkdir -p "$AM_PI_SESSIONS_DIR/$pfum_enc"
+    local pfum_file="$AM_PI_SESSIONS_DIR/$pfum_enc/2026-07-19T08-00-00-000Z_0199aaaa-0000-0000-0000-000000000001.jsonl"
+    printf '%s\n%s\n' \
+        '{"type":"session","version":3,"id":"0199aaaa-0000-0000-0000-000000000001","cwd":"'"$pfum_resolved"'"}' \
+        '{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":"Refactor the state machine please"}}' \
+        > "$pfum_file"
+    assert_eq "Refactor the state machine please" \
+        "$(pi_first_user_message "$pfum_dir")" "pi_first_user_message: string content"
+
+    printf '%s\n%s\n' \
+        '{"type":"session","version":3,"id":"0199aaaa-0000-0000-0000-000000000001","cwd":"'"$pfum_resolved"'"}' \
+        '{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"Fix the flaky test in registry"}]}}' \
+        > "$pfum_file"
+    assert_eq "Fix the flaky test in registry" \
+        "$(pi_first_user_message "$pfum_dir")" "pi_first_user_message: block content"
+
+    assert_eq "" "$(pi_first_user_message /nonexistent/xyz)" "pi_first_user_message: missing dir"
+
+    # strict mode with two jsonls and no sid -> empty
+    touch "$AM_PI_SESSIONS_DIR/$pfum_enc/2026-07-19T09-00-00-000Z_0199aaaa-0000-0000-0000-000000000002.jsonl"
+    assert_eq "" "$(pi_first_user_message "$pfum_dir" "" 1)" "pi_first_user_message: strict ambiguous"
+    # sid pin still works with two jsonls
+    assert_eq "Fix the flaky test in registry" \
+        "$(pi_first_user_message "$pfum_dir" "0199aaaa-0000-0000-0000-000000000001" 1)" \
+        "pi_first_user_message: sid pinned"
+    unset AM_PI_SESSIONS_DIR
+
+    # Cleanup
+    rm -rf "$pfum_home"
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_utils_tests() {
     _run_test test_utils
     _run_test test_utils_extended
     _run_test test_claude_first_user_message
+    _run_test test_pi_first_user_message
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

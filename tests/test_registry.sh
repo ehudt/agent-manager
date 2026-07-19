@@ -81,6 +81,31 @@ test_registry_extended() {
     assert_eq "/tmp/r1" "$(registry_get_field rapid-1 directory)" "registry: rapid-1 correct"
     assert_eq "/tmp/r3" "$(registry_get_field rapid-3 directory)" "registry: rapid-3 correct"
 
+    # --- pi sessions-log helpers ---
+    assert_eq "--Users-x.y-code-proj--" "$(_slog_encode_pi_dir /Users/x.y/code/proj)" \
+        "_slog_encode_pi_dir: slashes to dashes, dots preserved, wrapped"
+
+    local pi_home
+    pi_home=$(mktemp -d)
+    local pi_dir="$pi_home/proj"
+    mkdir -p "$pi_dir"
+    local resolved_pi_dir
+    resolved_pi_dir=$(cd "$pi_dir" && pwd -P)
+    local enc
+    enc=$(_slog_encode_pi_dir "$resolved_pi_dir")
+    export AM_PI_SESSIONS_DIR="$pi_home/.pi/agent/sessions"
+    mkdir -p "$AM_PI_SESSIONS_DIR/$enc"
+    touch "$AM_PI_SESSIONS_DIR/$enc/2026-07-19T08-00-00-000Z_0199aaaa-bbbb-cccc-dddd-eeeeffff0001.jsonl"
+
+    assert_cmd_succeeds "pi jsonl exists" \
+        _sessions_log_jsonl_exists "$pi_dir" "0199aaaa-bbbb-cccc-dddd-eeeeffff0001" "pi"
+    assert_cmd_fails "pi jsonl missing sid" \
+        _sessions_log_jsonl_exists "$pi_dir" "0199aaaa-bbbb-cccc-dddd-eeeeffff9999" "pi"
+
+    assert_eq "0199aaaa-bbbb-cccc-dddd-eeeeffff0001" \
+        "$(_sessions_log_detect_id "$pi_dir" "" "pi")" "pi detect id: newest jsonl"
+    unset AM_PI_SESSIONS_DIR
+
     teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
