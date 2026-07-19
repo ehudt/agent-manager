@@ -452,7 +452,9 @@ func encodedPiSessionDir(dir string) string {
 			}
 		}
 	}
-	resolved = strings.TrimLeft(resolved, "/\\")
+	if len(resolved) > 0 && (resolved[0] == '/' || resolved[0] == '\\') {
+		resolved = resolved[1:]
+	}
 	return "--" + strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(resolved) + "--"
 }
 

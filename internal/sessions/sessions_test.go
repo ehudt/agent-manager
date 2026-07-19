@@ -277,8 +277,17 @@ func TestRestorableEntriesIncludePi(t *testing.T) {
 }
 
 func TestEncodedPiSessionDir(t *testing.T) {
-	got := encodedPiSessionDir("/Users/x.y/code/proj")
-	if got != "--Users-x.y-code-proj--" {
-		t.Fatalf("encodedPiSessionDir: got %q", got)
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/Users/x.y/code/proj", "--Users-x.y-code-proj--"},
+		{"//foo", "---foo--"},
+	}
+	for _, tt := range tests {
+		got := encodedPiSessionDir(tt.input)
+		if got != tt.want {
+			t.Errorf("encodedPiSessionDir(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
