@@ -34,6 +34,19 @@ test_agents() {
     assert_eq "false" "$(_agent_prompt_as_arg claude && echo true || echo false)" \
         "_agent_prompt_as_arg: claude uses stdin"
 
+    # --- pi agent type ---
+    assert_eq "pi" "$(agent_get_command pi)" "agent_get_command: pi"
+    assert_eq "true" "$(agent_type_supported pi && echo true || echo false)" \
+        "agent_type_supported: pi"
+    assert_eq "true" "$(_agent_prompt_as_arg pi && echo true || echo false)" \
+        "_agent_prompt_as_arg: pi takes prompt as arg"
+    assert_eq "" "$(agent_get_yolo_flag pi)" "agent_get_yolo_flag: pi has no yolo flag"
+    assert_eq "true" "$(agent_supports_worktree pi && echo true || echo false)" \
+        "agent_supports_worktree: pi"
+    assert_eq "false" "$(agent_cli_manages_worktree pi && echo true || echo false)" \
+        "agent_cli_manages_worktree: pi is am-managed"
+    assert_eq "/tmp/x/.pi/worktrees" "$(agent_worktree_root /tmp/x pi)" "agent_worktree_root: pi"
+
     $SUMMARY_MODE || echo ""
 }
 

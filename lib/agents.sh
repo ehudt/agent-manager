@@ -12,13 +12,14 @@ _AGENTS_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 declare -A AGENT_COMMANDS=(
     [claude]="claude"
     [codex]="codex"
+    [pi]="pi"
 )
 
 # Check if an agent type accepts the initial prompt as a CLI argument.
-# Codex takes [PROMPT] as a positional arg; Claude reads from stdin.
+# Codex and pi take [PROMPT] as a positional arg; Claude reads from stdin.
 _agent_prompt_as_arg() {
     case "$1" in
-        codex) return 0 ;;
+        codex|pi) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -30,6 +31,7 @@ agent_get_yolo_flag() {
     case "$agent_type" in
         claude) echo "--dangerously-skip-permissions" ;;
         codex) echo "--yolo" ;;
+        pi) echo "" ;;
         *) echo "--yolo" ;;
     esac
 }
@@ -53,7 +55,7 @@ agent_type_supported() {
 agent_supports_worktree() {
     local agent_type="$1"
     case "$agent_type" in
-        claude|codex) return 0 ;;
+        claude|codex|pi) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -74,6 +76,7 @@ agent_worktree_root() {
     case "$agent_type" in
         claude) echo "$directory/.claude/worktrees" ;;
         codex) echo "$directory/.codex/worktrees" ;;
+        pi) echo "$directory/.pi/worktrees" ;;
         *) return 1 ;;
     esac
 }
@@ -189,7 +192,9 @@ agent_launch() {
     done
 
     if $wants_yolo; then
-        normalized_args+=("$(agent_get_yolo_flag "$agent_type")")
+        local _yolo_flag
+        _yolo_flag=$(agent_get_yolo_flag "$agent_type")
+        [[ -n "$_yolo_flag" ]] && normalized_args+=("$_yolo_flag")
     fi
     agent_args=("${normalized_args[@]}")
 
@@ -249,8 +254,8 @@ agent_launch() {
     registry_update "$session_name" "yolo_mode" "$wants_yolo"
     registry_update "$session_name" "sandbox_mode" "$wants_sandbox"
 
-    # Append to sessions log for restore support (Claude only)
-    if [[ "$agent_type" == "claude" ]]; then
+    # Append to sessions log for restore support (Claude and pi)
+    if [[ "$agent_type" == "claude" || "$agent_type" == "pi" ]]; then
         sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
     fi
 
