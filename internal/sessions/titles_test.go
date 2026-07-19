@@ -194,3 +194,48 @@ func TestClaudeFirstUserMessageStrictSingleJSONL(t *testing.T) {
 		t.Errorf("strict single: got %q, want the lone session's message", got)
 	}
 }
+
+func TestPiTitleExtract(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"pi - Refactor auth - proj", "Refactor auth"},
+		{"pi - a - b - proj", "a - b"},
+		{"pi - proj", ""},
+		{"pi", ""},
+		{"plain title", "plain title"},
+	}
+	for _, c := range cases {
+		if got := piTitleExtract(c.in); got != c.want {
+			t.Errorf("piTitleExtract(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestPiFirstUserMessage(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	dir := filepath.Join(tmp, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		resolved = dir
+	}
+	piDir := filepath.Join(tmp, ".pi", "agent", "sessions", encodedPiSessionDir(resolved))
+	if err := os.MkdirAll(piDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"type":"session","version":3,"id":"x","cwd":"` + resolved + `"}
+{"type":"message","id":"a1","message":{"role":"user","content":"Fix the flaky registry test"}}
+`
+	sid := "0199dddd-0000-0000-0000-000000000001"
+	if err := os.WriteFile(filepath.Join(piDir, "2026-07-19T08-00-00-000Z_"+sid+".jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := piFirstUserMessage(resolved, "", false); got != "Fix the flaky registry test" {
+		t.Fatalf("piFirstUserMessage = %q", got)
+	}
+	if got := piFirstUserMessage(resolved, sid, true); got != "Fix the flaky registry test" {
+		t.Fatalf("piFirstUserMessage sid-pinned = %q", got)
+	}
+}

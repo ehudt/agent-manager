@@ -163,7 +163,7 @@ func TestEnterInactiveOutputsRestoreProtocol(t *testing.T) {
 	m.entries = []sessions.Entry{
 		{
 			Kind:             sessions.EntryInactive,
-			Meta:             sessions.Session{Directory: "/tmp/my-site"},
+			Meta:             sessions.Session{Directory: "/tmp/my-site", AgentType: "claude"},
 			RestoreSessionID: "sid-123",
 			Display:          "my-site [claude] task (1m ago)",
 			DisplayBase:      "my-site [claude] task",
@@ -174,7 +174,7 @@ func TestEnterInactiveOutputsRestoreProtocol(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(model).output
-	want := "__RESTORE__\x1f/tmp/my-site\x1fsid-123"
+	want := "__RESTORE__\x1f/tmp/my-site\x1fsid-123\x1fclaude"
 	if got != want {
 		t.Errorf("inactive enter output = %q, want %q", got, want)
 	}

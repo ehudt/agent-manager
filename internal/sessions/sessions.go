@@ -336,7 +336,7 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 	var entries []Entry
 	for i := len(logs) - 1; i >= 0; i-- {
 		log := logs[i]
-		if log.AgentType != "claude" || log.SessionID == "" {
+		if (log.AgentType != "claude" && log.AgentType != "pi") || log.SessionID == "" {
 			continue
 		}
 		if liveSessions != nil && liveSessions[log.SessionName] {
@@ -345,7 +345,13 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 		if seenIDs[log.SessionID] {
 			continue
 		}
-		if !claudeJSONLExists(home, log.Directory, log.SessionID) {
+		exists := false
+		if log.AgentType == "pi" {
+			exists = piJSONLExists(home, log.Directory, log.SessionID)
+		} else {
+			exists = claudeJSONLExists(home, log.Directory, log.SessionID)
+		}
+		if !exists {
 			continue
 		}
 
@@ -423,4 +429,38 @@ func encodedClaudeProjectDir(dir string) string {
 		}
 	}
 	return strings.NewReplacer("/", "-", ".", "-").Replace(resolved)
+}
+
+func piSessionsRoot(home string) string {
+	if v := os.Getenv("AM_PI_SESSIONS_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(home, ".pi", "agent", "sessions")
+}
+
+// encodedPiSessionDir mirrors pi's session-manager cwd encoding:
+// "--" + path minus leading separator, with / \ : replaced by -, + "--".
+// Dots are preserved (unlike Claude's encoding).
+func encodedPiSessionDir(dir string) string {
+	resolved := dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		if st, statErr := os.Stat(abs); statErr == nil && st.IsDir() {
+			if realPath, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+				resolved = realPath
+			} else {
+				resolved = abs
+			}
+		}
+	}
+	resolved = strings.TrimLeft(resolved, "/\\")
+	return "--" + strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(resolved) + "--"
+}
+
+func piJSONLExists(home, dir, sessionID string) bool {
+	if home == "" || dir == "" || sessionID == "" {
+		return false
+	}
+	pattern := filepath.Join(piSessionsRoot(home), encodedPiSessionDir(dir), "*_"+sessionID+".jsonl")
+	matches, err := filepath.Glob(pattern)
+	return err == nil && len(matches) > 0
 }

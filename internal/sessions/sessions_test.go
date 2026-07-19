@@ -243,3 +243,42 @@ func TestEnvOr(t *testing.T) {
 		t.Errorf("EnvOr set = %q, want 'custom'", got)
 	}
 }
+
+func TestRestorableEntriesIncludePi(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		resolved = dir
+	}
+	sid := "0199cccc-0000-0000-0000-000000000001"
+	piDir := filepath.Join(home, ".pi", "agent", "sessions", encodedPiSessionDir(resolved))
+	if err := os.MkdirAll(piDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piDir, "2026-07-19T08-00-00-000Z_"+sid+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := []SessionLogEntry{
+		{SessionName: "am-pi1", SessionID: sid, Directory: resolved, AgentType: "pi", CreatedAt: "2026-07-19T08:00:00Z"},
+		{SessionName: "am-pi2", SessionID: "0199cccc-0000-0000-0000-000000000002", Directory: resolved, AgentType: "pi", CreatedAt: "2026-07-19T08:00:00Z"},
+	}
+	entries := restorableEntriesFromLog(logs, home, home, map[string]bool{}, time.Now())
+	if len(entries) != 1 {
+		t.Fatalf("want 1 restorable pi entry, got %d", len(entries))
+	}
+	if entries[0].RestoreSessionID != sid {
+		t.Fatalf("wrong sid: %s", entries[0].RestoreSessionID)
+	}
+}
+
+func TestEncodedPiSessionDir(t *testing.T) {
+	got := encodedPiSessionDir("/Users/x.y/code/proj")
+	if got != "--Users-x.y-code-proj--" {
+		t.Fatalf("encodedPiSessionDir: got %q", got)
+	}
+}

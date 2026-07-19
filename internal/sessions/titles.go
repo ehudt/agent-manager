@@ -56,15 +56,24 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 
 		title := readPaneTitle(socket, s.Name+":.{top}")
 		title = leadingNonAlnum.ReplaceAllString(title, "")
+		if meta.AgentType == "pi" {
+			title = piTitleExtract(title)
+		}
 		if !titleValid(title) {
-			if meta.AgentType == "claude" && meta.Directory != "" {
-				// Resolve THIS session's Claude id so two sessions sharing
-				// one directory don't both inherit the newest JSONL's first
-				// message as their title.
-				sid := resolveClaudeSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
-				// strict: when the id can't be pinned, don't guess from a
-				// directory with multiple JSONLs (would inherit a sibling's task).
-				fallback := claudeFirstUserMessage(meta.Directory, sid, true)
+			if (meta.AgentType == "claude" || meta.AgentType == "pi") && meta.Directory != "" {
+				var fallback string
+				if meta.AgentType == "pi" {
+					sid := resolvePiSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
+					fallback = piFirstUserMessage(meta.Directory, sid, true)
+				} else {
+					// Resolve THIS session's Claude id so two sessions sharing
+					// one directory don't both inherit the newest JSONL's first
+					// message as their title.
+					sid := resolveClaudeSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
+					// strict: when the id can't be pinned, don't guess from a
+					// directory with multiple JSONLs (would inherit a sibling's task).
+					fallback = claudeFirstUserMessage(meta.Directory, sid, true)
+				}
 				if len(fallback) > titleMaxLen {
 					fallback = fallback[:titleMaxLen]
 				}
@@ -302,6 +311,153 @@ func resolveClaudeSessionID(home, stateDir, sessionName, dir, createdAt string) 
 			continue
 		}
 		sid := strings.TrimSuffix(e.Name(), ".jsonl")
+		if !validSessionID.MatchString(sid) {
+			continue
+		}
+		if best == "" || info.ModTime().After(bestMod) {
+			best = sid
+			bestMod = info.ModTime()
+		}
+	}
+	return best
+}
+
+// piTitleExtract pulls a task candidate out of pi's self-maintained title.
+// "pi - <name> - <base>" -> "<name>" (name may contain " - "; only the
+// first and last segments are stripped). "pi - <base>" or "pi" -> "" so the
+// caller falls back to the JSONL first message. Anything else passes through.
+func piTitleExtract(title string) string {
+	if title == "pi" {
+		return ""
+	}
+	rest, ok := strings.CutPrefix(title, "pi - ")
+	if !ok {
+		return title
+	}
+	idx := strings.LastIndex(rest, " - ")
+	if idx < 0 {
+		return ""
+	}
+	return rest[:idx]
+}
+
+// piFirstUserMessage mirrors lib/utils.sh:pi_first_user_message.
+func piFirstUserMessage(directory, sessionID string, strict bool) string {
+	home := homeDir()
+	piDir := filepath.Join(piSessionsRoot(home), encodedPiSessionDir(directory))
+
+	var target string
+	if sessionID != "" {
+		matches, _ := filepath.Glob(filepath.Join(piDir, "*_"+sessionID+".jsonl"))
+		if len(matches) > 0 {
+			target = matches[0]
+		}
+	}
+
+	if target == "" {
+		entries, err := os.ReadDir(piDir)
+		if err != nil {
+			return ""
+		}
+		var jsonls []os.DirEntry
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+				jsonls = append(jsonls, e)
+			}
+		}
+		if strict && len(jsonls) != 1 {
+			return ""
+		}
+		var newestMod time.Time
+		for _, e := range jsonls {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			if target == "" || info.ModTime().After(newestMod) {
+				target = filepath.Join(piDir, e.Name())
+				newestMod = info.ModTime()
+			}
+		}
+	}
+	if target == "" {
+		return ""
+	}
+
+	f, err := os.Open(target)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	count := 0
+	for scanner.Scan() && count < 10 {
+		line := scanner.Bytes()
+		if !strings.Contains(string(line), `"role":"user"`) {
+			continue
+		}
+		count++
+		var rec struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue
+		}
+		if rec.Type != "message" || rec.Message.Role != "user" {
+			continue
+		}
+		text := cleanContent(extractContent(rec.Message.Content))
+		if len(text) > 10 {
+			return text
+		}
+	}
+	return ""
+}
+
+// resolvePiSessionID mirrors resolveClaudeSessionID for pi session files
+// (<timestamp>_<uuid>.jsonl under ~/.pi/agent/sessions/<encoded-cwd>/).
+func resolvePiSessionID(home, stateDir, sessionName, dir, createdAt string) string {
+	sidPath := filepath.Join(stateDir, sessionName+".sid")
+	if b, err := os.ReadFile(sidPath); err == nil {
+		sid := strings.TrimSpace(string(b))
+		matches, _ := filepath.Glob(filepath.Join(piSessionsRoot(home), encodedPiSessionDir(dir), "*_"+sid+".jsonl"))
+		if validSessionID.MatchString(sid) && len(matches) > 0 {
+			return sid
+		}
+		return ""
+	}
+
+	piDir := filepath.Join(piSessionsRoot(home), encodedPiSessionDir(dir))
+	entries, err := os.ReadDir(piDir)
+	if err != nil {
+		return ""
+	}
+	minTime := parseSessionLogTime(createdAt)
+	var best string
+	var bestMod time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if !minTime.IsZero() && info.ModTime().Before(minTime) {
+			continue
+		}
+		base := strings.TrimSuffix(e.Name(), ".jsonl")
+		idx := strings.LastIndex(base, "_")
+		if idx < 0 {
+			continue
+		}
+		sid := base[idx+1:]
 		if !validSessionID.MatchString(sid) {
 			continue
 		}
