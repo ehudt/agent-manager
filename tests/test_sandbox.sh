@@ -16,6 +16,11 @@ test_sandbox() {
     assert_contains "$cmd" "sandbox-shell" "sandbox_enter_cmd: invokes sandbox-shell script"
     assert_contains "$cmd" "am-abc123" "sandbox_enter_cmd: contains session name"
 
+    # --- sandbox_exec_cmd exports AM_SESSION_NAME ---
+    local exec_cmd
+    exec_cmd=$(sandbox_exec_cmd "am-sbtest" "/tmp" "echo hi")
+    assert_contains "$exec_cmd" "AM_SESSION_NAME=am-sbtest" "sandbox_exec_cmd: AM_SESSION_NAME exported"
+
     # shellcheck disable=SC2088 # Tildes in quotes are intentional — testing tilde expansion
     assert_eq "$HOME/demo" "$(sb_expand_path "~/demo")" "sb_expand_path: expands tilde"
     # shellcheck disable=SC2088

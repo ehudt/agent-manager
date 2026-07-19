@@ -89,7 +89,7 @@ sandbox_exec_cmd() {
     local target_dir="${directory:-$HOME}"
     local quoted_cmd
     printf -v quoted_cmd '%q' "$cmd"
-    printf "%s" "docker exec -it -u ubuntu -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh -lc $quoted_cmd"
+    printf "%s" "docker exec -it -u ubuntu -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'AM_SESSION_NAME=$session_name' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh -lc $quoted_cmd"
 }
 
 _sandbox_list_containers() {
@@ -284,6 +284,21 @@ sandbox_start() {
 
     local -a mounts
     mounts=(-v "$SB_HOME_DIR:/home/ubuntu" -v "$directory:$directory")
+
+    # State channel out of the container: agents inside write their state
+    # files to /tmp/am-state, which is the host's state dir. Applies to the
+    # pi am-state extension and to Claude hooks configured in sandbox-home.
+    local host_state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+    mkdir -p "$host_state_dir"
+    mounts+=(-v "$host_state_dir:/tmp/am-state")
+
+    # Seed the pi state extension into the sandbox home (a host symlink
+    # cannot cross the bind mount, so copy; idempotent, refreshed each start).
+    local pi_ext_src="$_SANDBOX_LIB_DIR/hooks/am-state.ts"
+    if [[ -f "$pi_ext_src" ]]; then
+        mkdir -p "$SB_HOME_DIR/.pi/agent/extensions"
+        cp -f "$pi_ext_src" "$SB_HOME_DIR/.pi/agent/extensions/am-state.ts" 2>/dev/null || true
+    fi
 
     local parsed share_host share_target share_mode
     while IFS= read -r parsed; do

@@ -111,7 +111,10 @@ def test_sandbox_start_uses_home_bind_mount_and_project_mount_only_by_default(
     assert home_dest in mounts
     assert mounts[home_dest]["Type"] == "bind"
     assert mounts[home_dest]["Source"] == sandbox_env["SB_HOME_DIR"]
-    assert len(mounts) == 2
+    state_dest = "/tmp/am-state"
+    assert state_dest in mounts
+    assert mounts[state_dest]["Type"] == "bind"
+    assert len(mounts) == 3
 
     caps = {
         cap.removeprefix("CAP_") for cap in (inspect["HostConfig"].get("CapAdd") or [])
