@@ -4,6 +4,41 @@
 # Source utils if not already loaded
 [[ -z "$AM_DIR" ]] && source "${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/utils.sh"
 
+# --- Registry write lock ---
+#
+# Every registry write is a read-whole-file -> jq -> rename cycle. The rename
+# is atomic (no torn JSON) but the cycle is not: two overlapping writers each
+# start from the same snapshot and the last rename silently erases the other's
+# change (lost update), including rows they never touched. Writers overlap
+# constantly (auto_title_scan, agent_launch/kill, the Go title-refresh/reaper
+# invoked by the status bar every 5s), so every read-modify-write below runs
+# under an exclusive lock on $AM_REGISTRY.lock. The Go twin
+# (internal/sessions) takes the same lock via syscall.Flock.
+#
+# flock(1) is used where available (Linux); macOS ships no flock CLI, so a
+# perl one-liner calls flock(2) on the shell's inherited fd instead. The lock
+# lives on the open file description held by the shell, so it survives the
+# perl child exiting and auto-releases if the holder dies. Not reentrant —
+# callers must not nest _registry_lock.
+_registry_lock() {
+    exec {_REGISTRY_LOCK_FD}>>"$AM_REGISTRY.lock" || return 0
+    if command -v flock >/dev/null 2>&1; then
+        flock "$_REGISTRY_LOCK_FD" 2>/dev/null || true
+    elif command -v perl >/dev/null 2>&1; then
+        perl -MFcntl=:flock -e \
+            'open(my $fh, ">&=", $ARGV[0]) or exit 1; flock($fh, LOCK_EX) or exit 1' \
+            "$_REGISTRY_LOCK_FD" 2>/dev/null || true
+    fi
+    return 0
+}
+
+_registry_unlock() {
+    [[ -n "${_REGISTRY_LOCK_FD:-}" ]] || return 0
+    exec {_REGISTRY_LOCK_FD}>&-
+    unset _REGISTRY_LOCK_FD
+    return 0
+}
+
 # Add a session to the registry
 # Usage: registry_add <name> <directory> <branch> <agent_type> [task_description]
 registry_add() {
@@ -19,6 +54,7 @@ registry_add() {
     local tmp_file
     tmp_file=$(mktemp)
 
+    _registry_lock
     jq --arg name "$name" \
        --arg dir "$directory" \
        --arg branch "$branch" \
@@ -33,6 +69,9 @@ registry_add() {
            "created_at": $created,
            "task": $task
        }' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
+    local rc=$?
+    _registry_unlock
+    return $rc
 }
 
 # Get a specific field from a session
@@ -72,11 +111,15 @@ registry_update() {
     local tmp_file
     tmp_file=$(mktemp)
 
+    _registry_lock
     jq --arg name "$name" \
        --arg field "$field" \
        --arg value "$value" \
        'if .sessions[$name] then .sessions[$name][$field] = $value else . end' \
        "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
+    local rc=$?
+    _registry_unlock
+    return $rc
 }
 
 # Remove a session from the registry
@@ -87,7 +130,11 @@ registry_remove() {
     local tmp_file
     tmp_file=$(mktemp)
 
+    _registry_lock
     jq --arg name "$name" 'del(.sessions[$name])' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
+    local rc=$?
+    _registry_unlock
+    return $rc
 }
 
 # Garbage collection: remove registry entries for sessions that no longer exist in tmux

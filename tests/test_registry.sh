@@ -748,9 +748,64 @@ test_agent_kill_sid_binding() {
     $SUMMARY_MODE || echo ""
 }
 
+# ============================================
+# Test: registry write locking (lost-update race)
+# ============================================
+test_registry_concurrency() {
+    $SUMMARY_MODE || echo "=== Testing registry concurrency (locking) ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    setup_isolated_am_dir
+
+    local n=12 i
+
+    # --- Parallel adds: every row must survive ---
+    for ((i = 1; i <= n; i++)); do
+        ( registry_add "conc-add-$i" "/tmp/c$i" "main" "claude" "" ) &
+    done
+    wait
+    assert_eq "$n" "$(registry_count)" \
+        "concurrency: all parallel registry_add rows persisted"
+
+    # --- Parallel updates to distinct sessions: every field must land ---
+    for ((i = 1; i <= n; i++)); do
+        ( registry_update "conc-add-$i" "task" "task-$i" ) &
+    done
+    wait
+    local lost=0
+    for ((i = 1; i <= n; i++)); do
+        [[ "$(registry_get_field "conc-add-$i" task)" == "task-$i" ]] || lost=$((lost+1))
+    done
+    assert_eq "0" "$lost" \
+        "concurrency: no parallel registry_update lost (lost=$lost of $n)"
+
+    # --- Mixed add + update + remove storm: registry stays consistent ---
+    for ((i = 1; i <= n; i++)); do
+        ( registry_update "conc-add-$i" "branch" "b-$i" ) &
+        ( registry_add "conc-new-$i" "/tmp/n$i" "main" "codex" "" ) &
+        ( registry_remove "conc-add-$i" ) &
+    done
+    wait
+    assert_eq "$n" "$(registry_count)" \
+        "concurrency: storm converges to expected row count"
+    lost=0
+    for ((i = 1; i <= n; i++)); do
+        registry_exists "conc-new-$i" || lost=$((lost+1))
+    done
+    assert_eq "0" "$lost" \
+        "concurrency: no added row clobbered during storm (lost=$lost of $n)"
+
+    teardown_isolated_am_dir
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_registry_tests() {
     _run_test test_registry
     _run_test test_registry_extended
+    _run_test test_registry_concurrency
     _run_test test_registry_get_fields
     _run_test test_registry_gc
     _run_test test_registry_gc_go_path

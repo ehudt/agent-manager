@@ -33,6 +33,11 @@ func reapOrphansAt(amDir, stateDir string, live []TmuxSession, now time.Time) in
 		return 0
 	}
 
+	// Read-modify-write on sessions.json: hold the registry lock so a
+	// concurrent bash registry_add/update/remove is not clobbered.
+	lock := lockRegistry(amDir)
+	defer unlockRegistry(lock)
+
 	regPath := filepath.Join(amDir, "sessions.json")
 	registry := ReadRegistry(regPath)
 	if len(registry.Sessions) == 0 {

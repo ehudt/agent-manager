@@ -31,6 +31,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 
 ## Gotchas
 
+- Registry writes must go through `registry_add/update/remove` (or Go's `lockRegistry`-wrapped paths) — a bare jq-rewrite of `sessions.json` bypasses the write lock and reintroduces lost updates. Don't spawn background jobs while `_registry_lock` is held (children inherit the lock fd and keep the lock alive until they exit)
 - Sourced libs derive their own dir as `_<MODULE>_LIB_DIR` from `AM_LIB_DIR` (exported by the `am` entry point); standalone scripts like `lib/status-bar` set their own `SCRIPT_DIR`
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
 - Sandbox containers always run as the `ubuntu` user (UID/GID aligned to host). Use `SB_CONTAINER_HOME` for container-side path expansion, not `$HOME`
@@ -295,7 +296,7 @@ am restore
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)
 
 **Registry (JSON metadata):**
-- `registry_add/get_field/get_fields/update/remove` - CRUD for sessions.json
+- `registry_add/get_field/get_fields/update/remove` - CRUD for sessions.json. All writes are read-jq-rename cycles serialized under an exclusive lock on `$AM_REGISTRY.lock` (`_registry_lock`/`_registry_unlock`: the flock CLI on Linux, a perl flock syscall on an inherited fd on macOS — no flock CLI there; **not reentrant**, don't nest). The Go twin (`internal/sessions/lock.go:lockRegistry`) takes the same lock via `syscall.Flock`, so bash and Go writers can't lost-update each other; `RefreshTitles` computes titles unlocked, then re-reads and applies under the lock
 - `registry_gc()` - Remove entries for dead tmux sessions. Two independently throttled halves: registry rows + hook state files (incl. `.sid` sidecars) on `$AM_DIR/.gc_last`, mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; bash-only extras (`sandbox_gc_orphans`, `sessions_log_gc`, orphan state-file sweep) on `$AM_DIR/.gc_extras_last` so Go stamping `.gc_last` can't starve them.
 
 **Sessions log (for restore):**

@@ -47,7 +47,10 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 	home := homeDir()
 	stateDir := EnvOr("AM_STATE_DIR", "/tmp/am-state")
 
-	var updated bool
+	// Phase 1 (unlocked): compute new tasks from pane titles / JSONLs against
+	// a registry snapshot. Slow (tmux exec + file reads per session), so it
+	// must not run under the registry lock.
+	updates := make(map[string]string)
 	for _, s := range sessions {
 		meta, ok := registry.Sessions[s.Name]
 		if !ok {
@@ -90,15 +93,34 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 		if title == meta.Task {
 			continue
 		}
-		meta.Task = title
-		registry.Sessions[s.Name] = meta
-		updated = true
+		updates[s.Name] = title
 	}
 
+	if len(updates) == 0 {
+		return
+	}
+
+	// Phase 2 (locked): re-read the registry under the write lock shared with
+	// bash (lib/registry.sh:_registry_lock) and apply only the task fields —
+	// writing back the phase-1 snapshot would clobber concurrent writers.
+	lock := lockRegistry(amDir)
+	defer unlockRegistry(lock)
+
+	fresh := ReadRegistry(regPath)
+	var updated bool
+	for name, task := range updates {
+		meta, ok := fresh.Sessions[name]
+		if !ok || meta.Task == task {
+			continue
+		}
+		meta.Task = task
+		fresh.Sessions[name] = meta
+		updated = true
+	}
 	if !updated {
 		return
 	}
-	writeRegistryAtomic(regPath, registry)
+	writeRegistryAtomic(regPath, fresh)
 }
 
 func readScanMarker(path string) (time.Time, bool) {
