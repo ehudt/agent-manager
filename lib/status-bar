@@ -193,7 +193,7 @@ for i in "${!session_meta[@]}"; do
     fi
 
     state=$(_state_resolve "$session" "$agent_type" "$dir" \
-        SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now" "$activity" SESSION_TITLE)
+        SESSION_TOP_PID PROC_COMM PROC_CHILDREN "$now" "$activity" SESSION_TITLE "$_created")
     [[ -z "$state" ]] && state="idle"
 
     # Tab age = time in current state. The hook state file's mtime is the

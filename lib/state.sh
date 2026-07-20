@@ -173,17 +173,17 @@ agent_classify_exit() {
 # together; one ps -eo builds the process maps).
 #
 # Pipeline:
-#   1. shell check   -> starting (created<5s, non-bulk) / idle / dead
+#   1. shell check   -> starting (created<5s; bulk needs created_epoch) / idle / dead (non-bulk classify_exit race only)
 #   2. title glyph   -> running / waiting_* per the decision table above
 #   3. hook fallback -> gated hook state (no glyph signal), else unknown
 #
 # Usage:
 #   _state_resolve <session> <agent_type> <dir>
-#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch> [activity_epoch] [title_map]
+#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch> [activity_epoch] [title_map] [created_epoch]
 _state_resolve() {
     local session="$1" agent_type="${2:-}" dir="${3:-}"
 
-    local top_name comm_name child_name now_val activity_val="" title_val=""
+    local top_name comm_name child_name now_val activity_val="" title_val="" created_val=""
     local -A __auto_top=() __auto_comm=() __auto_child=()
     local skip_classifier=false
     if (( $# >= 7 )); then
@@ -193,6 +193,7 @@ _state_resolve() {
             local -n __TITLES="$9"
             title_val="${__TITLES[$session]:-}"
         fi
+        created_val="${10:-}"
         skip_classifier=true
     else
         local pane_pid
@@ -214,6 +215,15 @@ _state_resolve() {
     # 1. Shell check
     if _state_pane_is_shell_bulk "$session" "$top_name" "$comm_name" "$child_name"; then
         if $skip_classifier; then
+            # Agree with the non-bulk classifier: a shell pane in a session
+            # younger than 5s is the agent still starting, not idle. The bulk
+            # caller supplies created_epoch (tmux #{session_created}); the
+            # non-bulk path below derives the same from registry created_at.
+            if [[ -n "$created_val" ]] && (( now_val - created_val < 5 )); then
+                _state_debug "$_dbg_session" "$_dbg_agent" shell starting
+                echo "starting"
+                return
+            fi
             _state_debug "$_dbg_session" "$_dbg_agent" shell idle
             echo "idle"
             return

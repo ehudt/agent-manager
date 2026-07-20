@@ -395,6 +395,28 @@ test_state_title_glyph() {
     assert_eq "idle" "$pi_state" "_state_resolve: pi shell pane wins"
     rm -f "$tmp_state_dir/am-pi1"
 
+    # --- bulk shell-pane semantics agree with the non-bulk classifier ---
+    # Non-bulk: shell pane + session <5s old -> starting; older -> idle.
+    # The bulk path must match when the caller supplies created_epoch
+    # (status-bar already reads #{session_created}); without it, idle.
+    local -A sh_top_map=( [am-sh]=88001 )
+    local -A sh_comm_map=( [88001]=zsh )
+    local -A sh_child_map=()
+    local -A sh_title_map=()
+    local sh_state
+    sh_state=$(_state_resolve "am-sh" "claude" "/tmp" sh_top_map sh_comm_map sh_child_map \
+        "$_t_now" "$_t_now" sh_title_map "$(( _t_now - 2 ))")
+    assert_eq "starting" "$sh_state" \
+        "_state_resolve bulk: shell pane + created<5s -> starting (agrees with non-bulk)"
+    sh_state=$(_state_resolve "am-sh" "claude" "/tmp" sh_top_map sh_comm_map sh_child_map \
+        "$_t_now" "$_t_now" sh_title_map "$(( _t_now - 600 ))")
+    assert_eq "idle" "$sh_state" \
+        "_state_resolve bulk: shell pane + created>=5s -> idle"
+    sh_state=$(_state_resolve "am-sh" "claude" "/tmp" sh_top_map sh_comm_map sh_child_map \
+        "$_t_now" "$_t_now" sh_title_map)
+    assert_eq "idle" "$sh_state" \
+        "_state_resolve bulk: shell pane without created_epoch -> idle (back-compat)"
+
     rm -rf "$tmp_state_dir"
     unset AM_STATE_DIR
     set +u
