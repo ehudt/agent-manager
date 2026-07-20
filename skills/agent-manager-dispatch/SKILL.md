@@ -1,9 +1,9 @@
 ---
-name: am-orchestration
+name: agent-manager-dispatch
 description: Use when a task has 2+ independent work streams, needs background agents, or when you want to delegate a subtask to a separate long-running agent session. Also use when asked to "spawn", "dispatch", or "launch" agent sessions.
 ---
 
-# Agent Manager Orchestration
+# Agent Manager Dispatch
 
 Dispatch and monitor background AI agent sessions using the `am` CLI. Each session runs in its own tmux with a dedicated agent + shell pane.
 

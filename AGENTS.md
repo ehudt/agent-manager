@@ -59,7 +59,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/state.sh` | Session state detection: title glyph + hook file + process tree, wait/poll |
 | `lib/hooks/am-state.ts` | Pi extension: lifecycle events → am state files (session_start/agent_settled → waiting_input, agent_start → running) |
 | `tests/live_lab/run.sh` | Empirical lab: drives a real Claude session through every state, records hook payloads / pane titles / transitions |
-| `skills/am-orchestration/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session orchestration |
+| `skills/agent-manager-dispatch/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session dispatch/orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `lib/sandbox.sh` | Docker sandbox lifecycle and fleet ops |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
@@ -408,7 +408,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
 | Add state detection signal | `lib/state.sh` → extend `_state_resolve()` ordering |
 | Add hook state event | `lib/hooks/state-hook.sh` → event-to-state mapping |
-| Add/edit orchestration skill | `skills/am-orchestration/SKILL.md` |
+| Add/edit dispatch skill | `skills/agent-manager-dispatch/SKILL.md` |
 | Add/edit peek skill | `skills/am-peek/SKILL.md` |
 | Add new skill (auto-installed) | drop `skills/<name>/SKILL.md`; `am install` loops `skills/*/` |
 | Add restore agent support | `lib/agents.sh` → `agent_resume_args()`, `lib/registry.sh` → `sessions_log_restorable()` filter, `am` → `cmd_restore_internal()`, `internal/sessions` → Go mirrors |

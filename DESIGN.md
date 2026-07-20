@@ -221,8 +221,8 @@ agent-manager/
 │   ├── tinyproxy.conf      # Tinyproxy network proxy configuration
 │   └── tinyproxy-filter.txt # Tinyproxy URL filter list
 ├── skills/
-│   └── am-orchestration/
-│       └── SKILL.md        # Claude Code skill for multi-session orchestration
+│   └── agent-manager-dispatch/
+│       └── SKILL.md        # Claude Code skill for multi-session dispatch/orchestration
 ├── scripts/
 │   ├── check-docs.sh       # Documentation check script
 │   ├── clean-history.sh    # History cleanup script

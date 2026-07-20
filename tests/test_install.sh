@@ -148,6 +148,12 @@ EOF
         fi
     done
 
+    # Seed a legacy symlink from the skill's pre-rename name (am-orchestration
+    # -> agent-manager-dispatch). After the rename it dangles; install must
+    # remove it, not leave a broken skill behind.
+    mkdir -p "$temp_skills_dir"
+    ln -s "$PROJECT_DIR/skills/am-orchestration" "$temp_skills_dir/am-orchestration"
+
     local install_output
     install_output=$(PATH="$fake_bin:$PATH" \
         AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
@@ -159,10 +165,12 @@ EOF
     assert_cmd_succeeds "install: config file created" test -f "$temp_am_dir/config.json"
 
     # Verify skills symlink was created
-    assert_cmd_succeeds "install: skills symlink created" test -L "$temp_skills_dir/am-orchestration"
+    assert_cmd_succeeds "install: skills symlink created" test -L "$temp_skills_dir/agent-manager-dispatch"
     local link_target
-    link_target=$(readlink "$temp_skills_dir/am-orchestration")
-    assert_eq "$PROJECT_DIR/skills/am-orchestration" "$link_target" "install: skills symlink target correct"
+    link_target=$(readlink "$temp_skills_dir/agent-manager-dispatch")
+    assert_eq "$PROJECT_DIR/skills/agent-manager-dispatch" "$link_target" "install: skills symlink target correct"
+    assert_cmd_fails "install: legacy am-orchestration symlink removed" \
+        test -e "$temp_skills_dir/am-orchestration" -o -L "$temp_skills_dir/am-orchestration"
 
     # Verify am binary was installed
     assert_cmd_succeeds "install: am binary installed" test -e "$temp_prefix/am"

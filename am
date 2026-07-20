@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.8.1"
+AM_VERSION="0.9.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -1381,6 +1381,21 @@ EOF
         (( warnings += 1 ))
     else
         mkdir -p "$skills_dir"
+
+        # Remove symlinks left behind by renamed skills (e.g. am-orchestration
+        # -> agent-manager-dispatch): after a rename the old link dangles.
+        # Only symlinks are touched — a real directory under a legacy name is
+        # the user's own and is left alone.
+        local legacy_name legacy_target
+        for legacy_name in am-orchestration; do
+            legacy_target="$skills_dir/$legacy_name"
+            if [[ -L "$legacy_target" && ! -d "$skills_root/$legacy_name" ]]; then
+                rm -f "$legacy_target"
+                log_success "  Removed legacy skill symlink: $legacy_target"
+                steps_done+=("Skill $legacy_name: legacy symlink removed")
+            fi
+        done
+
         shopt -s nullglob
         local skill_src skill_name skill_target existing
         for skill_src in "$skills_root"/*/; do

@@ -267,7 +267,7 @@ For Claude and Codex sessions, state is detected via push-based hooks (installed
 
 ### Claude Code skill
 
-`am` ships with an orchestration skill for Claude Code at `skills/am-orchestration/SKILL.md`. When installed, Claude Code agents can automatically use `am` to dispatch and manage worker sessions.
+`am` ships with a dispatch skill for Claude Code at `skills/agent-manager-dispatch/SKILL.md`. When installed, Claude Code agents can automatically use `am` to dispatch and manage worker sessions.
 
 <!-- TODO: Video (30-40s) — terminal recording showing an orchestrator agent launching two parallel workers with `am new --detach`, waiting for them with `am wait`, peeking at results with `am peek --lines 10`, and then killing the sessions. Show the session IDs being captured and reused. -->
 

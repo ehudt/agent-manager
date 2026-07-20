@@ -85,6 +85,6 @@ full history — say so explicitly when reporting back.
 
 ## Related
 
-- `am-orchestration` — when to spawn / send / observe sessions at all.
+- `agent-manager-dispatch` — when to spawn / send / observe sessions at all.
 - `am peek --pane shell --follow <session>` — live tail. Avoid from agent
   context; only for short interactive bursts when attaching is impractical.
