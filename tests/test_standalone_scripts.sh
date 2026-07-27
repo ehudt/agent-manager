@@ -215,6 +215,69 @@ test_standalone_status_bar() {
     $SUMMARY_MODE || echo ""
 }
 
+test_standalone_status_bar_many_sessions() {
+    $SUMMARY_MODE || echo "=== Testing lib/status-bar (10+ sessions) ==="
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/state.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+    setup_integration_env
+    local old_state_dir="${AM_STATE_DIR:-}"
+    local test_state_dir
+    test_state_dir=$(mktemp -d)
+    export AM_STATE_DIR="$test_state_dir"
+
+    # Regression: tmux caps a single client→server command at ~16KB (imsg
+    # limit, "command too long"). status-bar used to chain ALL per-session
+    # set-option writes into one tmux invocation; the payload grows
+    # ~quadratically (N sessions × N tabs per strip), so at ~10 sessions the
+    # whole batch silently failed — existing sessions kept a stale strip and
+    # newer sessions never got @am_status_left at all.
+    local n=12 i name test_dir rc
+    test_dir=$(mktemp -d)
+    local -a names=()
+    for i in $(seq -w 1 "$n"); do
+        name="${AM_SESSION_PREFIX}many${i}"
+        mkdir -p "$test_dir/project-$i"
+        tmux_create_session "$name" "$test_dir/project-$i" 2>/dev/null
+        registry_add "$name" "$test_dir/project-$i" "main" "bash" \
+            "long-ish task description number $i for width"
+        names+=("$name")
+    done
+    # Throttle piggyback scans so the run is deterministic and fast.
+    touch "$AM_DIR/.title_scan_last" "$AM_DIR/.restore_scan_last"
+
+    rc=0
+    "$LIB_DIR/status-bar" 2>/dev/null || rc=$?
+    assert_eq "0" "$rc" "status-bar: exits 0 with $n sessions"
+
+    local missing="" val
+    for name in "${names[@]}"; do
+        val=$(am_tmux show-option -t "$name" -qv @am_status_left 2>/dev/null || true)
+        [[ -n "$val" ]] || missing+=" $name"
+    done
+    assert_eq "" "$missing" "status-bar: writes @am_status_left for all $n sessions"
+
+    val=$(am_tmux show-option -t "${names[$((n - 1))]}" -qv @am_status_left 2>/dev/null || true)
+    assert_contains "$val" "${n}|" "status-bar: last session's strip includes its own tab"
+
+    for name in "${names[@]}"; do
+        am_tmux kill-session -t "$name" 2>/dev/null || true
+        registry_remove "$name" 2>/dev/null || true
+    done
+    rm -rf "$test_dir" "$test_state_dir"
+    if [[ -n "$old_state_dir" ]]; then
+        export AM_STATE_DIR="$old_state_dir"
+    else
+        unset AM_STATE_DIR
+    fi
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 test_strip_ansi() {
     $SUMMARY_MODE || echo "=== Testing strip-ansi filter ==="
 
@@ -303,6 +366,7 @@ run_standalone_scripts_tests() {
     _run_test test_standalone_preview
     _run_test test_standalone_dir_preview
     _run_test test_standalone_status_bar
+    _run_test test_standalone_status_bar_many_sessions
     _run_test test_strip_ansi
 }
 

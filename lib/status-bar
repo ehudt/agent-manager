@@ -388,27 +388,52 @@ _build_attention() {
 }
 
 # Write per-session options. Each session sees itself as current — switch is
-# instant because tmux reads the precomputed option. All set-option calls
-# are chained into a single tmux invocation (tmux's `;` command separator)
-# so we pay one fork+exec instead of 3N.
+# instant because tmux reads the precomputed option. set-option calls are
+# chained into as few tmux invocations as possible (tmux's `;` command
+# separator) so we pay a couple of fork+execs instead of 3N — but a single
+# client→server tmux command is capped at ~16KB (imsg limit: "command too
+# long"), and the payload grows ~quadratically with session count (N sessions
+# × N tabs per strip). One giant batch silently failed past ~9 sessions,
+# leaving every session's options stale or unset. Flush in chunks that stay
+# safely under the cap; a session's 3 options may straddle a chunk boundary
+# (no atomicity requirement between them).
+_BATCH_BUDGET=12288
 batch_args=()
+batch_len=0
+
+_batch_flush() {
+    (( ${#batch_args[@]} > 0 )) || return 0
+    am_tmux "${batch_args[@]}" >/dev/null 2>&1 || true
+    batch_args=()
+    batch_len=0
+}
+
+# Append one `set-option -q -t <session> <option> <value>` command, flushing
+# first when it would push the packed payload over budget.
+_batch_add() {
+    local session="$1" option="$2" value="$3"
+    # Packed size ≈ argv bytes + per-arg NULs; 48 generously covers
+    # "set-option -q -t" and the `;` separator.
+    local len=$(( ${#session} + ${#option} + ${#value} + 48 ))
+    if (( batch_len > 0 && batch_len + len > _BATCH_BUDGET )); then
+        _batch_flush
+    fi
+    (( ${#batch_args[@]} > 0 )) && batch_args+=(';')
+    batch_args+=(set-option -q -t "$session" "$option" "$value")
+    batch_len=$(( batch_len + len ))
+}
+
 for p_idx in "${!S_NAME[@]}"; do
     p_session="${S_NAME[$p_idx]}"
     _build_strip "$p_idx" true false;  status_left="$_STRIP"
     _build_strip "$p_idx" false true;  sidebar="$_STRIP"
     _build_attention "$p_idx";         attention="$_ATT"
 
-    (( ${#batch_args[@]} > 0 )) && batch_args+=(';')
-    batch_args+=(set-option -q -t "$p_session" @am_status_left "$status_left")
-    batch_args+=(';')
-    batch_args+=(set-option -q -t "$p_session" @am_sidebar "$sidebar")
-    batch_args+=(';')
-    batch_args+=(set-option -q -t "$p_session" @am_attention "$attention")
+    _batch_add "$p_session" @am_status_left "$status_left"
+    _batch_add "$p_session" @am_sidebar "$sidebar"
+    _batch_add "$p_session" @am_attention "$attention"
 done
-
-if (( ${#batch_args[@]} > 0 )); then
-    am_tmux "${batch_args[@]}" >/dev/null 2>&1 || true
-fi
+_batch_flush
 
 # Stdout: clickable strip from the perspective of the arg session, only when
 # explicitly requested. tmux invocations leave it empty so #() refreshes
