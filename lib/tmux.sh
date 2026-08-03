@@ -41,6 +41,13 @@ set -as terminal-features 'xterm*:extkeys'
 # like Claude/Pi parse csi-u more reliably; server option, so use -s.
 set -s extended-keys-format csi-u
 
+# OSC 8 hyperlinks: tmux only forwards them when the client advertises the
+# 'hyperlinks' feature, which it reads from the terminfo Hls capability. No
+# entry sets Hls -- not xterm-256color, not Ghostty's own xterm-ghostty -- so
+# force it, or clickable links from agents arrive as plain text. Terminals
+# without OSC 8 support ignore the sequence.
+set -as terminal-features '*:hyperlinks'
+
 # Restore tmux defaults for [/] (idempotent on reload — earlier versions of
 # this config rebound them to session cycling).
 bind [ copy-mode
