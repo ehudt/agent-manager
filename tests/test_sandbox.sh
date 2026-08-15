@@ -31,6 +31,31 @@ test_sandbox() {
     _sb_home_ensure
     assert_cmd_succeeds "_sb_home_ensure: creates home dir" test -d "$SB_HOME_DIR"
 
+    # Cursor setup is seeded into the persistent sandbox home without
+    # replacing unrelated hooks/config.
+    mkdir -p "$SB_HOME_DIR/.cursor"
+    printf '%s\n' '{"version":1,"hooks":{"stop":[{"command":"echo user-hook"}]}}' \
+        > "$SB_HOME_DIR/.cursor/hooks.json"
+    _sandbox_seed_cursor_hooks
+    assert_cmd_succeeds "sandbox Cursor hooks: helper copied" \
+        test -x "$SB_HOME_DIR/.cursor/hooks/am-state-hook.sh"
+    assert_eq "2" "$(jq '.hooks.stop | length' "$SB_HOME_DIR/.cursor/hooks.json")" \
+        "sandbox Cursor hooks: unrelated stop hook preserved"
+    assert_eq "8" "$(jq '[.hooks[][] | select((.command // "") | contains("# am-state-hook"))] | length' "$SB_HOME_DIR/.cursor/hooks.json")" \
+        "sandbox Cursor hooks: lifecycle hooks installed"
+    _sandbox_seed_skills
+    assert_cmd_succeeds "sandbox skills: Cursor dispatch skill seeded" \
+        test -f "$SB_HOME_DIR/.cursor/skills/agent-manager-dispatch/SKILL.md"
+    assert_cmd_succeeds "sandbox skills: Claude dispatch skill seeded" \
+        test -f "$SB_HOME_DIR/.claude/skills/agent-manager-dispatch/SKILL.md"
+
+    assert_contains "$(cat "$PROJECT_DIR/sandbox/Dockerfile")" "https://cursor.com/install" \
+        "sandbox image: installs official Cursor Agent"
+    assert_contains "$(cat "$PROJECT_DIR/sandbox/tinyproxy-filter.txt")" "cursor\\.sh" \
+        "sandbox proxy: allows Cursor API domains"
+    assert_contains "$(cat "$LIB_DIR/sandbox.sh")" "CURSOR_API_KEY" \
+        "sandbox launch: forwards CURSOR_API_KEY"
+
     rm -rf "$SB_HOME_DIR"
 
     $SUMMARY_MODE || echo ""

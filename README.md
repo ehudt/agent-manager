@@ -6,7 +6,7 @@
 
 <p align="center">
   Run multiple AI coding agents side by side. Switch between them instantly.<br>
-  <code>tmux</code> + <code>fzf</code> powered. Works with Claude Code and Codex CLI.
+  <code>tmux</code> + <code>fzf</code> powered. Works with Claude Code, Cursor Agent, Codex, and pi.
 </p>
 
 <p align="center">
@@ -80,6 +80,8 @@ sudo pacman -S tmux fzf jq zoxide
 |-------|---------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
 | [Codex CLI](https://github.com/openai/codex) | `npm install -g @openai/codex` |
+| [Cursor Agent](https://cursor.com/docs/cli/installation) | `curl https://cursor.com/install -fsS \| bash` |
+| [pi](https://github.com/badlogic/pi-mono) | `npm install -g @earendil-works/pi-coding-agent` |
 
 ### Install
 
@@ -92,7 +94,7 @@ cd agent-manager
 This symlinks `am` into `~/.local/bin` and sets up the dedicated tmux configuration. The installer will:
 - Add `~/.local/bin` to your PATH in `.zshrc` or `.bashrc` if needed
 - Generate a dedicated tmux config at `~/.agent-manager/tmux.conf` with am-specific keybindings (your personal `~/.tmux.conf` is unaffected)
-- Register state-detection hooks for push-based session monitoring in `~/.claude/settings.json` and `~/.codex/hooks.json` (existing hooks are preserved)
+- Register state-detection hooks for push-based session monitoring in Claude, Codex, and Cursor configuration (existing hooks are preserved)
 
 ```bash
 # Install options
@@ -116,6 +118,7 @@ am help
 ```bash
 am new ~/code/myproject              # New Claude session in a directory
 am new -t codex ~/code/project       # Use Codex instead
+am new -t cursor ~/code/project      # Use Cursor Agent
 am new -n "fix auth bug" .           # Session with a task description
 am new --yolo ~/code/myproject       # Permissive mode (agent-specific flags)
 am new -w ~/code/myproject           # Isolate changes in a git worktree
@@ -164,7 +167,7 @@ Each session is a tmux split pane — agent on top, shell on the bottom, both in
 
 ```
 ┌─────────────────────────────────────┐
-│  Agent (Claude/Codex)               │  ← top pane
+│  Agent (Claude/Cursor/Codex/pi)     │  ← top pane
 │                                     │
 ├─────────────────────────────────────┤
 │  Shell                              │  ← bottom pane, same directory
@@ -199,7 +202,9 @@ am peek --lines 100 am-abc123            # Include the last 100 lines
 
 ### Restoring closed sessions
 
-Closed a session and want to pick it back up? Recently closed Claude sessions appear below active sessions in the main `am` browser. Select an inactive session and press Enter to resume it exactly where you left off.
+Closed a session and want to pick it back up? Recently closed Claude, Cursor,
+and pi sessions appear below active sessions in the main `am` browser. Select
+an inactive session and press Enter to resume it exactly where you left off.
 
 You can also open the standalone restore picker directly:
 
@@ -209,9 +214,12 @@ am restore
 
 The preview panel displays the last captured pane output — a text snapshot of what the agent was showing when the session ended — so you can remember what you were doing.
 
-Select a session and press Enter to resume it via `claude --resume` in the original directory, with full conversation history intact.
+Select a session and press Enter to resume it with the agent's native resume
+flag in the original directory, with full conversation history intact.
 
-Sessions stay restorable as long as Claude's conversation file exists on disk. There's no fixed time limit — cleanup happens automatically when Claude removes its own session data.
+Sessions stay restorable as long as the agent's conversation file exists on
+disk. Cursor restore is bound to the exact hook-reported transcript path, so
+multiple conversations in one directory do not get mixed up.
 
 ## Agent-to-Agent Orchestration
 
@@ -263,11 +271,18 @@ am peek --lines 5 "$s2"
 | `idle` | Agent process exited cleanly |
 | `dead` | Agent process crashed or session gone |
 
-For Claude and Codex sessions, state is detected via push-based hooks (installed by `am install`) that fire on lifecycle events. JSONL and pane pattern matching serve as fallbacks.
+Claude, Cursor, Codex, and pi use push-based lifecycle hooks/extensions
+installed by `am install`. Cursor lifecycle hooks expose turn start/stop; on
+Cursor 2026.08+, verified terminal-title suffixes also distinguish ready,
+working, and in-turn question states. Cursor permission prompts still remain
+`running`, and no background-wait event is exposed. Pane-content heuristics
+are deliberately not used.
 
-### Claude Code skill
+### Agent dispatch skill
 
-`am` ships with a dispatch skill for Claude Code at `skills/agent-manager-dispatch/SKILL.md`. When installed, Claude Code agents can automatically use `am` to dispatch and manage worker sessions.
+`am` ships with a dispatch skill at `skills/agent-manager-dispatch/SKILL.md`.
+`am install` links bundled skills into both `~/.claude/skills` and
+`~/.cursor/skills`.
 
 <!-- TODO: Video (30-40s) — terminal recording showing an orchestrator agent launching two parallel workers with `am new --detach`, waiting for them with `am wait`, peeking at results with `am peek --lines 10`, and then killing the sessions. Show the session IDs being captured and reused. -->
 
@@ -294,7 +309,10 @@ All sandbox containers share a single host directory bind-mounted as `/home/ubun
 ~/.agent-manager/sandbox-home/
 ```
 
-Every file written to `$HOME` inside a container persists automatically on the host -- no mapping or syncing required. Claude credentials, SSH keys, git config, and any other home-dir state survive container restarts.
+Every file written to `$HOME` inside a container persists automatically on the
+host -- no mapping or syncing required. Claude/Cursor credentials, Cursor
+transcripts and worktrees, SSH keys, git config, and other home-dir state
+survive container restarts.
 
 To pre-populate the sandbox home, simply copy files into `~/.agent-manager/sandbox-home/` on the host:
 
@@ -308,7 +326,7 @@ cp ~/.gitconfig ~/.agent-manager/sandbox-home/.gitconfig
 The sandbox image is intentionally simple and currently includes:
 
 - a single in-image user, `dev`, with `zsh` as the login shell
-- Node.js plus the `codex` CLI and Claude Code
+- Node.js plus Codex, Claude Code, pi, and the official Cursor Agent CLI
 - Rust installed for `dev` via `rustup`, including `rustfmt`
 - `uv`, one managed Python, and `ipython`
 - Playwright's Chromium runtime for UI tests
@@ -390,9 +408,31 @@ am new -w ~/project                    # Auto-named worktree
 am new -w my-feature ~/project         # Named worktree
 ```
 
+Cursor uses its native `-w [name]` worktree support under
+`~/.cursor/worktrees/<repo>/<name>`. In Docker mode the container path and its
+corresponding persistent host path are both recorded.
+
+### Cursor authentication and sandboxing
+
+Authenticate the host CLI with `agent login`, or export `CURSOR_API_KEY`.
+Sandbox containers forward `CURSOR_API_KEY`/`CURSOR_AUTH_TOKEN`; interactive
+login state written under `/home/ubuntu/.cursor` persists in
+`~/.agent-manager/sandbox-home/.cursor`.
+
+`am new --sandbox -t cursor` means agent-manager's outer Docker sandbox.
+Cursor's nested sandbox is disabled there unless explicitly overridden. To use
+Cursor's native sandbox outside Docker, pass it after `--`:
+
+```bash
+am new -t cursor . -- --sandbox=enabled
+```
+
 ### Auto-titling
 
-Claude sessions are automatically titled from the first user message. A background process extracts the message and sends it to Claude Haiku to generate a short title (e.g., "Fix auth login bug") that appears in the session browser.
+Agent-maintained terminal titles are used when they represent a task. Claude,
+Cursor, and pi can also fall back to the exact session transcript's first user
+message; transient Cursor titles such as `Cursor Agent` and `Shell Command` are
+ignored.
 
 ### Configuration
 
@@ -412,6 +452,8 @@ Precedence: CLI flag > environment variable > saved config > built-in default.
 |-------|---------|-------------------|
 | `claude` | `claude` | `--dangerously-skip-permissions` |
 | `codex` | `codex` | `--yolo` |
+| `cursor` (`cursor-agent` alias) | `agent` | `--yolo` |
+| `pi` | `pi` | — |
 
 Unknown agent types are passed through as the command name, so `am new -t aider .` will try to run `aider`.
 
@@ -427,7 +469,7 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 | `am wait <session>` | Block until agent reaches a target state |
 | `am interrupt <session>` | Send Ctrl-C to the agent pane |
 | `am attach <session>` | Attach to a session |
-| `am restore` | Browse and resume closed Claude sessions |
+| `am restore` | Browse and resume closed Claude, Cursor, and pi sessions |
 | `am kill <session>` | Kill a session |
 | `am status [--json]` | Show detailed session info |
 | `am config` | Show or change saved defaults |

@@ -320,6 +320,7 @@ setup_integration_env() {
 
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/claude"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/codex"
+    ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/agent"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/stubagent"
     TEST_OLD_PATH="${PATH:-}"
     export PATH="$TEST_STUB_BIN:$PATH"
@@ -345,6 +346,8 @@ setup_integration_env() {
     AGENT_COMMANDS[claude]="$TEST_STUB_DIR/stub_agent"
     # shellcheck disable=SC2034,SC2154
     AGENT_COMMANDS[codex]="$TEST_STUB_DIR/stub_agent"
+    # shellcheck disable=SC2034,SC2154
+    AGENT_COMMANDS[cursor]="$TEST_STUB_DIR/stub_agent"
     # Test-only agent type without worktree support (exercises unsupported-agent paths)
     # shellcheck disable=SC2034,SC2154
     AGENT_COMMANDS[stubagent]="$TEST_STUB_DIR/stub_agent"

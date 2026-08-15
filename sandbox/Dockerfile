@@ -69,9 +69,15 @@ ENV CARGO_HOME=
 # Install Claude CLI: install as ubuntu, then copy binary to system path
 USER ubuntu
 RUN curl -fsSL https://claude.ai/install.sh | bash
+# Install the official Cursor Agent CLI into the same user-local prefix.
+RUN curl -fsSL https://cursor.com/install | bash
 USER root
 RUN cp "$(readlink -f /home/ubuntu/.local/bin/claude)" /usr/local/bin/claude && \
     rm -rf /home/ubuntu/.local/share/claude /home/ubuntu/.local/bin/claude /home/ubuntu/.claude
+RUN cursor_dir="$(dirname "$(readlink -f /home/ubuntu/.local/bin/agent)")" && \
+    cp -a "$cursor_dir" /opt/cursor-agent && \
+    ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/agent && \
+    rm -rf /home/ubuntu/.local/bin/agent /home/ubuntu/.local/share/cursor-agent /home/ubuntu/.cursor
 
 RUN ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts 2>/dev/null; \
     chmod 644 /etc/ssh/ssh_known_hosts

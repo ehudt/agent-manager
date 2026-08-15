@@ -24,6 +24,9 @@ test_config() {
     am_config_set "stream_logs" "yes" "boolean"
 
     assert_eq "codex" "$(am_default_agent)" "config: saved default agent"
+    am_config_set "default_agent" "cursor-agent" "string"
+    assert_eq "cursor" "$(am_default_agent)" "config: Cursor alias is canonicalized"
+    am_config_set "default_agent" "codex" "string"
     assert_eq "true" "$(am_default_yolo_enabled && echo true || echo false)" "config: saved default yolo"
     assert_eq "true" "$(am_stream_logs_enabled && echo true || echo false)" "config: saved stream logs"
     assert_eq "true" "$(am_maybe_apply_default_yolo --resume && echo true || echo false)" "config: applies default yolo when missing"

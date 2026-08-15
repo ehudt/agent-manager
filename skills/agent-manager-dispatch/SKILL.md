@@ -42,6 +42,20 @@ am attach "$session"             # give to user
 am kill "$session"               # terminate when no longer needed
 ```
 
+## Choosing Cursor Agent
+
+Launch Cursor explicitly with:
+
+```bash
+session=$(printf 'Implement the requested change.\n' |
+  am new --detach --print-session -t cursor <directory>)
+```
+
+`cursor-agent` is accepted as an alias, but registry/UI output uses `cursor`.
+Current Cursor releases expose in-turn questions as `waiting_custom`.
+Permission dialogs still remain `running`, so do not wait specifically for
+`waiting_permission` on Cursor sessions.
+
 ## Writing Good Dispatch Prompts
 
 The worker has NO context from this conversation. Make the prompt self-contained: goal in the first sentence, approach or skill to use, file paths, expected outcome (commit, tests passing).

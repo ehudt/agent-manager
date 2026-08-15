@@ -7,7 +7,7 @@ Architecture reference for AI agents working with this codebase.
 - Run tests: `./tests/test_all.sh`
 - Run tests (summary): `./tests/test_all.sh --summary` — suppresses PASS lines, shows only failures with details and a counts summary
 - Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
-- Run live state-detection lab: `./tests/live_lab/run.sh` — drives a real `claude --model haiku` through every state and records ground truth (hook payloads, pane titles, state transitions); not part of `test_all.sh` (spends tokens, ~8 min). Run after Claude Code updates or state.sh/state-hook.sh changes
+- Run live state-detection labs: `tests/live_lab/run.sh` (Claude), `run_cursor.sh` (Cursor), and `run_pi.sh` (pi). They record hook payloads, pane titles, and transitions; they are opt-in and spend tokens.
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
 
 ## Versioning
@@ -42,7 +42,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | File | Purpose |
 |------|---------|
 | `am` | Main entry point. Handles CLI args, routes to commands. |
-| `lib/utils.sh` | Shared: colors, logging, time formatting, paths, Claude JSONL extraction |
+| `lib/utils.sh` | Shared: colors, logging, time formatting, paths, agent JSONL extraction |
 | `lib/registry.sh` | JSON storage for session metadata, sessions log (restore), auto-titling |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
@@ -58,8 +58,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: title glyph + hook file + process tree, wait/poll |
 | `lib/hooks/am-state.ts` | Pi extension: lifecycle events → am state files (session_start/agent_settled → waiting_input, agent_start → running) |
-| `tests/live_lab/run.sh` | Empirical lab: drives a real Claude session through every state, records hook payloads / pane titles / transitions |
-| `skills/agent-manager-dispatch/SKILL.md` | Claude Code skill: teaches agents to use am for multi-session dispatch/orchestration |
+| `tests/live_lab/run.sh`, `run_cursor.sh`, `run_pi.sh` | Empirical state labs for real agent sessions |
+| `skills/agent-manager-dispatch/SKILL.md` | Claude/Cursor skill: teaches agents to use am for multi-session dispatch/orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `lib/sandbox.sh` | Docker sandbox lifecycle and fleet ops |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
@@ -81,7 +81,7 @@ Ctrl-N in browser → am_new_session_form() → _form_run()
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
-am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude → --resume, pi → --session)
+am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session)
 ```
 
 ## State Detection (title glyph + hooks)
@@ -175,7 +175,19 @@ writes can't go silently stale; a dead pi drops the pane to a shell, which
 the shell-pane check catches). Pi never reports `waiting_permission` /
 `waiting_custom` / `waiting_background`.
 
-### Verifying against a real Claude
+**Cursor sessions:** `~/.cursor/hooks.json` calls `state-hook.sh` for
+`sessionStart`/`stop` (waiting) and prompt/tool/response activity (running).
+The hook also writes `.sid` and `.transcript` identity sidecars from
+`conversation_id` and `transcript_path`. Cursor hook state is read ungated:
+turn-boundary events remain authoritative during long quiet tools, and the
+shell-pane check catches process exit. Cursor 2026.08 added empirically stable
+terminal-title suffixes: `✅ Ready`, `⏳ Working`, and `❓ Waiting for you`.
+They self-heal missed/stale hook transitions and expose `waiting_custom`
+without pane scraping. The permission dialog still showed `⏳ Working`, and
+Cursor exposes no background-wait lifecycle event, so those cases remain
+`running`; do not add pane-content heuristics.
+
+### Verifying against real agents
 
 `tests/live_lab/run.sh` drives a real `claude --model haiku` session in an
 isolated tmux/state sandbox through every state (fresh idle, running,
@@ -187,6 +199,9 @@ verifies pi state detection (session_start, agent_start, agent_settled). Run
 the Claude lab when Claude Code updates or when changing `lib/state.sh` /
 `lib/hooks/state-hook.sh`, and check `results/<ts>/report.txt` +
 `timeline.tsv` for glyph/hook/state agreement.
+`tests/live_lab/run_cursor.sh` records Cursor's fresh, running, permission,
+question, subagent, stop, and resume behavior. `tests/live_lab/run_pi.sh`
+covers pi.
 
 ### Debug instrumentation
 

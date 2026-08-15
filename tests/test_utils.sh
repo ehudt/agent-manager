@@ -173,11 +173,49 @@ test_pi_first_user_message() {
     $SUMMARY_MODE || echo ""
 }
 
+test_cursor_first_user_message() {
+    $SUMMARY_MODE || echo "=== Testing cursor_first_user_message ==="
+
+    source "$LIB_DIR/utils.sh"
+
+    local root project_dir transcript sid
+    root=$(mktemp -d)
+    project_dir="$root/project.with-dot"
+    sid="cursor-session-1"
+    mkdir -p "$project_dir"
+    export AM_CURSOR_PROJECTS_DIR="$root/cursor-projects"
+    local resolved
+    resolved=$(cd "$project_dir" && pwd -P)
+    local encoded="${resolved#/}"
+    encoded="${encoded//\//-}"
+    encoded="${encoded//./-}"
+    transcript="$AM_CURSOR_PROJECTS_DIR/$encoded/agent-transcripts/$sid/$sid.jsonl"
+    mkdir -p "$(dirname "$transcript")"
+    printf '%s\n' \
+        '{"role":"user","message":{"content":[{"type":"text","text":"<user_query>Implement exact Cursor restore support</user_query>"}]}}' \
+        '{"role":"assistant","message":{"content":[{"type":"text","text":"Working"}]}}' \
+        > "$transcript"
+
+    assert_eq "Implement exact Cursor restore support" \
+        "$(cursor_first_user_message "$project_dir" "$sid" "$transcript" 1)" \
+        "cursor_first_user_message: authoritative transcript path"
+    assert_eq "Implement exact Cursor restore support" \
+        "$(cursor_first_user_message "$project_dir" "$sid" "" 1)" \
+        "cursor_first_user_message: standard-layout fallback"
+    assert_eq "" "$(cursor_first_user_message "$project_dir" missing "" 1)" \
+        "cursor_first_user_message: strict missing session"
+
+    unset AM_CURSOR_PROJECTS_DIR
+    rm -rf "$root"
+    $SUMMARY_MODE || echo ""
+}
+
 run_utils_tests() {
     _run_test test_utils
     _run_test test_utils_extended
     _run_test test_claude_first_user_message
     _run_test test_pi_first_user_message
+    _run_test test_cursor_first_user_message
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

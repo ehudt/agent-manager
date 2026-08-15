@@ -210,6 +210,57 @@ func TestPiTitleExtract(t *testing.T) {
 	}
 }
 
+func TestCursorTitleExtract(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Cursor Agent", ""},
+		{"Shell Command", ""},
+		{"Cursor Agent - ✅ Ready", ""},
+		{"Shell Command - ⏳ Working .··", ""},
+		{"Cursor Pong - ✅ Ready", "Cursor Pong"},
+		{"Fix restore", "Fix restore"},
+	}
+	for _, c := range cases {
+		if got := cursorTitleExtract(c.in); got != c.want {
+			t.Errorf("cursorTitleExtract(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCursorFirstUserMessage(t *testing.T) {
+	tmp := t.TempDir()
+	transcript := filepath.Join(tmp, "conversation.jsonl")
+	content := `{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>now</timestamp>\n<user_query>\nImplement exact Cursor restore\n</user_query>"}]}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := cursorFirstUserMessage("/unused", "cursor-id", transcript, true); got != "Implement exact Cursor restore" {
+		t.Fatalf("cursorFirstUserMessage = %q", got)
+	}
+}
+
+func TestReadCursorTranscriptSidecarTranslatesSandboxHome(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	stateDir := t.TempDir()
+	hostTranscript := filepath.Join(tmp, ".agent-manager", "sandbox-home", ".cursor", "projects", "x.jsonl")
+	if err := os.MkdirAll(filepath.Dir(hostTranscript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostTranscript, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(stateDir, "am-cursor.transcript"),
+		[]byte("/home/ubuntu/.cursor/projects/x.jsonl"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := readCursorTranscriptSidecar(stateDir, "am-cursor"); got != hostTranscript {
+		t.Fatalf("translated transcript = %q, want %q", got, hostTranscript)
+	}
+}
+
 func TestPiFirstUserMessage(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

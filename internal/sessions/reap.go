@@ -11,7 +11,7 @@ import (
 const reapThrottle = 60 * time.Second
 
 // ReapOrphans removes registry entries whose tmux session is no longer alive
-// and deletes their hook state file and .sid sidecar. Throttled to once per
+// and deletes their hook state file and identity sidecars. Throttled once per
 // 60s via $amDir/.gc_last (shared with the rows half of bash registry_gc so
 // they coordinate). Sandbox containers and the sessions log are not touched
 // here — the bash-only extras half of registry_gc handles those on its own
@@ -58,6 +58,7 @@ func reapOrphansAt(amDir, stateDir string, live []TmuxSession, now time.Time) in
 		if stateDir != "" && isSafeSessionName(name) {
 			_ = os.Remove(filepath.Join(stateDir, name))
 			_ = os.Remove(filepath.Join(stateDir, name+".sid"))
+			_ = os.Remove(filepath.Join(stateDir, name+".transcript"))
 		}
 		removed++
 	}

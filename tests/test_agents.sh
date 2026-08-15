@@ -23,16 +23,22 @@ test_agents() {
     # Test agent_get_command
     assert_eq "claude" "$(agent_get_command claude)" "agent_get_command: claude"
     assert_eq "codex" "$(agent_get_command codex)" "agent_get_command: codex"
+    assert_eq "agent" "$(agent_get_command cursor)" "agent_get_command: cursor"
+    assert_eq "cursor" "$(agent_normalize_type cursor-agent)" \
+        "agent_normalize_type: cursor-agent alias"
 
     # Test yolo flag mapping
     assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
     assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
+    assert_eq "--yolo" "$(agent_get_yolo_flag cursor)" "agent_get_yolo_flag: cursor"
 
     # Test _agent_prompt_as_arg
     assert_eq "true" "$(_agent_prompt_as_arg codex && echo true || echo false)" \
         "_agent_prompt_as_arg: codex uses CLI arg"
     assert_eq "false" "$(_agent_prompt_as_arg claude && echo true || echo false)" \
         "_agent_prompt_as_arg: claude uses stdin"
+    assert_eq "true" "$(_agent_prompt_as_arg cursor && echo true || echo false)" \
+        "_agent_prompt_as_arg: cursor uses CLI arg"
 
     # --- pi agent type ---
     assert_eq "pi" "$(agent_get_command pi)" "agent_get_command: pi"
@@ -50,8 +56,18 @@ test_agents() {
     # --- agent_resume_args ---
     assert_eq "--resume|abc123" "$(agent_resume_args claude abc123 | paste -sd'|' -)" \
         "agent_resume_args: claude"
+    assert_eq "--resume|abc123" "$(agent_resume_args cursor abc123 | paste -sd'|' -)" \
+        "agent_resume_args: cursor"
     assert_eq "--session|abc123" "$(agent_resume_args pi abc123 | paste -sd'|' -)" \
         "agent_resume_args: pi"
+
+    # --- Cursor worktrees are managed by the CLI under ~/.cursor ---
+    assert_eq "true" "$(agent_supports_worktree cursor && echo true || echo false)" \
+        "agent_supports_worktree: cursor"
+    assert_eq "true" "$(agent_cli_manages_worktree cursor && echo true || echo false)" \
+        "agent_cli_manages_worktree: cursor"
+    assert_eq "$HOME/.cursor/worktrees/x" "$(agent_worktree_root /tmp/x cursor)" \
+        "agent_worktree_root: cursor"
 
     $SUMMARY_MODE || echo ""
 }
@@ -69,6 +85,10 @@ test_agents_extended() {
         "agent_type_supported: claude"
     assert_eq "true" "$(agent_type_supported codex && echo true || echo false)" \
         "agent_type_supported: codex"
+    assert_eq "true" "$(agent_type_supported cursor && echo true || echo false)" \
+        "agent_type_supported: cursor"
+    assert_eq "true" "$(agent_type_supported cursor-agent && echo true || echo false)" \
+        "agent_type_supported: cursor-agent alias"
     assert_eq "false" "$( (agent_type_supported bogus) 2>/dev/null && echo true || echo false)" \
         "agent_type_supported: bogus rejected"
 
@@ -417,6 +437,24 @@ test_prompt_injection() {
             am_tmux capture-pane -t "${session_name}:.{top}" -p)
         assert_contains "$pane_output" "hello from arg" \
             "codex CLI arg prompt: prompt appears in pane (passed as arg)"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+
+    # --- Test: Cursor gets prompt as a positional CLI argument ---
+    _AM_LAUNCH_PROMPT="hello cursor"
+    session_name=$(set +u; agent_launch "$test_dir" "cursor-agent" "" "" 2>/dev/null)
+    assert_not_empty "$session_name" "cursor CLI arg prompt: session created"
+
+    if [[ -n "$session_name" ]]; then
+        local cursor_agent_type
+        cursor_agent_type=$(registry_get_field "$session_name" agent_type)
+        assert_eq "cursor" "$cursor_agent_type" \
+            "cursor alias launch: registry stores canonical type"
+        local cursor_pane_output
+        cursor_pane_output=$(wait_for_text "hello cursor" \
+            am_tmux capture-pane -t "${session_name}:.{top}" -p)
+        assert_contains "$cursor_pane_output" "hello cursor" \
+            "cursor CLI arg prompt: prompt appears in pane"
         agent_kill "$session_name" 2>/dev/null
     fi
 

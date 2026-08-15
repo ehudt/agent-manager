@@ -9,14 +9,15 @@
 #      self-healing, works while detached, and — unlike hook files or tmux
 #      session_activity — never goes stale (verified empirically: activity
 #      stops updating during long quiet tool calls; the glyph does not).
-#   3. hook file (pi)             -> ungated: the am-state extension is in-process,
-#      so its state file cannot go silently stale the way out-of-process hooks
-#      can. A dead pi drops the pane to a shell, which step 1 already catches.
-#   4. hook file ($AM_STATE_DIR)  -> which *flavor* of waiting: waiting_input /
+#   3. title status (Cursor 2026.08+) -> ready / working / in-turn question
+#   4. turn-boundary hook (pi/Cursor) -> ungated: both emit explicit start/stop
+#      lifecycle transitions. A dead process drops the pane to a shell, which
+#      step 1 already catches.
+#   5. hook file ($AM_STATE_DIR)  -> which *flavor* of waiting: waiting_input /
 #      waiting_permission / waiting_custom / waiting_background (the hook
 #      writes waiting_background directly from the Stop payload's
 #      background_tasks on Claude Code ≥2.1)
-#   5. fallback (no glyph signal) -> hook state with staleness gate, else unknown
+#   6. fallback (no title signal) -> hook state with staleness gate, else unknown
 #
 # States: starting | running | waiting_input | waiting_permission |
 #         waiting_custom | waiting_background | idle | unknown | dead
@@ -72,6 +73,21 @@ _state_title_signal() {
         $'\xe2\xa0'*|$'\xe2\xa1'*|$'\xe2\xa2'*|$'\xe2\xa3'*) __sig="busy" ;;
         $'\xe2\x9c\xb3'*)                                    __sig="attention" ;;
         *)                                                   __sig="none" ;;
+    esac
+}
+
+# Cursor 2026.08+ appends a status suffix to context/task titles. These are
+# terminal-title signals, not pane-content heuristics. Older releases omit the
+# suffix and safely fall back to lifecycle hooks.
+# Usage: _state_cursor_title_signal <title> <out_var>
+# out: running|waiting_input|waiting_custom|none
+_state_cursor_title_signal() {
+    local -n __sig="$2"
+    case "$1" in
+        *" - ✅ Ready")          __sig="waiting_input" ;;
+        *" - ⏳ Working"*)      __sig="running" ;;
+        *" - ❓ Waiting for you") __sig="waiting_custom" ;;
+        *)                      __sig="none" ;;
     esac
 }
 
@@ -288,17 +304,39 @@ _state_resolve() {
         fi
     fi
 
-    # 3a. pi: the am-state extension is in-process, so its state file cannot
-    # go silently stale the way out-of-process hooks can — read it ungated.
-    # A dead pi drops the pane to a shell, which step 1 already catches, and
-    # long quiet tool calls must not flap a live turn to unknown (the exact
-    # failure the title glyph solves for Claude; pi has no glyph).
-    if [[ "$agent_type" == "pi" ]]; then
-        local pi_hook=""
-        _state_hook_raw "$session" pi_hook
-        if [[ -n "$pi_hook" ]]; then
-            _state_debug "$_dbg_session" "$_dbg_agent" hook "$pi_hook"
-            echo "$pi_hook"
+    # Cursor 2026.08+ publishes explicit status suffixes. Trust them when
+    # present; older versions fall through to ungated lifecycle hooks.
+    if [[ "$agent_type" == "cursor" ]]; then
+        local cursor_sig="none" cursor_raw=""
+        _state_cursor_title_signal "$title_val" cursor_sig
+        if [[ "$cursor_sig" != "none" ]]; then
+            _state_hook_raw "$session" cursor_raw
+            if [[ "$cursor_sig" == "running" ]]; then
+                case "$cursor_raw" in
+                    waiting_permission|waiting_custom)
+                        _state_debug "$_dbg_session" "$_dbg_agent" title "$cursor_raw"
+                        echo "$cursor_raw"
+                        return ;;
+                esac
+            elif [[ "$cursor_sig" == "waiting_input" && "$cursor_raw" == "running" ]]; then
+                printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+            fi
+            _state_debug "$_dbg_session" "$_dbg_agent" title "$cursor_sig"
+            echo "$cursor_sig"
+            return
+        fi
+    fi
+
+    # 3a. pi/Cursor: both integrations emit explicit turn-boundary lifecycle
+    # events, so read their state ungated. Long quiet tool calls must not flap
+    # a live turn to unknown; process exit still drops the pane to a shell and
+    # is handled by step 1.
+    if [[ "$agent_type" == "pi" || "$agent_type" == "cursor" ]]; then
+        local lifecycle_hook=""
+        _state_hook_raw "$session" lifecycle_hook
+        if [[ -n "$lifecycle_hook" ]]; then
+            _state_debug "$_dbg_session" "$_dbg_agent" hook "$lifecycle_hook"
+            echo "$lifecycle_hook"
             return
         fi
         _state_debug "$_dbg_session" "$_dbg_agent" fallback unknown

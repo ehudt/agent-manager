@@ -289,6 +289,58 @@ pi_first_user_message() {
     done < <(grep '"role":"user"' "$session_file" 2>/dev/null | head -10)
 }
 
+# Usage: cursor_first_user_message <directory> [session_id] [transcript_path] [strict]
+# Cursor stores each transcript at:
+# ~/.cursor/projects/<encoded-cwd>/agent-transcripts/<id>/<id>.jsonl
+# The hook-provided transcript_path is authoritative; the standard layout is
+# used only as a fallback. Cursor user records use role=user with block content
+# and commonly wrap the actual prompt in <user_query>.
+cursor_first_user_message() {
+    local directory="$1"
+    local session_id="${2:-}"
+    local transcript_path="${3:-}"
+    local strict="${4:-0}"
+    local session_file=""
+
+    if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+        session_file="$transcript_path"
+    else
+        local resolved
+        resolved=$(cd "$directory" 2>/dev/null && pwd -P) || resolved="$directory"
+        local encoded="${resolved#/}"
+        encoded="${encoded//\//-}"
+        encoded="${encoded//./-}"
+        local cursor_dir="${AM_CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}/$encoded/agent-transcripts"
+
+        if [[ -n "$session_id" && -f "$cursor_dir/$session_id/$session_id.jsonl" ]]; then
+            session_file="$cursor_dir/$session_id/$session_id.jsonl"
+        elif [[ "$strict" != "1" ]]; then
+            session_file=$(command ls -t "$cursor_dir"/*/*.jsonl 2>/dev/null | head -1)
+        fi
+    fi
+    [[ -n "$session_file" && -f "$session_file" ]] || return 0
+
+    local line content cleaned
+    while IFS= read -r line; do
+        content=$(echo "$line" | jq -r '
+            select(.role == "user") | .message.content |
+            if type == "string" then .
+            elif type == "array" then
+                [.[] | select(.type == "text") | .text] | join(" ")
+            else empty
+            end
+        ' 2>/dev/null) || continue
+        [[ -n "$content" ]] || continue
+
+        cleaned=$(printf '%s' "$content" | tr '\n' ' ' | \
+            sed -E 's|.*<user_query>(.*)</user_query>.*|\1|; s|<[^>]*>||g; s/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
+            echo "$cleaned"
+            return 0
+        fi
+    done < "$session_file"
+}
+
 # TRACE=1 profiling — uses bash set -x with timestamped PS4.
 # Traces every line automatically, no per-function instrumentation needed.
 # Usage: TRACE=1 am list-internal

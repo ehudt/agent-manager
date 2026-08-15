@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.9.1"
+AM_VERSION="0.10.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -46,7 +46,7 @@ COMMANDS:
     status              Show detailed session info
     wait                Block until a session reaches a target state
     interrupt           Send Ctrl-C to an agent pane
-    restore             Browse and resume a closed Claude session
+    restore             Browse and resume a closed agent session
     sandbox, sb         Manage sandbox containers and home directory
     install             First-time setup (deps, config, skills, PATH)
     help                Show this help message
@@ -55,10 +55,10 @@ OPTIONS FOR 'list':
     --json          Output as JSON
 
 OPTIONS FOR 'new':
-    -t, --type      Agent type: claude, codex (saved default applies)
+    -t, --type      Agent type: claude, codex, cursor, pi (saved default applies)
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
-    -w, --worktree  Enable git worktree isolation (Claude, Codex)
+    -w, --worktree  Enable git worktree isolation (Claude, Codex, Cursor, pi)
                     Optional: -w <name> to set worktree name (default: am-XXXXXX)
     --sandbox       Run session in Docker sandbox container
     --no-sandbox    Disable sandbox even if enabled by default
@@ -104,6 +104,7 @@ EXAMPLES:
     am new                          # New session in current dir (uses defaults)
     am new ~/code/proj              # New session in specific directory
     am new -t codex ~/code/proj     # New codex session
+    am new -t cursor ~/code/proj    # New Cursor Agent session
     am new -n "fix auth" .          # Session with task description
     printf 'Fix auth bug\n' | am new --detach ~/code/proj
     printf 'Run the test suite\n' | am send am-abc123
@@ -272,7 +273,7 @@ cmd_restore() {
         cat <<'EOF'
 Usage: am restore
 
-Browse recently closed Claude and pi sessions and resume one.
+Browse recently closed Claude, Cursor, and pi sessions and resume one.
 Shows pane snapshots in the preview panel for visual recall.
 
 Sessions are available as long as their conversation file exists.
@@ -388,9 +389,9 @@ cmd_new() {
                 echo "If no directory specified, opens interactive picker."
                 echo ""
                 echo "Options:"
-                echo "  -t, --type      Agent type (claude, codex)"
+                echo "  -t, --type      Agent type (claude, codex, cursor, pi)"
                 echo "  -n, --name      Task description"
-                echo "  -w, --worktree  Enable git worktree isolation (Claude, Codex)"
+                echo "  -w, --worktree  Enable git worktree isolation"
                 echo "                  Optional: -w <name> for custom worktree name"
                 echo "  --sandbox       Run session in Docker sandbox container"
                 echo "  --no-sandbox    Disable sandbox even if enabled by default"
@@ -909,6 +910,9 @@ cmd_config() {
                 return 1
             fi
             key_type=$(am_config_key_type "$key")
+            if [[ "$key" == "default_agent" ]]; then
+                value=$(agent_normalize_type "${value,,}")
+            fi
             if ! am_config_value_is_valid "$key" "${value,,}"; then
                 log_error "Invalid value for $raw_key: $value"
                 return 1
@@ -1370,65 +1374,66 @@ EOF
     log_success "  Config file: $AM_CONFIG"
     steps_done+=("Config: $AM_CONFIG")
 
-    # --- Step 3: Symlink skills for Claude Code discovery ---
+    # --- Step 3: Symlink skills for Claude Code and Cursor discovery ---
     echo "" >&2
     echo -e "${BOLD}Setting up skills...${RESET}" >&2
     local skills_root="$AM_SCRIPT_DIR/skills"
-    local skills_dir="${AM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+    local skill_destinations=(
+        "${AM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+        "${AM_CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"
+    )
 
     if [[ ! -d "$skills_root" ]]; then
         log_warn "  Skills source root not found: $skills_root"
         (( warnings += 1 ))
     else
-        mkdir -p "$skills_dir"
+        local skills_dir
+        for skills_dir in "${skill_destinations[@]}"; do
+            mkdir -p "$skills_dir"
 
-        # Remove symlinks left behind by renamed skills (e.g. am-orchestration
-        # -> agent-manager-dispatch): after a rename the old link dangles.
-        # Only symlinks are touched — a real directory under a legacy name is
-        # the user's own and is left alone.
-        local legacy_name legacy_target
-        for legacy_name in am-orchestration; do
-            legacy_target="$skills_dir/$legacy_name"
-            if [[ -L "$legacy_target" && ! -d "$skills_root/$legacy_name" ]]; then
-                rm -f "$legacy_target"
-                log_success "  Removed legacy skill symlink: $legacy_target"
-                steps_done+=("Skill $legacy_name: legacy symlink removed")
-            fi
-        done
-
-        shopt -s nullglob
-        local skill_src skill_name skill_target existing
-        for skill_src in "$skills_root"/*/; do
-            skill_src="${skill_src%/}"
-            [[ -f "$skill_src/SKILL.md" ]] || continue
-            skill_name=$(basename "$skill_src")
-            skill_target="$skills_dir/$skill_name"
-
-            if [[ -L "$skill_target" ]]; then
-                existing=$(readlink "$skill_target")
-                # Compare resolved real paths, not raw link text: an existing
-                # link may be relative (or stale) yet still point at skill_src.
-                local existing_real
-                existing_real=$(cd "$(dirname "$skill_target")" 2>/dev/null && cd "$existing" 2>/dev/null && pwd -P)
-                if [[ "$existing_real" == "$skill_src" ]]; then
-                    log_success "  Symlink already exists: $skill_target"
-                    steps_done+=("Skill $skill_name: verified")
-                else
-                    # Re-point to the known-correct absolute path.
-                    ln -sfn "$skill_src" "$skill_target"
-                    log_success "  Re-pointed: $skill_target -> $skill_src"
-                    steps_done+=("Skill $skill_name: re-pointed")
+            # Remove only managed legacy symlinks. Real user directories are
+            # deliberately preserved.
+            local legacy_name legacy_target
+            for legacy_name in am-orchestration; do
+                legacy_target="$skills_dir/$legacy_name"
+                if [[ -L "$legacy_target" && ! -d "$skills_root/$legacy_name" ]]; then
+                    rm -f "$legacy_target"
+                    log_success "  Removed legacy skill symlink: $legacy_target"
+                    steps_done+=("Skill $legacy_name: legacy symlink removed")
                 fi
-            elif [[ -e "$skill_target" ]]; then
-                log_warn "  Target exists but is not a symlink: $skill_target"
-                (( warnings += 1 ))
-            else
-                ln -s "$skill_src" "$skill_target"
-                log_success "  Symlinked: $skill_target -> $skill_src"
-                steps_done+=("Skill $skill_name: symlinked")
-            fi
+            done
+
+            shopt -s nullglob
+            local skill_src skill_name skill_target existing
+            for skill_src in "$skills_root"/*/; do
+                skill_src="${skill_src%/}"
+                [[ -f "$skill_src/SKILL.md" ]] || continue
+                skill_name=$(basename "$skill_src")
+                skill_target="$skills_dir/$skill_name"
+
+                if [[ -L "$skill_target" ]]; then
+                    existing=$(readlink "$skill_target")
+                    local existing_real
+                    existing_real=$(cd "$(dirname "$skill_target")" 2>/dev/null && cd "$existing" 2>/dev/null && pwd -P)
+                    if [[ "$existing_real" == "$skill_src" ]]; then
+                        log_success "  Symlink already exists: $skill_target"
+                        steps_done+=("Skill $skill_name: verified")
+                    else
+                        ln -sfn "$skill_src" "$skill_target"
+                        log_success "  Re-pointed: $skill_target -> $skill_src"
+                        steps_done+=("Skill $skill_name: re-pointed")
+                    fi
+                elif [[ -e "$skill_target" ]]; then
+                    log_warn "  Target exists but is not a symlink: $skill_target"
+                    (( warnings += 1 ))
+                else
+                    ln -s "$skill_src" "$skill_target"
+                    log_success "  Symlinked: $skill_target -> $skill_src"
+                    steps_done+=("Skill $skill_name: symlinked")
+                fi
+            done
+            shopt -u nullglob
         done
-        shopt -u nullglob
     fi
 
     # --- Step 4: Install am onto PATH (via scripts/install.sh) ---

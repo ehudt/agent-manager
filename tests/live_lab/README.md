@@ -1,19 +1,21 @@
 # Live state-detection lab
 
-Drives a **real** Claude Code or pi session through every am state inside an
+Drives a **real** Claude Code, Cursor Agent, or pi session through observable
+am states inside an
 isolated tmux server + state/registry sandbox, and records ground truth at 1s
 resolution. This is the empirical layer of state-detection testing — the fast
 layers (`tests/test_state.sh`, `tests/state_lab/`) encode what this lab observed.
 
-Two runners:
+Three runners:
 - `run.sh` — Claude Code (7 scenarios, ~8 min)
+- `run_cursor.sh` — Cursor Agent (6 independently selectable scenarios)
 - `run_pi.sh` — pi (4 scenarios, ~5 min)
 
 Not part of `test_all.sh`: they spend real tokens.
 
 ## When to run
 
-- Agent updated (Claude Code or pi — verify signal contracts still hold)
+- Agent updated (Claude Code, Cursor, or pi — verify signal contracts still hold)
 - Changing `lib/state.sh`, `lib/hooks/state-hook.sh`, or `lib/hooks/am-state.ts` semantics
 - Harvesting fresh pane/title fixtures for the unit tests
 
@@ -29,6 +31,11 @@ LAB_MODEL=sonnet ./tests/live_lab/run.sh        # different model
 ./tests/live_lab/run_pi.sh                 # all scenarios
 LAB_SCENARIOS="p1 p3" ./tests/live_lab/run_pi.sh   # subset
 LAB_PI_ARGS="--provider anthropic --model claude-haiku-4-5" ./tests/live_lab/run_pi.sh
+
+# Cursor runner
+./tests/live_lab/run_cursor.sh
+LAB_SCENARIOS="c1 c2" ./tests/live_lab/run_cursor.sh
+LAB_CURSOR_ARGS="--model auto" ./tests/live_lab/run_cursor.sh
 ```
 
 ## Scenarios (Claude — `run.sh`)
@@ -61,6 +68,24 @@ LAB_PI_ARGS="--provider anthropic --model claude-haiku-4-5" ./tests/live_lab/run
 | p2 | prompt round-trip | `agent_start` → `running`, `agent_settled` → `waiting_input` |
 | p3 | `sleep 200` (> 180s quiet) | ungated hook read: resolved state NEVER leaves `running` during long tool call |
 | p4 | quit pi → shell | shell-pane check precedence: resolved state == `idle` despite stale hook file |
+
+## Scenarios (Cursor — `run_cursor.sh`)
+
+| # | Drives | Verifies |
+|---|--------|----------|
+| c1 | fresh trusted workspace | `sessionStart`, conversation sidecar, initial title |
+| c2 | prompt round-trip | `beforeSubmitPrompt` → running; response/stop → waiting |
+| c3 | forced shell approval | hook/title behavior while permission UI is pending |
+| c4 | AskQuestion | behavior while an in-turn question is pending |
+| c5 | subagent turn | tool/response activity and settle behavior |
+| c6 | native `--resume` | conversation identity survives relaunch |
+
+Cursor 2026.08.11 exposed stable terminal-title suffixes for `✅ Ready`,
+`⏳ Working`, and `❓ Waiting for you`; production uses these non-content
+signals alongside lifecycle hooks. Its forced permission dialog still showed
+`⏳ Working`, and no permission/background-wait lifecycle event was observed,
+so those states remain `running`. Older Cursor releases without suffixes fall
+back to hooks. Pane content is never scraped.
 
 ## Key empirical findings (2026-07-10, Claude Code 2.1.206)
 

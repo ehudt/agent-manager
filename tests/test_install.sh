@@ -94,6 +94,7 @@ test_install() {
     temp_root=$(mktemp -d)
     local temp_am_dir="$temp_root/am-dir"
     local temp_skills_dir="$temp_root/claude-skills"
+    local temp_cursor_skills_dir="$temp_root/cursor-skills"
     local temp_prefix="$temp_root/bin"
     local temp_shell_rc="$temp_root/.zshrc"
     local fake_bin="$temp_root/fakebin"
@@ -158,6 +159,7 @@ EOF
     install_output=$(PATH="$fake_bin:$PATH" \
         AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
         AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
+        AM_CURSOR_SKILLS_DIR="$temp_cursor_skills_dir" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
 
@@ -169,6 +171,11 @@ EOF
     local link_target
     link_target=$(readlink "$temp_skills_dir/agent-manager-dispatch")
     assert_eq "$PROJECT_DIR/skills/agent-manager-dispatch" "$link_target" "install: skills symlink target correct"
+    assert_cmd_succeeds "install: Cursor skills symlink created" \
+        test -L "$temp_cursor_skills_dir/agent-manager-dispatch"
+    assert_eq "$PROJECT_DIR/skills/agent-manager-dispatch" \
+        "$(readlink "$temp_cursor_skills_dir/agent-manager-dispatch")" \
+        "install: Cursor skills symlink target correct"
     assert_cmd_fails "install: legacy am-orchestration symlink removed" \
         test -e "$temp_skills_dir/am-orchestration" -o -L "$temp_skills_dir/am-orchestration"
 
@@ -197,6 +204,7 @@ EOF
     install_output2=$(PATH="$fake_bin:$PATH" \
         AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
         AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
+        AM_CURSOR_SKILLS_DIR="$temp_cursor_skills_dir" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
     assert_contains "$install_output2" "already exists" "install: skills symlink idempotent"
@@ -217,11 +225,59 @@ EOF
 }
 
 _ensure_install_lib_sourced() {
-    if [[ "$(type -t _install_claude_hooks)" != "function" || "$(type -t _install_codex_hooks)" != "function" || "$(type -t _install_pi_extension)" != "function" ]]; then
+    if [[ "$(type -t _install_claude_hooks)" != "function" || "$(type -t _install_codex_hooks)" != "function" || "$(type -t _install_cursor_hooks)" != "function" || "$(type -t _install_pi_extension)" != "function" ]]; then
         # Extract just the hook installer functions from install.sh (can't
         # source the whole file because it runs install logic at top level).
         eval "$(awk '/^_install_claude_hooks\(\)/ {p=1} /^while \[\[/ {p=0} p {print}' "$PROJECT_DIR/scripts/install.sh")"
     fi
+}
+
+test_install_cursor_hooks_preserves_existing_and_is_idempotent() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local hooks="$tmp_dir/hooks.json"
+    local hooks_dir="$tmp_dir/hooks"
+    cat > "$hooks" <<'JSON'
+{"version":1,"hooks":{"beforeSubmitPrompt":[{"command":"echo existing"}]}}
+JSON
+
+    _install_cursor_hooks "$hooks" "$hooks_dir" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+    _install_cursor_hooks "$hooks" "$hooks_dir" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    assert_eq "1" "$(jq '.version' "$hooks")" "Cursor hooks: schema version retained"
+    assert_eq "2" "$(jq '.hooks.beforeSubmitPrompt | length' "$hooks")" \
+        "Cursor hooks: existing prompt hook preserved and am hook added once"
+    assert_eq "echo existing" "$(jq -r '.hooks.beforeSubmitPrompt[0].command' "$hooks")" \
+        "Cursor hooks: existing hook unchanged"
+    assert_eq "true" "$(jq '[.hooks[][] | select((.command // "") | contains("# am-state-hook"))] | length == 8' "$hooks")" \
+        "Cursor hooks: eight lifecycle hooks installed idempotently"
+    assert_cmd_succeeds "Cursor hooks: stable helper copies state hook" \
+        cmp -s "$PROJECT_DIR/lib/hooks/state-hook.sh" "$hooks_dir/am-state-hook.sh"
+
+    rm -rf "$tmp_dir"
+}
+
+test_enable_cursor_status_indicators() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local config="$tmp_dir/cli-config.json"
+    cat > "$config" <<'JSON'
+{"version":1,"editor":{"vimMode":true},"permissions":{"allow":["Shell(git status)"],"deny":[]},"notifications":false}
+JSON
+
+    _enable_cursor_status_indicators "$config"
+    _enable_cursor_status_indicators "$config"
+
+    assert_eq "true" "$(jq -r '.display.showStatusIndicators' "$config")" \
+        "Cursor config: status indicators enabled"
+    assert_eq "true" "$(jq -r '.editor.vimMode' "$config")" \
+        "Cursor config: unrelated editor setting preserved"
+    assert_eq "Shell(git status)" "$(jq -r '.permissions.allow[0]' "$config")" \
+        "Cursor config: unrelated permissions preserved"
+
+    rm -rf "$tmp_dir"
 }
 
 test_install_hooks_into_empty_settings() {
@@ -469,6 +525,8 @@ run_install_tests() {
     _run_test test_install_hooks_into_empty_settings
     _run_test test_install_hooks_preserves_existing
     _run_test test_install_hooks_idempotent
+    _run_test test_install_cursor_hooks_preserves_existing_and_is_idempotent
+    _run_test test_enable_cursor_status_indicators
     _run_test test_install_codex_hooks_into_empty_file
     _run_test test_install_codex_hooks_preserves_existing_and_idempotent
     _run_test test_enable_codex_hooks_feature_new_file

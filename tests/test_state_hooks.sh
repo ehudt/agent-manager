@@ -129,6 +129,36 @@ test_state_hooks() {
     assert_eq "running" "$state" "UserPromptSubmit with session_id: writes state"
     assert_eq "sid-from-hook" "$sid" "UserPromptSubmit with session_id: writes sid sidecar"
 
+    # --- Cursor hook events use camelCase names and conversation_id ---
+    local cursor_transcript="$tmp_dir/cursor-transcript.jsonl"
+    : > "$cursor_transcript"
+    rm -f "$state_dir/am-abc123" "$state_dir/am-abc123.sid" \
+        "$state_dir/am-abc123.transcript"
+    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+        "$hook_script" <<< "{\"hook_event_name\":\"sessionStart\",\"conversation_id\":\"cursor-conv-1\",\"session_id\":\"cursor-conv-1\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "waiting_input" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+        "Cursor sessionStart: writes waiting_input"
+    assert_eq "cursor-conv-1" "$(cat "$state_dir/am-abc123.sid" 2>/dev/null || echo)" \
+        "Cursor sessionStart: writes conversation id sidecar"
+    assert_eq "$cursor_transcript" "$(cat "$state_dir/am-abc123.transcript" 2>/dev/null || echo)" \
+        "Cursor sessionStart: writes transcript path sidecar"
+
+    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+        "$hook_script" <<< "{\"hook_event_name\":\"beforeSubmitPrompt\",\"conversation_id\":\"cursor-conv-1\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "running" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+        "Cursor beforeSubmitPrompt: writes running"
+
+    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+        "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"cursor-conv-1\",\"status\":\"completed\",\"loop_count\":0,\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "waiting_input" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+        "Cursor stop: writes waiting_input"
+
+    rm -f "$state_dir/am-abc123"
+    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+        "$hook_script" <<< "{\"hook_event_name\":\"preToolUse\",\"conversation_id\":\"cursor-conv-1\",\"tool_name\":\"Read\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "running" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+        "Cursor preToolUse: writes running"
+
     # --- Codex PermissionRequest writes waiting_permission ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PermissionRequest\",\"cwd\":\"$real_project_dir\"}"

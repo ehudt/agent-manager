@@ -12,14 +12,24 @@ _AGENTS_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 declare -A AGENT_COMMANDS=(
     [claude]="claude"
     [codex]="codex"
+    [cursor]="agent"
     [pi]="pi"
 )
 
-# Check if an agent type accepts the initial prompt as a CLI argument.
-# Codex and pi take [PROMPT] as a positional arg; Claude reads from stdin.
-_agent_prompt_as_arg() {
+# Normalize public aliases to the canonical registry/UI agent type.
+# Usage: agent_normalize_type <type>
+agent_normalize_type() {
     case "$1" in
-        codex|pi) return 0 ;;
+        cursor-agent) echo "cursor" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Check if an agent type accepts the initial prompt as a CLI argument.
+# Codex, Cursor, and pi take [PROMPT] as a positional arg; Claude reads stdin.
+_agent_prompt_as_arg() {
+    case "$(agent_normalize_type "$1")" in
+        codex|cursor|pi) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -27,10 +37,11 @@ _agent_prompt_as_arg() {
 # Get the yolo mode flag for an agent type.
 # Usage: agent_get_yolo_flag <type>
 agent_get_yolo_flag() {
-    local agent_type="$1"
+    local agent_type
+    agent_type=$(agent_normalize_type "$1")
     case "$agent_type" in
         claude) echo "--dangerously-skip-permissions" ;;
-        codex) echo "--yolo" ;;
+        codex|cursor) echo "--yolo" ;;
         pi) echo "" ;;
         *) echo "--yolo" ;;
     esac
@@ -39,7 +50,8 @@ agent_get_yolo_flag() {
 # Print the CLI args (one per line) that resume a conversation for an agent.
 # Usage: agent_resume_args <agent_type> <session_id>
 agent_resume_args() {
-    local agent_type="$1"
+    local agent_type
+    agent_type=$(agent_normalize_type "$1")
     local session_id="$2"
     case "$agent_type" in
         pi) printf '%s\n' "--session" "$session_id" ;;
@@ -50,23 +62,26 @@ agent_resume_args() {
 # Get the command for an agent type
 # Usage: agent_get_command <type>
 agent_get_command() {
-    local agent_type="$1"
+    local agent_type
+    agent_type=$(agent_normalize_type "$1")
     echo "${AGENT_COMMANDS[$agent_type]-$agent_type}"
 }
 
 # Check if an agent type is supported
 # Usage: agent_type_supported <type>
 agent_type_supported() {
-    local agent_type="$1"
+    local agent_type
+    agent_type=$(agent_normalize_type "$1")
     [[ -n "${AGENT_COMMANDS[$agent_type]-}" ]]
 }
 
 # Check whether an agent supports git worktree isolation.
 # Usage: agent_supports_worktree <type>
 agent_supports_worktree() {
-    local agent_type="$1"
+    local agent_type
+    agent_type=$(agent_normalize_type "$1")
     case "$agent_type" in
-        claude|codex|pi) return 0 ;;
+        claude|codex|cursor|pi) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -74,19 +89,22 @@ agent_supports_worktree() {
 # Check whether an agent natively manages worktrees via its own CLI flag.
 # Usage: agent_cli_manages_worktree <type>
 agent_cli_manages_worktree() {
-    local agent_type="$1"
-    [[ "$agent_type" == "claude" ]]
+    local agent_type
+    agent_type=$(agent_normalize_type "$1")
+    [[ "$agent_type" == "claude" || "$agent_type" == "cursor" ]]
 }
 
 # Return the repo-local directory used to store managed worktrees.
 # Usage: agent_worktree_root <directory> <agent_type>
 agent_worktree_root() {
     local directory="$1"
-    local agent_type="$2"
+    local agent_type
+    agent_type=$(agent_normalize_type "$2")
 
     case "$agent_type" in
         claude) echo "$directory/.claude/worktrees" ;;
         codex) echo "$directory/.codex/worktrees" ;;
+        cursor) echo "$HOME/.cursor/worktrees/$(dir_basename "$directory")" ;;
         pi) echo "$directory/.pi/worktrees" ;;
         *) return 1 ;;
     esac
@@ -154,7 +172,8 @@ generate_session_name() {
 # Returns: session name on success, empty on failure
 agent_launch() {
     local directory="$1"
-    local agent_type="${2:-claude}"
+    local agent_type
+    agent_type=$(agent_normalize_type "${2:-claude}")
     local task="${3:-}"
     local worktree_name="${4:-}"
     shift 4 2>/dev/null || shift $#
@@ -228,6 +247,7 @@ agent_launch() {
 
     # Resolve worktree name
     local worktree_path=""
+    local worktree_ready_path=""
     if [[ -n "$worktree_name" ]]; then
         if ! agent_supports_worktree "$agent_type"; then
             log_warn "Worktree isolation is not supported for $agent_type, ignoring -w"
@@ -242,9 +262,17 @@ agent_launch() {
             fi
 
             if agent_cli_manages_worktree "$agent_type"; then
-                worktree_path="$(agent_worktree_root "$directory" "$agent_type")/$worktree_name"
+                if [[ "$agent_type" == "cursor" && "$wants_sandbox" == "true" ]]; then
+                    local cursor_worktree_rel=".cursor/worktrees/$(dir_basename "$directory")/$worktree_name"
+                    worktree_path="${SB_CONTAINER_HOME:-/home/ubuntu}/$cursor_worktree_rel"
+                    worktree_ready_path="${SB_HOME_DIR:-$HOME/.agent-manager/sandbox-home}/$cursor_worktree_rel"
+                else
+                    worktree_path="$(agent_worktree_root "$directory" "$agent_type")/$worktree_name"
+                    worktree_ready_path="$worktree_path"
+                fi
             else
                 worktree_path=$(agent_prepare_managed_worktree "$directory" "$agent_type" "$worktree_name") || return 1
+                worktree_ready_path="$worktree_path"
                 session_directory="$worktree_path"
             fi
         fi
@@ -265,8 +293,8 @@ agent_launch() {
     registry_update "$session_name" "yolo_mode" "$wants_yolo"
     registry_update "$session_name" "sandbox_mode" "$wants_sandbox"
 
-    # Append to sessions log for restore support (Claude and pi)
-    if [[ "$agent_type" == "claude" || "$agent_type" == "pi" ]]; then
+    # Append to sessions log for restore support.
+    if [[ "$agent_type" == "claude" || "$agent_type" == "pi" || "$agent_type" == "cursor" ]]; then
         sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
     fi
 
@@ -304,6 +332,17 @@ agent_launch() {
     fi
     if [[ ${#agent_args[@]} -gt 0 ]]; then
         cmd_parts+=("${agent_args[@]}")
+    fi
+    if [[ "$agent_type" == "cursor" && "$wants_sandbox" == "true" ]]; then
+        local has_cursor_sandbox_override=false
+        for arg in "${agent_args[@]}"; do
+            [[ "$arg" == --sandbox=* ]] && has_cursor_sandbox_override=true
+        done
+        if ! $has_cursor_sandbox_override; then
+            # The outer Docker container is already the sandbox. Cursor's
+            # nested bubblewrap sandbox is unreliable under dropped caps.
+            cmd_parts+=("--sandbox" "disabled")
+        fi
     fi
 
     local full_cmd="" quoted_part part
@@ -366,9 +405,12 @@ agent_launch() {
     # Background: wait for CLI-managed worktrees to appear, then cd shell pane into them.
     if [[ -n "$worktree_path" ]]; then
         registry_update "$session_name" "worktree_path" "$worktree_path"
+        if [[ -n "$worktree_ready_path" && "$worktree_ready_path" != "$worktree_path" ]]; then
+            registry_update "$session_name" "worktree_host_path" "$worktree_ready_path"
+        fi
         if [[ "$session_directory" != "$worktree_path" ]]; then
             (for _i in $(seq 1 20); do
-                if [ -d "$worktree_path" ]; then
+                if [ -d "${worktree_ready_path:-$worktree_path}" ]; then
                     am_tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
                     break
                 fi
@@ -425,10 +467,10 @@ agent_info() {
     local session_name="$1"
 
     local fields
-    fields=$(registry_get_fields "$session_name" directory branch agent_type task worktree_path yolo_mode container_name)
+    fields=$(registry_get_fields "$session_name" directory branch agent_type task worktree_path worktree_host_path yolo_mode container_name)
 
-    local directory branch agent_type task worktree_path yolo_mode container_name
-    IFS='|' read -r directory branch agent_type task worktree_path yolo_mode container_name <<< "$fields"
+    local directory branch agent_type task worktree_path worktree_host_path yolo_mode container_name
+    IFS='|' read -r directory branch agent_type task worktree_path worktree_host_path yolo_mode container_name <<< "$fields"
 
     # Get tmux info
     local activity created_ts
@@ -464,6 +506,7 @@ agent_info() {
     fi
     if [[ -n "$worktree_path" ]]; then
         echo "Worktree: $worktree_path"
+        [[ -n "$worktree_host_path" ]] && echo "Worktree (host): $worktree_host_path"
     fi
 }
 
@@ -479,13 +522,18 @@ agent_kill() {
         <<< "$(registry_get_fields "$session_name" agent_type directory created_at container_name)"
 
     # Final snapshot + close timestamp for session restore (before killing tmux)
-    if [[ ( "$agent_type" == "claude" || "$agent_type" == "pi" ) ]] && tmux_session_exists "$session_name"; then
+    if [[ ( "$agent_type" == "claude" || "$agent_type" == "pi" || "$agent_type" == "cursor" ) ]] && tmux_session_exists "$session_name"; then
         # Bind the conversation id: sidecar (authoritative) → already-logged
         # sid → guarded directory detection. A kill-time guess must never
         # overwrite a binding established while hooks were alive.
-        local sid
+        local sid transcript=""
+        if [[ "$agent_type" == "cursor" ]]; then
+            transcript=$(_sessions_log_sidecar_transcript "$session_name" 2>/dev/null || true)
+            [[ -z "$transcript" ]] && transcript=$(_sessions_log_field "$session_name" "transcript_path" 2>/dev/null || true)
+            [[ -n "$transcript" ]] && sessions_log_update "$session_name" "transcript_path" "$transcript"
+        fi
         sid=$(_sessions_log_sidecar_id "$session_name" 2>/dev/null || true)
-        if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent_type"; then
+        if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent_type" "$transcript"; then
             sid=""
         fi
         if [[ -z "$sid" ]]; then
@@ -518,7 +566,8 @@ agent_kill() {
     # Always clean up registry and hook state file
     registry_remove "$session_name"
     rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name" \
-          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript"
 
     # Rebuild sidebar cache for surviving sessions so the killed entry
     # disappears from every pane-border immediately.

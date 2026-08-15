@@ -22,7 +22,9 @@
 # callers must not nest _registry_lock.
 _registry_lock() {
     exec {_REGISTRY_LOCK_FD}>>"$AM_REGISTRY.lock" || return 0
-    if command -v flock >/dev/null 2>&1; then
+    # macOS may have third-party flock shims that do not support locking an
+    # inherited numeric fd. Use the syscall-backed Perl path there.
+    if [[ "$(uname -s)" != "Darwin" ]] && command -v flock >/dev/null 2>&1; then
         flock "$_REGISTRY_LOCK_FD" 2>/dev/null || true
     elif command -v perl >/dev/null 2>&1; then
         perl -MFcntl=:flock -e \
@@ -191,7 +193,8 @@ registry_gc() {
                 fi
                 registry_remove "$name"
                 rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name" \
-                      "${AM_STATE_DIR:-/tmp/am-state}/$name.sid"
+                      "${AM_STATE_DIR:-/tmp/am-state}/$name.sid" \
+                      "${AM_STATE_DIR:-/tmp/am-state}/$name.transcript"
                 ((removed++))
             fi
         done
@@ -208,8 +211,7 @@ registry_gc() {
         fi
 
         # Clean up orphan hook state files and sidecars (session gone but file remains).
-        # State file is "<session>", sidecar is "<session>.sid" — strip the suffix
-        # before checking liveness so live sessions don't lose their sidecar.
+        # Strip known sidecar suffixes before checking liveness.
         local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
         if [[ -d "$state_dir" ]]; then
             local state_file sname
@@ -217,6 +219,7 @@ registry_gc() {
                 [[ -f "$state_file" ]] || continue
                 sname=$(basename "$state_file")
                 sname="${sname%.sid}"
+                sname="${sname%.transcript}"
                 if [[ -z "${live_sessions[$sname]:-}" ]]; then
                     rm -f "$state_file"
                 fi
@@ -262,6 +265,21 @@ _pi_title_extract() {
         *)
             printf '%s\n' "$t"
             ;;
+    esac
+}
+
+# Cursor paints transient context/status titles while a turn is active. These
+# are not task names; the hook-bound transcript is the exact title source.
+_cursor_title_extract() {
+    local title="$1"
+    case "$title" in
+        *" - ✅ Ready") title="${title% - ✅ Ready}" ;;
+        *" - ⏳ Working"*) title="${title%% - ⏳ Working*}" ;;
+        *" - ❓ Waiting for you") title="${title% - ❓ Waiting for you}" ;;
+    esac
+    case "$title" in
+        "Cursor Agent"|"Shell Command") printf '\n' ;;
+        *) printf '%s\n' "$title" ;;
     esac
 }
 
@@ -318,6 +336,8 @@ auto_title_scan() {
         # name or blank it so the JSONL fallback kicks in.
         if [[ "${reg_agent[$name]}" == "pi" ]]; then
             title=$(_pi_title_extract "$title")
+        elif [[ "${reg_agent[$name]}" == "cursor" ]]; then
+            title=$(_cursor_title_extract "$title")
         fi
 
         if ! _title_valid "$title"; then
@@ -326,7 +346,7 @@ auto_title_scan() {
             # yet), bash-only panes, and legacy sessions created before
             # auto-titling existed.
             local fallback=""
-            if [[ ( "${reg_agent[$name]}" == "claude" || "${reg_agent[$name]}" == "pi" ) && -n "${reg_dir[$name]}" ]]; then
+            if [[ ( "${reg_agent[$name]}" == "claude" || "${reg_agent[$name]}" == "pi" || "${reg_agent[$name]}" == "cursor" ) && -n "${reg_dir[$name]}" ]]; then
                 # Resolve THIS session's id (sidecar, else mtime>=created) so two
                 # sessions in one directory don't share the newest JSONL's first
                 # message as their title.
@@ -336,6 +356,10 @@ auto_title_scan() {
                 # a directory with multiple JSONLs (would inherit a sibling's task).
                 if [[ "${reg_agent[$name]}" == "pi" ]]; then
                     fallback=$(pi_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
+                elif [[ "${reg_agent[$name]}" == "cursor" ]]; then
+                    local _transcript
+                    _transcript=$(_sessions_log_sidecar_transcript "$name")
+                    fallback=$(cursor_first_user_message "${reg_dir[$name]}" "$_sid" "$_transcript" 1 2>/dev/null || true)
                 else
                     fallback=$(claude_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
                 fi
@@ -397,22 +421,34 @@ sessions_log_scan() {
     done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
     # Build lookup of sessions_log entries (bulk parse — one jq call)
-    local -A slog_sid slog_snap
-    local _sl_sname _sl_sid _sl_snap
-    while IFS='|' read -r _sl_sname _sl_sid _sl_snap; do
+    local -A slog_sid slog_snap slog_transcript
+    local _sl_sname _sl_sid _sl_snap _sl_transcript
+    while IFS='|' read -r _sl_sname _sl_sid _sl_snap _sl_transcript; do
         [[ -z "$_sl_sname" ]] && continue
         # Keep last entry per session_name (later lines overwrite)
         slog_sid[$_sl_sname]="$_sl_sid"
         slog_snap[$_sl_sname]="$_sl_snap"
-    done < <(jq -r '[.session_name // "", .session_id // "", .snapshot_file // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null)
+        slog_transcript[$_sl_sname]="$_sl_transcript"
+    done < <(jq -r '[.session_name // "", .session_id // "", .snapshot_file // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null)
 
     local name snap_count=0
     for name in "${!reg_agent[@]}"; do
-        case "${reg_agent[$name]}" in claude|pi) ;; *) continue ;; esac
+        case "${reg_agent[$name]}" in claude|pi|cursor) ;; *) continue ;; esac
         # Only process sessions that have a log entry
         [[ -n "${slog_sid[$name]+x}" ]] || continue
 
         local sid="${slog_sid[$name]}"
+        local transcript="${slog_transcript[$name]:-}"
+        if [[ "${reg_agent[$name]}" == "cursor" ]]; then
+            local sidecar_transcript
+            sidecar_transcript=$(_sessions_log_sidecar_transcript "$name")
+            if [[ -n "$sidecar_transcript" && "$sidecar_transcript" != "$transcript" ]]; then
+                sessions_log_update "$name" "transcript_path" "$sidecar_transcript"
+                transcript="$sidecar_transcript"
+                slog_transcript[$name]="$transcript"
+                _titler_log "  $name: bound transcript_path from sidecar"
+            fi
+        fi
 
         # The hook sidecar is authoritative — it was written by the agent pane
         # itself. Correct the logged sid whenever it disagrees (heals wrong
@@ -421,7 +457,7 @@ sessions_log_scan() {
         local sidecar_sid=""
         if [[ -n "${reg_dir[$name]}" ]]; then
             sidecar_sid=$(_sessions_log_sidecar_id "$name")
-            if [[ -n "$sidecar_sid" ]] && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid" "${reg_agent[$name]}"; then
+            if [[ -n "$sidecar_sid" ]] && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid" "${reg_agent[$name]}" "$transcript"; then
                 sidecar_sid=""
             fi
         fi
@@ -460,7 +496,7 @@ sessions_log_scan() {
 
     # Also sync task into the sessions log
     for name in "${!reg_agent[@]}"; do
-        case "${reg_agent[$name]}" in claude|pi) ;; *) continue ;; esac
+        case "${reg_agent[$name]}" in claude|pi|cursor) ;; *) continue ;; esac
         [[ -n "${slog_sid[$name]+x}" ]] || continue
         local current_task="${reg_task[$name]}"
         [[ -n "$current_task" ]] && sessions_log_update "$name" "task" "$current_task"
@@ -497,7 +533,7 @@ sessions_log_append() {
         --arg snap "" \
         '{session_name: $sname, session_id: $sid, directory: $dir, branch: $branch,
           agent_type: $agent, task: $task, created_at: $created, closed_at: null,
-          snapshot_file: $snap}')" \
+          snapshot_file: $snap, transcript_path: ""}')" \
         >> "$AM_SESSIONS_LOG"
 }
 
@@ -564,6 +600,16 @@ _slog_encode_pi_dir() {
     printf -- '--%s--\n' "$p"
 }
 
+# Cursor's project key strips the leading slash, then replaces slash/dot.
+_slog_encode_cursor_dir() {
+    local p="${1#/}"
+    printf '%s\n' "$p" | sed -E 's|[/.]|-|g'
+}
+
+_cursor_projects_root() {
+    echo "${AM_CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}"
+}
+
 # Root of pi's session storage (override: AM_PI_SESSIONS_DIR, for tests).
 _pi_sessions_root() {
     echo "${AM_PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
@@ -596,6 +642,20 @@ _sessions_log_sidecar_id() {
     if _sessions_log_valid_id "$sid"; then
         echo "$sid"
     fi
+}
+
+_sessions_log_sidecar_transcript() {
+    local session_name="$1"
+    local path_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript"
+    [[ -f "$path_file" ]] || return 0
+
+    local transcript=""
+    IFS= read -r transcript < "$path_file" 2>/dev/null || true
+    if [[ "$transcript" == /home/ubuntu/* && ! -f "$transcript" ]]; then
+        local host_home="${SB_HOME_DIR:-$HOME/.agent-manager/sandbox-home}"
+        transcript="$host_home/${transcript#/home/ubuntu/}"
+    fi
+    [[ "$transcript" == /* && -f "$transcript" ]] && echo "$transcript"
 }
 
 # Read a field from the most recent sessions log entry for a session.
@@ -639,7 +699,9 @@ _sessions_log_detect_id_for_session() {
     local sid sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
     sid=$(_sessions_log_sidecar_id "$session_name")
     if [[ -f "$sid_file" ]]; then
-        if [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid" "$agent"; then
+        local sidecar_transcript=""
+        [[ "$agent" == "cursor" ]] && sidecar_transcript=$(_sessions_log_sidecar_transcript "$session_name")
+        if [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$sidecar_transcript"; then
             echo "$sid"
         fi
         return 0
@@ -693,6 +755,25 @@ _sessions_log_detect_id() {
         return 0
     fi
 
+    if [[ "$agent" == "cursor" ]]; then
+        local cursor_dir
+        cursor_dir="$(_cursor_projects_root)/$(_slog_encode_cursor_dir "$resolved")/agent-transcripts"
+        [[ -d "$cursor_dir" ]] || return 0
+        local cursor_jsonl cursor_sid cursor_mtime
+        while IFS= read -r cursor_jsonl; do
+            [[ -n "$cursor_jsonl" && -f "$cursor_jsonl" ]] || continue
+            if (( min_epoch > 0 )); then
+                cursor_mtime=$(_slog_file_mtime "$cursor_jsonl" 2>/dev/null || echo 0)
+                (( cursor_mtime > 0 && cursor_mtime < min_epoch )) && continue
+            fi
+            cursor_sid=$(basename "$cursor_jsonl" .jsonl)
+            _sessions_log_valid_id "$cursor_sid" || continue
+            echo "$cursor_sid"
+            return 0
+        done < <(command ls -t "$cursor_dir"/*/*.jsonl 2>/dev/null)
+        return 0
+    fi
+
     local encoded project_dir
     encoded=$(_slog_encode_dir "$resolved")
     project_dir="$HOME/.claude/projects/$encoded"
@@ -718,6 +799,7 @@ _sessions_log_jsonl_exists() {
     local dir="$1"
     local session_id="$2"
     local agent="${3:-claude}"
+    local transcript_path="${4:-}"
 
     local resolved
     resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
@@ -727,6 +809,16 @@ _sessions_log_jsonl_exists() {
         pi_dir="$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"
         local matches=("$pi_dir"/*_"${session_id}".jsonl)
         [[ -f "${matches[0]}" ]]
+        return
+    fi
+
+    if [[ "$agent" == "cursor" ]]; then
+        if [[ -n "$transcript_path" && -f "$transcript_path" && "$(basename "$transcript_path")" == "$session_id.jsonl" ]]; then
+            return 0
+        fi
+        local cursor_dir
+        cursor_dir="$(_cursor_projects_root)/$(_slog_encode_cursor_dir "$resolved")/agent-transcripts"
+        [[ -f "$cursor_dir/$session_id/$session_id.jsonl" ]]
         return
     fi
 
@@ -743,7 +835,7 @@ sessions_log_gc() {
 
     # Bulk-parse all fields in one jq call
     local all_fields
-    all_fields=$(jq -r '[.agent_type // "", .session_id // "", .directory // "", .created_at // "", .snapshot_file // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
+    all_fields=$(jq -r '[.agent_type // "", .session_id // "", .directory // "", .created_at // "", .snapshot_file // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
 
     # Read raw lines and parsed fields into parallel arrays
     local lines=() fields_arr=()
@@ -768,16 +860,16 @@ sessions_log_gc() {
 
     local i
     for (( i=0; i<${#lines[@]}; i++ )); do
-        local agent sid dir created_at snap
-        IFS='|' read -r agent sid dir created_at snap <<< "${fields_arr[$i]}"
+        local agent sid dir created_at snap transcript
+        IFS='|' read -r agent sid dir created_at snap transcript <<< "${fields_arr[$i]}"
 
         local keep=true
 
-        if [[ ( "$agent" == "claude" || "$agent" == "pi" ) && -n "$sid" && -n "$dir" ]]; then
-            if ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent"; then
+        if [[ ( "$agent" == "claude" || "$agent" == "pi" || "$agent" == "cursor" ) && -n "$sid" && -n "$dir" ]]; then
+            if ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$transcript"; then
                 keep=false
             fi
-        elif [[ ( "$agent" == "claude" || "$agent" == "pi" ) && -z "$sid" ]]; then
+        elif [[ ( "$agent" == "claude" || "$agent" == "pi" || "$agent" == "cursor" ) && -z "$sid" ]]; then
             # ISO 8601 UTC timestamps sort lexicographically
             if [[ -n "$created_at" && "$created_at" < "$cutoff_iso" ]]; then
                 keep=false
@@ -814,7 +906,7 @@ sessions_log_restorable() {
 
     # Bulk-parse all fields in one jq call
     local all_fields
-    all_fields=$(jq -r '[.session_name // "", .session_id // "", .agent_type // "", .directory // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
+    all_fields=$(jq -r '[.session_name // "", .session_id // "", .agent_type // "", .directory // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
 
     # Read raw lines and parsed fields into parallel arrays
     local lines=() fields_arr=()
@@ -831,15 +923,15 @@ sessions_log_restorable() {
     local -A seen_ids
     local i result=()
     for (( i=${#lines[@]}-1; i>=0; i-- )); do
-        local sname sid agent dir
-        IFS='|' read -r sname sid agent dir <<< "${fields_arr[$i]}"
+        local sname sid agent dir transcript
+        IFS='|' read -r sname sid agent dir transcript <<< "${fields_arr[$i]}"
 
-        case "$agent" in claude|pi) ;; *) continue ;; esac
+        case "$agent" in claude|pi|cursor) ;; *) continue ;; esac
         [[ -n "$sid" ]] || continue
         [[ -z "${live_sessions[$sname]:-}" ]] || continue
         [[ -z "${seen_ids[$sid]:-}" ]] || continue
 
-        if _sessions_log_jsonl_exists "$dir" "$sid" "$agent"; then
+        if _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$transcript"; then
             seen_ids[$sid]=1
             result+=("${lines[$i]}")
         fi

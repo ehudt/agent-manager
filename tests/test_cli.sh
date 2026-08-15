@@ -14,6 +14,7 @@ test_cli() {
     local new_help
     new_help=$("$PROJECT_DIR/am" new --help)
     assert_contains "$new_help" "-t, --type" "am new --help: shows flags"
+    assert_contains "$new_help" "cursor" "am new --help: lists Cursor agent"
     assert_not_contains "$new_help" "--yolo" "am new --help: hides yolo flag"
     assert_not_contains "$new_help" "--no-yolo" "am new --help: hides no-yolo flag"
     assert_not_contains "$new_help" "--no-worktree" "am new --help: hides no-worktree flag"
@@ -194,6 +195,12 @@ test_cli_extended() {
     local config_get
     config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get agent 2>/dev/null)
     assert_eq "codex" "$config_get" "am config get agent: returns saved default"
+
+    config_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set agent cursor-agent 2>/dev/null)
+    assert_contains "$config_output" "default_agent=cursor" \
+        "am config set agent: canonicalizes cursor-agent alias"
+    assert_eq "cursor" "$(jq -r '.default_agent' "$TEST_AM_DIR/config.json")" \
+        "am config set agent: stores canonical Cursor type"
 
     config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DEFAULT_AGENT="claude" "$PROJECT_DIR/am" config get agent 2>/dev/null)
     assert_eq "claude" "$config_get" "am config get agent: env override wins"

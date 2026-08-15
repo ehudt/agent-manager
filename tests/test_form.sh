@@ -14,6 +14,10 @@ test_form_core() {
     set -u
 
     _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
+    assert_contains "${FORM_OPTIONS[agent]}" "cursor," \
+        "form input: cursor is available as an agent"
+    assert_not_contains "${FORM_OPTIONS[agent]}" "cursor-agent" \
+        "form input: cursor alias is not duplicated"
 
     # Select cycling
     FORM_CURSOR=1  # agent field

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # lib/hooks/state-hook.sh - Agent hook: maps lifecycle events to am session states
 #
-# Claude Code and Codex call this script as a hook. Reads JSON from stdin, maps
-# the event to an am state, finds the matching session in the registry, and
-# writes the state to $AM_STATE_DIR/<session_name>.
+# Claude Code, Codex, and Cursor Agent call this script as a hook. Reads JSON
+# from stdin, maps the event to an am state, finds the matching session in the
+# registry, and writes the state to $AM_STATE_DIR/<session_name>.
 #
 # Supported events:
 #   Stop (stop_hook_active != true)  → waiting_input, or waiting_background
@@ -19,6 +19,11 @@
 #   PreToolUse                       → running
 #   PermissionRequest                → waiting_permission
 #   PostToolUse                      → running
+#   sessionStart / stop              → waiting_input        (Cursor)
+#   beforeSubmitPrompt               → running              (Cursor)
+#   preToolUse / postToolUse /
+#   postToolUseFailure /
+#   afterAgentResponse/Thought       → running              (Cursor)
 #
 # background_tasks: Claude Code ≥2.1 includes a background_tasks array in the
 # Stop payload — one entry per still-running background item ({id, type
@@ -103,6 +108,9 @@ case "$hook_type" in
         am_state="waiting_input"
         [[ "$(_bg_running_count)" =~ ^[1-9] ]] && am_state="waiting_background"
         ;;
+    sessionStart|stop)
+        am_state="waiting_input"
+        ;;
     Notification)
         notification_type=$(printf '%s' "$hook_input" | jq -r '.notification_type // empty' 2>/dev/null || true)
         case "$notification_type" in
@@ -118,7 +126,7 @@ case "$hook_type" in
     PermissionRequest)
         am_state="waiting_permission"
         ;;
-    UserPromptSubmit|PreToolUse|PostToolUse)
+    UserPromptSubmit|PreToolUse|PostToolUse|beforeSubmitPrompt|preToolUse|postToolUse|postToolUseFailure|afterAgentResponse|afterAgentThought)
         am_state="running"
         ;;
     *)
@@ -161,7 +169,7 @@ fi
 
 # 3. cwd match — last resort; ambiguous when two sessions share a directory
 if [[ -z "$session_name" ]]; then
-    cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // empty' 2>/dev/null || true)
+    cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // .workspace_roots[0] // empty' 2>/dev/null || true)
     if [[ -z "$cwd" ]]; then
         _hook_debug "no AM_SESSION_NAME/TMUX_PANE/cwd; cannot resolve session"
         exit 0
@@ -210,7 +218,7 @@ fi
 # PreToolUse/PostToolUse. Those hooks MUST move the state forward to running,
 # otherwise the session appears stuck at waiting_permission until end-of-turn.
 state_file="$AM_STATE_DIR/$session_name"
-if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && -f "$state_file" ]]; then
+if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && "$hook_type" != "beforeSubmitPrompt" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
     case "$current" in
         waiting_background) exit 0 ;;
@@ -255,7 +263,7 @@ fi
 # payload exposes it. This lets restore snapshots bind to the exact pane that
 # fired the hook instead of guessing by cwd, which is ambiguous for duplicate
 # sessions in one repo.
-hook_session_id=$(printf '%s' "$hook_input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
+hook_session_id=$(printf '%s' "$hook_input" | jq -r '.conversation_id // .session_id // .sessionId // empty' 2>/dev/null || true)
 if [[ -z "$hook_session_id" ]]; then
     transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
     if [[ -n "$transcript_path" ]]; then
@@ -264,6 +272,14 @@ if [[ -z "$hook_session_id" ]]; then
 fi
 if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
     printf '%s' "$hook_session_id" > "$AM_STATE_DIR/$session_name.sid"
+fi
+
+# Cursor exposes the exact transcript path in every conversation hook. Persist
+# it alongside the state so restore/title code never has to guess which
+# same-directory conversation belongs to this tmux pane.
+transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+if [[ "$transcript_path" == /* && "$transcript_path" != *$'\n'* ]]; then
+    printf '%s' "$transcript_path" > "$AM_STATE_DIR/$session_name.transcript"
 fi
 
 # Invalidate list cache so the next fzf reload picks up the new state
@@ -275,7 +291,7 @@ rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
 # 60s. Only fire on prompt boundaries — tool hooks would defeat the throttle
 # for busy sessions.
 case "$hook_type" in
-    UserPromptSubmit|Stop)
+    UserPromptSubmit|Stop|beforeSubmitPrompt|stop|sessionStart)
         rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
         ;;
 esac

@@ -45,15 +45,16 @@ const (
 
 // SessionLogEntry matches one JSONL row from sessions_log.jsonl.
 type SessionLogEntry struct {
-	SessionName  string `json:"session_name"`
-	SessionID    string `json:"session_id"`
-	Directory    string `json:"directory"`
-	Branch       string `json:"branch"`
-	AgentType    string `json:"agent_type"`
-	Task         string `json:"task"`
-	CreatedAt    string `json:"created_at"`
-	ClosedAt     string `json:"closed_at"`
-	SnapshotFile string `json:"snapshot_file"`
+	SessionName    string `json:"session_name"`
+	SessionID      string `json:"session_id"`
+	Directory      string `json:"directory"`
+	Branch         string `json:"branch"`
+	AgentType      string `json:"agent_type"`
+	Task           string `json:"task"`
+	CreatedAt      string `json:"created_at"`
+	ClosedAt       string `json:"closed_at"`
+	SnapshotFile   string `json:"snapshot_file"`
+	TranscriptPath string `json:"transcript_path"`
 }
 
 // Entry combines session metadata + formatted display for browser rows.
@@ -231,7 +232,7 @@ func LoadEntries() []Entry {
 }
 
 // LoadBrowserEntries returns active sessions followed by restorable inactive
-// Claude sessions for the interactive session switcher.
+// agent sessions for the interactive session switcher.
 func LoadBrowserEntries() []Entry {
 	socket := EnvOr("AM_TMUX_SOCKET", "agent-manager")
 	amDir := EnvOr("AM_DIR", filepath.Join(HomeDir(), ".agent-manager"))
@@ -291,8 +292,8 @@ func loadActiveEntries(amDir, socket string, tmuxSessions []TmuxSession, now tim
 	return entries
 }
 
-// LoadRestorableEntries reads sessions_log.jsonl and returns closed Claude
-// sessions that still have a backing Claude JSONL available for resume.
+// LoadRestorableEntries reads sessions_log.jsonl and returns closed sessions
+// that still have a backing conversation JSONL available for resume.
 func LoadRestorableEntries(amDir, home string, liveSessions map[string]bool, now time.Time) []Entry {
 	return restorableEntriesFromLog(
 		ReadSessionLog(EnvOr("AM_SESSIONS_LOG", filepath.Join(amDir, "sessions_log.jsonl"))),
@@ -336,7 +337,7 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 	var entries []Entry
 	for i := len(logs) - 1; i >= 0; i-- {
 		log := logs[i]
-		if (log.AgentType != "claude" && log.AgentType != "pi") || log.SessionID == "" {
+		if (log.AgentType != "claude" && log.AgentType != "pi" && log.AgentType != "cursor") || log.SessionID == "" {
 			continue
 		}
 		if liveSessions != nil && liveSessions[log.SessionName] {
@@ -348,6 +349,8 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 		exists := false
 		if log.AgentType == "pi" {
 			exists = piJSONLExists(home, log.Directory, log.SessionID)
+		} else if log.AgentType == "cursor" {
+			exists = cursorJSONLExists(home, log.Directory, log.SessionID, log.TranscriptPath)
 		} else {
 			exists = claudeJSONLExists(home, log.Directory, log.SessionID)
 		}
@@ -429,6 +432,50 @@ func encodedClaudeProjectDir(dir string) string {
 		}
 	}
 	return strings.NewReplacer("/", "-", ".", "-").Replace(resolved)
+}
+
+func cursorProjectsRoot(home string) string {
+	if v := os.Getenv("AM_CURSOR_PROJECTS_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(home, ".cursor", "projects")
+}
+
+func encodedCursorProjectDir(dir string) string {
+	resolved := dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		if st, statErr := os.Stat(abs); statErr == nil && st.IsDir() {
+			if realPath, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+				resolved = realPath
+			} else {
+				resolved = abs
+			}
+		}
+	}
+	resolved = strings.TrimPrefix(resolved, string(filepath.Separator))
+	return strings.NewReplacer("/", "-", ".", "-").Replace(resolved)
+}
+
+func cursorTranscriptsDir(home, dir string) string {
+	return filepath.Join(cursorProjectsRoot(home), encodedCursorProjectDir(dir), "agent-transcripts")
+}
+
+func cursorStandardTranscriptPath(home, dir, sessionID string) string {
+	return filepath.Join(cursorTranscriptsDir(home, dir), sessionID, sessionID+".jsonl")
+}
+
+func cursorJSONLExists(home, dir, sessionID, transcriptPath string) bool {
+	if transcriptPath != "" {
+		if st, err := os.Stat(transcriptPath); err == nil && !st.IsDir() &&
+			filepath.Base(transcriptPath) == sessionID+".jsonl" {
+			return true
+		}
+	}
+	if home == "" || dir == "" || sessionID == "" {
+		return false
+	}
+	st, err := os.Stat(cursorStandardTranscriptPath(home, dir, sessionID))
+	return err == nil && !st.IsDir()
 }
 
 func piSessionsRoot(home string) string {
