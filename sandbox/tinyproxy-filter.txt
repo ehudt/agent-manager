@@ -3,6 +3,12 @@
 ^(.+\.)?openai\.com$
 ^(.+\.)?chatgpt\.com$
 ^(.+\.)?oaistatic\.com$
+^(.+\.)?cursor\.sh$
+^(.+\.)?cursor\.com$
+^(.+\.)?cursor-cdn\.com$
+^(.+\.)?cursorapi\.com$
+^(.+\.)?cursorvm\.com$
+^anysphere-binaries\.s3\.us-east-1\.amazonaws\.com$
 ^github\.com$
 ^.*\.githubusercontent\.com$
 ^registry\.npmjs\.org$

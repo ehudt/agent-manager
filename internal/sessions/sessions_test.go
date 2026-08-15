@@ -276,6 +276,25 @@ func TestRestorableEntriesIncludePi(t *testing.T) {
 	}
 }
 
+func TestRestorableEntriesIncludeCursorTranscript(t *testing.T) {
+	home := t.TempDir()
+	transcript := filepath.Join(t.TempDir(), "cursor-1.jsonl")
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logs := []SessionLogEntry{
+		{SessionName: "am-cursor1", SessionID: "cursor-1", TranscriptPath: transcript, Directory: home, AgentType: "cursor"},
+		{SessionName: "am-cursor2", SessionID: "cursor-2", TranscriptPath: filepath.Join(home, "missing.jsonl"), Directory: home, AgentType: "cursor"},
+	}
+	entries := restorableEntriesFromLog(logs, home, home, map[string]bool{}, time.Now())
+	if len(entries) != 1 {
+		t.Fatalf("want 1 restorable Cursor entry, got %d", len(entries))
+	}
+	if entries[0].RestoreSessionID != "cursor-1" {
+		t.Fatalf("wrong sid: %s", entries[0].RestoreSessionID)
+	}
+}
+
 func TestEncodedPiSessionDir(t *testing.T) {
 	tests := []struct {
 		input string

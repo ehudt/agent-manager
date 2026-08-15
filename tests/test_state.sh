@@ -244,6 +244,15 @@ test_state_title_glyph() {
     _state_title_signal "✻ Baked for 5m" sig
     assert_eq "none" "$sig" "_state_title_signal: other decoration (✻) -> none"
 
+    _state_cursor_title_signal "Cursor Agent - ✅ Ready" sig
+    assert_eq "waiting_input" "$sig" "_state_cursor_title_signal: ready"
+    _state_cursor_title_signal "Cursor Agent - ⏳ Working .··" sig
+    assert_eq "running" "$sig" "_state_cursor_title_signal: working"
+    _state_cursor_title_signal "Shell Command - ❓ Waiting for you" sig
+    assert_eq "waiting_custom" "$sig" "_state_cursor_title_signal: in-turn question"
+    _state_cursor_title_signal "Cursor Agent" sig
+    assert_eq "none" "$sig" "_state_cursor_title_signal: legacy context title has no signal"
+
     # --- resolver decision table (bulk path; empty maps bypass the shell
     #     check, title injected via the title map) ---
     local -A _T_TOP=() _T_COMM=() _T_CHILD=() _T_TITLE=()
@@ -394,6 +403,41 @@ test_state_title_glyph() {
     pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map2 pi_comm_map2 pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map2)
     assert_eq "idle" "$pi_state" "_state_resolve: pi shell pane wins"
     rm -f "$tmp_state_dir/am-pi1"
+
+    # --- cursor: lifecycle hooks are turn-boundary events and stay authoritative
+    #     during long quiet tool calls, just like pi's in-process extension. ---
+    printf 'running' > "$tmp_state_dir/am-cursor1"
+    touch -t "$_t_backdated" "$tmp_state_dir/am-cursor1"
+    local -A cursor_top_map=( [am-cursor1]=99993 )
+    local -A cursor_comm_map=( [99993]=agent )
+    local -A cursor_child_map=()
+    local -A cursor_title_map=()
+    local cursor_state
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
+    assert_eq "running" "$cursor_state" \
+        "_state_resolve: Cursor stale running stays running (turn-boundary hooks)"
+
+    printf 'waiting_input' > "$tmp_state_dir/am-cursor1"
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
+    assert_eq "waiting_input" "$cursor_state" "_state_resolve: Cursor waiting_input"
+
+    cursor_title_map[am-cursor1]="Cursor Agent - ⏳ Working ..."
+    printf 'waiting_input' > "$tmp_state_dir/am-cursor1"
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
+    assert_eq "running" "$cursor_state" "_state_resolve: Cursor working title advances stale waiting hook"
+
+    cursor_title_map[am-cursor1]="Shell Command - ❓ Waiting for you"
+    printf 'running' > "$tmp_state_dir/am-cursor1"
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
+    assert_eq "waiting_custom" "$cursor_state" "_state_resolve: Cursor question title reports waiting_custom"
+
+    cursor_title_map[am-cursor1]="Cursor Pong - ✅ Ready"
+    printf 'running' > "$tmp_state_dir/am-cursor1"
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
+    assert_eq "waiting_input" "$cursor_state" "_state_resolve: Cursor ready title self-heals stale running hook"
+    assert_eq "waiting_input" "$(cat "$tmp_state_dir/am-cursor1")" \
+        "_state_resolve: Cursor ready title updates state timestamp source"
+    rm -f "$tmp_state_dir/am-cursor1"
 
     # --- bulk shell-pane semantics agree with the non-bulk classifier ---
     # Non-bulk: shell pane + session <5s old -> starting; older -> idle.

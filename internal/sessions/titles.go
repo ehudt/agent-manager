@@ -61,13 +61,19 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 		title = leadingNonAlnum.ReplaceAllString(title, "")
 		if meta.AgentType == "pi" {
 			title = piTitleExtract(title)
+		} else if meta.AgentType == "cursor" {
+			title = cursorTitleExtract(title)
 		}
 		if !titleValid(title) {
-			if (meta.AgentType == "claude" || meta.AgentType == "pi") && meta.Directory != "" {
+			if (meta.AgentType == "claude" || meta.AgentType == "pi" || meta.AgentType == "cursor") && meta.Directory != "" {
 				var fallback string
 				if meta.AgentType == "pi" {
 					sid := resolvePiSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
 					fallback = piFirstUserMessage(meta.Directory, sid, true)
+				} else if meta.AgentType == "cursor" {
+					transcript := readCursorTranscriptSidecar(stateDir, s.Name)
+					sid := resolveCursorSessionID(home, stateDir, s.Name, meta.Directory, transcript)
+					fallback = cursorFirstUserMessage(meta.Directory, sid, transcript, true)
 				} else {
 					// Resolve THIS session's Claude id so two sessions sharing
 					// one directory don't both inherit the newest JSONL's first
@@ -250,6 +256,120 @@ func claudeFirstUserMessage(directory, sessionID string, strict bool) string {
 		if len(text) > 10 {
 			return text
 		}
+	}
+	return ""
+}
+
+// cursorTitleExtract drops Cursor's empirically observed transient status
+// titles. Task titles pass through; exact task fallback comes from transcript.
+func cursorTitleExtract(title string) string {
+	if strings.HasSuffix(title, " - ✅ Ready") {
+		title = strings.TrimSuffix(title, " - ✅ Ready")
+	} else if idx := strings.LastIndex(title, " - ⏳ Working"); idx >= 0 {
+		title = title[:idx]
+	} else if strings.HasSuffix(title, " - ❓ Waiting for you") {
+		title = strings.TrimSuffix(title, " - ❓ Waiting for you")
+	}
+	switch title {
+	case "Cursor Agent", "Shell Command":
+		return ""
+	default:
+		return title
+	}
+}
+
+var cursorUserQueryRe = regexp.MustCompile(`(?s)<user_query>\s*(.*?)\s*</user_query>`)
+
+// cursorFirstUserMessage reads the hook-bound transcript when available,
+// falling back to Cursor's standard per-project transcript layout.
+func cursorFirstUserMessage(directory, sessionID, transcriptPath string, strict bool) string {
+	target := ""
+	if transcriptPath != "" {
+		if st, err := os.Stat(transcriptPath); err == nil && !st.IsDir() {
+			target = transcriptPath
+		}
+	}
+	if target == "" && sessionID != "" {
+		candidate := cursorStandardTranscriptPath(homeDir(), directory, sessionID)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			target = candidate
+		}
+	}
+	if target == "" && strict {
+		return ""
+	}
+	if target == "" {
+		pattern := filepath.Join(cursorTranscriptsDir(homeDir(), directory), "*", "*.jsonl")
+		matches, _ := filepath.Glob(pattern)
+		var newest time.Time
+		for _, candidate := range matches {
+			if info, err := os.Stat(candidate); err == nil && (target == "" || info.ModTime().After(newest)) {
+				target = candidate
+				newest = info.ModTime()
+			}
+		}
+	}
+	if target == "" {
+		return ""
+	}
+
+	f, err := os.Open(target)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var rec struct {
+			Role    string `json:"role"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil || rec.Role != "user" {
+			continue
+		}
+		text := extractContent(rec.Message.Content)
+		if match := cursorUserQueryRe.FindStringSubmatch(text); len(match) == 2 {
+			text = match[1]
+		}
+		text = cleanContent(strings.ReplaceAll(text, "\n", " "))
+		if len(text) > 10 {
+			return text
+		}
+	}
+	return ""
+}
+
+func readCursorTranscriptSidecar(stateDir, sessionName string) string {
+	b, err := os.ReadFile(filepath.Join(stateDir, sessionName+".transcript"))
+	if err != nil {
+		return ""
+	}
+	path := strings.TrimSpace(string(b))
+	containerPrefix := "/home/ubuntu/"
+	if strings.HasPrefix(path, containerPrefix) {
+		hostHome := EnvOr("SB_HOME_DIR", filepath.Join(homeDir(), ".agent-manager", "sandbox-home"))
+		candidate := filepath.Join(hostHome, strings.TrimPrefix(path, containerPrefix))
+		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
+			path = candidate
+		}
+	}
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return ""
+}
+
+func resolveCursorSessionID(home, stateDir, sessionName, directory, transcriptPath string) string {
+	b, err := os.ReadFile(filepath.Join(stateDir, sessionName+".sid"))
+	if err != nil {
+		return ""
+	}
+	sid := strings.TrimSpace(string(b))
+	if validSessionID.MatchString(sid) && cursorJSONLExists(home, directory, sid, transcriptPath) {
+		return sid
 	}
 	return ""
 }

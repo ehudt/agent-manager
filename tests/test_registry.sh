@@ -115,6 +115,14 @@ test_registry_extended() {
     assert_eq "" "$(_pi_title_extract 'pi')" "_pi_title_extract: bare"
     assert_eq "plain title" "$(_pi_title_extract 'plain title')" "_pi_title_extract: non-pi shape"
 
+    # --- _cursor_title_extract ---
+    assert_eq "" "$(_cursor_title_extract 'Cursor Agent - ✅ Ready')" \
+        "_cursor_title_extract: generic ready context is not a task"
+    assert_eq "" "$(_cursor_title_extract 'Shell Command - ⏳ Working .··')" \
+        "_cursor_title_extract: generic working context is not a task"
+    assert_eq "Cursor Pong" "$(_cursor_title_extract 'Cursor Pong - ✅ Ready')" \
+        "_cursor_title_extract: task title strips ready suffix"
+
     # --- sessions_log_restorable accepts pi ---
     local pr_home; pr_home=$(mktemp -d)
     local pr_dir="$pr_home/proj"; mkdir -p "$pr_dir"
@@ -135,6 +143,30 @@ test_registry_extended() {
     echo "$pr_out" | grep -q "am-pia02" && fail "restorable: pi without jsonl dropped" \
         || pass "restorable: pi without jsonl dropped"
     unset AM_PI_SESSIONS_DIR
+
+    # --- Cursor transcript path is authoritative for restore ---
+    local cr_home; cr_home=$(mktemp -d)
+    local cr_dir="$cr_home/project"; mkdir -p "$cr_dir"
+    local cr_transcript="$cr_home/exact/cursor-conv-1.jsonl"
+    mkdir -p "$(dirname "$cr_transcript")"
+    touch "$cr_transcript"
+    assert_cmd_succeeds "Cursor jsonl exists by exact transcript path" \
+        _sessions_log_jsonl_exists "$cr_dir" "cursor-conv-1" "cursor" "$cr_transcript"
+    assert_cmd_fails "Cursor missing exact transcript path" \
+        _sessions_log_jsonl_exists "$cr_dir" "cursor-conv-1" "cursor" "$cr_home/missing.jsonl"
+
+    local cr_log; cr_log=$(mktemp)
+    printf '%s\n%s\n' \
+        '{"session_name":"am-cursor1","session_id":"cursor-conv-1","transcript_path":"'"$cr_transcript"'","directory":"'"$cr_dir"'","branch":"main","agent_type":"cursor","task":"Cursor task","created_at":"2026-07-19T08:00:00Z","closed_at":"2026-07-19T09:00:00Z","snapshot_file":""}' \
+        '{"session_name":"am-cursor2","session_id":"cursor-conv-2","transcript_path":"'"$cr_home"'/missing.jsonl","directory":"'"$cr_dir"'","branch":"main","agent_type":"cursor","task":"Missing","created_at":"2026-07-19T08:00:00Z","closed_at":"2026-07-19T09:00:00Z","snapshot_file":""}' \
+        > "$cr_log"
+    local cr_out
+    cr_out=$(AM_SESSIONS_LOG="$cr_log" sessions_log_restorable)
+    echo "$cr_out" | grep -q "am-cursor1" && pass "restorable: Cursor exact transcript kept" \
+        || fail "restorable: Cursor exact transcript kept"
+    echo "$cr_out" | grep -q "am-cursor2" && fail "restorable: Cursor missing transcript dropped" \
+        || pass "restorable: Cursor missing transcript dropped"
+    rm -rf "$cr_home" "$cr_log" "$pr_home" "$pr_log"
 
     teardown_isolated_am_dir
 
@@ -402,6 +434,7 @@ test_auto_title_scan() {
             test-scan-11:*) echo "Sidecar session id" ;;
             test-scan-12:*) echo "Sidecar pending JSONL" ;;
             test-scan-13:*) echo "Title that must not land" ;;
+            test-scan-cursor:*) echo "Cursor Agent" ;;
             *) echo "" ;;
         esac
     }
@@ -680,6 +713,20 @@ test_auto_title_scan() {
     assert_eq "" "$sid_15" \
         "scan: no session_id guess when the directory is shared by another Claude session"
 
+    # --- Cursor's status-only title must fall back to its exact transcript ---
+    local cursor_transcript="$AM_DIR/cursor-title-sid.jsonl"
+    printf '%s\n' \
+        '{"role":"user","message":{"content":[{"type":"text","text":"<user_query>Implement Cursor title fallback</user_query>"}]}}' \
+        > "$cursor_transcript"
+    registry_add "test-scan-cursor" "$AM_DIR/cursor-project" "main" "cursor" ""
+    sessions_log_append "test-scan-cursor" "$AM_DIR/cursor-project" "main" "cursor" ""
+    printf '%s' "cursor-title-sid" > "$AM_STATE_DIR/test-scan-cursor.sid"
+    printf '%s' "$cursor_transcript" > "$AM_STATE_DIR/test-scan-cursor.transcript"
+    auto_title_scan 1
+    assert_eq "Implement Cursor title fallback" \
+        "$(registry_get_field "test-scan-cursor" task)" \
+        "scan: Cursor status-only title uses exact transcript first message"
+
     # --- Cleanup ---
     unset -f tmux_pane_title tmux_session_pane_target tmux_capture_pane
     teardown_isolated_am_dir
@@ -739,6 +786,20 @@ test_agent_kill_sid_binding() {
         "kill: logged session_id survives when the sidecar is gone"
     assert_eq "snapshots/sid-mine.txt" "$snap" \
         "kill: final snapshot keyed by the logged session_id"
+
+    local cursor_transcript="$AM_DIR/cursor-kill-sid.jsonl"
+    printf '%s\n' '{"role":"user","message":{"content":[{"type":"text","text":"Cursor kill binding prompt"}]}}' \
+        > "$cursor_transcript"
+    registry_add "test-kill-cursor" "$fake_dir" "main" "cursor" ""
+    sessions_log_append "test-kill-cursor" "$fake_dir" "main" "cursor" ""
+    printf '%s' "cursor-kill-sid" > "$AM_STATE_DIR/test-kill-cursor.sid"
+    printf '%s' "$cursor_transcript" > "$AM_STATE_DIR/test-kill-cursor.transcript"
+    agent_kill "test-kill-cursor" 2>/dev/null
+    assert_eq "$cursor_transcript" \
+        "$(jq -r 'select(.session_name == "test-kill-cursor") | .transcript_path' "$AM_SESSIONS_LOG")" \
+        "kill: Cursor transcript path persisted before sidecar cleanup"
+    assert_eq "false" "$(test -f "$AM_STATE_DIR/test-kill-cursor.transcript" && echo true || echo false)" \
+        "kill: Cursor transcript sidecar cleaned after persistence"
 
     export HOME="$old_home"
     unset -f tmux_session_exists tmux_kill_session tmux_session_pane_target \

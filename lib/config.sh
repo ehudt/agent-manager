@@ -62,18 +62,23 @@ am_bool_is_true() {
 }
 
 am_default_agent() {
+    local value
     if [[ -n "${AM_DEFAULT_AGENT:-}" ]]; then
-        echo "$AM_DEFAULT_AGENT"
-        return 0
+        value="$AM_DEFAULT_AGENT"
+    else
+        local configured
+        configured=$(am_config_get "default_agent")
+        if [[ -n "$configured" && "$configured" != "null" ]]; then
+            value="$configured"
+        else
+            value="claude"
+        fi
     fi
 
-    local configured
-    configured=$(am_config_get "default_agent")
-    if [[ -n "$configured" && "$configured" != "null" ]]; then
-        echo "$configured"
-    else
-        echo "claude"
-    fi
+    case "$value" in
+        cursor-agent) echo "cursor" ;;
+        *) echo "$value" ;;
+    esac
 }
 
 am_default_yolo_enabled() {

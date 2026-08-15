@@ -256,6 +256,76 @@ _install_codex_hooks() {
     ' "$hooks_file" > "$tmp_file" && mv "$tmp_file" "$hooks_file"
 }
 
+# Install Cursor Agent hooks for state detection. Cursor's native hooks.json
+# schema uses camelCase event names and command entries directly in each array.
+# Existing hooks are preserved and only entries carrying our marker are
+# replaced, making upgrades idempotent.
+# Usage: _install_cursor_hooks <hooks_json_path> <hooks_dir> <hook_script_path>
+_install_cursor_hooks() {
+    local hooks_file="$1"
+    local hooks_dir="$2"
+    local hook_script="$3"
+    local marker="# am-state-hook"
+    local helper="$hooks_dir/am-state-hook.sh"
+    local quoted_helper
+    printf -v quoted_helper '%q' "$helper"
+    local cmd="bash $quoted_helper $marker"
+
+    mkdir -p "$(dirname "$hooks_file")" "$hooks_dir"
+    [[ -f "$hooks_file" ]] || echo '{"version":1,"hooks":{}}' > "$hooks_file"
+
+    if [[ -f "$helper" && ! -L "$helper" ]] && \
+       ! grep -Fq "lib/hooks/state-hook.sh - Agent hook" "$helper" 2>/dev/null; then
+        warn "Cursor hook helper exists and is not managed by agent-manager: $helper"
+        return 1
+    fi
+    rm -f "$helper"
+    cp "$hook_script" "$helper"
+    chmod 755 "$helper"
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg cmd "$cmd" --arg marker "$marker" '
+        .version = 1 |
+        .hooks //= {} |
+        reduce [
+            "sessionStart",
+            "beforeSubmitPrompt",
+            "preToolUse",
+            "postToolUse",
+            "postToolUseFailure",
+            "afterAgentResponse",
+            "afterAgentThought",
+            "stop"
+        ][] as $event (.;
+            .hooks[$event] = (
+                ((.hooks[$event] // [])
+                    | map(select((.command // "") | contains($marker) | not)))
+                + [{"command": $cmd, "timeout": 5}]
+            )
+        )
+    ' "$hooks_file" > "$tmp_file" && mv "$tmp_file" "$hooks_file"
+}
+
+# Preserve Cursor's config while enabling the verified ready/working/question
+# terminal-title suffixes used alongside lifecycle hooks.
+# Usage: _enable_cursor_status_indicators <cli_config_path>
+_enable_cursor_status_indicators() {
+    local config_file="$1"
+    mkdir -p "$(dirname "$config_file")"
+    if [[ ! -f "$config_file" ]]; then
+        cat > "$config_file" <<'EOF'
+{"display":{"showStatusIndicators":true}}
+EOF
+        return
+    fi
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq '.display //= {} | .display.showStatusIndicators = true' \
+        "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
+}
+
 # Install the pi state-detection extension: symlink into pi's global
 # extensions directory (auto-discovered) so it stays version-fresh with the
 # repo checkout. Idempotent.
@@ -366,6 +436,23 @@ if confirm "Install state-detection hooks into Codex hooks ($CODEX_HOOKS)?"; the
     log "Enabled Codex hooks feature flag in $CODEX_CONFIG"
 else
     log "Skipped Codex hook installation"
+fi
+
+CURSOR_CONFIG_HOME="${CURSOR_CONFIG_DIR:-$HOME/.cursor}"
+CURSOR_HOOKS="${CURSOR_HOOKS:-$CURSOR_CONFIG_HOME/hooks.json}"
+CURSOR_HOOKS_DIR="${CURSOR_HOOKS_DIR:-$CURSOR_CONFIG_HOME/hooks}"
+CURSOR_CLI_CONFIG="${CURSOR_CLI_CONFIG:-$CURSOR_CONFIG_HOME/cli-config.json}"
+
+if command -v agent >/dev/null 2>&1; then
+    if confirm "Install state-detection hooks into Cursor Agent ($CURSOR_HOOKS)?"; then
+        _install_cursor_hooks "$CURSOR_HOOKS" "$CURSOR_HOOKS_DIR" "$HOOK_SCRIPT"
+        _enable_cursor_status_indicators "$CURSOR_CLI_CONFIG"
+        log "Installed Cursor Agent hooks and enabled terminal status indicators"
+    else
+        log "Skipped Cursor Agent hook installation"
+    fi
+else
+    log "Cursor Agent CLI not found -- skipped Cursor hook installation"
 fi
 
 PI_EXT_DIR="${PI_EXT_DIR:-$HOME/.pi/agent/extensions}"

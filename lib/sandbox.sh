@@ -30,6 +30,82 @@ _sb_home_ensure() {
     mkdir -p "$SB_HOME_DIR"
 }
 
+# Seed Cursor's state hook into the persistent sandbox home. The helper is a
+# copy because host symlinks cannot resolve through the /home/ubuntu bind.
+# Existing user hooks/config are preserved; only our marked entries are
+# replaced.
+_sandbox_seed_cursor_hooks() {
+    local src="$_SANDBOX_LIB_DIR/hooks/state-hook.sh"
+    [[ -f "$src" ]] || return 0
+
+    local cursor_dir="$SB_HOME_DIR/.cursor"
+    local hooks_dir="$cursor_dir/hooks"
+    local hooks_file="$cursor_dir/hooks.json"
+    local helper="$hooks_dir/am-state-hook.sh"
+    local marker="# am-state-hook"
+    local cmd="bash /home/ubuntu/.cursor/hooks/am-state-hook.sh $marker"
+    mkdir -p "$hooks_dir"
+    cp -f "$src" "$helper"
+    chmod 755 "$helper"
+    [[ -f "$hooks_file" ]] || echo '{"version":1,"hooks":{}}' > "$hooks_file"
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    if jq --arg cmd "$cmd" --arg marker "$marker" '
+        .version = 1 |
+        .hooks //= {} |
+        reduce [
+            "sessionStart", "beforeSubmitPrompt", "preToolUse", "postToolUse",
+            "postToolUseFailure", "afterAgentResponse", "afterAgentThought", "stop"
+        ][] as $event (.;
+            .hooks[$event] = (
+                ((.hooks[$event] // [])
+                    | map(select((.command // "") | contains($marker) | not)))
+                + [{"command": $cmd, "timeout": 5}]
+            )
+        )
+    ' "$hooks_file" > "$tmp_file" 2>/dev/null; then
+        command mv "$tmp_file" "$hooks_file"
+    else
+        rm -f "$tmp_file"
+        log_warn "Could not merge Cursor hooks in sandbox home: $hooks_file"
+    fi
+
+    local cli_config="$cursor_dir/cli-config.json"
+    if [[ ! -f "$cli_config" ]]; then
+        echo '{"display":{"showStatusIndicators":true}}' > "$cli_config"
+    else
+        tmp_file=$(mktemp)
+        if jq '.display //= {} | .display.showStatusIndicators = true' \
+            "$cli_config" > "$tmp_file" 2>/dev/null; then
+            command mv "$tmp_file" "$cli_config"
+        else
+            rm -f "$tmp_file"
+        fi
+    fi
+}
+
+_sandbox_seed_skills() {
+    local skills_root="${AM_SCRIPT_DIR:-$(cd "$_SANDBOX_LIB_DIR/.." && pwd)}/skills"
+    [[ -d "$skills_root" ]] || return 0
+
+    local skills_dir skill_src skill_name skill_target
+    for skills_dir in "$SB_HOME_DIR/.claude/skills" "$SB_HOME_DIR/.cursor/skills"; do
+        mkdir -p "$skills_dir"
+        for skill_src in "$skills_root"/*/; do
+            [[ -f "$skill_src/SKILL.md" ]] || continue
+            skill_name=$(basename "$skill_src")
+            skill_target="$skills_dir/$skill_name"
+            if [[ -e "$skill_target" && ! -f "$skill_target/.agent-manager-managed" ]]; then
+                continue
+            fi
+            rm -rf "$skill_target"
+            cp -R "$skill_src" "$skill_target"
+            : > "$skill_target/.agent-manager-managed"
+        done
+    done
+}
+
 _sandbox_log_dir() {
     local session_name="$1"
     echo "$AM_DIR/logs/$session_name"
@@ -299,6 +375,8 @@ sandbox_start() {
         mkdir -p "$SB_HOME_DIR/.pi/agent/extensions"
         cp -f "$pi_ext_src" "$SB_HOME_DIR/.pi/agent/extensions/am-state.ts" 2>/dev/null || true
     fi
+    _sandbox_seed_cursor_hooks
+    _sandbox_seed_skills
 
     local parsed share_host share_target share_mode
     while IFS= read -r parsed; do
@@ -317,6 +395,9 @@ sandbox_start() {
         -e "SB_UNSAFE_ROOT=$sb_unsafe_root"
     )
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_vars+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
+    [[ -n "${CURSOR_API_KEY:-}" ]] && env_vars+=(-e "CURSOR_API_KEY=$CURSOR_API_KEY")
+    [[ -n "${CURSOR_AUTH_TOKEN:-}" ]] && env_vars+=(-e "CURSOR_AUTH_TOKEN=$CURSOR_AUTH_TOKEN")
+    [[ -n "${CURSOR_API_ENDPOINT:-}" ]] && env_vars+=(-e "CURSOR_API_ENDPOINT=$CURSOR_API_ENDPOINT")
 
     local -a run_opts=(
         --init
