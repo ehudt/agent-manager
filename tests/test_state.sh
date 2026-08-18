@@ -231,6 +231,12 @@ test_state_title_glyph() {
         _state_title_signal "${frame} Fixing the bug" sig
         assert_eq "busy" "$sig" "_state_title_signal: braille frame '${frame}' -> busy"
     done
+    for frame in "◐" "◓" "◑" "◒"; do
+        _state_title_signal "${frame} Fixing the bug" sig
+        assert_eq "busy" "$sig" "_state_title_signal: circle-phase frame '${frame}' -> busy (Claude Code ≥2.1.232)"
+    done
+    _state_title_signal "◉ Some other tool" sig
+    assert_eq "none" "$sig" "_state_title_signal: non-phase circle (◉) -> none"
     _state_title_signal "✳ Fix the bug" sig
     assert_eq "attention" "$sig" "_state_title_signal: ✳ -> attention"
     _state_title_signal "✳ Claude Code" sig

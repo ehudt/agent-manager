@@ -4,8 +4,10 @@
 # State sources, in order:
 #   1. tmux + ps process tree     -> starting / idle / dead
 #   2. pane title glyph (Claude)  -> busy vs attention. Claude Code maintains
-#      the terminal title itself: a braille spinner frame (U+2800-U+28FF)
-#      while a turn is running, "✳" when it needs the user. Event-driven,
+#      the terminal title itself: a busy glyph while a turn is running — a
+#      braille spinner frame (U+2800-U+28FF) up to 2.1.221, a circle-phase
+#      glyph ◐◓◑◒ (U+25D0-U+25D3) from 2.1.232 — and "✳" when it needs the
+#      user. Event-driven,
 #      self-healing, works while detached, and — unlike hook files or tmux
 #      session_activity — never goes stale (verified empirically: activity
 #      stops updating during long quiet tool calls; the glyph does not).
@@ -61,7 +63,10 @@ _state_debug() {
 
 # Classify Claude's self-maintained pane title into a liveness signal.
 # Byte-oriented (LC_ALL=C) so the match is identical under any caller locale:
-# braille spinner frames U+2800-U+28FF encode as E2 A0 80 .. E2 A3 BF, the
+# braille spinner frames U+2800-U+28FF (Claude Code ≤2.1.221) encode as
+# E2 A0 80 .. E2 A3 BF, circle-phase busy glyphs ◐◓◑◒ U+25D0-U+25D3
+# (Claude Code ≥2.1.232; live lab observed ◐ and ◑ frames) as
+# E2 97 90 .. E2 97 93, the
 # attention asterisk U+2733 as E2 9C B3. Anything else (hostname before
 # Claude boots, user-set titles, other agents) is "none" — callers then fall
 # back to the hook-file path.
@@ -70,9 +75,11 @@ _state_title_signal() {
     local LC_ALL=C
     local -n __sig="$2"
     case "$1" in
-        $'\xe2\xa0'*|$'\xe2\xa1'*|$'\xe2\xa2'*|$'\xe2\xa3'*) __sig="busy" ;;
-        $'\xe2\x9c\xb3'*)                                    __sig="attention" ;;
-        *)                                                   __sig="none" ;;
+        $'\xe2\xa0'*|$'\xe2\xa1'*|$'\xe2\xa2'*|$'\xe2\xa3'*)  __sig="busy" ;;
+        $'\xe2\x97\x90'*|$'\xe2\x97\x91'*|$'\xe2\x97\x92'*|$'\xe2\x97\x93'*)
+                                                              __sig="busy" ;;
+        $'\xe2\x9c\xb3'*)                                     __sig="attention" ;;
+        *)                                                    __sig="none" ;;
     esac
 }
 

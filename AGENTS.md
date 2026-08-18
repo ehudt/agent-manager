@@ -90,7 +90,9 @@ Claude sessions are resolved from two complementary, documented-behavior
 signals — no pane-content scraping:
 
 1. **Pane title glyph** (busy vs attention). Claude Code maintains the
-   terminal title itself: a braille spinner frame (`⠂` …, U+2800–U+28FF)
+   terminal title itself: a busy glyph — a braille spinner frame (`⠂` …,
+   U+2800–U+28FF) up to 2.1.221, a circle-phase glyph (`◐◓◑◒`,
+   U+25D0–U+25D3) from 2.1.232 —
    while a turn is running, `✳` when it needs the user. tmux exposes it as
    `#{pane_title}`. It is event-driven, self-healing, survives detachment,
    and never goes stale — verified empirically (tests/live_lab): tmux
@@ -112,7 +114,7 @@ Glyph × hook decision table (`_state_resolve`, Claude sessions):
 
 | Glyph | Hook state | Result |
 |---|---|---|
-| busy (braille) | `waiting_permission` / `waiting_custom` | pass through — a pending dialog needs the user; approval fires `PreToolUse` which moves the file forward |
+| busy (braille / circle-phase) | `waiting_permission` / `waiting_custom` | pass through — a pending dialog needs the user; approval fires `PreToolUse` which moves the file forward |
 | busy | anything else (incl. stale `running`, `waiting_input`, `waiting_background`, missing) | `running` — trust Claude's own indicator (covers hook-silent gaps, wrap-up turns after background work, turns resumed without `UserPromptSubmit`) |
 | attention (`✳`) | any `waiting_*` | pass through — the hook has the precise flavor |
 | attention | `running` / missing | `waiting_input`; a leftover `running` file is self-healed so its mtime stamps the waiting-entry time (backgrounded-turn ends, fresh sessions) |
@@ -332,7 +334,7 @@ am restore
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, waiting_background, idle, unknown, dead
 - `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch [, activity_epoch [, title_map [, created_epoch]]]])` - **Single source of truth** for state derivation. Without bulk fixtures (last args), forks per-session for tmux/ps (fetching pane_pid + session_activity + pane_title in one call); with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place, plus optional per-session activity epoch, title map, and created epoch. Used by `agent_get_state` / `lib/fzf.sh` (non-bulk) and `lib/status-bar` (bulk; passes tmux `#{session_created}` as created_epoch). Canonical order: shell pane check → title glyph × hook state per the decision table in "State Detection" above → gated hook state when the title carries no signal → unknown. Bulk and non-bulk shell-pane semantics agree: shell pane + session <5s → starting (bulk needs created_epoch, else idle), otherwise idle; dead from `agent_classify_exit` is a non-bulk race-window branch only — missing sessions are reported dead by `agent_get_state`'s existence check
-- `_state_title_signal(title, out_var)` - Classify Claude's self-maintained pane title into busy (braille spinner frame, U+2800–U+28FF) / attention (✳) / none. Byte-oriented (LC_ALL=C) so it is locale-independent; fork-free
+- `_state_title_signal(title, out_var)` - Classify Claude's self-maintained pane title into busy (braille spinner frame U+2800–U+28FF, or circle-phase glyph ◐◓◑◒ U+25D0–U+25D3 on Claude Code ≥2.1.232) / attention (✳) / none. Byte-oriented (LC_ALL=C) so it is locale-independent; fork-free
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_hook_raw(session, out_var)` - Read the raw (ungated) hook state into a nameref; used by the title-glyph layer, which needs the flavor even when the file is stale
