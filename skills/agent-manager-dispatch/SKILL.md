@@ -42,6 +42,21 @@ am attach "$session"             # give to user
 am kill "$session"               # terminate when no longer needed
 ```
 
+## Choosing the Directory — wekapp work
+
+Never launch a wekapp-work session in `~/code` or the daily-driver checkout
+(`~/code/green-wekapp`). Allocate an isolated pool copy and launch directly
+into it — `wp allocate` prints a ready, fetched checkout path to stdout:
+
+```bash
+session=$(printf 'Task...\n' | am new --detach --print-session $(wp allocate))
+# optionally: $(wp allocate --branch <name>)
+```
+
+This lands the agent in a real wekapp checkout (CLAUDE.md, teka, venvs all in
+place) with zero bootstrap turns and no branch-switch collisions. See the
+`wp` skill for pool management (status/clear/find).
+
 ## Choosing Cursor Agent
 
 Launch Cursor explicitly with:
