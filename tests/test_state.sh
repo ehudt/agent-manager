@@ -45,11 +45,10 @@ test_state() {
     _state_hook_read "am-foo" got
     assert_eq "" "$got" "_state_hook_read: stale running drops"
 
-    # --- running + fresh pane activity survives a stale state file. A turn can
-    #     run for many minutes with zero tool calls (long thinking stretch), so
-    #     no hook refreshes the file — but Claude repaints its spinner timer
-    #     every second, keeping tmux session_activity fresh. Staleness is
-    #     measured against max(file mtime, activity). ---
+    # --- running + fresh pane activity survives a stale state file. The gate
+    #     serves agents without turn-boundary lifecycle events (pi/Cursor/
+    #     Claude are read ungated by the resolver); staleness is measured
+    #     against max(file mtime, activity). ---
     local now_epoch
     now_epoch=$(date +%s)
     printf 'running' > "$tmp_state_dir/am-foo"
@@ -303,51 +302,63 @@ test_state_title_glyph() {
     assert_eq "running" "$(_resolve am-g claude)" \
         "resolve: busy + no hook file -> running"
 
-    # attention glyph: waiting_* flavors pass through from the hook
+    # ✳ glyph: since Claude Code 2.1.234 the title is static "✳ <task>" from
+    # boot through running turns (no busy glyph exists), so ✳ decides nothing
+    # once a hook file exists — waiting flavors come from the hook read.
     _T_TITLE[am-g]="✳ Fixing the bug"
     printf 'waiting_input' > "$tmp_state_dir/am-g"
     assert_eq "waiting_input" "$(_resolve am-g claude)" \
-        "resolve: attention + waiting_input -> waiting_input"
+        "resolve: ✳ + waiting_input -> waiting_input (hook read)"
     printf 'waiting_background' > "$tmp_state_dir/am-g"
     assert_eq "waiting_background" "$(_resolve am-g claude)" \
-        "resolve: attention + waiting_background passes through (no pane scan)"
+        "resolve: ✳ + waiting_background -> waiting_background (hook read)"
     printf 'waiting_permission' > "$tmp_state_dir/am-g"
     assert_eq "waiting_permission" "$(_resolve am-g claude)" \
-        "resolve: attention + waiting_permission passes through"
+        "resolve: ✳ + waiting_permission -> waiting_permission (hook read)"
 
-    # attention + 'running' left behind: backgrounded turn whose lifecycle
-    # hooks never resolved here. Resolves waiting_input AND self-heals the
-    # file so its mtime stamps the waiting-entry time for tab ages.
+    # THE 2.1.234+ regression case: a running turn keeps "✳ <task>" painted.
+    # Treating ✳ as needs-the-user flipped every live turn to waiting_input
+    # within one status-bar tick and rewrote the state file, fighting the
+    # hooks. A fresh 'running' must stay running, untouched.
+    printf 'running' > "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: ✳ + fresh running -> running (live turn, 2.1.234+)"
+    assert_eq "running" "$(head -1 "$tmp_state_dir/am-g")" \
+        "resolve: ✳ + fresh running leaves the state file alone"
+
+    # Long turn: the state file mtime pins turn start (hooks skip same-state
+    # rewrites) and tmux session_activity is empirically unreliable (live
+    # lab: it goes stale while the pane repaints), so Claude's running state
+    # is read UNGATED — Stop/UserPromptSubmit are turn-boundary events, like
+    # pi/Cursor, and process exit drops the pane to a shell (step 1).
     printf 'running' > "$tmp_state_dir/am-g"
     touch -t "$_t_backdated" "$tmp_state_dir/am-g"
-    assert_eq "waiting_input" "$(_resolve am-g claude)" \
-        "resolve: attention + stale running -> waiting_input"
-    assert_eq "waiting_input" "$(head -1 "$tmp_state_dir/am-g")" \
-        "resolve: attention + running self-heals the state file"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: ✳ + stale running + stale activity -> running (ungated)"
+    assert_eq "running" "$(head -1 "$tmp_state_dir/am-g")" \
+        "resolve: ungated running read does not rewrite the state file"
 
-    # fresh session: Claude idle at the first prompt, no hook ever fired.
-    # Old resolver showed 'unknown' until the first prompt; glyph fixes it.
+    # fresh session: Claude idle at the first prompt, no hook ever fired
+    # (the very first UserPromptSubmit would have created the file). The ✳
+    # paint is the only signal that distinguishes this from 'still booting'.
     rm -f "$tmp_state_dir/am-g"
     assert_eq "waiting_input" "$(_resolve am-g claude)" \
-        "resolve: attention + no hook file -> waiting_input (fresh session)"
+        "resolve: ✳ + no hook file -> waiting_input (fresh session)"
     assert_eq "false" "$([[ -f "$tmp_state_dir/am-g" ]] && echo true || echo false)" \
         "resolve: no-hook case does not fabricate a state file"
 
-    # no glyph signal (claude still booting / titles unavailable): hook
-    # fallback with the staleness gate, else unknown
+    # no glyph signal (claude still booting / titles unavailable): same
+    # ungated hook read; without even a hook file there is nothing -> unknown
     _T_TITLE[am-g]="myhost.local"
     printf 'running' > "$tmp_state_dir/am-g"
     assert_eq "running" "$(_resolve am-g claude)" \
-        "resolve: no glyph + fresh running -> running (fallback)"
+        "resolve: no glyph + fresh running -> running"
     touch -t "$_t_backdated" "$tmp_state_dir/am-g"
-    assert_eq "unknown" "$(_resolve am-g claude)" \
-        "resolve: no glyph + stale running + stale activity -> unknown (wedge gate)"
-    st=$(_state_resolve am-g claude /tmp _T_TOP _T_COMM _T_CHILD "$_t_now" "$(( _t_now - 2 ))" _T_TITLE)
-    assert_eq "running" "$st" \
-        "resolve: no glyph + stale running + fresh activity -> running"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: no glyph + stale running -> running (ungated)"
     printf 'waiting_input' > "$tmp_state_dir/am-g"
     assert_eq "waiting_input" "$(_resolve am-g claude)" \
-        "resolve: no glyph + waiting_input -> waiting_input (fallback)"
+        "resolve: no glyph + waiting_input -> waiting_input"
     rm -f "$tmp_state_dir/am-g"
     assert_eq "unknown" "$(_resolve am-g claude)" \
         "resolve: no glyph + no hook -> unknown"

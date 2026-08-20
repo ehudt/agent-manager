@@ -84,41 +84,58 @@ agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sa
 am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session)
 ```
 
-## State Detection (title glyph + hooks)
+## State Detection (hooks + title paint)
 
-Claude sessions are resolved from two complementary, documented-behavior
-signals — no pane-content scraping:
+Claude sessions are resolved from documented-behavior signals — no
+pane-content scraping:
 
-1. **Pane title glyph** (busy vs attention). Claude Code maintains the
-   terminal title itself: a busy glyph — a braille spinner frame (`⠂` …,
-   U+2800–U+28FF) up to 2.1.221, a circle-phase glyph (`◐◓◑◒`,
-   U+25D0–U+25D3) from 2.1.232 —
-   while a turn is running, `✳` when it needs the user. tmux exposes it as
-   `#{pane_title}`. It is event-driven, self-healing, survives detachment,
-   and never goes stale — verified empirically (tests/live_lab): tmux
-   `session_activity` and the hook file's mtime both go quiet for minutes
-   during long tool calls, the glyph does not. It also covers cases hooks
-   structurally miss: a fresh session idle at its first prompt (no hook has
-   fired yet) and a backgrounded turn whose lifecycle events fire from a bg
-   session context that never resolves to the am session.
-2. **Hook state file** (which *flavor* of waiting). Claude Code lifecycle
-   hooks (`Stop`, `Notification`, `UserPromptSubmit`, `PreToolUse`,
-   `PostToolUse`, `PermissionRequest`) call `lib/hooks/state-hook.sh`, which
-   maps the event to an am state and writes it to
-   `/tmp/am-state/<session_name>`.
+1. **Hook state file** (primary). Claude Code lifecycle hooks (`Stop`,
+   `Notification`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+   `PermissionRequest`) call `lib/hooks/state-hook.sh`, which maps the event
+   to an am state and writes it to `/tmp/am-state/<session_name>`. The state
+   is read **ungated**: `Stop`/`UserPromptSubmit` are reliable turn-boundary
+   events (like pi's in-process extension and Cursor's stop hooks), a dead
+   process drops the pane to a shell (caught by the shell-pane check), and a
+   ctrl-b backgrounded turn fires its own `Stop` on Claude Code ≥2.1.237
+   (live lab s6) — so `running` no longer goes silently stale. No staleness
+   gate: hooks skip same-state rewrites (mtime pins turn start) and tmux
+   `session_activity` is empirically unreliable (live lab s7 on 2.1.237:
+   activity age grew unbounded while the pane visibly repainted), so any
+   mtime/activity gate flaps long live turns to `unknown`.
+2. **Pane title paint** (fresh-session detection + legacy busy glyph).
+   Claude Code ≤2.1.233 animated a busy glyph in the terminal title — a
+   braille spinner frame (`⠂` …, U+2800–U+28FF) up to 2.1.221, a
+   circle-phase glyph (`◐◓◑◒`, U+25D0–U+25D3) from 2.1.232 — and painted
+   `✳` when it needed the user. **Since 2.1.234 the title is written only
+   when its text changes** (the 960ms spinner animation was removed to stop
+   tab-bar jitter — see that version's changelog): the busy glyph is gone
+   and `✳ <task>` stays painted from boot through running turns (verified on
+   2.1.237, live lab: the title never left `✳ …` across all seven
+   scenarios). So `✳` now proves only that Claude is alive and has painted;
+   the one case it still decides is a **fresh session idle at its first
+   prompt** (`✳` + no hook file → `waiting_input`, since the very first
+   `UserPromptSubmit` would have created the file). A busy glyph, where an
+   old version still emits one, remains authoritative for `running`.
 
-State detection priority: **shell pane check → title glyph × hook state
-(decision table below) → gated hook state (no glyph signal) → unknown**.
+State detection priority: **shell pane check → busy glyph (legacy) / fresh
+`✳`+no-hook-file → ungated hook state → unknown**.
 
 Glyph × hook decision table (`_state_resolve`, Claude sessions):
 
 | Glyph | Hook state | Result |
 |---|---|---|
-| busy (braille / circle-phase) | `waiting_permission` / `waiting_custom` | pass through — a pending dialog needs the user; approval fires `PreToolUse` which moves the file forward |
-| busy | anything else (incl. stale `running`, `waiting_input`, `waiting_background`, missing) | `running` — trust Claude's own indicator (covers hook-silent gaps, wrap-up turns after background work, turns resumed without `UserPromptSubmit`) |
-| attention (`✳`) | any `waiting_*` | pass through — the hook has the precise flavor |
-| attention | `running` / missing | `waiting_input`; a leftover `running` file is self-healed so its mtime stamps the waiting-entry time (backgrounded-turn ends, fresh sessions) |
-| none (hostname / booting / titles unavailable / non-Claude agent) | — | hook state with the 180s running-staleness gate, else `unknown` |
+| busy (braille / circle-phase; ≤2.1.233 only) | `waiting_permission` / `waiting_custom` | pass through — a pending dialog needs the user; approval fires `PreToolUse` which moves the file forward |
+| busy | anything else | `running` — trust the legacy indicator |
+| `✳` | missing | `waiting_input` — fresh session idle at its first prompt |
+| `✳` | any state | hook state, ungated — `✳` carries no busy/waiting information on ≥2.1.234; resurrecting the old attention rows flips every running turn to `waiting_input` within one status-bar tick |
+| none (hostname / booting / titles unavailable) | any state | hook state, ungated; `unknown` when no file |
+| — (non-Claude, non-pi, non-Cursor agents) | — | hook state with the 180s running-staleness gate, else `unknown` |
+
+Known display wart (accepted): a wrap-up turn that starts when background
+work completes fires no `UserPromptSubmit`, and its tool hooks are blocked
+by the unconditional `waiting_background` race guard, so the session shows
+`waiting_background` until the wrap-up turn's own `Stop`. Self-healing and
+not user-blocking (it never fakes "waiting for you").
 
 Hooks are installed via `am install` into `~/.claude/settings.json`. State
 files are cleaned up on session kill and during registry GC.

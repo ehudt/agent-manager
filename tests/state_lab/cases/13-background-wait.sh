@@ -2,8 +2,8 @@
 # Case 13: background work + title glyph, end to end through the real hook
 # script. Claude Code ≥2.1 reports still-running background work in the Stop
 # payload's background_tasks array — the hook writes waiting_background
-# directly, and the resolver's title-glyph layer passes it through while the
-# attention glyph (✳) is up. When the background work finishes, Stop re-fires
+# directly, and the resolver reads it ungated (the ✳ title carries no
+# busy/waiting information). When the background work finishes, Stop re-fires
 # with a pruned array and the state self-heals to waiting_input. No pane
 # content is ever scanned.
 
@@ -53,13 +53,15 @@ lab_assert "waiting_input" "$state" "hook silent + attention glyph -> waiting_in
 state=$(probe_resolve_titled lab-bg claude "$real" "myhost.local")
 lab_assert "unknown" "$state" "hook silent + no glyph -> unknown"
 
-# 7. Stale 'running' left behind by a backgrounded turn + attention glyph ->
-#    waiting_input, and the file is self-healed so its mtime stamps the
-#    waiting-entry time.
+# 7. Stale 'running' + ✳ title -> still running: since Claude Code 2.1.234
+#    "✳ <task>" stays painted through live turns (no busy glyph exists), so
+#    ✳ must not flip a running turn to waiting_input; the hook's Stop moves
+#    the state forward (a ctrl-b backgrounded turn fires its own Stop on
+#    ≥2.1.237 — live lab s6).
 printf 'running' > "$AM_STATE_DIR/lab-bg"
 lab_hook_age lab-bg 600
 state=$(probe_resolve_titled lab-bg claude "$real" "$TITLE_WAIT")
-lab_assert "waiting_input" "$state" "attention glyph + stale running -> waiting_input"
-lab_assert "waiting_input" "$(probe_hook lab-bg)" "state file self-healed to waiting_input"
+lab_assert "running" "$state" "✳ + stale running -> running (✳ carries no busy/waiting info)"
+lab_assert "running" "$(probe_hook lab-bg)" "state file left untouched (no self-heal rewrite)"
 
 lab_report

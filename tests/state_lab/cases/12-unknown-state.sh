@@ -22,12 +22,14 @@ rm -f "$AM_STATE_DIR/lab-unk"
 state=$(probe_resolve lab-unk claude "$real")
 lab_assert "unknown" "$state" "agent alive, hook silent -> unknown"
 
-# Stale running hook also leads to unknown.
+# Stale running hook stays running: Claude is read ungated (Stop /
+# UserPromptSubmit are turn-boundary events; long turns routinely outlive
+# any staleness window, and process exit drops the pane to a shell).
 mkdir -p "$AM_STATE_DIR"
 printf 'running' > "$AM_STATE_DIR/lab-unk"
 lab_hook_age lab-unk 600
 state=$(probe_resolve lab-unk claude "$real")
-lab_assert "unknown" "$state" "stale running hook -> unknown"
+lab_assert "running" "$state" "stale running hook -> running (ungated)"
 
 # Fresh waiting_input hook -> waiting_input (sanity check).
 printf 'waiting_input' > "$AM_STATE_DIR/lab-unk"

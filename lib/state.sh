@@ -3,23 +3,31 @@
 #
 # State sources, in order:
 #   1. tmux + ps process tree     -> starting / idle / dead
-#   2. pane title glyph (Claude)  -> busy vs attention. Claude Code maintains
-#      the terminal title itself: a busy glyph while a turn is running — a
-#      braille spinner frame (U+2800-U+28FF) up to 2.1.221, a circle-phase
-#      glyph ◐◓◑◒ (U+25D0-U+25D3) from 2.1.232 — and "✳" when it needs the
-#      user. Event-driven,
-#      self-healing, works while detached, and — unlike hook files or tmux
-#      session_activity — never goes stale (verified empirically: activity
-#      stops updating during long quiet tool calls; the glyph does not).
+#   2. pane title glyph (Claude)  -> a *version-dependent* signal:
+#      - ≤2.1.233: Claude Code animates a busy glyph while a turn runs — a
+#        braille spinner frame (U+2800-U+28FF) up to 2.1.221, a circle-phase
+#        glyph ◐◓◑◒ (U+25D0-U+25D3) from 2.1.232 — and paints "✳" when it
+#        needs the user. On those versions busy-vs-✳ is authoritative.
+#      - ≥2.1.234: the title is written only when its *text* changes (the
+#        960ms spinner animation was removed to stop tab-bar jitter — see
+#        that version's changelog); the busy glyph is gone and "✳ <task>" is
+#        painted from boot and stays through running turns. Verified
+#        empirically on 2.1.237 (tests/live_lab): the title never leaves
+#        "✳ …" across fresh/running/waiting/background states. So "✳" only
+#        proves Claude is alive and has painted at least once; the ONE case
+#        it still decides is a fresh session before any hook has fired
+#        (no hook file + ✳ -> idle at the first prompt, since the very first
+#        UserPromptSubmit would have created the file).
 #   3. title status (Cursor 2026.08+) -> ready / working / in-turn question
-#   4. turn-boundary hook (pi/Cursor) -> ungated: both emit explicit start/stop
-#      lifecycle transitions. A dead process drops the pane to a shell, which
-#      step 1 already catches.
-#   5. hook file ($AM_STATE_DIR)  -> which *flavor* of waiting: waiting_input /
-#      waiting_permission / waiting_custom / waiting_background (the hook
-#      writes waiting_background directly from the Stop payload's
-#      background_tasks on Claude Code ≥2.1)
-#   6. fallback (no title signal) -> hook state with staleness gate, else unknown
+#   4. turn-boundary hook (pi/Cursor/Claude) -> ungated: all three emit
+#      explicit start/stop lifecycle transitions (pi's in-process extension;
+#      Cursor's stop/beforeSubmitPrompt; Claude's Stop/UserPromptSubmit). A
+#      dead process drops the pane to a shell, which step 1 already catches.
+#      The hook file is the flavor source: waiting_input / waiting_permission
+#      / waiting_custom / waiting_background (the hook writes
+#      waiting_background directly from the Stop payload's background_tasks
+#      on Claude Code ≥2.1)
+#   5. fallback (other agents)    -> hook state with staleness gate, else unknown
 #
 # States: starting | running | waiting_input | waiting_permission |
 #         waiting_custom | waiting_background | idle | unknown | dead
@@ -29,16 +37,18 @@
 #               needs the user even if a spinner frame lingers; approval fires
 #               PreToolUse which flips the file to running)
 #   busy      + anything else             -> running (trust Claude's own
-#               indicator; covers hook-silent gaps, wrap-up turns after
-#               background work, turns resumed without UserPromptSubmit)
-#   attention + waiting_*                 -> pass through (hook has the flavor)
-#   attention + running/none              -> waiting_input; when the file says
-#               'running' the resolver self-heals it so the mtime stamps the
-#               waiting-entry time (tab ages). Covers backgrounded turns whose
-#               lifecycle hooks never resolved to this session, and fresh
-#               sessions before any hook has fired.
-#   no signal (title disabled / non-Claude agent / claude still booting)
-#             -> hook state with the 180s running-staleness gate, else unknown
+#               indicator; ≤2.1.233 only — the glyph no longer exists after)
+#   attention + no hook file              -> waiting_input (fresh session idle
+#               at its first prompt; correct on every version)
+#   attention + hook file present         -> no title information: fall
+#               through to the ungated hook read. On ≥2.1.234 "✳" is
+#               permanent, so treating it as "needs the user" flipped every
+#               RUNNING turn to waiting_input within one status-bar tick (and
+#               fought the hooks by rewriting the state file). Do not
+#               resurrect the old attention rows.
+#   no signal (title disabled / claude still booting) -> ungated hook state,
+#               else unknown. Other agents (codex): hook state with the 180s
+#               running-staleness gate, else unknown
 
 _STATE_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ -z "$AM_DIR" ]] && source "$_STATE_LIB_DIR/utils.sh"
@@ -61,15 +71,16 @@ _state_debug() {
 # Pane title glyph
 # ---------------------------------------------------------------------------
 
-# Classify Claude's self-maintained pane title into a liveness signal.
+# Classify Claude's self-maintained pane title.
 # Byte-oriented (LC_ALL=C) so the match is identical under any caller locale:
 # braille spinner frames U+2800-U+28FF (Claude Code ≤2.1.221) encode as
 # E2 A0 80 .. E2 A3 BF, circle-phase busy glyphs ◐◓◑◒ U+25D0-U+25D3
-# (Claude Code ≥2.1.232; live lab observed ◐ and ◑ frames) as
-# E2 97 90 .. E2 97 93, the
-# attention asterisk U+2733 as E2 9C B3. Anything else (hostname before
-# Claude boots, user-set titles, other agents) is "none" — callers then fall
-# back to the hook-file path.
+# (Claude Code 2.1.232-2.1.233; live lab observed ◐ and ◑ frames) as
+# E2 97 90 .. E2 97 93, the asterisk U+2733 as E2 9C B3. Anything else
+# (hostname before Claude boots, user-set titles, other agents) is "none".
+# NOTE: "attention" is a historical name — on ≥2.1.234 the ✳ is permanent and
+# means only "Claude has painted its title"; the resolver treats it as an
+# is-alive marker, not a needs-the-user marker (see the header table).
 # Usage: _state_title_signal <title> <out_var>   (out: busy|attention|none)
 _state_title_signal() {
     local LC_ALL=C
@@ -120,8 +131,11 @@ _state_hook_raw() {
 # with the staleness gate. Terminal waiting_* states are persistent. running
 # gets a 180s gate — measured against max(file mtime, tmux session_activity)
 # — so a wedged agent falls through to 'unknown' instead of looking busy
-# forever. Only the no-glyph fallback path uses this; when the title glyph is
-# readable it supersedes any staleness reasoning.
+# forever. Only agents without turn-boundary lifecycle events use this
+# (pi/Cursor/Claude are read ungated in the resolver): a live turn routinely
+# outlives any staleness window — hooks skip same-state rewrites, and tmux
+# session_activity is empirically unreliable (it goes stale while a pane
+# visibly repaints; live lab, 2.1.237).
 # Usage: _state_hook_read <session> <out_var> [now_epoch] [activity_epoch]
 _state_hook_read() {
     local session="$1"
@@ -271,43 +285,40 @@ _state_resolve() {
         return
     fi
 
-    # 2. Title glyph (Claude maintains it; see decision table in the header)
+    # 2. Title glyph (version-dependent; see decision table in the header)
     if [[ "$agent_type" == "claude" ]]; then
         local sig="none"
         _state_title_signal "$title_val" sig
-        if [[ "$sig" != "none" ]]; then
+        if [[ "$sig" == "busy" ]]; then
+            # Busy glyphs only exist on Claude Code ≤2.1.233; where present
+            # they are authoritative for a live turn.
             local raw=""
             _state_hook_raw "$session" raw
-            if [[ "$sig" == "busy" ]]; then
-                case "$raw" in
-                    waiting_permission|waiting_custom)
-                        # A pending dialog needs the user; approval fires
-                        # PreToolUse which moves the file forward.
-                        _state_debug "$_dbg_session" "$_dbg_agent" title "$raw"
-                        echo "$raw"
-                        return ;;
-                esac
-                _state_debug "$_dbg_session" "$_dbg_agent" title running
-                echo "running"
-                return
-            fi
-            # attention
             case "$raw" in
-                waiting_input|waiting_permission|waiting_custom|waiting_background)
+                waiting_permission|waiting_custom)
+                    # A pending dialog needs the user; approval fires
+                    # PreToolUse which moves the file forward.
                     _state_debug "$_dbg_session" "$_dbg_agent" title "$raw"
                     echo "$raw"
                     return ;;
             esac
-            # Hook silent (fresh session) or a stale 'running' left behind by
-            # a turn whose lifecycle hooks never resolved to this session
-            # (backgrounded turn). Self-heal the file on the running case so
-            # its mtime stamps the waiting-entry moment for tab ages.
-            if [[ "$raw" == "running" ]]; then
-                printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
-            fi
-            _state_debug "$_dbg_session" "$_dbg_agent" title waiting_input
-            echo "waiting_input"
+            _state_debug "$_dbg_session" "$_dbg_agent" title running
+            echo "running"
             return
+        elif [[ "$sig" == "attention" ]]; then
+            # Since 2.1.234 "✳ <task>" is painted at boot and never changes
+            # glyph, so it carries no busy/waiting information. The one case
+            # it still decides: Claude alive but no hook has ever fired —
+            # a fresh session idle at its first prompt (the first
+            # UserPromptSubmit would have created the file). Everything else
+            # falls through to the hook read below.
+            local raw=""
+            _state_hook_raw "$session" raw
+            if [[ -z "$raw" ]]; then
+                _state_debug "$_dbg_session" "$_dbg_agent" title waiting_input
+                echo "waiting_input"
+                return
+            fi
         fi
     fi
 
@@ -334,11 +345,18 @@ _state_resolve() {
         fi
     fi
 
-    # 3a. pi/Cursor: both integrations emit explicit turn-boundary lifecycle
-    # events, so read their state ungated. Long quiet tool calls must not flap
-    # a live turn to unknown; process exit still drops the pane to a shell and
-    # is handled by step 1.
-    if [[ "$agent_type" == "pi" || "$agent_type" == "cursor" ]]; then
+    # 3a. pi/Cursor/Claude: all three emit explicit turn-boundary lifecycle
+    # events (pi's in-process extension; Cursor's stop/beforeSubmitPrompt;
+    # Claude's Stop/UserPromptSubmit), so read their state ungated. Long
+    # quiet tool calls and long thinking stretches must not flap a live turn
+    # to unknown — and the old staleness gate would: hooks skip same-state
+    # rewrites (mtime pins turn start) and tmux session_activity is
+    # empirically unreliable (live lab on 2.1.237: activity age grew
+    # unbounded while the pane visibly repainted). Process exit still drops
+    # the pane to a shell, which step 1 catches; a ctrl-b backgrounded turn
+    # fires its own Stop on 2.1.237 (live lab s6), so running files no
+    # longer go silently stale.
+    if [[ "$agent_type" == "pi" || "$agent_type" == "cursor" || "$agent_type" == "claude" ]]; then
         local lifecycle_hook=""
         _state_hook_raw "$session" lifecycle_hook
         if [[ -n "$lifecycle_hook" ]]; then
@@ -351,8 +369,9 @@ _state_resolve() {
         return
     fi
 
-    # 3b. Fallback: no glyph signal (title disabled, agent still booting, or a
-    #     non-Claude agent). Gated hook state, else unknown.
+    # 3b. Hook state, gated: Claude with a hook file (the primary path on
+    #     ≥2.1.234, where "✳" carries no signal), no glyph at all (title
+    #     disabled, agent still booting), or a non-Claude agent.
     local hook_state=""
     _state_hook_read "$session" hook_state "$now_val" "$activity_val"
     if [[ -n "$hook_state" ]]; then
