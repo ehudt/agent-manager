@@ -318,6 +318,87 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "waiting_input" "$state" "Notification[idle_prompt] without background_tasks over waiting_input: unchanged"
 
+    # --- Orphaned leftover shells do not pin waiting_background ---
+    # A --fork-session / parent-Claude exit reparents still-running
+    # run_in_background zsh loops to PID 1. Claude keeps listing them in
+    # background_tasks as status=running, so every later Stop would otherwise
+    # write waiting_background forever (observed live: recap + "new task?"
+    # while the tab stayed ⧗ for hours). Ignore a running shell task whose
+    # matching OS process is not owned by this Claude (PPID=1 when we cannot
+    # see a claude ancestor; not a descendant when we can).
+    local orphan_secs=98761
+    local owned_secs=98762
+    local orphan_pid="" owned_pid="" owned_ppid=""
+    orphan_pid=$(
+        ( sleep "$orphan_secs" >/dev/null 2>&1 & echo $! )
+    )
+    sleep 0.4
+    local orphan_ppid
+    orphan_ppid=$(ps -p "$orphan_pid" -o ppid= 2>/dev/null | tr -d ' ')
+    if [[ "$orphan_ppid" == "1" ]]; then
+        rm -f "$state_dir/am-abc123"
+        run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"orphan1\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"leftover wait-loop\",\"command\":\"sleep $orphan_secs\"}]}"
+        state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+        assert_eq "waiting_input" "$state" "Stop + running shell whose process is PPID=1: leftover, writes waiting_input"
+    else
+        skip_test "orphaned-shell PPID=1 (reparent did not happen, ppid=$orphan_ppid)"
+    fi
+    kill "$orphan_pid" 2>/dev/null || true
+
+    sleep "$owned_secs" >/dev/null 2>&1 &
+    owned_pid=$!
+    owned_ppid=$(ps -p "$owned_pid" -o ppid= 2>/dev/null | tr -d ' ')
+    if [[ -n "$owned_pid" && "$owned_ppid" != "1" ]]; then
+        rm -f "$state_dir/am-abc123"
+        run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"owned1\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"live bg sleep\",\"command\":\"sleep $owned_secs\"}]}"
+        state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+        assert_eq "waiting_background" "$state" "Stop + running shell owned by this tree: writes waiting_background"
+    else
+        skip_test "owned-shell child process (pid=$owned_pid ppid=$owned_ppid)"
+    fi
+    kill "$owned_pid" 2>/dev/null || true
+    wait "$owned_pid" 2>/dev/null || true
+
+    # A live subagent still counts even if the only shell in the payload is
+    # an orphan — do not drop the whole refinement.
+    orphan_pid=$(
+        ( sleep "$orphan_secs" >/dev/null 2>&1 & echo $! )
+    )
+    sleep 0.4
+    orphan_ppid=$(ps -p "$orphan_pid" -o ppid= 2>/dev/null | tr -d ' ')
+    if [[ "$orphan_ppid" == "1" ]]; then
+        rm -f "$state_dir/am-abc123"
+        run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"orphan1\",\"type\":\"shell\",\"status\":\"running\",\"command\":\"sleep $orphan_secs\"},{\"id\":\"a1\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"still working\"}]}"
+        state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+        assert_eq "waiting_background" "$state" "Stop + orphaned shell + running subagent: still waiting_background"
+    else
+        skip_test "orphaned-shell+subagent (reparent did not happen)"
+    fi
+    kill "$orphan_pid" 2>/dev/null || true
+
+    # idle_prompt without the field may re-check the last Stop's snapshot:
+    # if every leftover shell is now orphaned, allow the downgrade. This
+    # heals a session whose wrap-up Stop already fired with stale running
+    # tasks and will not fire again until the next user prompt.
+    orphan_pid=$(
+        ( sleep "$orphan_secs" >/dev/null 2>&1 & echo $! )
+    )
+    sleep 0.4
+    orphan_ppid=$(ps -p "$orphan_pid" -o ppid= 2>/dev/null | tr -d ' ')
+    if [[ "$orphan_ppid" == "1" ]]; then
+        printf 'waiting_background' > "$state_dir/am-abc123"
+        printf '[{"id":"orphan1","type":"shell","status":"running","command":"sleep %s"}]' \
+            "$orphan_secs" > "$state_dir/am-abc123.bg"
+        run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
+        state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+        assert_eq "waiting_input" "$state" \
+            "idle_prompt without field + sidecar of only PPID=1 shells: downgrades"
+    else
+        skip_test "idle_prompt sidecar orphan re-check (reparent did not happen)"
+    fi
+    kill "$orphan_pid" 2>/dev/null || true
+    rm -f "$state_dir/am-abc123.bg"
+
     # --- Duplicate cwd: AM_SESSION_NAME disambiguates which session to update ---
     # Two am sessions can share a cwd (e.g., multiple Claude instances in the
     # same repo). Without AM_SESSION_NAME the hook would blindly pick the first

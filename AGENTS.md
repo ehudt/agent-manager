@@ -150,7 +150,7 @@ for waiting_* tabs, "running for" on running tabs.
 | Hook Event | Matcher | am State |
 |---|---|---|
 | `Stop` | — | `waiting_input`, or `waiting_background` when the payload's `background_tasks` lists running work |
-| `Notification` | `idle_prompt` | `waiting_input` (same `background_tasks` refinement; without the field it cannot downgrade `waiting_background` — idle_prompt's payload omits it) |
+| `Notification` | `idle_prompt` | `waiting_input` (same `background_tasks` refinement; without the field it cannot downgrade `waiting_background` unless a prior Stop snapshot's leftover shells are all unowned) |
 | `Notification` | `permission_prompt` | `waiting_permission` |
 | `Notification` | `elicitation_dialog` | `waiting_custom` |
 | `UserPromptSubmit` | — | `running` |
@@ -176,10 +176,17 @@ workflow/shell is still running) is written directly by the hook: the `Stop`
 payload carries a `background_tasks` array (documented; Claude Code ≥2.1) —
 one entry per still-running background item (`{id, type (subagent|shell),
 status, description, …}`), pruned to `[]` once everything finishes — and the
-hook writes `waiting_background` when any entry has `status == "running"`.
-`Stop` re-fires when background work completes (the completion re-invokes
-Claude for a wrap-up turn), so the state self-heals without any pane
-involvement. The race guard in `state-hook.sh` protects `waiting_background`
+hook writes `waiting_background` when any *owned* entry has `status ==
+"running"`. A running `shell` / `local_bash` task whose matching OS process
+is not owned by this Claude (PPID=1 after `--fork-session` or a parent
+Claude exit) is ignored — otherwise leftover wait-loops keep every later
+Stop at `waiting_background` while the pane already shows recap / "new
+task?". `Stop` re-fires when owned background work completes (the
+completion re-invokes Claude for a wrap-up turn). The last Stop's array is
+snapshotted to `$AM_STATE_DIR/<session>.bg` so a field-less `idle_prompt`
+can re-check leftovers after wrap-up. No pane scraping.
+
+The race guard in `state-hook.sh` protects `waiting_background`
 unconditionally: a background subagent's own tool calls fire
 `PreToolUse`/`PostToolUse` in the session for as long as it runs, and must
 not flip the state to `running`; only `UserPromptSubmit` or the next `Stop`

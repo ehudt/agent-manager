@@ -12,7 +12,9 @@
 #   Notification[idle_prompt]        → waiting_input (same background_tasks
 #                                      refinement when the field is present;
 #                                      without it, never downgrades
-#                                      waiting_background)
+#                                      waiting_background unless a prior
+#                                      Stop snapshot's leftover shells are
+#                                      all unowned)
 #   Notification[permission_prompt]  → waiting_permission
 #   Notification[elicitation_dialog] → waiting_custom
 #   UserPromptSubmit                 → running
@@ -33,6 +35,14 @@
 # turn), so the state is self-healing without any pane scraping. Older CLIs
 # and Codex simply lack the field → the jq filter counts 0 → waiting_input,
 # and the pane-scan fallback in lib/state.sh still applies.
+#
+# Leftover shells: --fork-session / a parent-Claude exit reparents
+# run_in_background zsh loops to PID 1. Claude still lists them as
+# status=running, which would pin waiting_background after wrap-up. A
+# running shell/local_bash task is ignored when its matching OS process is
+# not owned by this Claude. Unmatched tasks are still counted. The last
+# Stop's array is snapshotted to $AM_STATE_DIR/<session>.bg so a field-less
+# idle_prompt can re-check leftovers.
 #
 # Environment overrides (for testing):
 #   AM_REGISTRY          — path to sessions.json (default: ~/.agent-manager/sessions.json)
@@ -98,17 +108,133 @@ fi
 
 # Idle states are refined to waiting_background when the payload reports
 # background work (subagents / background shells) still running.
+#
+# Leftover shells: a --fork-session or parent-Claude exit reparents
+# run_in_background zsh loops to PID 1. Claude keeps listing them as
+# status=running, so a naive count pins waiting_background after the wrap-up
+# Stop (the tab stays ⧗ while the pane shows recap / "new task?"). A running
+# shell task is ignored when we can see its OS process and that process is
+# not owned by this Claude. Unmatched tasks are still counted — the payload
+# stays authoritative when we cannot verify.
+
+# One `ps` snapshot per count. No associative arrays — this script is
+# invoked as `bash` by Claude and must survive macOS /bin/bash 3.2.
+_bg_ps_table=""
+
+_bg_load_ps() {
+    _bg_ps_table=$(ps -ax -o pid=,ppid=,command= 2>/dev/null || true)
+}
+
+_bg_ppid_of() {
+    printf '%s\n' "$_bg_ps_table" | awk -v p="$1" '$1 == p { print $2; exit }'
+}
+
+_bg_cmd_of() {
+    printf '%s\n' "$_bg_ps_table" | awk -v p="$1" '
+        $1 == p { $1 = ""; $2 = ""; sub(/^ +/, ""); print; exit }'
+}
+
+_bg_find_claude_pid() {
+    local pid="${PPID:-}" i=0 cmd first
+    while [[ -n "$pid" && "$pid" != "0" && "$pid" != "1" && $i -lt 20 ]]; do
+        cmd=$(_bg_cmd_of "$pid")
+        first=${cmd%% *}
+        first=${first##*/}
+        if [[ "$first" == "claude" ]]; then
+            echo "$pid"
+            return 0
+        fi
+        pid=$(_bg_ppid_of "$pid")
+        i=$((i + 1))
+    done
+    return 1
+}
+
+_bg_is_descendant() {
+    local pid="$1" ancestor="$2" i=0
+    while [[ -n "$pid" && "$pid" != "0" && $i -lt 24 ]]; do
+        [[ "$pid" == "$ancestor" ]] && return 0
+        [[ "$pid" == "1" ]] && return 1
+        pid=$(_bg_ppid_of "$pid")
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# True when this running shell task matches only leftover (unowned) processes.
+_bg_shell_task_is_leftover() {
+    local id="$1" command="$2"
+    local claude_pid="" pid ppid rest matched=0
+    claude_pid=$(_bg_find_claude_pid || true)
+    while read -r pid ppid rest; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        if [[ -n "$id" && ${#id} -ge 6 && "$rest" == *"$id"* ]]; then
+            :
+        elif [[ -n "$command" && ${#command} -ge 8 && "$rest" == *"$command"* ]]; then
+            :
+        else
+            continue
+        fi
+        matched=1
+        if [[ -n "$claude_pid" ]]; then
+            if _bg_is_descendant "$pid" "$claude_pid"; then
+                return 1
+            fi
+        elif [[ "$ppid" != "1" ]]; then
+            return 1
+        fi
+    done < <(printf '%s\n' "$_bg_ps_table")
+    [[ "$matched" -eq 1 ]]
+}
+
+# Count running background_tasks that should keep waiting_background.
+# $1 = JSON array (the background_tasks value).
+_bg_owned_running_count() {
+    local tasks="$1"
+    [[ -z "$tasks" || "$tasks" == "null" ]] && echo 0 && return 0
+    local running
+    running=$(printf '%s' "$tasks" | jq -c '[.[]? | select(.status == "running")]' 2>/dev/null) \
+        || { echo 0; return 0; }
+    local len
+    len=$(printf '%s' "$running" | jq 'length' 2>/dev/null) || { echo 0; return 0; }
+    [[ "$len" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+    (( len == 0 )) && echo 0 && return 0
+
+    _bg_load_ps
+
+    local idx type id command n=0
+    for (( idx = 0; idx < len; idx++ )); do
+        type=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].type // empty' 2>/dev/null || true)
+        id=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].id // empty' 2>/dev/null || true)
+        command=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].command // empty' 2>/dev/null || true)
+        case "$type" in
+            shell|local_bash|"")
+                if [[ "$type" == "shell" || "$type" == "local_bash" || -n "$command" ]]; then
+                    if _bg_shell_task_is_leftover "$id" "$command"; then
+                        continue
+                    fi
+                fi
+                ;;
+        esac
+        n=$((n + 1))
+    done
+    echo "$n"
+}
+
 _bg_running_count() {
-    printf '%s' "$hook_input" \
-        | jq '[.background_tasks[]? | select(.status == "running")] | length' 2>/dev/null \
-        || echo 0
+    local tasks
+    tasks=$(printf '%s' "$hook_input" | jq -c '.background_tasks // empty' 2>/dev/null) \
+        || { echo 0; return 0; }
+    [[ -z "$tasks" || "$tasks" == "null" ]] && echo 0 && return 0
+    _bg_owned_running_count "$tasks"
 }
 
 # Does the payload carry the background_tasks field at all? Events that lack
 # it (Notification idle_prompt fires without it) know nothing about
 # background work and must not downgrade waiting_background — only an event
 # that positively reports the field pruned/empty (Stop) may move it to
-# waiting_input.
+# waiting_input, unless a previous Stop left a snapshot whose leftover
+# shells have all been reparented off this Claude.
 _bg_field_present() {
     printf '%s' "$hook_input" | jq -e 'has("background_tasks")' >/dev/null 2>&1
 }
@@ -270,6 +396,13 @@ if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && "$hook_t
     esac
 fi
 
+# Snapshot the last background_tasks array so a later field-less
+# idle_prompt can re-check leftover shells after a wrap-up Stop that
+# will not fire again until the next user prompt.
+if _bg_field_present; then
+    printf '%s' "$hook_input" | jq -c '.background_tasks' > "$state_file.bg" 2>/dev/null || true
+fi
+
 # waiting_background may only be downgraded to waiting_input by an event
 # whose payload actually carries the background_tasks field (Stop always
 # does; it re-fires with a pruned array when the work finishes). Events
@@ -278,10 +411,20 @@ fi
 # work and must not clobber the state (observed live: idle_prompt flipped
 # waiting_background to waiting_input exactly 60s after every Stop while
 # the background shell/agent was still running).
+#
+# Exception: if a previous Stop left a snapshot and every leftover shell
+# in it is now unowned (PPID=1 / not a child of this Claude), the session
+# is done — allow the downgrade. The wrap-up Stop already fired; it will
+# not fire again until the user types.
 if [[ "$am_state" == "waiting_input" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
     if [[ "$current" == "waiting_background" ]] && ! _bg_field_present; then
-        exit 0
+        if [[ -f "$state_file.bg" ]] \
+            && [[ "$(_bg_owned_running_count "$(cat "$state_file.bg" 2>/dev/null || echo '[]')")" == "0" ]]; then
+            :
+        else
+            exit 0
+        fi
     fi
 fi
 

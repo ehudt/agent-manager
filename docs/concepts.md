@@ -81,6 +81,13 @@ flowchart TD
   without `UserPromptSubmit` and an unconditional guard would pin an active
   session at waiting. `waiting_permission`/`waiting_custom` get *no* guard —
   approval must flip them to running.
+- **Leftover shells do not count as background work.** `--fork-session` or
+  a parent-Claude exit reparents `run_in_background` zsh loops to PID 1.
+  Claude still lists them as `status=running` in `background_tasks`. The
+  hook ignores a running shell whose matching OS process is not owned by
+  this Claude, and a field-less `idle_prompt` may downgrade once a prior
+  Stop snapshot's leftovers are all unowned. Unmatched tasks are still
+  counted (payload stays authoritative when we cannot verify).
 - **Session identity resolves precisely, never loosely.** The hook
   identifies its session as `AM_SESSION_NAME` → `TMUX_PANE` → cwd match,
   and if `AM_SESSION_NAME` is set but missing from the registry it *exits*
