@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # tests/test_install.sh - Tests for install
 
+# Run scripts/install.sh with every host-config hook/extension target
+# redirected under the given temp root. Installer tests MUST go through
+# this (or pass the same overrides explicitly): a bare invocation writes
+# into the real ~/.claude/settings.json, ~/.codex/*, ~/.cursor/* and
+# ~/.pi/agent/extensions of whoever runs the suite (observed live: each
+# test run silently rewrote the host's hook files).
+_run_installer_isolated() {
+    local temp_root="$1"; shift
+    CLAUDE_SETTINGS="$temp_root/claude-settings.json" \
+    CODEX_HOME="$temp_root/codex" \
+    CURSOR_CONFIG_DIR="$temp_root/cursor" \
+    PI_EXT_DIR="$temp_root/pi-extensions" \
+        "$PROJECT_DIR/scripts/install.sh" "$@"
+}
+
 test_installer_replaces_managed_blocks() {
     $SUMMARY_MODE || echo "=== Testing installer block replacement ==="
 
@@ -24,7 +39,13 @@ bind x kill-pane
 # <<< agent-manager <<<
 EOF
 
-    "$PROJECT_DIR/scripts/install.sh" --prefix "$prefix" --shell-rc "$shell_rc" --tmux-conf "$tmux_conf" -y >/dev/null
+    _run_installer_isolated "$temp_root" \
+        --prefix "$prefix" --shell-rc "$shell_rc" --tmux-conf "$tmux_conf" -y >/dev/null
+
+    # Isolation canary: hook installs must land under the temp root, not in
+    # the runner's real home. Fails if an env override name drifts.
+    assert_cmd_succeeds "installer: Claude hooks written to temp settings" \
+        test -f "$temp_root/claude-settings.json"
 
     shell_contents=$(cat "$shell_rc")
     # shellcheck disable=SC2034  # tmux_contents used by assertion helpers
@@ -62,7 +83,7 @@ bind x kill-pane
 # <<< agent-manager <<<
 EOF
 
-    printf '\n\n' | "$PROJECT_DIR/scripts/install.sh" \
+    printf '\n\n' | _run_installer_isolated "$temp_root" \
         --prefix "$prefix" --shell-rc "$shell_rc" --tmux-conf "$tmux_conf" >/dev/null
 
     shell_contents=$(cat "$shell_rc")
@@ -98,6 +119,15 @@ test_install() {
     local temp_prefix="$temp_root/bin"
     local temp_shell_rc="$temp_root/.zshrc"
     local fake_bin="$temp_root/fakebin"
+    # Hook/extension install targets. Every one of these MUST be overridden
+    # when invoking `am install`, or the test writes into the real
+    # ~/.claude/settings.json, ~/.codex/*, ~/.cursor/* and
+    # ~/.pi/agent/extensions of whoever runs the suite (observed live: each
+    # test run silently rewrote the host's Cursor hooks).
+    local temp_claude_settings="$temp_root/claude-settings.json"
+    local temp_codex_home="$temp_root/codex"
+    local temp_cursor_config="$temp_root/cursor"
+    local temp_pi_ext="$temp_root/pi-extensions"
     touch "$temp_shell_rc"
     mkdir -p "$fake_bin"
     cat > "$fake_bin/go" <<'EOF'
@@ -136,6 +166,13 @@ esac
 EOF
     chmod +x "$fake_bin/go"
 
+    # Stub the Cursor Agent and pi CLIs so the `command -v agent` /
+    # `command -v pi` gates in install.sh pass on any machine and the
+    # cursor/pi install paths are always exercised (against temp targets).
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$fake_bin/agent"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$fake_bin/pi"
+    chmod +x "$fake_bin/agent" "$fake_bin/pi"
+
     # Snapshot any pre-existing Go binaries so the fake-go stub created by
     # `am install` doesn't clobber a real build for the duration of a
     # parallel test run. Other workers exec these binaries from
@@ -160,6 +197,10 @@ EOF
         AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
         AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
         AM_CURSOR_SKILLS_DIR="$temp_cursor_skills_dir" \
+        CLAUDE_SETTINGS="$temp_claude_settings" \
+        CODEX_HOME="$temp_codex_home" \
+        CURSOR_CONFIG_DIR="$temp_cursor_config" \
+        PI_EXT_DIR="$temp_pi_ext" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
 
@@ -178,6 +219,20 @@ EOF
         "install: Cursor skills symlink target correct"
     assert_cmd_fails "install: legacy am-orchestration symlink removed" \
         test -e "$temp_skills_dir/am-orchestration" -o -L "$temp_skills_dir/am-orchestration"
+
+    # Verify hook/extension installs landed in the overridden temp targets.
+    # These are the isolation canaries: if an env override is renamed or
+    # dropped, the install lands in the real home dir and these fail.
+    assert_cmd_succeeds "install: Claude hooks written to temp settings" \
+        test -f "$temp_claude_settings"
+    assert_cmd_succeeds "install: Codex hooks written to temp codex home" \
+        test -f "$temp_codex_home/hooks.json"
+    assert_cmd_succeeds "install: Cursor hooks.json written to temp cursor dir" \
+        test -f "$temp_cursor_config/hooks.json"
+    assert_cmd_succeeds "install: Cursor hook helper copied to temp cursor dir" \
+        test -f "$temp_cursor_config/hooks/am-state-hook.sh"
+    assert_cmd_succeeds "install: pi extension symlinked into temp ext dir" \
+        test -L "$temp_pi_ext/am-state.ts"
 
     # Verify am binary was installed
     assert_cmd_succeeds "install: am binary installed" test -e "$temp_prefix/am"
@@ -205,6 +260,10 @@ EOF
         AM_DIR="$temp_am_dir" AM_CONFIG="$temp_am_dir/config.json" \
         AM_CLAUDE_SKILLS_DIR="$temp_skills_dir" \
         AM_CURSOR_SKILLS_DIR="$temp_cursor_skills_dir" \
+        CLAUDE_SETTINGS="$temp_claude_settings" \
+        CODEX_HOME="$temp_codex_home" \
+        CURSOR_CONFIG_DIR="$temp_cursor_config" \
+        PI_EXT_DIR="$temp_pi_ext" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
     assert_contains "$install_output2" "already exists" "install: skills symlink idempotent"
