@@ -46,6 +46,18 @@
 #      AM_SESSION_NAME was added, since agents inherit TMUX_PANE from their pane
 #   3. cwd match against registry — last resort; cannot disambiguate when
 #      multiple am sessions share a directory (two Claude instances in one repo)
+#
+# All three layers are gated on the agent family: the hook's event name
+# proves which agent fired it (CamelCase → Claude Code / Codex; camelCase →
+# Cursor; pi never calls this script — its states come from the in-process
+# extension lib/hooks/am-state.ts), and the resolved session's registered
+# agent_type must belong to that family. Without the gate, an unmanaged
+# agent process (e.g. a Cursor conversation run outside am) whose cwd hosts
+# an am session of a *different* agent clobbers that session's state and
+# .sid/.transcript sidecars — observed live: a stray Cursor daily-log run
+# flipped a mid-turn pi session to waiting_input. A positively identified
+# session (layers 1–2) with the wrong type means a foreign agent is nested
+# inside an am pane; the hook exits rather than guessing by cwd.
 
 set -euo pipefail
 
@@ -134,6 +146,16 @@ case "$hook_type" in
         ;;
 esac
 
+# Agent family of the hook source, proven by the event name. CamelCase
+# events exist only in the Claude Code / Codex hook API; camelCase events
+# only in Cursor's. Unknown events already exited above.
+case "$hook_type" in
+    Stop|Notification|UserPromptSubmit|PreToolUse|PostToolUse|PermissionRequest)
+        hook_family="claude codex" ;;
+    *)
+        hook_family="cursor" ;;
+esac
+
 # Registry is required for any session lookup or validation
 [[ ! -f "$AM_REGISTRY" ]] && exit 0
 
@@ -142,6 +164,14 @@ esac
 _registry_has() {
     jq -e --arg k "$1" '.sessions[$k] // empty' "$AM_REGISTRY" &>/dev/null && echo "$1"
     return 0
+}
+
+# Helper: true when the session's registered agent_type belongs to the
+# hook's agent family.
+_family_match() {
+    local t
+    t=$(jq -r --arg k "$1" '.sessions[$k].agent_type // empty' "$AM_REGISTRY" 2>/dev/null || true)
+    [[ -n "$t" && " $hook_family " == *" $t "* ]]
 }
 
 session_name=""
@@ -155,6 +185,10 @@ if [[ -n "${AM_SESSION_NAME:-}" ]]; then
         _hook_debug "AM_SESSION_NAME=$AM_SESSION_NAME not in registry; exiting"
         exit 0
     fi
+    if ! _family_match "$session_name"; then
+        _hook_debug "AM_SESSION_NAME=$session_name agent_type outside hook family ($hook_family); exiting"
+        exit 0
+    fi
 fi
 
 # 2. TMUX_PANE — agents inherit this from their tmux pane; resolving it to the
@@ -164,6 +198,10 @@ if [[ -z "$session_name" && -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/nul
     tmux_session=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)
     if [[ -n "$tmux_session" ]]; then
         session_name=$(_registry_has "$tmux_session")
+        if [[ -n "$session_name" ]] && ! _family_match "$session_name"; then
+            _hook_debug "tmux session $session_name agent_type outside hook family ($hook_family); exiting"
+            exit 0
+        fi
     fi
 fi
 
@@ -178,10 +216,11 @@ if [[ -z "$session_name" ]]; then
         _hook_debug "cwd '$cwd' not accessible; exiting"
         exit 0
     }
-    session_name=$(jq -r --arg cwd "$cwd_real" '
+    session_name=$(jq -r --arg cwd "$cwd_real" --arg fam "$hook_family" '
         .sessions
         | to_entries[]
         | select(.value.directory == $cwd)
+        | select((.value.agent_type // "") as $t | ($fam | split(" ") | index($t)) != null)
         | .key
     ' "$AM_REGISTRY" 2>/dev/null | head -1 || true)
 fi

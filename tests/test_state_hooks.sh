@@ -130,33 +130,39 @@ test_state_hooks() {
     assert_eq "sid-from-hook" "$sid" "UserPromptSubmit with session_id: writes sid sidecar"
 
     # --- Cursor hook events use camelCase names and conversation_id ---
+    # Cursor events may only touch cursor-type sessions (agent-family gate),
+    # so these run against a dedicated cursor-type registry.
+    local cursor_registry="$tmp_dir/cursor.json"
+    jq -n --arg dir "$real_project_dir" \
+        '{sessions: {"am-cur456": {name: "am-cur456", directory: $dir, branch: "main", agent_type: "cursor", task: "t"}}}' \
+        > "$cursor_registry"
     local cursor_transcript="$tmp_dir/cursor-transcript.jsonl"
     : > "$cursor_transcript"
-    rm -f "$state_dir/am-abc123" "$state_dir/am-abc123.sid" \
-        "$state_dir/am-abc123.transcript"
-    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+    rm -f "$state_dir/am-cur456" "$state_dir/am-cur456.sid" \
+        "$state_dir/am-cur456.transcript"
+    AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"sessionStart\",\"conversation_id\":\"cursor-conv-1\",\"session_id\":\"cursor-conv-1\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
-    assert_eq "waiting_input" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+    assert_eq "waiting_input" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
         "Cursor sessionStart: writes waiting_input"
-    assert_eq "cursor-conv-1" "$(cat "$state_dir/am-abc123.sid" 2>/dev/null || echo)" \
+    assert_eq "cursor-conv-1" "$(cat "$state_dir/am-cur456.sid" 2>/dev/null || echo)" \
         "Cursor sessionStart: writes conversation id sidecar"
-    assert_eq "$cursor_transcript" "$(cat "$state_dir/am-abc123.transcript" 2>/dev/null || echo)" \
+    assert_eq "$cursor_transcript" "$(cat "$state_dir/am-cur456.transcript" 2>/dev/null || echo)" \
         "Cursor sessionStart: writes transcript path sidecar"
 
-    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+    AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"beforeSubmitPrompt\",\"conversation_id\":\"cursor-conv-1\",\"workspace_roots\":[\"$real_project_dir\"]}"
-    assert_eq "running" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+    assert_eq "running" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
         "Cursor beforeSubmitPrompt: writes running"
 
-    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+    AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"cursor-conv-1\",\"status\":\"completed\",\"loop_count\":0,\"workspace_roots\":[\"$real_project_dir\"]}"
-    assert_eq "waiting_input" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+    assert_eq "waiting_input" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
         "Cursor stop: writes waiting_input"
 
-    rm -f "$state_dir/am-abc123"
-    AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+    rm -f "$state_dir/am-cur456"
+    AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"preToolUse\",\"conversation_id\":\"cursor-conv-1\",\"tool_name\":\"Read\",\"cwd\":\"$real_project_dir\"}"
-    assert_eq "running" "$(cat "$state_dir/am-abc123" 2>/dev/null || echo)" \
+    assert_eq "running" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
         "Cursor preToolUse: writes running"
 
     # --- Codex PermissionRequest writes waiting_permission ---
@@ -335,6 +341,70 @@ test_state_hooks() {
         "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
     assert_eq "" "$(cat "$state_dir/am-first"  2>/dev/null || echo)" "AM_SESSION_NAME bogus: first session untouched"
     assert_eq "" "$(cat "$state_dir/am-second" 2>/dev/null || echo)" "AM_SESSION_NAME bogus: second session untouched"
+
+    # --- Agent-family gate: a hook may only touch sessions whose registered
+    #     agent_type matches the hook's source agent. CamelCase events come
+    #     only from Claude Code / Codex; camelCase events only from Cursor;
+    #     pi never calls this script (in-process extension instead).
+    #     Observed live: an unmanaged Cursor conversation running in a
+    #     directory that hosts a pi am session resolved via the cwd fallback
+    #     and clobbered the pi session's state mid-turn (plus its .sid /
+    #     .transcript sidecars). ---
+    local fam_registry="$tmp_dir/family.json"
+    jq -n --arg dir "$real_project_dir" \
+        '{sessions: {
+            "am-pi":  {name: "am-pi",  directory: $dir, branch: "main", agent_type: "pi",     task: "t"},
+            "am-cur": {name: "am-cur", directory: $dir, branch: "main", agent_type: "cursor", task: "t"}
+         }}' > "$fam_registry"
+
+    # Cursor stop via cwd fallback: must skip the pi session (listed first)
+    # and land on the cursor session — including the sidecars.
+    rm -f "$state_dir/am-pi" "$state_dir/am-pi.sid" "$state_dir/am-pi.transcript" \
+        "$state_dir/am-cur" "$state_dir/am-cur.sid"
+    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-x\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "" "$(cat "$state_dir/am-pi" 2>/dev/null || echo)" \
+        "family gate: Cursor stop leaves pi session state untouched"
+    assert_eq "" "$(cat "$state_dir/am-pi.sid" 2>/dev/null || echo)" \
+        "family gate: Cursor stop leaves pi sid sidecar untouched"
+    assert_eq "" "$(cat "$state_dir/am-pi.transcript" 2>/dev/null || echo)" \
+        "family gate: Cursor stop leaves pi transcript sidecar untouched"
+    assert_eq "waiting_input" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
+        "family gate: Cursor stop targets the cursor session"
+
+    # Claude Stop via cwd fallback with only pi + cursor sessions in the
+    # directory: no session may be written.
+    rm -f "$state_dir/am-pi" "$state_dir/am-cur"
+    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+    assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
+        "family gate: Claude Stop leaves pi session untouched"
+    assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
+        "family gate: Claude Stop leaves cursor session untouched"
+
+    # AM_SESSION_NAME inherited by a foreign agent (e.g. cursor-agent run
+    # manually inside a pi session's shell pane): wrong family → exit, and
+    # do NOT fall through to cwd matching (that would clobber the cursor
+    # session with a rogue, unmanaged conversation's state).
+    rm -f "$state_dir/am-pi" "$state_dir/am-cur"
+    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-pi" \
+        "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-x\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
+        "family gate: AM_SESSION_NAME type mismatch writes nothing"
+    assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
+        "family gate: AM_SESSION_NAME type mismatch does not fall through to cwd"
+
+    # CamelCase events come from Claude Code or Codex — a codex session is
+    # family-compatible with them.
+    local codex_registry="$tmp_dir/codex.json"
+    jq -n --arg dir "$real_project_dir" \
+        '{sessions: {"am-codex": {name: "am-codex", directory: $dir, branch: "main", agent_type: "codex", task: "t"}}}' \
+        > "$codex_registry"
+    rm -f "$state_dir/am-codex"
+    AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+    assert_eq "waiting_input" "$(cat "$state_dir/am-codex" 2>/dev/null || echo)" \
+        "family gate: CamelCase Stop may target a codex session"
 
     # --- No matching session → no state file written ---
     rm -f "$state_dir/am-abc123"

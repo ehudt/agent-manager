@@ -159,6 +159,18 @@ for waiting_* tabs, "running for" on running tabs.
 States not covered by hooks (`starting`, `idle`, `dead`) use existing
 process/tmux checks which are already reliable.
 
+Hook writes are gated by **agent family**: the event name proves the source
+(CamelCase → Claude Code / Codex; camelCase → Cursor; pi never calls the
+script — its states come from the in-process extension), and the resolved
+session's registered `agent_type` must belong to that family. A positively
+identified session (`AM_SESSION_NAME` / `TMUX_PANE`) of the wrong family
+makes the hook exit — no fallthrough to cwd matching — and the cwd fallback
+filters candidates by family. Without the gate, an unmanaged agent process
+(e.g. a Cursor conversation run outside am) whose cwd hosts another agent's
+am session clobbers that session's state and `.sid`/`.transcript` sidecars
+(observed live: a stray Cursor run flipped a mid-turn pi session to
+`waiting_input`).
+
 `waiting_background` (Claude's main turn ended but a background agent/task/
 workflow/shell is still running) is written directly by the hook: the `Stop`
 payload carries a `background_tasks` array (documented; Claude Code ≥2.1) —
