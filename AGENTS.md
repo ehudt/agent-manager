@@ -203,8 +203,11 @@ agent panels, end-of-turn status classification with box-chrome/todo-widget
 anchoring). That machinery misread live turns whose hook file and tmux
 activity had both gone stale (>180s quiet tool calls are routine) and flapped
 sessions through running/unknown/waiting_background hundreds of times a day.
-The title glyph replaced all of it; do not reintroduce pane-content
-heuristics for state. Empirical ground truth lives in `tests/live_lab/`.
+The title glyph replaced all of it; do not reintroduce broad pane-content
+classifiers for state. The sole narrow exception is Cursor's own structural
+footer task counter, consulted only after its authoritative `✅ Ready` title
+has established that the main turn is idle. Empirical ground truth lives in
+`tests/live_lab/`.
 
 **Pi sessions:** State comes from the in-process extension
 `lib/hooks/am-state.ts` (`session_start` / `agent_settled` → `waiting_input`,
@@ -221,9 +224,14 @@ turn-boundary events remain authoritative during long quiet tools, and the
 shell-pane check catches process exit. Cursor 2026.08 added empirically stable
 terminal-title suffixes: `✅ Ready`, `⏳ Working`, and `❓ Waiting for you`.
 They self-heal missed/stale hook transitions and expose `waiting_custom`
-without pane scraping. The permission dialog still showed `⏳ Working`, and
-Cursor exposes no background-wait lifecycle event, so those cases remain
-`running`; do not add pane-content heuristics.
+without broad pane scraping. The permission dialog still shows `⏳ Working`,
+so it remains `running`. Cursor exposes no background-wait lifecycle event,
+but while a Ready session owns background work its footer renders a nonzero
+`<N> tasks` row directly below the input border. `_state_resolve` matches only
+that Cursor-owned structure to refine `waiting_input` to
+`waiting_background`; disappearance of the row returns it to
+`waiting_input`. It cannot override a Working title, and task-like text in
+the conversation does not match.
 
 ### Verifying against real agents
 
@@ -238,14 +246,14 @@ the Claude lab when Claude Code updates or when changing `lib/state.sh` /
 `lib/hooks/state-hook.sh`, and check `results/<ts>/report.txt` +
 `timeline.tsv` for glyph/hook/state agreement.
 `tests/live_lab/run_cursor.sh` records Cursor's fresh, running, permission,
-question, subagent, stop, and resume behavior. `tests/live_lab/run_pi.sh`
-covers pi.
+question, subagent, stop, resume, and background-task footer behavior.
+`tests/live_lab/run_pi.sh` covers pi.
 
 ### Debug instrumentation
 
 - `AM_STATE_DEBUG=1` — `_state_resolve` appends one line per call to
   `$AM_DIR/.state-debug.log` (`<iso8601>\t<session>\t<agent>\t<source>\t<state>`)
-  recording which layer (`shell` / `title` / `hook` / `fallback` /
+  recording which layer (`shell` / `title` / `pane` / `hook` / `fallback` /
   `classify_exit`) produced the answer. Use for empirical data on which
   fallbacks are still load-bearing before cutting them.
 - `AM_HOOK_DEBUG=1` — `state-hook.sh` appends to `$AM_DIR/.hook-debug.log`
@@ -369,8 +377,9 @@ am restore
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`. Returns: starting, running, waiting_input, waiting_permission, waiting_custom, waiting_background, idle, unknown, dead
-- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch [, activity_epoch [, title_map [, created_epoch]]]])` - **Single source of truth** for state derivation. Without bulk fixtures (last args), forks per-session for tmux/ps (fetching pane_pid + session_activity + pane_title in one call); with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place, plus optional per-session activity epoch, title map, and created epoch. Used by `agent_get_state` / `lib/fzf.sh` (non-bulk) and `lib/status-bar` (bulk; passes tmux `#{session_created}` as created_epoch). Canonical order: shell pane check → title glyph × hook state per the decision table in "State Detection" above → gated hook state when the title carries no signal → unknown. Bulk and non-bulk shell-pane semantics agree: shell pane + session <5s → starting (bulk needs created_epoch, else idle), otherwise idle; dead from `agent_classify_exit` is a non-bulk race-window branch only — missing sessions are reported dead by `agent_get_state`'s existence check
+- `_state_resolve(session, agent_type, dir [, top_pid_map, comm_map, children_map, now_epoch [, activity_epoch [, title_map [, created_epoch [, cursor_tasks_map]]]]])` - **Single source of truth** for state derivation. Without bulk fixtures (last args), forks per-session for tmux/ps (fetching pane_pid + session_activity + pane_title in one call); with bulk fixtures passed by nameref (bash 4.3+), reads pre-built maps in place, plus optional per-session activity epoch, title map, created epoch, and pre-probed Cursor task signal. Used by `agent_get_state` / `lib/fzf.sh` (non-bulk) and `lib/status-bar` (bulk; passes tmux `#{session_created}` as created_epoch). Canonical order: shell pane check → title glyph/status × hook state → Cursor Ready-footer refinement → hook state when the title carries no signal → unknown. Bulk and non-bulk shell-pane semantics agree: shell pane + session <5s → starting (bulk needs created_epoch, else idle), otherwise idle; dead from `agent_classify_exit` is a non-bulk race-window branch only — missing sessions are reported dead by `agent_get_state`'s existence check
 - `_state_title_signal(title, out_var)` - Classify Claude's self-maintained pane title into busy (braille spinner frame U+2800–U+28FF, or circle-phase glyph ◐◓◑◒ U+25D0–U+25D3 on Claude Code ≥2.1.232) / attention (✳) / none. Byte-oriented (LC_ALL=C) so it is locale-independent; fork-free
+- `_state_cursor_tasks_signal(pane_text, out_var)` - Detect Cursor's nonzero footer task count only when it immediately follows the current input border; later footers supersede stale rows still visible in scrollback
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_hook_raw(session, out_var)` - Read the raw (ungated) hook state into a nameref; used by the title-glyph layer, which needs the flavor even when the file is stale

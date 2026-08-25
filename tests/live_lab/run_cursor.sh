@@ -18,7 +18,7 @@ LAB=$(mktemp -d -t am-live-lab-cursor.XXXXXX)
 SOCKET="am-live-lab-cursor-$$"
 SESSION="lab-cursor-1"
 WORKDIR="$LAB/workdir"
-SCENARIOS="${LAB_SCENARIOS:-c1 c2 c3 c4 c5 c6}"
+SCENARIOS="${LAB_SCENARIOS:-c1 c2 c3 c4 c5 c6 c7}"
 CURSOR_ARGS="${LAB_CURSOR_ARGS:-}"
 
 mkdir -p "$RESULTS/snapshots" "$WORKDIR/.cursor" "$LAB/state" "$LAB/am"
@@ -132,6 +132,15 @@ wait_state() {
     done
     return 1
 }
+wait_resolved() {
+    local wanted="$1" timeout="${2:-90}" start
+    start=$(date +%s)
+    while (( $(date +%s) - start < timeout )); do
+        [[ "$(resolved_state)" == "$wanted" ]] && return 0
+        sleep 0.5
+    done
+    return 1
+}
 wait_pane() {
     local pattern="$1" timeout="${2:-90}" start
     start=$(date +%s)
@@ -236,6 +245,23 @@ if [[ " $SCENARIOS " == *" c6 "* ]]; then
         tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
         wait_state waiting_input 60 && observe c6-resume \
             || mark c6-resume "WARN: resumed session did not reach waiting_input"
+    fi
+fi
+
+if [[ " $SCENARIOS " == *" c7 "* ]]; then
+    wait_resolved waiting_input 20 || { press C-c; wait_resolved waiting_input 20 || true; }
+    run_scenario c7-background-task
+    send_prompt "Start this exact shell command as a background task: sleep 40. Finish your response as soon as Cursor labels it background; do not wait for it to complete."
+    if wait_resolved waiting_background 60; then
+        observe c7-background-task-waiting
+        if wait_resolved waiting_input 90; then
+            observe c7-background-task-complete
+            mark c7-background-task "PASS: footer tasks appeared and cleared"
+        else
+            mark c7-background-task "WARN: waiting_background did not clear after task completion"
+        fi
+    else
+        mark c7-background-task "WARN: footer task count did not resolve as waiting_background"
     fi
 fi
 

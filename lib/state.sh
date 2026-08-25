@@ -18,7 +18,9 @@
 #        it still decides is a fresh session before any hook has fired
 #        (no hook file + ✳ -> idle at the first prompt, since the very first
 #        UserPromptSubmit would have created the file).
-#   3. title status (Cursor 2026.08+) -> ready / working / in-turn question
+#   3. title status (Cursor 2026.08+) -> ready / working / in-turn question;
+#      a Ready pane is refined to waiting_background when Cursor's own footer
+#      shows a nonzero "<N> tasks" row directly below the input border
 #   4. turn-boundary hook (pi/Cursor/Claude) -> ungated: all three emit
 #      explicit start/stop lifecycle transitions (pi's in-process extension;
 #      Cursor's stop/beforeSubmitPrompt; Claude's Stop/UserPromptSubmit). A
@@ -107,6 +109,56 @@ _state_cursor_title_signal() {
         *" - ❓ Waiting for you") __sig="waiting_custom" ;;
         *)                      __sig="none" ;;
     esac
+}
+
+# Cursor renders a nonzero "<N> tasks" row directly below the bottom border of
+# its input box while background shells/tasks remain active. Match that exact
+# footer structure so an agent response that merely mentions "2 tasks" cannot
+# affect state.
+# Usage: _state_cursor_tasks_signal <plain_pane_text> <out_var>
+# out: present|absent
+_state_cursor_tasks_signal() {
+    local pane_text="$1"
+    local -n __sig="$2"
+    __sig="absent"
+
+    local line
+    local awaiting_tasks=false
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^[[:space:]]*▀▀▀▀▀[▀]*[[:space:]]*$ ]]; then
+            # A newer input footer supersedes any older footer still visible
+            # in scrollback.
+            __sig="absent"
+            awaiting_tasks=true
+            continue
+        fi
+        if $awaiting_tasks; then
+            if [[ "$line" =~ ^[[:space:]]*[1-9][0-9]*[[:space:]]+tasks?[[:space:]]*$ ]]; then
+                __sig="present"
+                awaiting_tasks=false
+            elif [[ ! "$line" =~ ^[[:space:]]*$ ]]; then
+                awaiting_tasks=false
+            fi
+        fi
+    done <<< "$pane_text"
+}
+
+# Capture and classify Cursor's current viewport. A failed capture is unknown,
+# not absent: preserving an existing waiting_background state avoids flicker
+# during a transient tmux race.
+# Usage: _state_cursor_tasks_probe <session> <out_var>
+# out: present|absent|unknown
+_state_cursor_tasks_probe() {
+    local session="$1"
+    local -n __out="$2"
+    __out="unknown"
+
+    local pane_text="" parsed=""
+    if ! pane_text=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null); then
+        return
+    fi
+    _state_cursor_tasks_signal "$pane_text" parsed
+    __out="$parsed"
 }
 
 # ---------------------------------------------------------------------------
@@ -216,11 +268,12 @@ agent_classify_exit() {
 #
 # Usage:
 #   _state_resolve <session> <agent_type> <dir>
-#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch> [activity_epoch] [title_map] [created_epoch]
+#   _state_resolve <session> <agent_type> <dir> <top_pid_map> <comm_map> <children_map> <now_epoch> [activity_epoch] [title_map] [created_epoch] [cursor_tasks_map]
 _state_resolve() {
     local session="$1" agent_type="${2:-}" dir="${3:-}"
 
     local top_name comm_name child_name now_val activity_val="" title_val="" created_val=""
+    local cursor_tasks_val="unknown" cursor_tasks_known=false
     local -A __auto_top=() __auto_comm=() __auto_child=()
     local skip_classifier=false
     if (( $# >= 7 )); then
@@ -231,6 +284,13 @@ _state_resolve() {
             title_val="${__TITLES[$session]:-}"
         fi
         created_val="${10:-}"
+        if [[ -n "${11:-}" ]]; then
+            local -n __CURSOR_TASKS="${11}"
+            if [[ -n "${__CURSOR_TASKS[$session]+set}" ]]; then
+                cursor_tasks_val="${__CURSOR_TASKS[$session]}"
+                cursor_tasks_known=true
+            fi
+        fi
         skip_classifier=true
     else
         local pane_pid
@@ -336,8 +396,34 @@ _state_resolve() {
                         echo "$cursor_raw"
                         return ;;
                 esac
-            elif [[ "$cursor_sig" == "waiting_input" && "$cursor_raw" == "running" ]]; then
-                printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+            elif [[ "$cursor_sig" == "waiting_input" ]]; then
+                if ! $cursor_tasks_known; then
+                    _state_cursor_tasks_probe "$session" cursor_tasks_val
+                fi
+                case "$cursor_tasks_val" in
+                    present)
+                        if [[ "$cursor_raw" != "waiting_background" ]]; then
+                            printf 'waiting_background' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+                        fi
+                        _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
+                        echo "waiting_background"
+                        return
+                        ;;
+                    absent)
+                        if [[ "$cursor_raw" == "running" || "$cursor_raw" == "waiting_background" ]]; then
+                            printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+                        fi
+                        ;;
+                    *)
+                        if [[ "$cursor_raw" == "waiting_background" ]]; then
+                            _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
+                            echo "waiting_background"
+                            return
+                        fi
+                        [[ "$cursor_raw" == "running" ]] \
+                            && printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+                        ;;
+                esac
             fi
             _state_debug "$_dbg_session" "$_dbg_agent" title "$cursor_sig"
             echo "$cursor_sig"

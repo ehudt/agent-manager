@@ -258,6 +258,28 @@ test_state_title_glyph() {
     _state_cursor_title_signal "Cursor Agent" sig
     assert_eq "none" "$sig" "_state_cursor_title_signal: legacy context title has no signal"
 
+    local cursor_pane
+    cursor_pane=$'  Agent response mentions\n  2 tasks\n\n ▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀\n  2 tasks\n  GPT-5.6 Sol | project/branch'
+    _state_cursor_tasks_signal "$cursor_pane" sig
+    assert_eq "present" "$sig" \
+        "_state_cursor_tasks_signal: footer task count after input border"
+    cursor_pane=$' ▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀\n  1 task\n  model | project/branch'
+    _state_cursor_tasks_signal "$cursor_pane" sig
+    assert_eq "present" "$sig" \
+        "_state_cursor_tasks_signal: singular footer task count"
+    cursor_pane=$'  Agent response mentions\n  2 tasks\n\n ▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀\n  model | project/branch'
+    _state_cursor_tasks_signal "$cursor_pane" sig
+    assert_eq "absent" "$sig" \
+        "_state_cursor_tasks_signal: task-like response text is ignored"
+    cursor_pane=$' ▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀\n  0 tasks\n  model | project/branch'
+    _state_cursor_tasks_signal "$cursor_pane" sig
+    assert_eq "absent" "$sig" \
+        "_state_cursor_tasks_signal: zero tasks is not background work"
+    cursor_pane=$' ▄▄▄▄▄▄▄▄▄\n  → Old prompt\n ▀▀▀▀▀▀▀▀▀\n  2 tasks\n  old status\n\n ▄▄▄▄▄▄▄▄▄\n  → Current prompt\n ▀▀▀▀▀▀▀▀▀\n  current status'
+    _state_cursor_tasks_signal "$cursor_pane" sig
+    assert_eq "absent" "$sig" \
+        "_state_cursor_tasks_signal: current footer supersedes stale task row"
+
     # --- resolver decision table (bulk path; empty maps bypass the shell
     #     check, title injected via the title map) ---
     local -A _T_TOP=() _T_COMM=() _T_CHILD=() _T_TITLE=()
@@ -454,6 +476,33 @@ test_state_title_glyph() {
     assert_eq "waiting_input" "$cursor_state" "_state_resolve: Cursor ready title self-heals stale running hook"
     assert_eq "waiting_input" "$(cat "$tmp_state_dir/am-cursor1")" \
         "_state_resolve: Cursor ready title updates state timestamp source"
+
+    # Cursor keeps the Ready title and fires stop while background shell tasks
+    # remain active. Its footer renders "<N> tasks" directly below the input
+    # border; that narrow signal refines waiting_input to waiting_background.
+    local -A cursor_tasks_map=( [am-cursor1]=present )
+    printf 'waiting_input' > "$tmp_state_dir/am-cursor1"
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map \
+        "$_t_now" "$(( _t_now - 600 ))" cursor_title_map "" cursor_tasks_map)
+    assert_eq "waiting_background" "$cursor_state" \
+        "_state_resolve: Cursor ready + footer tasks -> waiting_background"
+    assert_eq "waiting_background" "$(cat "$tmp_state_dir/am-cursor1")" \
+        "_state_resolve: Cursor footer tasks update state timestamp source"
+
+    cursor_tasks_map[am-cursor1]=absent
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map \
+        "$_t_now" "$(( _t_now - 600 ))" cursor_title_map "" cursor_tasks_map)
+    assert_eq "waiting_input" "$cursor_state" \
+        "_state_resolve: Cursor ready after footer tasks clear -> waiting_input"
+    assert_eq "waiting_input" "$(cat "$tmp_state_dir/am-cursor1")" \
+        "_state_resolve: cleared Cursor tasks update state timestamp source"
+
+    printf 'waiting_background' > "$tmp_state_dir/am-cursor1"
+    cursor_tasks_map[am-cursor1]=unknown
+    cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map \
+        "$_t_now" "$(( _t_now - 600 ))" cursor_title_map "" cursor_tasks_map)
+    assert_eq "waiting_background" "$cursor_state" \
+        "_state_resolve: failed Cursor pane probe preserves waiting_background"
     rm -f "$tmp_state_dir/am-cursor1"
 
     # --- bulk shell-pane semantics agree with the non-bulk classifier ---
