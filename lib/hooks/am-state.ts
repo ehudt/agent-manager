@@ -7,11 +7,11 @@
  * (auto-discovered by pi) and copied into the sandbox home by sandbox_start.
  *
  * Event mapping:
- *   session_start  -> waiting_input   (fresh session idle at its first
+ *   session_start  -> ready           (fresh session idle at its first
  *                     prompt; also rebinds the .sid sidecar — re-fires on
  *                     /new, /resume and /fork, keeping it authoritative)
  *   agent_start    -> running
- *   agent_settled  -> waiting_input   (pi will not continue on its own: no
+ *   agent_settled  -> ready           (pi will not continue on its own: no
  *                     retry, auto-compaction, or queued messages left)
  *
  * The resolver (lib/state.sh) trusts this file UNGATED for pi sessions:
@@ -95,7 +95,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     writeSid(ctx.sessionManager.getSessionId());
-    writeState("waiting_input");
+    writeState("ready");
   });
 
   pi.on("agent_start", async () => {
@@ -103,6 +103,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async () => {
-    writeState("waiting_input");
+    writeState("ready");
   });
 }

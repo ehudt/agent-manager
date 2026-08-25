@@ -1,5 +1,9 @@
 # Multi-Session Switching Design
 
+> Historical document: pre-0.12 `waiting_input`, `waiting_permission` /
+> `waiting_custom`, and `waiting_background` correspond to `ready`,
+> `waiting_user`, and `background`.
+
 ## Problem
 
 With 3+ agent sessions, switching is limited to binary toggle (`Prefix+a` = last used) or opening the full browser popup (`Prefix+s`). No middle ground for quick directional navigation.

@@ -187,7 +187,9 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix ↑/↓` | Switch between agent and shell panes |
 | `:am` | Open am browser as a tmux command |
 
-The status bar shows all sessions as numbered slots with the current session highlighted. State icons indicate what each session is doing (`!` needs permission, `>` waiting for input, `~` running, `-` idle).
+The status bar shows all sessions as numbered slots with the current session
+highlighted. State icons distinguish active work (`▸`), background work (`⧗`),
+a turn blocked on the user (`⚠`), and a session ready for another prompt (`●`).
 
 ### Peeking and monitoring
 
@@ -265,9 +267,10 @@ am peek --lines 5 "$s2"
 |-------|---------|
 | `starting` | Session created, agent not yet running |
 | `running` | Agent is actively executing |
-| `waiting_input` | Agent finished its turn, ready for next prompt |
-| `waiting_permission` | Agent is blocked on a permission prompt |
-| `waiting_custom` | Agent is asking a custom question (plan approval, elicitation) |
+| `background` | Foreground turn ended, but background work is still running |
+| `waiting_user` | Current turn cannot continue until the user answers a dialog |
+| `ready` | Agent finished its turn and can accept another prompt |
+| `unknown` | Agent is alive, but no trustworthy activity signal is available |
 | `idle` | Agent process exited cleanly |
 | `dead` | Agent process crashed or session gone |
 
@@ -275,8 +278,13 @@ Claude, Cursor, Codex, and pi use push-based lifecycle hooks/extensions
 installed by `am install`. Cursor lifecycle hooks expose turn start/stop; on
 Cursor 2026.08+, verified terminal-title suffixes also distinguish ready,
 working, and in-turn question states. Cursor permission prompts still remain
-`running`, and no background-wait event is exposed. Pane-content heuristics
-are deliberately not used.
+`running`. Cursor exposes no background-work lifecycle event, so a Ready pane
+is narrowly refined from its CLI-owned footer task count.
+
+`am wait --state` continues to accept the pre-0.12 names (`waiting_input`,
+`waiting_permission`, `waiting_custom`, `waiting_background`) as aliases for
+`ready`, `waiting_user`, and `background`. Commands and JSON output emit only
+the canonical names.
 
 ### Agent dispatch skill
 

@@ -1,5 +1,9 @@
 # State-detection plan
 
+> Historical document: pre-0.12 `waiting_input`, `waiting_permission` /
+> `waiting_custom`, and `waiting_background` correspond to `ready`,
+> `waiting_user`, and `background`.
+
 Pinning the open bugs and the consolidation plan that removes the
 duplication letting these bugs hide. Captured 2026-05-13 after building
 `tests/state_lab/` and observing two confirmed failures on a real session.

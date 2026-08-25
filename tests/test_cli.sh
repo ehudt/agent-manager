@@ -24,6 +24,18 @@ test_cli() {
     assert_contains "$send_help" "Usage: am send" "am send --help: shows usage"
     assert_contains "$send_help" "--wait" "am send --help: documents wait flag"
     assert_contains "$send_help" "--timeout" "am send --help: documents timeout flag"
+    assert_contains "$send_help" "ready" \
+        "am send --help: --wait promises the canonical ready state"
+    assert_not_contains "$send_help" "waiting_permission" \
+        "am send --help: does not call a permission dialog ready"
+
+    local wait_help
+    wait_help=$("$PROJECT_DIR/am" wait --help)
+    assert_contains "$wait_help" "ready" "am wait --help: lists ready"
+    assert_contains "$wait_help" "waiting_user" "am wait --help: lists waiting_user"
+    assert_contains "$wait_help" "background" "am wait --help: lists background"
+    assert_contains "$wait_help" "legacy aliases" \
+        "am wait --help: documents legacy state aliases"
 
     local peek_help
     peek_help=$("$PROJECT_DIR/am" peek --help)

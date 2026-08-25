@@ -38,12 +38,12 @@ test_state_hooks() {
             "$hook_script" <<< "$input"
     }
 
-    # --- Stop hook writes waiting_input ---
+    # --- Stop hook writes ready ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
     local state
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "Stop hook: writes waiting_input"
+    assert_eq "ready" "$state" "Stop hook: writes ready"
 
     # --- stop_hook_active=true is a no-op ---
     rm -f "$state_dir/am-abc123"
@@ -51,47 +51,62 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "" "$state" "Stop hook (stop_hook_active=true): no state written"
 
-    # --- Notification[permission_prompt] writes waiting_permission ---
+    # --- User-blocking notifications share one truthful state ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_permission" "$state" "Notification[permission_prompt]: writes waiting_permission"
+    assert_eq "waiting_user" "$state" \
+        "Notification[permission_prompt]: writes waiting_user"
 
-    # --- Notification[elicitation_dialog] writes waiting_custom ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"elicitation_dialog\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_custom" "$state" "Notification[elicitation_dialog]: writes waiting_custom"
+    assert_eq "waiting_user" "$state" \
+        "Notification[elicitation_dialog]: writes waiting_user"
 
-    # --- Notification[idle_prompt] writes waiting_input ---
+    # --- Notification[idle_prompt] writes ready ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "Notification[idle_prompt]: writes waiting_input"
+    assert_eq "ready" "$state" "Notification[idle_prompt]: writes ready"
 
-    # --- same-state waiting_* rewrites are skipped: the file mtime pins the
+    # --- same-state rewrites are skipped: the file mtime pins the
     #     moment the wait began (the status bar shows "waiting since" from it).
     #     A repeated idle_prompt Notification must not reset it. ---
     local mtime_before mtime_after
-    printf 'waiting_input' > "$state_dir/am-abc123"
+    printf 'ready' > "$state_dir/am-abc123"
     touch -t 202601010000 "$state_dir/am-abc123"
     mtime_before=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
     mtime_after=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
     assert_eq "$mtime_before" "$mtime_after" \
-        "idle_prompt over waiting_input: same-state rewrite skipped (mtime pinned)"
+        "idle_prompt over ready: same-state rewrite skipped (mtime pinned)"
 
-    # Stop re-fires while background work drains: waiting_background over
-    # waiting_background must also keep the original mtime.
-    printf 'waiting_background' > "$state_dir/am-abc123"
+    # Upgrade compatibility: normalize a legacy value for comparisons but do
+    # not rewrite it merely to change the spelling, because that would reset
+    # the live session's time-in-state timestamp.
+    printf 'waiting_input' > "$state_dir/am-abc123"
+    touch -t 202601010000 "$state_dir/am-abc123"
+    mtime_before=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    mtime_after=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
+    assert_eq "waiting_input" "$state" \
+        "legacy waiting_input remains on a same-state ready event"
+    assert_eq "$mtime_before" "$mtime_after" \
+        "legacy waiting_input same-state event preserves mtime"
+
+    # Stop re-fires while background work drains: background over background
+    # must also keep the original mtime.
+    printf 'background' > "$state_dir/am-abc123"
     touch -t 202601010000 "$state_dir/am-abc123"
     mtime_before=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"b1\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"x\"}]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     mtime_after=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
-    assert_eq "waiting_background" "$state" "Stop re-fire keeps waiting_background"
+    assert_eq "background" "$state" "Stop re-fire keeps background"
     assert_eq "$mtime_before" "$mtime_after" \
-        "Stop re-fire over waiting_background: mtime pinned"
+        "Stop re-fire over background: mtime pinned"
 
     # running over running is also skipped: the mtime pins the moment the turn
     # started ("running for" tab age). Liveness comes from tmux activity, not
@@ -107,12 +122,12 @@ test_state_hooks() {
         "PostToolUse over running: same-state rewrite skipped (mtime pinned)"
 
     # A genuine state *transition* between waiting states must still write.
-    printf 'waiting_input' > "$state_dir/am-abc123"
+    printf 'ready' > "$state_dir/am-abc123"
     touch -t 202601010000 "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_permission" "$state" \
-        "waiting_input -> waiting_permission transition still writes"
+    assert_eq "waiting_user" "$state" \
+        "ready -> waiting_user transition still writes"
 
     # --- UserPromptSubmit writes running ---
     rm -f "$state_dir/am-abc123"
@@ -142,8 +157,8 @@ test_state_hooks() {
         "$state_dir/am-cur456.transcript"
     AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"sessionStart\",\"conversation_id\":\"cursor-conv-1\",\"session_id\":\"cursor-conv-1\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
-    assert_eq "waiting_input" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
-        "Cursor sessionStart: writes waiting_input"
+    assert_eq "ready" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
+        "Cursor sessionStart: writes ready"
     assert_eq "cursor-conv-1" "$(cat "$state_dir/am-cur456.sid" 2>/dev/null || echo)" \
         "Cursor sessionStart: writes conversation id sidecar"
     assert_eq "$cursor_transcript" "$(cat "$state_dir/am-cur456.transcript" 2>/dev/null || echo)" \
@@ -156,8 +171,8 @@ test_state_hooks() {
 
     AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"cursor-conv-1\",\"status\":\"completed\",\"loop_count\":0,\"workspace_roots\":[\"$real_project_dir\"]}"
-    assert_eq "waiting_input" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
-        "Cursor stop: writes waiting_input"
+    assert_eq "ready" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
+        "Cursor stop: writes ready"
 
     rm -f "$state_dir/am-cur456"
     AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
@@ -165,11 +180,11 @@ test_state_hooks() {
     assert_eq "running" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
         "Cursor preToolUse: writes running"
 
-    # --- Codex PermissionRequest writes waiting_permission ---
+    # --- Codex PermissionRequest writes waiting_user ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PermissionRequest\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_permission" "$state" "PermissionRequest: writes waiting_permission"
+    assert_eq "waiting_user" "$state" "PermissionRequest: writes waiting_user"
 
     # --- Codex PreToolUse writes running ---
     rm -f "$state_dir/am-abc123"
@@ -183,146 +198,140 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "PostToolUse: writes running"
 
-    # --- PostToolUse does NOT clobber a fresh waiting_input (race protection) ---
+    # --- PostToolUse does NOT clobber a fresh ready (race protection) ---
     # Claude Code may deliver a delayed PostToolUse from a previous turn
-    # milliseconds after Stop has already written waiting_input. Within the
+    # milliseconds after Stop has already written ready. Within the
     # grace window (AM_STATE_GUARD_SECS) that must not revert the state.
-    printf 'waiting_input' > "$state_dir/am-abc123"
+    printf 'ready' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "PostToolUse: does not clobber fresh waiting_input"
+    assert_eq "ready" "$state" "PostToolUse: does not clobber fresh ready"
 
-    # --- PostToolUse DOES flip an aged waiting_input back to running ---
+    # --- PostToolUse DOES flip an aged ready back to running ---
     # A turn can resume without UserPromptSubmit (answering an in-turn
     # question dialog continues the same turn), so tool hooks arriving after
     # the grace window are genuine new activity, not the trailing-hook race.
-    # An unconditional guard pinned such sessions at waiting_input forever.
-    printf 'waiting_input' > "$state_dir/am-abc123"
+    # An unconditional guard pinned such sessions at ready forever.
+    printf 'ready' > "$state_dir/am-abc123"
     touch -t 202601010000 "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "running" "$state" "PostToolUse: flips aged waiting_input to running (resumed turn)"
+    assert_eq "running" "$state" "PostToolUse: flips aged ready to running (resumed turn)"
 
-    # --- PostToolUse does NOT clobber waiting_background, fresh OR aged ---
+    # --- PostToolUse does NOT clobber background, fresh OR aged ---
     # A background subagent's own tool calls fire PreToolUse/PostToolUse in
-    # this session for as long as it runs (minutes), so waiting_background is
+    # this session for as long as it runs (minutes), so background is
     # guarded unconditionally — no grace window. Stop re-fires when the work
     # completes, so the state cannot stick.
-    printf 'waiting_background' > "$state_dir/am-abc123"
+    printf 'background' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_background" "$state" "PostToolUse: does not clobber fresh waiting_background"
+    assert_eq "background" "$state" "PostToolUse: does not clobber fresh background"
 
-    printf 'waiting_background' > "$state_dir/am-abc123"
+    printf 'background' > "$state_dir/am-abc123"
     touch -t 202601010000 "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_background" "$state" "PostToolUse: does not clobber aged waiting_background"
+    assert_eq "background" "$state" "PostToolUse: does not clobber aged background"
 
-    # --- PostToolUse DOES transition waiting_permission -> running ---
+    # --- PostToolUse DOES transition waiting_user -> running ---
     # After the user grants a permission prompt, the tool runs and PostToolUse
-    # fires. That must move the session out of waiting_permission so the UI
+    # fires. That must move the session out of waiting_user so the UI
     # reflects that the agent is working again. Without this, the session
-    # appears stuck at waiting_permission until Stop fires at end-of-turn.
-    printf 'waiting_permission' > "$state_dir/am-abc123"
+    # appears stuck at waiting_user until Stop fires at end-of-turn.
+    printf 'waiting_user' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "running" "$state" "PostToolUse: transitions waiting_permission -> running"
+    assert_eq "running" "$state" "PostToolUse: transitions waiting_user -> running"
 
-    # --- PostToolUse DOES transition waiting_custom -> running ---
-    printf 'waiting_custom' > "$state_dir/am-abc123"
-    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
-    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "running" "$state" "PostToolUse: transitions waiting_custom -> running"
-
-    # --- PreToolUse DOES transition waiting_permission -> running ---
+    # --- PreToolUse DOES transition waiting_user -> running ---
     # After grant, the next tool's PreToolUse must flip the state forward too.
-    printf 'waiting_permission' > "$state_dir/am-abc123"
+    printf 'waiting_user' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PreToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "running" "$state" "PreToolUse: transitions waiting_permission -> running"
+    assert_eq "running" "$state" "PreToolUse: transitions waiting_user -> running"
 
-    # --- UserPromptSubmit DOES override waiting_input (explicit user action) ---
-    printf 'waiting_input' > "$state_dir/am-abc123"
+    # --- UserPromptSubmit DOES override ready (explicit user action) ---
+    printf 'ready' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "running" "$state" "UserPromptSubmit: overrides waiting_input"
+    assert_eq "running" "$state" "UserPromptSubmit: overrides ready"
 
-    # --- UserPromptSubmit DOES override waiting_background too ---
-    printf 'waiting_background' > "$state_dir/am-abc123"
+    # --- UserPromptSubmit DOES override background too ---
+    printf 'background' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "running" "$state" "UserPromptSubmit: overrides waiting_background"
+    assert_eq "running" "$state" "UserPromptSubmit: overrides background"
 
-    # --- Stop with running background_tasks writes waiting_background ---
+    # --- Stop with running background_tasks writes background ---
     # Claude Code ≥2.1 Stop payload carries a background_tasks array — one
     # entry per still-running background item. Payload shapes below mirror
     # real captures (subagent and background shell).
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"a9596f8935c90b6cf\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"Sleep then reply OK\",\"agent_type\":\"general-purpose\"}]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_background" "$state" "Stop + running subagent in background_tasks: writes waiting_background"
+    assert_eq "background" "$state" "Stop + running subagent in background_tasks: writes background"
 
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"b6p7gc49c\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"Sleep 20s then echo done\",\"command\":\"sleep 20 && echo done\"}]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_background" "$state" "Stop + running shell in background_tasks: writes waiting_background"
+    assert_eq "background" "$state" "Stop + running shell in background_tasks: writes background"
 
-    # --- Stop with empty background_tasks writes waiting_input ---
+    # --- Stop with empty background_tasks writes ready ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "Stop + empty background_tasks: writes waiting_input"
+    assert_eq "ready" "$state" "Stop + empty background_tasks: writes ready"
 
-    # --- Stop with only non-running background_tasks writes waiting_input ---
+    # --- Stop with only non-running background_tasks writes ready ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"x\",\"type\":\"shell\",\"status\":\"completed\",\"description\":\"done already\"}]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "Stop + completed-only background_tasks: writes waiting_input"
+    assert_eq "ready" "$state" "Stop + completed-only background_tasks: writes ready"
 
-    # --- Stop clears a previous waiting_background once work finishes ---
+    # --- Stop clears a previous background once work finishes ---
     # Stop re-fires when background work completes (the completion re-invokes
     # Claude for a wrap-up turn) with a pruned background_tasks.
-    printf 'waiting_background' > "$state_dir/am-abc123"
+    printf 'background' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "Stop + empty background_tasks: clears waiting_background"
+    assert_eq "ready" "$state" "Stop + empty background_tasks: clears background"
 
     # --- Notification[idle_prompt] honors background_tasks when present ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"y\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"bg\"}]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_background" "$state" "Notification[idle_prompt] + running background_tasks: writes waiting_background"
+    assert_eq "background" "$state" "Notification[idle_prompt] + running background_tasks: writes background"
 
     # --- Notification[idle_prompt] WITHOUT the background_tasks field must
-    #     not downgrade waiting_background. idle_prompt fires ~60s into an
+    #     not downgrade background. idle_prompt fires ~60s into an
     #     idle wait with no background_tasks in its payload — it knows
     #     nothing about background work (observed live: it flipped
-    #     waiting_background to waiting_input exactly 60s after every Stop
+    #     background to ready exactly 60s after every Stop
     #     while the background shell/agent was still running). ---
-    printf 'waiting_background' > "$state_dir/am-abc123"
+    printf 'background' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_background" "$state" "Notification[idle_prompt] without background_tasks: keeps waiting_background"
+    assert_eq "background" "$state" "Notification[idle_prompt] without background_tasks: keeps background"
 
     # With the field present and pruned, the downgrade is legitimate.
-    printf 'waiting_background' > "$state_dir/am-abc123"
+    printf 'background' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\",\"background_tasks\":[]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "Notification[idle_prompt] + empty background_tasks: downgrades to waiting_input"
+    assert_eq "ready" "$state" "Notification[idle_prompt] + empty background_tasks: downgrades to ready"
 
-    # Field-less idle_prompt over a plain waiting_input is still a same-state
+    # Field-less idle_prompt over plain ready is still a same-state
     # no-op write path (nothing to protect).
-    printf 'waiting_input' > "$state_dir/am-abc123"
+    printf 'ready' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "waiting_input" "$state" "Notification[idle_prompt] without background_tasks over waiting_input: unchanged"
+    assert_eq "ready" "$state" "Notification[idle_prompt] without background_tasks over ready: unchanged"
 
-    # --- Orphaned leftover shells do not pin waiting_background ---
+    # --- Orphaned leftover shells do not pin background ---
     # A --fork-session / parent-Claude exit reparents still-running
     # run_in_background zsh loops to PID 1. Claude keeps listing them in
     # background_tasks as status=running, so every later Stop would otherwise
-    # write waiting_background forever (observed live: recap + "new task?"
+    # write background forever (observed live: recap + "new task?"
     # while the tab stayed ⧗ for hours). Ignore a running shell task whose
     # matching OS process is not owned by this Claude (PPID=1 when we cannot
     # see a claude ancestor; not a descendant when we can).
@@ -339,7 +348,7 @@ test_state_hooks() {
         rm -f "$state_dir/am-abc123"
         run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"orphan1\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"leftover wait-loop\",\"command\":\"sleep $orphan_secs\"}]}"
         state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-        assert_eq "waiting_input" "$state" "Stop + running shell whose process is PPID=1: leftover, writes waiting_input"
+        assert_eq "ready" "$state" "Stop + running shell whose process is PPID=1: leftover, writes ready"
     else
         skip_test "orphaned-shell PPID=1 (reparent did not happen, ppid=$orphan_ppid)"
     fi
@@ -352,7 +361,7 @@ test_state_hooks() {
         rm -f "$state_dir/am-abc123"
         run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"owned1\",\"type\":\"shell\",\"status\":\"running\",\"description\":\"live bg sleep\",\"command\":\"sleep $owned_secs\"}]}"
         state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-        assert_eq "waiting_background" "$state" "Stop + running shell owned by this tree: writes waiting_background"
+        assert_eq "background" "$state" "Stop + running shell owned by this tree: writes background"
     else
         skip_test "owned-shell child process (pid=$owned_pid ppid=$owned_ppid)"
     fi
@@ -370,7 +379,7 @@ test_state_hooks() {
         rm -f "$state_dir/am-abc123"
         run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[{\"id\":\"orphan1\",\"type\":\"shell\",\"status\":\"running\",\"command\":\"sleep $orphan_secs\"},{\"id\":\"a1\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"still working\"}]}"
         state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-        assert_eq "waiting_background" "$state" "Stop + orphaned shell + running subagent: still waiting_background"
+        assert_eq "background" "$state" "Stop + orphaned shell + running subagent: still background"
     else
         skip_test "orphaned-shell+subagent (reparent did not happen)"
     fi
@@ -386,12 +395,12 @@ test_state_hooks() {
     sleep 0.4
     orphan_ppid=$(ps -p "$orphan_pid" -o ppid= 2>/dev/null | tr -d ' ')
     if [[ "$orphan_ppid" == "1" ]]; then
-        printf 'waiting_background' > "$state_dir/am-abc123"
+        printf 'background' > "$state_dir/am-abc123"
         printf '[{"id":"orphan1","type":"shell","status":"running","command":"sleep %s"}]' \
             "$orphan_secs" > "$state_dir/am-abc123.bg"
         run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
         state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-        assert_eq "waiting_input" "$state" \
+        assert_eq "ready" "$state" \
             "idle_prompt without field + sidecar of only PPID=1 shells: downgrades"
     else
         skip_test "idle_prompt sidecar orphan re-check (reparent did not happen)"
@@ -450,7 +459,7 @@ test_state_hooks() {
         "family gate: Cursor stop leaves pi sid sidecar untouched"
     assert_eq "" "$(cat "$state_dir/am-pi.transcript" 2>/dev/null || echo)" \
         "family gate: Cursor stop leaves pi transcript sidecar untouched"
-    assert_eq "waiting_input" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
+    assert_eq "ready" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
         "family gate: Cursor stop targets the cursor session"
 
     # Claude Stop via cwd fallback with only pi + cursor sessions in the
@@ -484,7 +493,7 @@ test_state_hooks() {
     rm -f "$state_dir/am-codex"
     AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
         "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
-    assert_eq "waiting_input" "$(cat "$state_dir/am-codex" 2>/dev/null || echo)" \
+    assert_eq "ready" "$(cat "$state_dir/am-codex" 2>/dev/null || echo)" \
         "family gate: CamelCase Stop may target a codex session"
 
     # --- No matching session → no state file written ---
@@ -521,11 +530,11 @@ test_state_from_hook_reads_file() {
     _ensure_state_lib_sourced
     local state_dir
     state_dir=$(mktemp -d)
-    printf 'waiting_permission' > "$state_dir/am-test01"
+    printf 'waiting_user' > "$state_dir/am-test01"
 
     local result
     result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
-    assert_eq "waiting_permission" "$result" "_state_from_hook reads state file"
+    assert_eq "waiting_user" "$result" "_state_from_hook reads state file"
     rm -rf "$state_dir"
 }
 
@@ -549,14 +558,14 @@ test_state_from_hook_stale_file() {
         || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')
 
     # Terminal waiting states are persistent — an idle session can sit at
-    # waiting_input for hours without firing a new hook. The staleness gate
+    # ready for hours without firing a new hook. The staleness gate
     # must not drop these.
-    printf 'waiting_input' > "$state_dir/am-test01"
+    printf 'ready' > "$state_dir/am-test01"
     touch -t "$backdated" "$state_dir/am-test01"
     local result
     result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
-    assert_eq "waiting_input" "$result" \
-        "_state_from_hook trusts stale waiting_input (terminal state)"
+    assert_eq "ready" "$result" \
+        "_state_from_hook trusts stale ready (terminal state)"
 
     # Running implies an in-progress turn; missing PostToolUse/Stop for
     # >3 min means the agent likely crashed. Pane fallback should take over.

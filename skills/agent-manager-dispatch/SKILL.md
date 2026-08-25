@@ -27,7 +27,7 @@ Dispatch and monitor background AI agent sessions using the `am` CLI. Each sessi
 session=$(printf 'Your task description here.\n' | am new --detach --print-session <directory>)
 
 # 2. Block until the agent pauses
-#    (default states: waiting_input, waiting_permission, waiting_custom, idle, dead)
+#    (default states: ready, waiting_user, idle, dead)
 am wait "$session"
 
 # 3. Send follow-ups only when the agent is ready (--wait prevents mid-run injection)
@@ -67,9 +67,8 @@ session=$(printf 'Implement the requested change.\n' |
 ```
 
 `cursor-agent` is accepted as an alias, but registry/UI output uses `cursor`.
-Current Cursor releases expose in-turn questions as `waiting_custom`.
-Permission dialogs still remain `running`, so do not wait specifically for
-`waiting_permission` on Cursor sessions.
+Current Cursor releases expose in-turn questions as `waiting_user`. Permission
+dialogs still remain `running`, so user-wait detection is best-effort on Cursor.
 
 ## Writing Good Dispatch Prompts
 
@@ -108,9 +107,10 @@ Run the tests, reproduce, fix, and commit. Use superpowers:systematic-debugging.
 |-------|---------|
 | `starting` | Session created; agent process not yet running |
 | `running` | Agent actively executing |
-| `waiting_input` | Turn finished; ready for next prompt |
-| `waiting_permission` | Blocked on a y/n/a permission prompt |
-| `waiting_custom` | Blocked on a non-permission question |
+| `background` | Foreground turn ended; background work is still active |
+| `waiting_user` | Current turn is blocked on a user interaction |
+| `ready` | Turn finished; safe to send the next prompt |
+| `unknown` | Agent is alive, but no trustworthy state signal is available |
 | `idle` | Agent exited cleanly (task complete) |
 | `dead` | Agent crashed or session gone |
 
@@ -120,7 +120,7 @@ Run the tests, reproduce, fix, and commit. Use superpowers:systematic-debugging.
 ```bash
 session=$(printf 'Implement feature X\n' | am new --detach --print-session ~/repo)
 state=$(am wait "$session")
-if [[ "$state" == "waiting_input" ]]; then
+if [[ "$state" == "ready" ]]; then
     am send --wait "$session" "Now write the tests"
 fi
 am wait --state idle,dead "$session"
@@ -137,19 +137,19 @@ am peek "$s1" | tail -n 5
 am peek "$s2" | tail -n 5
 ```
 
-**Permission prompts** — detect and approve:
+**User interactions** — hand control to a human; `waiting_user` intentionally
+does not claim whether the dialog is a permission or a custom question:
 ```bash
 state=$(am wait "$session")
-if [[ "$state" == "waiting_permission" ]]; then
-    am send "$session" "y"
-    am wait "$session"
+if [[ "$state" == "waiting_user" ]]; then
+    am attach "$session"
 fi
 ```
 
 **Interrupt and redirect:**
 ```bash
 am interrupt "$session"
-am wait --state waiting_input "$session"
+am wait --state ready "$session"
 am send "$session" "Ignore the previous approach. Instead, ..."
 ```
 

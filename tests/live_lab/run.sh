@@ -200,14 +200,14 @@ if [[ " $SCENARIOS " == *" s1 "* ]]; then
     sleep 3; observe s1-fresh
 fi
 
-# ── S2: plain running turn (allowlisted sleep 25), then waiting_input ───────
+# ── S2: plain running turn (allowlisted sleep 25), then ready ───────────────
 if [[ " $SCENARIOS " == *" s2 "* ]]; then
     run_scenario s2-running
     send_prompt "Use the Bash tool to run exactly: sleep 25 && echo lab-done-s2 . Do not run anything else. Then reply with exactly one word: DONE"
     wait_hook_state running 30 && mark s2-running "hook wrote running"
     sleep 10; observe s2-running    # mid-turn: spinner + title glyph
-    wait_hook_state waiting_input 90 && mark s2-running "hook wrote waiting_input at turn end" \
-        || mark s2-running "NO waiting_input within 90s (state=$(hook_state))"
+    wait_hook_state ready 90 && mark s2-running "hook wrote ready at turn end" \
+        || mark s2-running "NO ready within 90s (state=$(hook_state))"
     sleep 2; observe s2-running
 fi
 
@@ -223,24 +223,24 @@ if [[ " $SCENARIOS " == *" s3 "* ]]; then
     else
         mark s3-permission "NO permission dialog appeared"
     fi
-    wait_hook_state waiting_input 60 && observe s3-permission
+    wait_hook_state ready 60 && observe s3-permission
 fi
 
-# ── S4: background shell -> Stop with background_tasks -> waiting_background ─
+# ── S4: background shell -> Stop with background_tasks -> background ────────
 if [[ " $SCENARIOS " == *" s4 "* ]]; then
     run_scenario s4-background
     send_prompt "Use the Bash tool with run_in_background set to true to start exactly: sleep 45 && echo lab-done-s4 . Immediately after starting it, end your turn replying with exactly one word: STARTED. Do not wait for the background command."
     wait_hook_state running 30
-    if wait_hook_state waiting_background 90; then
-        mark s4-background "hook wrote waiting_background"
+    if wait_hook_state background 90; then
+        mark s4-background "hook wrote background"
         sleep 3; observe s4-background
     else
-        mark s4-background "NO waiting_background (state=$(hook_state))"
+        mark s4-background "NO background (state=$(hook_state))"
         observe s4-background
     fi
-    # background completes -> Stop re-fires -> waiting_input self-heal
-    if wait_hook_state waiting_input 150; then
-        mark s4-background "self-healed to waiting_input after bg completion"
+    # background completes -> Stop re-fires -> ready self-heal
+    if wait_hook_state ready 150; then
+        mark s4-background "self-healed to ready after bg completion"
     else
         mark s4-background "NO self-heal (state=$(hook_state))"
     fi
@@ -257,7 +257,7 @@ if [[ " $SCENARIOS " == *" s5 "* ]]; then
         press Enter                       # pick first option
         mark s5-question "answered"
         sleep 5; observe s5-question      # did state move back to running?
-        wait_hook_state waiting_input 60 && mark s5-question "turn ended -> waiting_input" \
+        wait_hook_state ready 60 && mark s5-question "turn ended -> ready" \
             || mark s5-question "stuck: state=$(hook_state)"
     else
         mark s5-question "NO question dialog"
@@ -288,7 +288,7 @@ if [[ " $SCENARIOS " == *" s7 "* ]]; then
         sleep 50
         mark s7-long-quiet "t+$((i*50))s hook=$(hook_state) hook_age=$(( $(date +%s) - $(hook_mtime) )) act_age=$(( $(date +%s) - $(activity) )) title='$(pane_title)'"
     done
-    wait_hook_state waiting_input 60 && mark s7-long-quiet "turn ended -> waiting_input"
+    wait_hook_state ready 60 && mark s7-long-quiet "turn ended -> ready"
     observe s7-long-quiet
 fi
 

@@ -12,18 +12,19 @@ mechanics implement.
 
 ## Big picture
 
-**am is a multiplexer for AI coding agents.** Each agent (Claude Code or
-Codex) lives in its own tmux session on a dedicated tmux server, with a
+**am is a multiplexer for AI coding agents.** Each Claude, Cursor, Codex, or
+pi agent lives in its own tmux session on a dedicated tmux server, with a
 registry of metadata beside it. Around that core, everything serves one
 promise: *tell the human — instantly and truthfully — which sessions are
-waiting on them*, and give both humans and other agents primitives to
-launch, message, observe, kill, and resurrect sessions without attaching.
+working, blocked on them, or ready*, and give both humans and other agents
+primitives to launch, message, observe, kill, and resurrect sessions without
+attaching.
 
-The intellectual center of gravity is **state detection**: deriving a
-nine-value session state from two documented-behavior signals (Claude's
-self-maintained pane-title glyph, and lifecycle-hook writes to a state
-file) — after a failed generation of pane-content scraping that the
-codebase now explicitly forbids.
+The intellectual center of gravity is **state detection**: deriving an
+eight-value lifecycle state from process ownership, agent-maintained terminal
+titles, and lifecycle-hook writes. Broad conversation-content scraping remains
+forbidden; Cursor's own structural footer task counter is the sole narrow
+exception because Cursor exposes no background-work lifecycle event.
 
 ## Vocabulary and boundaries
 
@@ -31,41 +32,41 @@ codebase now explicitly forbids.
 |---|---|---|---|---|
 | Session | One agent in one tmux session named `am-<6-hex>`, split into an **agent pane** (top) and **shell pane** (bottom, 15 lines). Both panes export `AM_SESSION_NAME`. | Foundational | `lib/agents.sh:agent_launch` | verified |
 | Dedicated tmux server | All am sessions live on socket `agent-manager` (the `am_tmux` wrapper), isolated from the user's own tmux config and sessions. | Foundational | `lib/utils.sh` (`AM_TMUX_SOCKET`), `lib/tmux.sh:am_tmux` | verified (the *why* — config isolation — is inferred from `lib/tmux.sh` comments) |
-| State | Nine values: `starting · running · waiting_input · waiting_permission · waiting_custom · waiting_background · idle · unknown · dead`. The product's core datum. | Foundational | `lib/state.sh` | verified |
+| State | Eight values: `starting · running · background · waiting_user · ready · idle · unknown · dead`. The product's core datum. | Foundational | `lib/state.sh` | verified |
 | Registry | Live-session metadata (dir, branch, agent type, task, flags) in one JSON file. Removed on kill. | Structural | `lib/registry.sh:registry_add` | verified |
 | Sessions log | Append-only JSONL afterlife of Claude sessions — the substrate for `am restore` (resume via `claude --resume <sid>`). | Structural | `lib/registry.sh:sessions_log_*` | verified |
 | Sandbox | Optional per-session Docker container (agent runs inside; shell pane attaches) with an egress-filtering proxy sidecar. | Structural | `lib/sandbox.sh` | verified |
 | Go mirror | Hot-path logic (session list, browser TUI, title refresh, orphan reaping) re-implemented in Go for latency; bash remains the semantic reference. | Structural | `internal/sessions/` | verified |
 | A2A primitives | `am new --detach` / `send` / `peek` / `wait`: transport for agent-to-agent orchestration. Deliberately *not* semantic — they move bytes and report state, never interpret task completion. | Structural | `am` help text, AGENTS.md | verified |
 
-## State detection: two honest signals, no scraping
+## State detection: lifecycle signals, not conversational guesses
 
-Two signals with complementary strengths are crossed in a decision table
-inside `_state_resolve` (`lib/state.sh`) — the **single source of truth**
-for state:
+Signals with complementary strengths are crossed inside `_state_resolve`
+(`lib/state.sh`) — the **single source of truth** for public state:
 
-- **Title glyph** (liveness). Claude Code itself maintains the terminal
-  title: a braille spinner frame (U+2800–U+28FF) while busy, `✳` when it
-  needs the user. Event-driven, never goes stale — the only signal that
-  survives long quiet tool calls. Answers *busy vs. attention*, nothing
-  more.
-- **Hook state file** (flavor). Lifecycle hooks (`Stop`, `Notification`,
-  `UserPromptSubmit`, `Pre/PostToolUse`, `PermissionRequest`) run
-  `lib/hooks/state-hook.sh`, which writes one word to
-  `/tmp/am-state/<session>`. Answers *which kind of waiting*.
+- **Process ownership** distinguishes an agent process from a shell and yields
+  `starting`, `idle`, or `dead` before any activity signal is considered.
+- **Lifecycle state files** record `running`, `background`, `waiting_user`, or
+  `ready`. Claude/Codex/Cursor hooks and pi's in-process extension write only on
+  transitions, so file mtime is the state-entry timestamp.
+- **Agent-maintained terminal titles** self-heal missed transitions. Legacy
+  Claude versions expose a busy glyph; current Claude's static `✳` only proves
+  a fresh process painted its title. Cursor exposes explicit Ready, Working,
+  and Waiting-for-you suffixes.
+- **Cursor footer task count** refines a Ready title to `background`. This
+  matches only Cursor-owned input-footer structure, never response text.
 
 ```mermaid
 flowchart TD
     A["_state_resolve(session)"] --> B{"top pane is a<br/>plain shell?"}
     B -- yes --> C["starting / idle / dead<br/>(process tree + age)"]
-    B -- no --> D{"title glyph?<br/>(Claude only)"}
-    D -- "busy ⠋" --> E{"hook file says<br/>permission/custom?"}
-    E -- yes --> F["pass through:<br/>dialog needs the user"]
-    E -- no --> G["running<br/>(trust Claude's indicator)"]
-    D -- "attention ✳" --> H{"hook file says<br/>waiting_*?"}
-    H -- yes --> I["pass through:<br/>hook has the flavor"]
-    H -- no --> J["waiting_input<br/>+ self-heal stale file"]
-    D -- none --> K["gated hook state<br/>(180s staleness gate on running)<br/>else unknown"]
+    B -- no --> D{"agent-maintained<br/>title status?"}
+    D -- working --> E["running<br/>(unless hook says waiting_user)"]
+    D -- waiting --> F["waiting_user"]
+    D -- ready --> G{"Cursor footer has<br/>active tasks?"}
+    G -- yes --> H["background"]
+    G -- no --> I["ready"]
+    D -- none / static Claude ✳ --> J["canonical hook state<br/>else unknown"]
 ```
 
 ### Invariants that keep it truthful (all verified)
@@ -74,13 +75,13 @@ flowchart TD
   state file's *mtime is the state-entry timestamp* — the status bar's
   "waiting for you since 12m" derives directly from it. Any change that
   rewrites the file on every event silently breaks tab ages.
-- **Race guards are asymmetric by design.** `waiting_background` is guarded
+- **Race guards are asymmetric by design.** `background` is guarded
   *unconditionally* against tool hooks (a background subagent fires
-  Pre/PostToolUse for minutes); `waiting_input` gets only a bounded grace
+  Pre/PostToolUse for minutes); `ready` gets only a bounded grace
   window (`AM_STATE_GUARD_SECS`, default 10s), because a turn can resume
   without `UserPromptSubmit` and an unconditional guard would pin an active
-  session at waiting. `waiting_permission`/`waiting_custom` get *no* guard —
-  approval must flip them to running.
+  session at ready. `waiting_user` gets *no* guard — answering the dialog must
+  flip it to running.
 - **Leftover shells do not count as background work.** `--fork-session` or
   a parent-Claude exit reparents `run_in_background` zsh loops to PID 1.
   Claude still lists them as `status=running` in `background_tasks`. The
@@ -93,18 +94,20 @@ flowchart TD
   and if `AM_SESSION_NAME` is set but missing from the registry it *exits*
   rather than fall through and clobber another session sharing the
   directory.
-- **Staleness gates are fallback-only.** The 180s gate on a `running` hook
-  file applies only when no glyph is readable — both file mtime and tmux
-  activity routinely go quiet during live long tool calls.
+- **Staleness gates are fallback-only.** Claude, Cursor, and pi have reliable
+  turn-boundary events and are read ungated; the 180s gate applies only to
+  other agents. File mtime and tmux activity routinely go quiet during live
+  long tool calls.
 
 ### Load-bearing prohibition
 
-Earlier revisions scraped pane *content* (banners, mode-line counters,
-box-chrome anchoring) as a fourth signal. It misread live turns and flapped
-states hundreds of times a day. The title glyph replaced all of it. **Do
-not reintroduce pane-content heuristics for state.** Ground truth lives in
-`tests/live_lab/`, which drives a real Claude through every state (spends
-tokens, ~8 min — run after Claude Code updates or state.sh changes).
+Earlier revisions classified conversational pane *content* (banners, mode-line
+counters, box chrome). It misread live turns and flapped states hundreds of
+times a day. **Do not reintroduce broad pane-content heuristics for state.**
+The only exception is Cursor's CLI-owned footer task count, structurally
+anchored to the newest `→ Add a follow-up` input placeholder (or its captured
+border) and consulted only while Cursor's title says Ready. Ground truth lives
+in `tests/live_lab/`.
 
 Hooks are wired by `scripts/install.sh` (`_install_claude_hooks` into
 `~/.claude/settings.json`; `_install_codex_hooks` into a Codex hooks
@@ -207,9 +210,10 @@ lifecycle (created in launch, removed in kill, orphans GC'd).
 
 Three concepts control this system:
 
-1. **The two-signal state contract** — glyph for liveness, hook for flavor,
-   decision table as the only merger, pane content forbidden. Every state
-   bug and every Claude Code upgrade is judged against this contract.
+1. **The lifecycle state contract** — public states describe what can progress
+   (`running`, `background`, `waiting_user`, `ready`), while `_state_resolve`
+   alone merges process, hook, and agent-owned title signals. Broad
+   conversational pane classification is forbidden.
 2. **Tense decides the store** — registry (present) vs. sessions log (past)
    vs. state dir (now), with the sid sidecar as the one authoritative
    identity link between a live session and its resumable conversation.

@@ -124,10 +124,12 @@ send_prompt() {
 }
 press() { tmux -L "$SOCKET" send-keys -t "$SESSION" "$@"; }
 wait_state() {
-    local wanted="$1" timeout="${2:-90}" start
+    local wanted="$1" timeout="${2:-90}" start observed canonical
     start=$(date +%s)
     while (( $(date +%s) - start < timeout )); do
-        [[ "$(hook_state)" == "$wanted" ]] && return 0
+        observed=$(hook_state)
+        _state_normalize "$observed" canonical
+        [[ "$canonical" == "$wanted" ]] && return 0
         sleep 0.5
     done
     return 1
@@ -171,8 +173,8 @@ tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
 sampler &
 SAMPLER_PID=$!
 
-if ! wait_state waiting_input 60; then
-    mark boot "FATAL: Cursor did not reach waiting_input (hook=$(hook_state))"
+if ! wait_state ready 60; then
+    mark boot "FATAL: Cursor did not reach ready (hook=$(hook_state))"
     exit 1
 fi
 
@@ -188,7 +190,7 @@ if [[ " $SCENARIOS " == *" c2 "* ]]; then
     run_scenario c2-roundtrip
     send_prompt "Reply with exactly: cursor-pong"
     wait_state running 15 && observe c2-running || mark c2-roundtrip "FAIL: no running hook"
-    if wait_state waiting_input 120; then
+    if wait_state ready 120; then
         observe c2-waiting
         [[ -n "$(transcript)" ]] \
             && mark c2-waiting "PASS: exact transcript sidecar present" \
@@ -205,21 +207,21 @@ if [[ " $SCENARIOS " == *" c3 "* ]]; then
         sleep 8
         observe c3-permission
         press a
-        wait_state waiting_input 60 || { press C-c; wait_state waiting_input 20 || true; }
+        wait_state ready 60 || { press C-c; wait_state ready 20 || true; }
     else
         mark c3-permission "WARN: permission turn did not start"
     fi
 fi
 
 if [[ " $SCENARIOS " == *" c4 "* ]]; then
-    wait_state waiting_input 20 || { press C-c; wait_state waiting_input 20 || true; }
+    wait_state ready 20 || { press C-c; wait_state ready 20 || true; }
     run_scenario c4-question
     send_prompt "Use the AskQuestion tool to ask me to choose red or blue. Do not choose for me."
     if wait_state running 20; then
         sleep 10
         observe c4-question
         press Enter
-        wait_state waiting_input 60 || { press C-c; wait_state waiting_input 20 || true; }
+        wait_state ready 60 || { press C-c; wait_state ready 20 || true; }
     else
         mark c4-question "WARN: question turn did not start"
     fi
@@ -229,7 +231,7 @@ if [[ " $SCENARIOS " == *" c5 "* ]]; then
     run_scenario c5-subagent
     send_prompt "Launch one general-purpose subagent that replies with exactly subagent-ok, then report its result."
     wait_state running 20 && observe c5-subagent-running || true
-    wait_state waiting_input 180 && observe c5-subagent-waiting \
+    wait_state ready 180 && observe c5-subagent-waiting \
         || mark c5-subagent "WARN: subagent turn did not settle"
 fi
 
@@ -243,25 +245,25 @@ if [[ " $SCENARIOS " == *" c6 "* ]]; then
         tmux -L "$SOCKET" send-keys -t "$SESSION" -l \
             "export AM_SESSION_NAME='$SESSION'; agent --trust --resume '$resume_sid' $CURSOR_ARGS"
         tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
-        wait_state waiting_input 60 && observe c6-resume \
-            || mark c6-resume "WARN: resumed session did not reach waiting_input"
+        wait_state ready 60 && observe c6-resume \
+            || mark c6-resume "WARN: resumed session did not reach ready"
     fi
 fi
 
 if [[ " $SCENARIOS " == *" c7 "* ]]; then
-    wait_resolved waiting_input 20 || { press C-c; wait_resolved waiting_input 20 || true; }
+    wait_resolved ready 20 || { press C-c; wait_resolved ready 20 || true; }
     run_scenario c7-background-task
     send_prompt "Start this exact shell command as a background task: sleep 40. Finish your response as soon as Cursor labels it background; do not wait for it to complete."
-    if wait_resolved waiting_background 60; then
+    if wait_resolved background 60; then
         observe c7-background-task-waiting
-        if wait_resolved waiting_input 90; then
+        if wait_resolved ready 90; then
             observe c7-background-task-complete
             mark c7-background-task "PASS: footer tasks appeared and cleared"
         else
-            mark c7-background-task "WARN: waiting_background did not clear after task completion"
+            mark c7-background-task "WARN: background did not clear after task completion"
         fi
     else
-        mark c7-background-task "WARN: footer task count did not resolve as waiting_background"
+        mark c7-background-task "WARN: footer task count did not resolve as background"
     fi
 fi
 

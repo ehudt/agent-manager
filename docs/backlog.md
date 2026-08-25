@@ -16,7 +16,11 @@
 
 ## Known Issues
 
-- **State detection edge transitions** — the resolver is now title-glyph-first (`_state_resolve`: shell pane check → title glyph × hook state → gated hook fallback → unknown; 2026-07-10 redesign after the pane-heuristic layers were shown to flap live sessions through running/unknown/waiting_background). Remaining edges: agent crash / manual `Ctrl-C` mid-turn can leave a stale glyph or hook state until the shell check catches the dead process; the no-glyph fallback (titles disabled, non-Claude agents) still relies on the 180s staleness gate. Use `AM_STATE_DEBUG=1` for empirical data; `tests/live_lab/run.sh` for ground truth against a real Claude.
-
-- **Backgrounded turns detach hook state (upstream)** — once a turn is backgrounded (ctrl-b), its lifecycle events fire from a bg session context (`stop_hook_summary` shows `sessionKind: bg`, different `session_id`) that doesn't resolve to the am session, so turn ends write nothing until the next foreground event (observed 2026-07-08, pink-wekapp session: state file frozen for 20+ min across 3 turn ends). Covered on the read side since 2026-07-10 by the title glyph: Claude flips the pane title to `✳` at the true turn end regardless of hook routing, and the resolver self-heals the leftover `running` file. A write-side fix (hook resolving bg-session events to the parent am session) is no longer needed for state correctness.
+- **State detection edge transitions** — `_state_resolve` combines the shell
+  process check, agent-maintained title status, canonical hook state, and
+  Cursor's narrow Ready-footer refinement. Earlier pane classifiers flapped
+  live sessions through `running`/`unknown`/`background`. Remaining edge:
+  agents without reliable turn-boundary events still use the 180s running
+  staleness gate. Use `AM_STATE_DEBUG=1` for empirical data and
+  `tests/live_lab/` for ground truth.
 

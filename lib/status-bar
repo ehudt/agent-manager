@@ -48,20 +48,18 @@ CURRENT_TASK_MAX=42
 # eliminating these $()  forks is the difference between "instant" and "lag".
 declare -A GLYPH=(
     [running]='▸'
-    [waiting_input]='●'
-    [waiting_permission]='⚠'
-    [waiting_custom]='◆'
-    [waiting_background]='⧗'
+    [ready]='●'
+    [waiting_user]='⚠'
+    [background]='⧗'
     [starting]='◌'
     [unknown]='?'
     [dead]='✕'
 )
 declare -A COLOR=(
     [running]='colour75'
-    [waiting_input]='colour114'
-    [waiting_permission]='colour214'
-    [waiting_custom]='colour213'
-    [waiting_background]='colour44'
+    [ready]='colour114'
+    [waiting_user]='colour214'
+    [background]='colour44'
     [starting]='colour221'
     [unknown]='colour244'
     [dead]='colour196'
@@ -204,7 +202,8 @@ for i in "${!session_meta[@]}"; do
     # fallback for states without a hook file (idle, non-hook agents).
     age=""
     _age_ref=""
-    if [[ "$state" == waiting_* || "$state" == "running" ]]; then
+    if [[ "$state" == "ready" || "$state" == "waiting_user" \
+        || "$state" == "background" || "$state" == "running" ]]; then
         _age_ref=$(stat -c %Y "$AM_STATE_DIR/$session" 2>/dev/null \
             || stat -f %m "$AM_STATE_DIR/$session" 2>/dev/null || true)
         [[ "$_age_ref" =~ ^[0-9]+$ ]] || _age_ref=""
@@ -226,7 +225,7 @@ for i in "${!session_meta[@]}"; do
     S_AGE[i]=$age
 
     case "$state" in
-        waiting_input|waiting_permission|waiting_custom|running)
+        ready|waiting_user|running)
             STATE_TOTAL[$state]=$(( ${STATE_TOTAL[$state]:-0} + 1 ))
             ;;
     esac
@@ -375,7 +374,7 @@ _build_attention() {
     local p_idx="$1"
     local p_state="${S_STATE[$p_idx]}"
     local att="" st cnt g c
-    for st in waiting_permission waiting_custom waiting_input; do
+    for st in waiting_user ready; do
         cnt=${STATE_TOTAL[$st]:-0}
         [[ "$p_state" == "$st" ]] && cnt=$(( cnt - 1 ))
         (( cnt <= 0 )) && continue

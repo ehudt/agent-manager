@@ -1,5 +1,9 @@
 # State detection simplification — instrumentation phase
 
+> Historical document: pre-0.12 `waiting_input`, `waiting_permission` /
+> `waiting_custom`, and `waiting_background` correspond to `ready`,
+> `waiting_user`, and `background`.
+
 Captured 2026-05-14. Follow-up to `state-detection-plan.md` (Phases 1–3
 already landed). Records what just landed, how to collect data, and what
 to do with that data when deciding the next cut.

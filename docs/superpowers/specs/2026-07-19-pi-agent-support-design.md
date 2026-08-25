@@ -1,5 +1,9 @@
 # Pi Agent Support — Design
 
+> Historical document: pre-0.12 `waiting_input`, `waiting_permission` /
+> `waiting_custom`, and `waiting_background` correspond to `ready`,
+> `waiting_user`, and `background`.
+
 Date: 2026-07-19
 Status: approved
 

@@ -141,10 +141,10 @@ tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
 
 sampler & SAMPLER_PID=$!
 
-# Wait for pi to boot (wait for state file to exist and be waiting_input)
+# Wait for pi to boot (wait for state file to exist and be ready)
 sleep 5
-if ! wait_hook_state waiting_input 40; then
-    mark boot "FATAL: pi did not reach waiting_input within 45s (state=$(hook_state))"
+if ! wait_hook_state ready 40; then
+    mark boot "FATAL: pi did not reach ready within 45s (state=$(hook_state))"
     exit 1
 fi
 mark boot "pi booted, state=$(hook_state)"
@@ -152,11 +152,11 @@ sleep 2
 
 run_scenario() { echo "$1" > "$CURRENT_SCENARIO_FILE"; mark "$1" "=== begin ==="; }
 
-# ── P1: fresh session, hook should write waiting_input ──────────────────────
+# ── P1: fresh session, hook should write ready ──────────────────────────────
 if [[ " $SCENARIOS " == *" p1 "* ]]; then
     run_scenario p1-fresh
-    if wait_hook_state waiting_input 30; then
-        mark p1-fresh "PASS: hook wrote waiting_input within 30s"
+    if wait_hook_state ready 30; then
+        mark p1-fresh "PASS: hook wrote ready within 30s"
         observe p1-fresh
         # .sid sidecar should exist (tracks the session ID pi is using,
         # even with --no-session — the ID exists, it's just not persisted)
@@ -166,12 +166,12 @@ if [[ " $SCENARIOS " == *" p1 "* ]]; then
             mark p1-fresh "FAIL: .sid absent (expected present)"
         fi
     else
-        mark p1-fresh "FAIL: NO waiting_input within 30s (state=$(hook_state))"
+        mark p1-fresh "FAIL: NO ready within 30s (state=$(hook_state))"
         observe p1-fresh
     fi
 fi
 
-# ── P2: prompt round-trip → running → waiting_input ─────────────────────────
+# ── P2: prompt round-trip → running → ready ─────────────────────────────────
 if [[ " $SCENARIOS " == *" p2 "* ]]; then
     run_scenario p2-roundtrip
     send_prompt "Reply with exactly: pong"
@@ -181,11 +181,11 @@ if [[ " $SCENARIOS " == *" p2 "* ]]; then
     else
         mark p2-roundtrip "FAIL: NO running within 10s (state=$(hook_state))"
     fi
-    if wait_hook_state waiting_input 120; then
-        mark p2-roundtrip "PASS: hook wrote waiting_input within 120s"
+    if wait_hook_state ready 120; then
+        mark p2-roundtrip "PASS: hook wrote ready within 120s"
         observe p2-roundtrip
     else
-        mark p2-roundtrip "FAIL: NO waiting_input within 120s (state=$(hook_state))"
+        mark p2-roundtrip "FAIL: NO ready within 120s (state=$(hook_state))"
         observe p2-roundtrip
     fi
 fi
@@ -225,11 +225,11 @@ if [[ " $SCENARIOS " == *" p3 "* ]]; then
     fi
     
     # Wait for turn to complete
-    if wait_hook_state waiting_input 60; then
-        mark p3-long-quiet "hook wrote waiting_input after turn completed"
+    if wait_hook_state ready 60; then
+        mark p3-long-quiet "hook wrote ready after turn completed"
         observe p3-long-quiet
     else
-        mark p3-long-quiet "FAIL: NO waiting_input after turn (state=$(hook_state))"
+        mark p3-long-quiet "FAIL: NO ready after turn (state=$(hook_state))"
         observe p3-long-quiet
     fi
 fi

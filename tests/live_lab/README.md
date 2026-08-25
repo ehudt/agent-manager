@@ -43,9 +43,9 @@ LAB_CURSOR_ARGS="--model auto" ./tests/live_lab/run_cursor.sh
 | # | Drives | Verifies |
 |---|--------|----------|
 | s1 | fresh session, no prompt | `✳` title before any hook fires |
-| s2 | allowlisted `sleep 25` turn | braille title while running; `Stop` → `waiting_input` + `✳` |
-| s3 | non-allowlisted command | `Notification[permission_prompt]` → `waiting_permission`; title during dialog |
-| s4 | background shell (`run_in_background`) | `Stop` `background_tasks` → `waiting_background`; self-heal to `waiting_input` on completion |
+| s2 | allowlisted `sleep 25` turn | braille title while running; `Stop` → `ready` + `✳` |
+| s3 | non-allowlisted command | `Notification[permission_prompt]` → `waiting_user`; title during dialog |
+| s4 | background shell (`run_in_background`) | `Stop` `background_tasks` → `background`; self-heal to `ready` on completion |
 | s5 | AskUserQuestion mid-turn | hook + title while an in-turn dialog is pending; resume after answer |
 | s6 | ctrl-b during a tool call | title flips to `✳` at true turn end even when hook routing is unreliable |
 | s7 | `sleep 200` (> 180s gate) | hook file + tmux activity go stale on a live turn; title stays busy |
@@ -64,8 +64,8 @@ LAB_CURSOR_ARGS="--model auto" ./tests/live_lab/run_cursor.sh
 
 | # | Drives | Verifies |
 |---|--------|----------|
-| p1 | fresh session, no prompt | `session_start` → `waiting_input` state file (no .sid with `--no-session`) |
-| p2 | prompt round-trip | `agent_start` → `running`, `agent_settled` → `waiting_input` |
+| p1 | fresh session, no prompt | `session_start` → `ready` state file (no .sid with `--no-session`) |
+| p2 | prompt round-trip | `agent_start` → `running`, `agent_settled` → `ready` |
 | p3 | `sleep 200` (> 180s quiet) | ungated hook read: resolved state NEVER leaves `running` during long tool call |
 | p4 | quit pi → shell | shell-pane check precedence: resolved state == `idle` despite stale hook file |
 
@@ -79,13 +79,14 @@ LAB_CURSOR_ARGS="--model auto" ./tests/live_lab/run_cursor.sh
 | c4 | AskQuestion | behavior while an in-turn question is pending |
 | c5 | subagent turn | tool/response activity and settle behavior |
 | c6 | native `--resume` | conversation identity survives relaunch |
+| c7 | background task | Ready title + footer task count → `background`, then `ready` |
 
 Cursor 2026.08.11 exposed stable terminal-title suffixes for `✅ Ready`,
-`⏳ Working`, and `❓ Waiting for you`; production uses these non-content
-signals alongside lifecycle hooks. Its forced permission dialog still showed
-`⏳ Working`, and no permission/background-wait lifecycle event was observed,
-so those states remain `running`. Older Cursor releases without suffixes fall
-back to hooks. Pane content is never scraped.
+`⏳ Working`, and `❓ Waiting for you`; production uses these signals alongside
+lifecycle hooks. Its forced permission dialog still showed `⏳ Working`, so it
+remains `running`. Cursor exposes no background-work lifecycle event; the
+resolver narrowly reads the CLI-owned footer task count while the title says
+Ready. Older Cursor releases without suffixes fall back to hooks.
 
 ## Key empirical findings (2026-07-10, Claude Code 2.1.206)
 
@@ -99,4 +100,5 @@ back to hooks. Pane content is never scraped.
 - `Stop` payload `background_tasks` is reliable: present on every `Stop`,
   pruned when work finishes, and `Stop` re-fires on background completion.
 - A pending AskUserQuestion dialog fires `Notification[permission_prompt]`
-  (hook state `waiting_permission`) and shows the `✳` title.
+  (canonical state `waiting_user`) and shows the `✳` title. This is why
+  permission and custom questions are not separate public states.

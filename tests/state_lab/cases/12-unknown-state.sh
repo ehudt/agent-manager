@@ -31,9 +31,9 @@ lab_hook_age lab-unk 600
 state=$(probe_resolve lab-unk claude "$real")
 lab_assert "running" "$state" "stale running hook -> running (ungated)"
 
-# Fresh waiting_input hook -> waiting_input (sanity check).
-printf 'waiting_input' > "$AM_STATE_DIR/lab-unk"
+# Fresh ready hook -> ready (sanity check).
+printf 'ready' > "$AM_STATE_DIR/lab-unk"
 state=$(probe_resolve lab-unk claude "$real")
-lab_assert "waiting_input" "$state" "fresh waiting_input hook -> waiting_input"
+lab_assert "ready" "$state" "fresh ready hook -> ready"
 
 lab_report

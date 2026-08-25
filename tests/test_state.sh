@@ -13,23 +13,45 @@ test_state() {
     source "$LIB_DIR/state.sh"
     set -u
 
-    # --- _state_hook_read: fresh waiting_* states ---
+    # --- _state_hook_read: fresh canonical states ---
     local tmp_state_dir
     tmp_state_dir=$(mktemp -d)
     AM_STATE_DIR="$tmp_state_dir"
 
     local got
+    printf 'ready' > "$tmp_state_dir/am-foo"
+    _state_hook_read "am-foo" got
+    assert_eq "ready" "$got" "_state_hook_read: ready"
+
+    printf 'waiting_user' > "$tmp_state_dir/am-foo"
+    _state_hook_read "am-foo" got
+    assert_eq "waiting_user" "$got" "_state_hook_read: waiting_user"
+
+    printf 'background' > "$tmp_state_dir/am-foo"
+    _state_hook_read "am-foo" got
+    assert_eq "background" "$got" "_state_hook_read: background"
+
+    # Live sessions may retain state files written by an older am process
+    # during an upgrade. Readers canonicalize those values without rewriting
+    # the file, preserving the original time-in-state mtime.
     printf 'waiting_input' > "$tmp_state_dir/am-foo"
     _state_hook_read "am-foo" got
-    assert_eq "waiting_input" "$got" "_state_hook_read: waiting_input"
+    assert_eq "ready" "$got" "_state_hook_read: legacy waiting_input -> ready"
 
     printf 'waiting_permission' > "$tmp_state_dir/am-foo"
     _state_hook_read "am-foo" got
-    assert_eq "waiting_permission" "$got" "_state_hook_read: waiting_permission"
+    assert_eq "waiting_user" "$got" \
+        "_state_hook_read: legacy waiting_permission -> waiting_user"
 
     printf 'waiting_custom' > "$tmp_state_dir/am-foo"
     _state_hook_read "am-foo" got
-    assert_eq "waiting_custom" "$got" "_state_hook_read: waiting_custom"
+    assert_eq "waiting_user" "$got" \
+        "_state_hook_read: legacy waiting_custom -> waiting_user"
+
+    printf 'waiting_background' > "$tmp_state_dir/am-foo"
+    _state_hook_read "am-foo" got
+    assert_eq "background" "$got" \
+        "_state_hook_read: legacy waiting_background -> background"
 
     printf 'running' > "$tmp_state_dir/am-foo"
     _state_hook_read "am-foo" got
@@ -67,12 +89,12 @@ test_state() {
     _state_hook_read "am-foo" got "$now_epoch" ""
     assert_eq "" "$got" "_state_hook_read: stale file + empty activity drops"
 
-    # --- waiting_* survives staleness (terminal states are persistent) ---
-    printf 'waiting_input' > "$tmp_state_dir/am-foo"
+    # --- paused/background states survive staleness ---
+    printf 'ready' > "$tmp_state_dir/am-foo"
     touch -t "$backdated" "$tmp_state_dir/am-foo"
     got=""
     _state_hook_read "am-foo" got
-    assert_eq "waiting_input" "$got" "_state_hook_read: stale waiting_input persists"
+    assert_eq "ready" "$got" "_state_hook_read: stale ready persists"
 
     # --- bogus state rejected ---
     printf 'bogus' > "$tmp_state_dir/am-foo"
@@ -118,7 +140,7 @@ test_state_integration() {
     state=$(agent_get_state "$session_name" 2>/dev/null || true)
     assert_not_empty "$state" "agent_get_state: returns non-empty state for live session"
 
-    local valid_states="starting running waiting_input waiting_permission waiting_custom waiting_background idle unknown dead"
+    local valid_states="starting running ready waiting_user background idle unknown dead"
     local state_valid=false
     local s
     for s in $valid_states; do
@@ -139,7 +161,7 @@ test_state_integration() {
     mock_state_dir=$(mktemp -d)
     AM_STATE_DIR="$mock_state_dir"
     local mock_state_file="$AM_STATE_DIR/$mock_session"
-    printf 'waiting_permission' > "$mock_state_file"
+    printf 'waiting_user' > "$mock_state_file"
 
     # Stub tmux_session_exists + bypass shell check.
     _state_pane_is_shell_bulk() { return 1; }
@@ -148,7 +170,7 @@ test_state_integration() {
 
     local hook_state
     hook_state=$(agent_get_state "$mock_session")
-    assert_eq "waiting_permission" "$hook_state" "agent_get_state: reads hook file when pane is not shell"
+    assert_eq "waiting_user" "$hook_state" "agent_get_state: reads hook file when pane is not shell"
 
     # --- Hook silent but pane non-shell → unknown ---
     rm -f "$mock_state_file"
@@ -250,11 +272,11 @@ test_state_title_glyph() {
     assert_eq "none" "$sig" "_state_title_signal: other decoration (✻) -> none"
 
     _state_cursor_title_signal "Cursor Agent - ✅ Ready" sig
-    assert_eq "waiting_input" "$sig" "_state_cursor_title_signal: ready"
+    assert_eq "ready" "$sig" "_state_cursor_title_signal: ready"
     _state_cursor_title_signal "Cursor Agent - ⏳ Working .··" sig
     assert_eq "running" "$sig" "_state_cursor_title_signal: working"
     _state_cursor_title_signal "Shell Command - ❓ Waiting for you" sig
-    assert_eq "waiting_custom" "$sig" "_state_cursor_title_signal: in-turn question"
+    assert_eq "waiting_user" "$sig" "_state_cursor_title_signal: in-turn question"
     _state_cursor_title_signal "Cursor Agent" sig
     assert_eq "none" "$sig" "_state_cursor_title_signal: legacy context title has no signal"
 
@@ -263,6 +285,10 @@ test_state_title_glyph() {
     _state_cursor_tasks_signal "$cursor_pane" sig
     assert_eq "present" "$sig" \
         "_state_cursor_tasks_signal: footer task count after input border"
+    cursor_pane=$'  Background task started.\n\n  → Add a follow-up\n\n\n  1 task\n  GPT-5.6 Sol | project/branch'
+    _state_cursor_tasks_signal "$cursor_pane" sig
+    assert_eq "present" "$sig" \
+        "_state_cursor_tasks_signal: live plain capture anchors on input placeholder"
     cursor_pane=$' ▄▄▄▄▄▄▄▄▄\n  → Add a follow-up\n ▀▀▀▀▀▀▀▀▀\n  1 task\n  model | project/branch'
     _state_cursor_tasks_signal "$cursor_pane" sig
     assert_eq "present" "$sig" \
@@ -306,18 +332,18 @@ test_state_title_glyph() {
     assert_eq "running" "$(_resolve am-g claude)" \
         "resolve: busy + stale running + stale activity -> running (no flap)"
 
-    # wrap-up turn after background work: file still waiting_input, spinner up
-    printf 'waiting_input' > "$tmp_state_dir/am-g"
+    # wrap-up turn after background work: file still ready, spinner up
+    printf 'ready' > "$tmp_state_dir/am-g"
     assert_eq "running" "$(_resolve am-g claude)" \
-        "resolve: busy + waiting_input -> running (turn resumed / wrap-up)"
+        "resolve: busy + ready -> running (turn resumed / wrap-up)"
 
-    # pending dialogs need the user even if a spinner frame lingers
+    # A pending dialog needs the user even if a spinner frame lingers.
     printf 'waiting_permission' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_permission" "$(_resolve am-g claude)" \
-        "resolve: busy + waiting_permission passes through"
+    assert_eq "waiting_user" "$(_resolve am-g claude)" \
+        "resolve: busy + legacy waiting_permission -> waiting_user"
     printf 'waiting_custom' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_custom" "$(_resolve am-g claude)" \
-        "resolve: busy + waiting_custom passes through"
+    assert_eq "waiting_user" "$(_resolve am-g claude)" \
+        "resolve: busy + legacy waiting_custom -> waiting_user"
 
     # hook never fired (first turn just started)
     rm -f "$tmp_state_dir/am-g"
@@ -326,20 +352,20 @@ test_state_title_glyph() {
 
     # ✳ glyph: since Claude Code 2.1.234 the title is static "✳ <task>" from
     # boot through running turns (no busy glyph exists), so ✳ decides nothing
-    # once a hook file exists — waiting flavors come from the hook read.
+    # once a hook file exists — lifecycle state comes from the hook read.
     _T_TITLE[am-g]="✳ Fixing the bug"
-    printf 'waiting_input' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_input" "$(_resolve am-g claude)" \
-        "resolve: ✳ + waiting_input -> waiting_input (hook read)"
-    printf 'waiting_background' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_background" "$(_resolve am-g claude)" \
-        "resolve: ✳ + waiting_background -> waiting_background (hook read)"
-    printf 'waiting_permission' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_permission" "$(_resolve am-g claude)" \
-        "resolve: ✳ + waiting_permission -> waiting_permission (hook read)"
+    printf 'ready' > "$tmp_state_dir/am-g"
+    assert_eq "ready" "$(_resolve am-g claude)" \
+        "resolve: ✳ + ready -> ready (hook read)"
+    printf 'background' > "$tmp_state_dir/am-g"
+    assert_eq "background" "$(_resolve am-g claude)" \
+        "resolve: ✳ + background -> background (hook read)"
+    printf 'waiting_user' > "$tmp_state_dir/am-g"
+    assert_eq "waiting_user" "$(_resolve am-g claude)" \
+        "resolve: ✳ + waiting_user -> waiting_user (hook read)"
 
     # THE 2.1.234+ regression case: a running turn keeps "✳ <task>" painted.
-    # Treating ✳ as needs-the-user flipped every live turn to waiting_input
+    # Treating ✳ as needs-the-user flipped every live turn to ready
     # within one status-bar tick and rewrote the state file, fighting the
     # hooks. A fresh 'running' must stay running, untouched.
     printf 'running' > "$tmp_state_dir/am-g"
@@ -364,8 +390,8 @@ test_state_title_glyph() {
     # (the very first UserPromptSubmit would have created the file). The ✳
     # paint is the only signal that distinguishes this from 'still booting'.
     rm -f "$tmp_state_dir/am-g"
-    assert_eq "waiting_input" "$(_resolve am-g claude)" \
-        "resolve: ✳ + no hook file -> waiting_input (fresh session)"
+    assert_eq "ready" "$(_resolve am-g claude)" \
+        "resolve: ✳ + no hook file -> ready (fresh session)"
     assert_eq "false" "$([[ -f "$tmp_state_dir/am-g" ]] && echo true || echo false)" \
         "resolve: no-hook case does not fabricate a state file"
 
@@ -378,9 +404,9 @@ test_state_title_glyph() {
     touch -t "$_t_backdated" "$tmp_state_dir/am-g"
     assert_eq "running" "$(_resolve am-g claude)" \
         "resolve: no glyph + stale running -> running (ungated)"
-    printf 'waiting_input' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_input" "$(_resolve am-g claude)" \
-        "resolve: no glyph + waiting_input -> waiting_input"
+    printf 'ready' > "$tmp_state_dir/am-g"
+    assert_eq "ready" "$(_resolve am-g claude)" \
+        "resolve: no glyph + ready -> ready"
     rm -f "$tmp_state_dir/am-g"
     assert_eq "unknown" "$(_resolve am-g claude)" \
         "resolve: no glyph + no hook -> unknown"
@@ -388,16 +414,16 @@ test_state_title_glyph() {
     # non-Claude agents never consult the title (codex out of scope: their
     # CLIs own the title differently); pure hook fallback.
     _T_TITLE[am-g]="⠂ busy-looking title"
-    printf 'waiting_input' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_input" "$(_resolve am-g codex)" \
+    printf 'ready' > "$tmp_state_dir/am-g"
+    assert_eq "ready" "$(_resolve am-g codex)" \
         "resolve: non-claude ignores busy-looking title, uses hook"
 
-    # hook-written waiting_background with busy glyph: wrap-up turn is live ->
+    # hook-written background with busy glyph: wrap-up turn is live ->
     # running wins; Stop rewrites the file when it ends.
     _T_TITLE[am-g]="⠐ Fixing the bug"
-    printf 'waiting_background' > "$tmp_state_dir/am-g"
+    printf 'background' > "$tmp_state_dir/am-g"
     assert_eq "running" "$(_resolve am-g claude)" \
-        "resolve: busy + waiting_background -> running (wrap-up turn live)"
+        "resolve: busy + background -> running (wrap-up turn live)"
 
     # --- non-bulk path: title parsed from the display-message fetch ---
     am_tmux() {
@@ -426,9 +452,9 @@ test_state_title_glyph() {
     pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map pi_comm_map pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map)
     assert_eq "running" "$pi_state" "_state_resolve: pi stale running stays running (ungated)"
 
-    printf 'waiting_input' > "$tmp_state_dir/am-pi1"
+    printf 'ready' > "$tmp_state_dir/am-pi1"
     pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map pi_comm_map pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map)
-    assert_eq "waiting_input" "$pi_state" "_state_resolve: pi waiting_input"
+    assert_eq "ready" "$pi_state" "_state_resolve: pi ready"
 
     rm -f "$tmp_state_dir/am-pi1"
     pi_state=$(_state_resolve "am-pi1" "pi" "/tmp" pi_top_map pi_comm_map pi_child_map "$_t_now" "$(( _t_now - 600 ))" pi_title_map)
@@ -456,53 +482,53 @@ test_state_title_glyph() {
     assert_eq "running" "$cursor_state" \
         "_state_resolve: Cursor stale running stays running (turn-boundary hooks)"
 
-    printf 'waiting_input' > "$tmp_state_dir/am-cursor1"
+    printf 'ready' > "$tmp_state_dir/am-cursor1"
     cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
-    assert_eq "waiting_input" "$cursor_state" "_state_resolve: Cursor waiting_input"
+    assert_eq "ready" "$cursor_state" "_state_resolve: Cursor ready"
 
     cursor_title_map[am-cursor1]="Cursor Agent - ⏳ Working ..."
-    printf 'waiting_input' > "$tmp_state_dir/am-cursor1"
+    printf 'ready' > "$tmp_state_dir/am-cursor1"
     cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
     assert_eq "running" "$cursor_state" "_state_resolve: Cursor working title advances stale waiting hook"
 
     cursor_title_map[am-cursor1]="Shell Command - ❓ Waiting for you"
     printf 'running' > "$tmp_state_dir/am-cursor1"
     cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
-    assert_eq "waiting_custom" "$cursor_state" "_state_resolve: Cursor question title reports waiting_custom"
+    assert_eq "waiting_user" "$cursor_state" "_state_resolve: Cursor question title reports waiting_user"
 
     cursor_title_map[am-cursor1]="Cursor Pong - ✅ Ready"
     printf 'running' > "$tmp_state_dir/am-cursor1"
     cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map "$_t_now" "$(( _t_now - 600 ))" cursor_title_map)
-    assert_eq "waiting_input" "$cursor_state" "_state_resolve: Cursor ready title self-heals stale running hook"
-    assert_eq "waiting_input" "$(cat "$tmp_state_dir/am-cursor1")" \
+    assert_eq "ready" "$cursor_state" "_state_resolve: Cursor ready title self-heals stale running hook"
+    assert_eq "ready" "$(cat "$tmp_state_dir/am-cursor1")" \
         "_state_resolve: Cursor ready title updates state timestamp source"
 
     # Cursor keeps the Ready title and fires stop while background shell tasks
-    # remain active. Its footer renders "<N> tasks" directly below the input
-    # border; that narrow signal refines waiting_input to waiting_background.
+    # remain active. Its input footer renders "<N> tasks"; that narrow signal
+    # refines ready to background.
     local -A cursor_tasks_map=( [am-cursor1]=present )
-    printf 'waiting_input' > "$tmp_state_dir/am-cursor1"
+    printf 'ready' > "$tmp_state_dir/am-cursor1"
     cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map \
         "$_t_now" "$(( _t_now - 600 ))" cursor_title_map "" cursor_tasks_map)
-    assert_eq "waiting_background" "$cursor_state" \
-        "_state_resolve: Cursor ready + footer tasks -> waiting_background"
-    assert_eq "waiting_background" "$(cat "$tmp_state_dir/am-cursor1")" \
+    assert_eq "background" "$cursor_state" \
+        "_state_resolve: Cursor ready + footer tasks -> background"
+    assert_eq "background" "$(cat "$tmp_state_dir/am-cursor1")" \
         "_state_resolve: Cursor footer tasks update state timestamp source"
 
     cursor_tasks_map[am-cursor1]=absent
     cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map \
         "$_t_now" "$(( _t_now - 600 ))" cursor_title_map "" cursor_tasks_map)
-    assert_eq "waiting_input" "$cursor_state" \
-        "_state_resolve: Cursor ready after footer tasks clear -> waiting_input"
-    assert_eq "waiting_input" "$(cat "$tmp_state_dir/am-cursor1")" \
+    assert_eq "ready" "$cursor_state" \
+        "_state_resolve: Cursor ready after footer tasks clear -> ready"
+    assert_eq "ready" "$(cat "$tmp_state_dir/am-cursor1")" \
         "_state_resolve: cleared Cursor tasks update state timestamp source"
 
-    printf 'waiting_background' > "$tmp_state_dir/am-cursor1"
+    printf 'background' > "$tmp_state_dir/am-cursor1"
     cursor_tasks_map[am-cursor1]=unknown
     cursor_state=$(_state_resolve "am-cursor1" "cursor" "/tmp" cursor_top_map cursor_comm_map cursor_child_map \
         "$_t_now" "$(( _t_now - 600 ))" cursor_title_map "" cursor_tasks_map)
-    assert_eq "waiting_background" "$cursor_state" \
-        "_state_resolve: failed Cursor pane probe preserves waiting_background"
+    assert_eq "background" "$cursor_state" \
+        "_state_resolve: failed Cursor pane probe preserves background"
     rm -f "$tmp_state_dir/am-cursor1"
 
     # --- bulk shell-pane semantics agree with the non-bulk classifier ---
@@ -545,7 +571,7 @@ test_agent_wait_state_stable_idle() {
     saved_sleep="$(declare -f sleep 2>/dev/null || true)"
     saved_date="$(declare -f date 2>/dev/null || true)"
 
-    local -a mock_states=("waiting_input" "waiting_input" "waiting_input")
+    local -a mock_states=("ready" "ready" "ready")
     local -a mock_activity=("100" "101" "101")
     local mock_idx=0
     local mock_now=103
@@ -580,7 +606,8 @@ test_agent_wait_state_stable_idle() {
     local state
     AM_WAIT_STABLE_POLLS=2 AM_WAIT_QUIET_SECS=2 \
         state=$(agent_wait_state "fake-session" "waiting_input" 5)
-    assert_eq "waiting_input" "$state" "agent_wait_state: requires stable quiet waiting_input"
+    assert_eq "ready" "$state" \
+        "agent_wait_state: legacy waiting_input target matches canonical ready"
 
     eval "$saved_get_state"
     eval "$saved_tmux_exists"

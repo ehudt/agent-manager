@@ -6,22 +6,22 @@
 # registry, and writes the state to $AM_STATE_DIR/<session_name>.
 #
 # Supported events:
-#   Stop (stop_hook_active != true)  → waiting_input, or waiting_background
+#   Stop (stop_hook_active != true)  → ready, or background
 #                                      when the payload's background_tasks
 #                                      array lists work still running
-#   Notification[idle_prompt]        → waiting_input (same background_tasks
+#   Notification[idle_prompt]        → ready (same background_tasks
 #                                      refinement when the field is present;
 #                                      without it, never downgrades
-#                                      waiting_background unless a prior
+#                                      background unless a prior
 #                                      Stop snapshot's leftover shells are
 #                                      all unowned)
-#   Notification[permission_prompt]  → waiting_permission
-#   Notification[elicitation_dialog] → waiting_custom
+#   Notification[permission_prompt]  → waiting_user
+#   Notification[elicitation_dialog] → waiting_user
 #   UserPromptSubmit                 → running
 #   PreToolUse                       → running
-#   PermissionRequest                → waiting_permission
+#   PermissionRequest                → waiting_user
 #   PostToolUse                      → running
-#   sessionStart / stop              → waiting_input        (Cursor)
+#   sessionStart / stop              → ready                 (Cursor)
 #   beforeSubmitPrompt               → running              (Cursor)
 #   preToolUse / postToolUse /
 #   postToolUseFailure /
@@ -33,12 +33,11 @@
 # finishes. It is a fresh snapshot at each Stop, and Stop re-fires when
 # background work completes (the completion re-invokes Claude for a wrap-up
 # turn), so the state is self-healing without any pane scraping. Older CLIs
-# and Codex simply lack the field → the jq filter counts 0 → waiting_input,
-# and the pane-scan fallback in lib/state.sh still applies.
+# and Codex simply lack the field → the jq filter counts 0 → ready.
 #
 # Leftover shells: --fork-session / a parent-Claude exit reparents
 # run_in_background zsh loops to PID 1. Claude still lists them as
-# status=running, which would pin waiting_background after wrap-up. A
+# status=running, which would pin background after wrap-up. A
 # running shell/local_bash task is ignored when its matching OS process is
 # not owned by this Claude. Unmatched tasks are still counted. The last
 # Stop's array is snapshotted to $AM_STATE_DIR/<session>.bg so a field-less
@@ -48,7 +47,7 @@
 #   AM_REGISTRY          — path to sessions.json (default: ~/.agent-manager/sessions.json)
 #   AM_STATE_DIR         — directory for state files (default: /tmp/am-state/)
 #   AM_STATE_GUARD_SECS  — grace window (s) during which tool hooks may not
-#                          flip waiting_input back to running (default: 10)
+#                          flip ready back to running (default: 10)
 #
 # Session identification (in order of preference):
 #   1. $AM_SESSION_NAME (exported by am when launching the agent) — exact match
@@ -65,7 +64,7 @@
 # agent process (e.g. a Cursor conversation run outside am) whose cwd hosts
 # an am session of a *different* agent clobbers that session's state and
 # .sid/.transcript sidecars — observed live: a stray Cursor daily-log run
-# flipped a mid-turn pi session to waiting_input. A positively identified
+# flipped a mid-turn pi session to ready. A positively identified
 # session (layers 1–2) with the wrong type means a foreign agent is nested
 # inside an am pane; the hook exits rather than guessing by cwd.
 
@@ -73,6 +72,18 @@ set -euo pipefail
 
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
+
+# Canonicalize state values read from files created by am <=0.11. Keep this
+# Bash-3-compatible: the hook runs under /bin/bash on macOS.
+_normalize_state_value() {
+    case "$1" in
+        waiting_input)                         NORMALIZED_STATE="ready" ;;
+        waiting_permission|waiting_custom)     NORMALIZED_STATE="waiting_user" ;;
+        waiting_background)                    NORMALIZED_STATE="background" ;;
+        running|ready|waiting_user|background) NORMALIZED_STATE="$1" ;;
+        *)                                     NORMALIZED_STATE="" ;;
+    esac
+}
 
 # Optional debug trail. Gated by AM_HOOK_DEBUG=1 — silent no-op otherwise.
 # Lets us see when a hook fires but the script exits without writing state
@@ -106,12 +117,12 @@ if [[ "$hook_type" == "Stop" ]]; then
     fi
 fi
 
-# Idle states are refined to waiting_background when the payload reports
+# Ready states are refined to background when the payload reports
 # background work (subagents / background shells) still running.
 #
 # Leftover shells: a --fork-session or parent-Claude exit reparents
 # run_in_background zsh loops to PID 1. Claude keeps listing them as
-# status=running, so a naive count pins waiting_background after the wrap-up
+# status=running, so a naive count pins background after the wrap-up
 # Stop (the tab stays ⧗ while the pane shows recap / "new task?"). A running
 # shell task is ignored when we can see its OS process and that process is
 # not owned by this Claude. Unmatched tasks are still counted — the payload
@@ -187,7 +198,7 @@ _bg_shell_task_is_leftover() {
     [[ "$matched" -eq 1 ]]
 }
 
-# Count running background_tasks that should keep waiting_background.
+# Count running background_tasks that should keep background.
 # $1 = JSON array (the background_tasks value).
 _bg_owned_running_count() {
     local tasks="$1"
@@ -231,9 +242,9 @@ _bg_running_count() {
 
 # Does the payload carry the background_tasks field at all? Events that lack
 # it (Notification idle_prompt fires without it) know nothing about
-# background work and must not downgrade waiting_background — only an event
+# background work and must not downgrade background — only an event
 # that positively reports the field pruned/empty (Stop) may move it to
-# waiting_input, unless a previous Stop left a snapshot whose leftover
+# ready, unless a previous Stop left a snapshot whose leftover
 # shells have all been reparented off this Claude.
 _bg_field_present() {
     printf '%s' "$hook_input" | jq -e 'has("background_tasks")' >/dev/null 2>&1
@@ -243,26 +254,25 @@ _bg_field_present() {
 am_state=""
 case "$hook_type" in
     Stop)
-        am_state="waiting_input"
-        [[ "$(_bg_running_count)" =~ ^[1-9] ]] && am_state="waiting_background"
+        am_state="ready"
+        [[ "$(_bg_running_count)" =~ ^[1-9] ]] && am_state="background"
         ;;
     sessionStart|stop)
-        am_state="waiting_input"
+        am_state="ready"
         ;;
     Notification)
         notification_type=$(printf '%s' "$hook_input" | jq -r '.notification_type // empty' 2>/dev/null || true)
         case "$notification_type" in
             idle_prompt)
-                am_state="waiting_input"
-                [[ "$(_bg_running_count)" =~ ^[1-9] ]] && am_state="waiting_background"
+                am_state="ready"
+                [[ "$(_bg_running_count)" =~ ^[1-9] ]] && am_state="background"
                 ;;
-            permission_prompt)  am_state="waiting_permission" ;;
-            elicitation_dialog) am_state="waiting_custom" ;;
+            permission_prompt|elicitation_dialog) am_state="waiting_user" ;;
             *)                  exit 0 ;;
         esac
         ;;
     PermissionRequest)
-        am_state="waiting_permission"
+        am_state="waiting_user"
         ;;
     UserPromptSubmit|PreToolUse|PostToolUse|beforeSubmitPrompt|preToolUse|postToolUse|postToolUseFailure|afterAgentResponse|afterAgentThought)
         am_state="running"
@@ -357,37 +367,39 @@ if [[ -z "$session_name" ]]; then
 fi
 
 # Race protection: a late PostToolUse can arrive after Stop has already
-# written waiting_input (hooks run concurrently, slow tool hook finishes last).
-# waiting_input is terminal — the agent is idle and the user is in the loop —
+# written ready (hooks run concurrently, slow tool hook finishes last).
+# ready is terminal — the agent is idle and the user is in the loop —
 # so a late tool hook must not flip it back to running.
 #
-# The waiting_input guard is bounded by a grace window (AM_STATE_GUARD_SECS
+# The ready guard is bounded by a grace window (AM_STATE_GUARD_SECS
 # after the write, default 10s) because a turn can *resume without
 # UserPromptSubmit*: an in-turn question dialog (AskUserQuestion) idles long
-# enough for Notification[idle_prompt] to write waiting_input, and answering
+# enough for Notification[idle_prompt] to write ready, and answering
 # it continues the same turn — no new prompt event, only PreToolUse/
 # PostToolUse. An unconditional guard swallowed those forever, pinning the
-# session at waiting_input while it was actively working. The trailing-hook
+# session at ready while it was actively working. The trailing-hook
 # race it exists for is a milliseconds-scale problem, so a short window
 # absorbs it while letting genuine resumed activity flip to running.
 #
-# waiting_background is guarded *unconditionally*: a background subagent's
+# background is guarded *unconditionally*: a background subagent's
 # own tool calls fire PreToolUse/PostToolUse in this session for as long as
 # it runs (minutes), so any time window would eventually let them erase the
 # refinement. The state still moves forward on its own — Stop re-fires when
 # the background work completes (with a pruned background_tasks) — and
 # UserPromptSubmit remains the user-driven exit.
 #
-# waiting_permission and waiting_custom are explicitly *transient*: they unblock
+# waiting_user is explicitly *transient*: it unblocks
 # when the user answers, after which Claude/Codex resumes work and fires
 # PreToolUse/PostToolUse. Those hooks MUST move the state forward to running,
-# otherwise the session appears stuck at waiting_permission until end-of-turn.
+# otherwise the session appears stuck at waiting_user until end-of-turn.
 state_file="$AM_STATE_DIR/$session_name"
 if [[ "$am_state" == "running" && "$hook_type" != "UserPromptSubmit" && "$hook_type" != "beforeSubmitPrompt" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
+    _normalize_state_value "$current"
+    current="$NORMALIZED_STATE"
     case "$current" in
-        waiting_background) exit 0 ;;
-        waiting_input)
+        background) exit 0 ;;
+        ready)
             state_mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null || echo 0)
             if (( $(date +%s) - state_mtime <= ${AM_STATE_GUARD_SECS:-10} )); then
                 exit 0
@@ -403,22 +415,24 @@ if _bg_field_present; then
     printf '%s' "$hook_input" | jq -c '.background_tasks' > "$state_file.bg" 2>/dev/null || true
 fi
 
-# waiting_background may only be downgraded to waiting_input by an event
+# background may only be downgraded to ready by an event
 # whose payload actually carries the background_tasks field (Stop always
 # does; it re-fires with a pruned array when the work finishes). Events
 # without the field — Notification[idle_prompt] fires ~60s into an idle
 # wait with no background_tasks — carry no information about background
 # work and must not clobber the state (observed live: idle_prompt flipped
-# waiting_background to waiting_input exactly 60s after every Stop while
+# background to ready exactly 60s after every Stop while
 # the background shell/agent was still running).
 #
 # Exception: if a previous Stop left a snapshot and every leftover shell
 # in it is now unowned (PPID=1 / not a child of this Claude), the session
 # is done — allow the downgrade. The wrap-up Stop already fired; it will
 # not fire again until the user types.
-if [[ "$am_state" == "waiting_input" && -f "$state_file" ]]; then
+if [[ "$am_state" == "ready" && -f "$state_file" ]]; then
     current=$(head -1 "$state_file" 2>/dev/null || true)
-    if [[ "$current" == "waiting_background" ]] && ! _bg_field_present; then
+    _normalize_state_value "$current"
+    current="$NORMALIZED_STATE"
+    if [[ "$current" == "background" ]] && ! _bg_field_present; then
         if [[ -f "$state_file.bg" ]] \
             && [[ "$(_bg_owned_running_count "$(cat "$state_file.bg" 2>/dev/null || echo '[]')")" == "0" ]]; then
             :
@@ -437,7 +451,9 @@ fi
 # gate in lib/state.sh measures against max(mtime, activity)), so the old
 # rewrite-as-heartbeat behavior is not needed.
 mkdir -p "$AM_STATE_DIR"
-if [[ "$(head -1 "$state_file" 2>/dev/null || true)" != "$am_state" ]]; then
+current=$(head -1 "$state_file" 2>/dev/null || true)
+_normalize_state_value "$current"
+if [[ "$NORMALIZED_STATE" != "$am_state" ]]; then
     printf '%s' "$am_state" > "$state_file"
 fi
 

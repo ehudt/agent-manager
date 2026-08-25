@@ -18,7 +18,7 @@ real=$(cd "$DIR" && pwd -P)
 
 # 1. AM_SESSION_NAME wins
 lab_hook lab-iii2 "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real\"}"
-lab_assert "waiting_input" "$(probe_hook lab-iii2)" "AM_SESSION_NAME=lab-iii2 -> writes lab-iii2"
+lab_assert "ready" "$(probe_hook lab-iii2)" "AM_SESSION_NAME=lab-iii2 -> writes lab-iii2"
 lab_assert "<missing>"     "$(probe_hook lab-iii1)" "AM_SESSION_NAME=lab-iii2 -> lab-iii1 untouched"
 
 # 2. Without AM_SESSION_NAME, cwd fallback picks whichever jq enumerates

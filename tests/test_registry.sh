@@ -285,7 +285,7 @@ test_registry_gc() {
     registry_add "test-am-stale-fake-3" "/tmp/gone3" "main" "claude" ""
     local extras_state_dir
     extras_state_dir=$(mktemp -d)
-    printf 'waiting_input' > "$extras_state_dir/test-am-orphan"
+    printf 'ready' > "$extras_state_dir/test-am-orphan"
     printf 'uuid-orphan' > "$extras_state_dir/test-am-orphan.sid"
     # Simulate the Go twin (ReapOrphans) having just stamped .gc_last
     date +%s > "$AM_DIR/.gc_last"

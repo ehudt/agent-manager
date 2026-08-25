@@ -1,5 +1,9 @@
 # Pi Agent Support Implementation Plan
 
+> Historical document: pre-0.12 `waiting_input`, `waiting_permission` /
+> `waiting_custom`, and `waiting_background` correspond to `ready`,
+> `waiting_user`, and `background`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Full support for the `pi` coding agent in agent-manager: launch, state detection, restore, auto-titling, install wiring, sandbox, tests, and a live-lab runner.

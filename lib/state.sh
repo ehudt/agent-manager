@@ -19,33 +19,32 @@
 #        (no hook file + ✳ -> idle at the first prompt, since the very first
 #        UserPromptSubmit would have created the file).
 #   3. title status (Cursor 2026.08+) -> ready / working / in-turn question;
-#      a Ready pane is refined to waiting_background when Cursor's own footer
-#      shows a nonzero "<N> tasks" row directly below the input border
+#      a Ready pane is refined to background when Cursor's own input footer
+#      shows a nonzero "<N> tasks" row
 #   4. turn-boundary hook (pi/Cursor/Claude) -> ungated: all three emit
 #      explicit start/stop lifecycle transitions (pi's in-process extension;
 #      Cursor's stop/beforeSubmitPrompt; Claude's Stop/UserPromptSubmit). A
 #      dead process drops the pane to a shell, which step 1 already catches.
-#      The hook file is the flavor source: waiting_input / waiting_permission
-#      / waiting_custom / waiting_background (the hook writes
-#      waiting_background directly from the Stop payload's background_tasks
-#      on Claude Code ≥2.1)
+#      The hook file is the lifecycle source: ready / waiting_user / background
+#      (the hook writes background directly from the Stop payload's
+#      background_tasks on Claude Code ≥2.1)
 #   5. fallback (other agents)    -> hook state with staleness gate, else unknown
 #
-# States: starting | running | waiting_input | waiting_permission |
-#         waiting_custom | waiting_background | idle | unknown | dead
+# States: starting | running | ready | waiting_user | background |
+#         idle | unknown | dead
 #
 # Glyph x hook decision table (Claude sessions):
-#   busy      + waiting_permission/custom -> pass through (a pending dialog
+#   busy      + waiting_user              -> pass through (a pending dialog
 #               needs the user even if a spinner frame lingers; approval fires
 #               PreToolUse which flips the file to running)
 #   busy      + anything else             -> running (trust Claude's own
 #               indicator; ≤2.1.233 only — the glyph no longer exists after)
-#   attention + no hook file              -> waiting_input (fresh session idle
+#   attention + no hook file              -> ready (fresh session idle
 #               at its first prompt; correct on every version)
 #   attention + hook file present         -> no title information: fall
 #               through to the ungated hook read. On ≥2.1.234 "✳" is
 #               permanent, so treating it as "needs the user" flipped every
-#               RUNNING turn to waiting_input within one status-bar tick (and
+#               RUNNING turn to ready within one status-bar tick (and
 #               fought the hooks by rewriting the state file). Do not
 #               resurrect the old attention rows.
 #   no signal (title disabled / claude still booting) -> ungated hook state,
@@ -58,6 +57,23 @@ _STATE_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ "$(type -t registry_get_field)" != "function" ]] && source "$_STATE_LIB_DIR/registry.sh"
 
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
+
+# Canonicalize state values at every read boundary. The waiting_* names were
+# emitted through am 0.11 and can remain in /tmp while live sessions survive an
+# upgrade; accepting them here avoids false "unknown" states without rewriting
+# the file and resetting its time-in-state mtime.
+# Usage: _state_normalize <value> <out_var>
+_state_normalize() {
+    local -n __normalized="$2"
+    case "$1" in
+        waiting_input)                         __normalized="ready" ;;
+        waiting_permission|waiting_custom)     __normalized="waiting_user" ;;
+        waiting_background)                    __normalized="background" ;;
+        starting|running|ready|waiting_user|background|idle|unknown|dead)
+                                                __normalized="$1" ;;
+        *)                                     __normalized="" ;;
+    esac
+}
 
 # Append a one-line trace of which resolver step produced an answer.
 # Gated by AM_STATE_DEBUG=1.
@@ -100,21 +116,22 @@ _state_title_signal() {
 # terminal-title signals, not pane-content heuristics. Older releases omit the
 # suffix and safely fall back to lifecycle hooks.
 # Usage: _state_cursor_title_signal <title> <out_var>
-# out: running|waiting_input|waiting_custom|none
+# out: running|ready|waiting_user|none
 _state_cursor_title_signal() {
     local -n __sig="$2"
     case "$1" in
-        *" - ✅ Ready")          __sig="waiting_input" ;;
+        *" - ✅ Ready")          __sig="ready" ;;
         *" - ⏳ Working"*)      __sig="running" ;;
-        *" - ❓ Waiting for you") __sig="waiting_custom" ;;
+        *" - ❓ Waiting for you") __sig="waiting_user" ;;
         *)                      __sig="none" ;;
     esac
 }
 
-# Cursor renders a nonzero "<N> tasks" row directly below the bottom border of
-# its input box while background shells/tasks remain active. Match that exact
-# footer structure so an agent response that merely mentions "2 tasks" cannot
-# affect state.
+# Cursor renders a nonzero "<N> tasks" row in the input footer while background
+# shells/tasks remain active. Depending on terminal rendering, capture-pane may
+# include the input border or only the exact "→ Add a follow-up" placeholder.
+# Match those Cursor-owned anchors so response text that merely mentions
+# "2 tasks" cannot affect state.
 # Usage: _state_cursor_tasks_signal <plain_pane_text> <out_var>
 # out: present|absent
 _state_cursor_tasks_signal() {
@@ -125,7 +142,8 @@ _state_cursor_tasks_signal() {
     local line
     local awaiting_tasks=false
     while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" =~ ^[[:space:]]*▀▀▀▀▀[▀]*[[:space:]]*$ ]]; then
+        if [[ "$line" =~ ^[[:space:]]*→[[:space:]]+Add[[:space:]]+a[[:space:]]+follow-up[[:space:]]*$ ]] \
+            || [[ "$line" =~ ^[[:space:]]*▀▀▀▀▀[▀]*[[:space:]]*$ ]]; then
             # A newer input footer supersedes any older footer still visible
             # in scrollback.
             __sig="absent"
@@ -144,7 +162,7 @@ _state_cursor_tasks_signal() {
 }
 
 # Capture and classify Cursor's current viewport. A failed capture is unknown,
-# not absent: preserving an existing waiting_background state avoids flicker
+# not absent: preserving an existing background state avoids flicker
 # during a transient tmux race.
 # Usage: _state_cursor_tasks_probe <session> <out_var>
 # out: present|absent|unknown
@@ -171,16 +189,18 @@ _state_cursor_tasks_probe() {
 _state_hook_raw() {
     local -n __raw="$2"
     __raw=""
-    local line=""
+    local line="" normalized=""
+    [[ -f "$AM_STATE_DIR/$1" ]] || return 0
     IFS= read -r line < "$AM_STATE_DIR/$1" 2>/dev/null || true
-    case "$line" in
-        running|waiting_input|waiting_permission|waiting_custom|waiting_background)
-            __raw="$line" ;;
+    _state_normalize "$line" normalized
+    case "$normalized" in
+        running|ready|waiting_user|background)
+            __raw="$normalized" ;;
     esac
 }
 
 # Read session state from $AM_STATE_DIR/<session> into a caller-supplied var,
-# with the staleness gate. Terminal waiting_* states are persistent. running
+# with the staleness gate. ready/waiting_user/background are persistent. running
 # gets a 180s gate — measured against max(file mtime, tmux session_activity)
 # — so a wedged agent falls through to 'unknown' instead of looking busy
 # forever. Only agents without turn-boundary lifecycle events use this
@@ -200,17 +220,18 @@ _state_hook_read() {
     local mtime
     mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
     [[ -z "$now_epoch" ]] && now_epoch=$(date +%s)
-    local line=""
+    local line="" normalized=""
     IFS= read -r line < "$state_file" 2>/dev/null || true
-    case "$line" in
-        waiting_input|waiting_permission|waiting_custom|waiting_background)
-            __out="$line" ;;
+    _state_normalize "$line" normalized
+    case "$normalized" in
+        ready|waiting_user|background)
+            __out="$normalized" ;;
         running)
             local fresh_ref=$mtime
             [[ "$activity_epoch" =~ ^[0-9]+$ ]] && (( activity_epoch > fresh_ref )) \
                 && fresh_ref=$activity_epoch
             (( now_epoch - fresh_ref > 180 )) && return 0
-            __out="$line" ;;
+            __out="$normalized" ;;
     esac
 }
 
@@ -263,7 +284,7 @@ agent_classify_exit() {
 #
 # Pipeline:
 #   1. shell check   -> starting (created<5s; bulk needs created_epoch) / idle / dead (non-bulk classify_exit race only)
-#   2. title glyph   -> running / waiting_* per the decision table above
+#   2. title glyph   -> running / ready / waiting_user per the table above
 #   3. hook fallback -> gated hook state (no glyph signal), else unknown
 #
 # Usage:
@@ -355,7 +376,7 @@ _state_resolve() {
             local raw=""
             _state_hook_raw "$session" raw
             case "$raw" in
-                waiting_permission|waiting_custom)
+                waiting_user)
                     # A pending dialog needs the user; approval fires
                     # PreToolUse which moves the file forward.
                     _state_debug "$_dbg_session" "$_dbg_agent" title "$raw"
@@ -375,8 +396,8 @@ _state_resolve() {
             local raw=""
             _state_hook_raw "$session" raw
             if [[ -z "$raw" ]]; then
-                _state_debug "$_dbg_session" "$_dbg_agent" title waiting_input
-                echo "waiting_input"
+                _state_debug "$_dbg_session" "$_dbg_agent" title ready
+                echo "ready"
                 return
             fi
         fi
@@ -391,37 +412,37 @@ _state_resolve() {
             _state_hook_raw "$session" cursor_raw
             if [[ "$cursor_sig" == "running" ]]; then
                 case "$cursor_raw" in
-                    waiting_permission|waiting_custom)
+                    waiting_user)
                         _state_debug "$_dbg_session" "$_dbg_agent" title "$cursor_raw"
                         echo "$cursor_raw"
                         return ;;
                 esac
-            elif [[ "$cursor_sig" == "waiting_input" ]]; then
+            elif [[ "$cursor_sig" == "ready" ]]; then
                 if ! $cursor_tasks_known; then
                     _state_cursor_tasks_probe "$session" cursor_tasks_val
                 fi
                 case "$cursor_tasks_val" in
                     present)
-                        if [[ "$cursor_raw" != "waiting_background" ]]; then
-                            printf 'waiting_background' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+                        if [[ "$cursor_raw" != "background" ]]; then
+                            printf 'background' > "$AM_STATE_DIR/$session" 2>/dev/null || true
                         fi
-                        _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
-                        echo "waiting_background"
+                        _state_debug "$_dbg_session" "$_dbg_agent" pane background
+                        echo "background"
                         return
                         ;;
                     absent)
-                        if [[ "$cursor_raw" == "running" || "$cursor_raw" == "waiting_background" ]]; then
-                            printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+                        if [[ "$cursor_raw" == "running" || "$cursor_raw" == "background" ]]; then
+                            printf 'ready' > "$AM_STATE_DIR/$session" 2>/dev/null || true
                         fi
                         ;;
                     *)
-                        if [[ "$cursor_raw" == "waiting_background" ]]; then
-                            _state_debug "$_dbg_session" "$_dbg_agent" pane waiting_background
-                            echo "waiting_background"
+                        if [[ "$cursor_raw" == "background" ]]; then
+                            _state_debug "$_dbg_session" "$_dbg_agent" pane background
+                            echo "background"
                             return
                         fi
                         [[ "$cursor_raw" == "running" ]] \
-                            && printf 'waiting_input' > "$AM_STATE_DIR/$session" 2>/dev/null || true
+                            && printf 'ready' > "$AM_STATE_DIR/$session" 2>/dev/null || true
                         ;;
                 esac
             fi
@@ -474,8 +495,8 @@ _state_resolve() {
 # ---------------------------------------------------------------------------
 
 # Return current state of a session.
-# Outputs one of: starting | running | waiting_input | waiting_permission |
-#                 waiting_custom | waiting_background | idle | unknown | dead
+# Outputs one of: starting | running | ready | waiting_user | background |
+#                 idle | unknown | dead
 agent_get_state() {
     local session="$1"
 
@@ -493,13 +514,13 @@ agent_get_state() {
 
 # Block until a session reaches one of the target states.
 # Usage: agent_wait_state <session> [states] [timeout_seconds]
-#   states: comma-separated, default: waiting_input,waiting_permission,waiting_custom,idle,dead
+#   states: comma-separated, default: ready,waiting_user,idle,dead
 #   timeout_seconds: default 600
 # Outputs: matched state, or "timeout"
 # Exit: 0=matched, 1=session not found, 3=timeout
 agent_wait_state() {
     local session="$1"
-    local target_states="${2:-waiting_input,waiting_permission,waiting_custom,idle,dead}"
+    local target_states="${2:-ready,waiting_user,idle,dead}"
     local timeout_s="${3:-600}"
     local stable_polls_required="${AM_WAIT_STABLE_POLLS:-3}"
     local quiet_secs_required="${AM_WAIT_QUIET_SECS:-2}"
@@ -510,6 +531,15 @@ agent_wait_state() {
         return 1
     fi
 
+    local -a raw_targets=() normalized_targets=()
+    local raw_target normalized_target
+    IFS=',' read -r -a raw_targets <<< "$target_states"
+    for raw_target in "${raw_targets[@]}"; do
+        _state_normalize "$raw_target" normalized_target
+        [[ -z "$normalized_target" ]] && normalized_target="$raw_target"
+        normalized_targets+=("$normalized_target")
+    done
+
     local start elapsed state
     local last_match_state="" last_match_activity="" stable_polls=0
     start=$(date +%s)
@@ -519,12 +549,11 @@ agent_wait_state() {
 
         local matched=false
         local t
-        local IFS=','
-        for t in $target_states; do
+        for t in "${normalized_targets[@]}"; do
             if [[ "$state" == "$t" ]]; then
                 matched=true
                 case "$state" in
-                    waiting_input|waiting_permission|waiting_custom|idle)
+                    ready|waiting_user|idle)
                         local activity now quiet_age
                         activity=$(tmux_get_activity "$session")
                         now=$(date +%s)
