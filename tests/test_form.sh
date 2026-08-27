@@ -83,6 +83,23 @@ test_form_core() {
     _form_handle_char "x"
     assert_eq "$before" "${FORM_VALUES[agent]}" "form text: char ignored on select field"
 
+    # The launcher requests bare paths so slow per-repository branch
+    # annotations do not block its first render.
+    local saved_list_directories=""
+    if declare -F _list_directories >/dev/null; then
+        saved_list_directories=$(declare -f _list_directories)
+    fi
+    _list_directories() { printf '/tmp/project\tannotations=%s\n' "${2:-missing}"; }
+    _FORM_DIR_SUGGESTIONS_LOADED=false
+    _form_load_dir_suggestions
+    assert_eq $'/tmp/project\tannotations=false' "${_FORM_DIR_SUGGESTIONS[0]}" \
+        "form startup: directory list skips branch annotations"
+    if [[ -n "$saved_list_directories" ]]; then
+        eval "$saved_list_directories"
+    else
+        unset -f _list_directories
+    fi
+
     $SUMMARY_MODE || echo ""
 }
 
@@ -106,7 +123,83 @@ test_form_loop() {
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
 
+    # The initial screen is a directory launcher
+    assert_eq "false" "$_FORM_OPTIONS_OPEN" "launcher: options start closed"
+    assert_eq "edit" "$_FORM_MODE" "launcher: directory starts in edit mode"
+
+    # Enter accepts the highlighted directory and launches the current harness
+    FORM_VALUES[directory]=""
+    _FORM_DIR_SUGGESTIONS=("/tmp/project1" "/tmp/project2")
+    _FORM_DIR_SUGGESTIONS_LOADED=true
+    _form_filter_dir_suggestions "" 5
+    _FORM_DIR_HIGHLIGHT=1
+    _form_process_key $'\n'
+    assert_eq "submit" "$FORM_KEY_RESULT" "launcher: enter submits"
+    assert_eq "/tmp/project2" "${FORM_VALUES[directory]}" "launcher: enter accepts highlighted directory"
+    assert_eq "claude" "${FORM_VALUES[agent]}" "launcher: enter keeps current harness"
+
+    # Each harness has a direct launch shortcut
+    local -a launch_keys=($'\x0c' $'\x18' $'\x12' $'\x10')
+    local -a launch_agents=("claude" "codex" "cursor" "pi")
+    local launch_idx
+    for ((launch_idx=0; launch_idx<${#launch_keys[@]}; launch_idx++)); do
+        _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+        FORM_VALUES[directory]=""
+        _FORM_DIR_SUGGESTIONS=("/tmp/project1")
+        _FORM_DIR_SUGGESTIONS_LOADED=true
+        _form_filter_dir_suggestions "" 5
+        _form_process_key "${launch_keys[$launch_idx]}"
+        assert_eq "submit" "$FORM_KEY_RESULT" \
+            "launcher: shortcut submits ${launch_agents[$launch_idx]}"
+        assert_eq "/tmp/project1" "${FORM_VALUES[directory]}" \
+            "launcher: shortcut accepts highlighted directory for ${launch_agents[$launch_idx]}"
+        assert_eq "${launch_agents[$launch_idx]}" "${FORM_VALUES[agent]}" \
+            "launcher: shortcut selects ${launch_agents[$launch_idx]}"
+    done
+
+    # Tab accepts the directory and progressively reveals advanced options
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    FORM_VALUES[directory]=""
+    _FORM_DIR_SUGGESTIONS=("/tmp/project1" "/tmp/project2")
+    _FORM_DIR_SUGGESTIONS_LOADED=true
+    _form_filter_dir_suggestions "" 5
+    _FORM_DIR_HIGHLIGHT=1
+    _form_process_key $'\t'
+    assert_eq "continue" "$FORM_KEY_RESULT" "launcher: tab continues"
+    assert_eq "/tmp/project2" "${FORM_VALUES[directory]}" "launcher: tab accepts highlighted directory"
+    assert_eq "true" "$_FORM_OPTIONS_OPEN" "launcher: tab opens options"
+    assert_eq "navigate" "$_FORM_MODE" "launcher: tab enters option navigation"
+    assert_eq "1" "$FORM_CURSOR" "launcher: tab focuses harness option"
+
+    # Escape from option navigation returns to the directory launcher
+    _form_process_key $'\x1b' ""
+    assert_eq "continue" "$FORM_KEY_RESULT" "options: escape returns to launcher"
+    assert_eq "false" "$_FORM_OPTIONS_OPEN" "options: escape closes options"
+    assert_eq "edit" "$_FORM_MODE" "options: escape resumes directory editing"
+    assert_eq "0" "$FORM_CURSOR" "options: escape focuses directory"
+
+    # Selecting Directory from options also returns to the fuzzy finder
+    _form_process_key $'\t'
+    FORM_CURSOR=0
+    _form_process_key $'\n'
+    assert_eq "continue" "$FORM_KEY_RESULT" "options: enter on directory continues"
+    assert_eq "false" "$_FORM_OPTIONS_OPEN" "options: enter on directory closes options"
+    assert_eq "edit" "$_FORM_MODE" "options: enter on directory resumes directory editing"
+
+    # Ctrl-S remains compatible and now submits directly from directory editing
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    FORM_VALUES[directory]=""
+    _FORM_DIR_SUGGESTIONS=("/tmp/project1")
+    _FORM_DIR_SUGGESTIONS_LOADED=true
+    _form_filter_dir_suggestions "" 5
+    _form_process_key $'\x13'
+    assert_eq "submit" "$FORM_KEY_RESULT" "launcher: ctrl-s submits from directory editing"
+    assert_eq "/tmp/project1" "${FORM_VALUES[directory]}" \
+        "launcher: ctrl-s accepts highlighted directory"
+
     # Regular char on text field — only works in edit mode
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _FORM_OPTIONS_OPEN=true
     FORM_CURSOR=2  # task
     _FORM_MODE="edit"
     _form_process_key "H"
@@ -114,17 +207,14 @@ test_form_loop() {
     assert_eq "H" "${FORM_VALUES[task]}" "dispatch: char is applied"
     _FORM_MODE="navigate"
 
-    # Enter on submit field returns submit
-    local submit_idx=$(( ${#FORM_FIELDS[@]} - 1 ))
-    FORM_CURSOR=$submit_idx
-    _form_process_key $'\n'
-    assert_eq "submit" "$FORM_KEY_RESULT" "dispatch: enter returns submit"
-
-    # Escape returns cancel
+    # Escape from the directory launcher returns cancel
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
     _form_process_key $'\x1b' ""
-    assert_eq "cancel" "$FORM_KEY_RESULT" "dispatch: escape returns cancel"
+    assert_eq "cancel" "$FORM_KEY_RESULT" "launcher: escape returns cancel"
 
-    # Arrow down
+    # Advanced-option navigation
+    _FORM_OPTIONS_OPEN=true
+    _FORM_MODE="navigate"
     FORM_CURSOR=0
     _form_process_key $'\x1b' "[B"
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: arrow down returns continue"
@@ -160,11 +250,6 @@ test_form_loop() {
     assert_eq "true" "${FORM_VALUES[yolo]}" "dispatch: right arrow toggles checkbox"
     _form_process_key $'\x1b' "[D"
     assert_eq "false" "${FORM_VALUES[yolo]}" "dispatch: left arrow toggles checkbox"
-
-    # Tab (handled inline now, returns continue)
-    FORM_CURSOR=0  # directory field
-    _form_process_key $'\t'
-    assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: tab returns continue"
 
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing form output contract ==="
@@ -220,18 +305,23 @@ test_form_modes() {
     # Mode starts as edit (on directory field)
     assert_eq "edit" "$_FORM_MODE" "mode: starts as edit"
 
-    # Last field is submit pseudo-field
-    local last_idx=$(( ${#FORM_FIELDS[@]} - 1 ))
-    assert_eq "submit" "${FORM_FIELDS[$last_idx]}" "mode: last field is submit"
-    assert_eq "submit" "${FORM_TYPES[submit]}" "mode: submit field type is submit"
+    # Advanced options are progressively disclosed and there is no submit row
+    assert_eq "false" "$_FORM_OPTIONS_OPEN" "mode: options start closed"
+    local has_submit="false" field
+    for field in "${FORM_FIELDS[@]}"; do
+        [[ "$field" == "submit" ]] && has_submit="true"
+    done
+    assert_eq "false" "$has_submit" "mode: submit is not a scrollable field"
 
     # Dir highlight starts at 0
     assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "mode: dir highlight starts at 0"
+    assert_eq "7" "$_FORM_DIR_SUGGESTION_LINES" "mode: compact launcher shows seven suggestions"
 
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing navigate mode key dispatch ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _FORM_OPTIONS_OPEN=true
     _FORM_MODE="navigate"
 
     # In navigate mode, Enter on text field enters edit mode
@@ -258,13 +348,6 @@ test_form_modes() {
     assert_eq "submit" "$FORM_KEY_RESULT" "nav: enter on select submits"
     assert_eq "new" "${FORM_VALUES[mode]}" "nav: enter on select does not cycle"
 
-    # In navigate mode, Enter on submit returns submit
-    _FORM_MODE="navigate"
-    local submit_idx=$(( ${#FORM_FIELDS[@]} - 1 ))
-    FORM_CURSOR=$submit_idx
-    _form_process_key $'\n'
-    assert_eq "submit" "$FORM_KEY_RESULT" "nav: enter on submit returns submit"
-
     # In navigate mode, Space on checkbox toggles
     _FORM_MODE="navigate"
     FORM_CURSOR=4  # yolo
@@ -289,6 +372,7 @@ test_form_modes() {
     $SUMMARY_MODE || echo "=== Testing edit mode key dispatch ==="
 
     _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _FORM_OPTIONS_OPEN=true
     _FORM_MODE="edit"
     FORM_CURSOR=2  # task (text field)
 
@@ -358,8 +442,9 @@ test_form_modes() {
     _form_handle_char "x"
     assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "dir scroll: typing resets highlight"
 
-    # Enter in edit mode accepts highlighted suggestion
+    # Enter in advanced directory editing accepts without launching
     _FORM_MODE="edit"
+    _FORM_OPTIONS_OPEN=true
     FORM_CURSOR=0
     FORM_VALUES[directory]=""
     _FORM_DIR_HIGHLIGHT=2
@@ -367,6 +452,7 @@ test_form_modes() {
     _form_process_key $'\n'
     assert_eq "/home/user/project3" "${FORM_VALUES[directory]}" "dir scroll: enter accepts highlighted"
     assert_eq "navigate" "$_FORM_MODE" "dir scroll: enter returns to navigate"
+    assert_eq "continue" "$FORM_KEY_RESULT" "dir scroll: advanced enter does not launch"
 
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing directory scroll offset ==="

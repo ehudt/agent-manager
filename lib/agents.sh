@@ -289,9 +289,8 @@ agent_launch() {
     # status-bar in three separate places during launch (here, after sandbox
     # start, after worktree create) was the dominant source of new-session
     # latency.
-    registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
-    registry_update "$session_name" "yolo_mode" "$wants_yolo"
-    registry_update "$session_name" "sandbox_mode" "$wants_sandbox"
+    registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task" \
+        "$wants_yolo" "$wants_sandbox"
 
     # Append to sessions log for restore support.
     if [[ "$agent_type" == "claude" || "$agent_type" == "pi" || "$agent_type" == "cursor" ]]; then
@@ -425,9 +424,10 @@ agent_launch() {
         zoxide add -- "$directory" >/dev/null 2>&1 || true
     fi
 
-    # Immediately regenerate sidebar cache so the new session appears in every
-    # other session's pane-border without waiting for the 5s status-interval.
-    am_refresh_sidebar_cache
+    # Refresh sidebar metadata without keeping the launcher popup open. The
+    # client-session-changed hook also refreshes after an attached launch; this
+    # background refresh covers detached launches and other clients.
+    (am_refresh_sidebar_cache) >/dev/null 2>&1 &
 
     log_success "Created session: $session_name"
     echo "$session_name"

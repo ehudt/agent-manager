@@ -32,6 +32,10 @@ FORM_CURSOR=0
 # Mode: "navigate" or "edit"
 _FORM_MODE="navigate"
 
+# The initial screen is a directory-first launcher. Advanced options are hidden
+# until requested with Tab.
+_FORM_OPTIONS_OPEN=false
+
 # Directory suggestion highlight index (used in edit mode)
 _FORM_DIR_HIGHLIGHT=0
 _FORM_DIR_SCROLL_OFFSET=0
@@ -67,6 +71,7 @@ _form_init() {
     _FORM_DIR_SUGGESTIONS_LOADED=false
     _FORM_DIR_FILTERED=()
     _FORM_MODE="edit"
+    _FORM_OPTIONS_OPEN=false
     _FORM_DIR_HIGHLIGHT=0
     _FORM_DIR_SCROLL_OFFSET=0
 
@@ -97,8 +102,6 @@ _form_init() {
         fi
     fi
 
-    # Submit button (always last)
-    _form_add_field "submit" "" "submit" ""
 }
 
 _form_add_field() {
@@ -165,9 +168,6 @@ _form_render_field() {
                 display="[ ]"
             fi
             ;;
-        submit)
-            display="[ Create ]"
-            ;;
     esac
 
     # Pick highlight color based on mode
@@ -180,14 +180,7 @@ _form_render_field() {
         fi
     fi
 
-    if [[ "$type" == "submit" ]]; then
-        _FORM_BUF+="${_FORM_EL}"$'\n'
-        if [[ "$focused" == "true" ]]; then
-            _FORM_BUF+="${prefix}${bg}${display}${_FORM_RESET}${_FORM_EL}"$'\n'
-        else
-            _FORM_BUF+="${prefix}${display}${_FORM_EL}"$'\n'
-        fi
-    elif [[ "$focused" == "true" ]]; then
+    if [[ "$focused" == "true" ]]; then
         _FORM_BUF+="${prefix}${bg}$(printf '%-14s' "$label:")${_FORM_RESET} ${display}${_FORM_EL}"$'\n'
     else
         _FORM_BUF+="${prefix}$(printf '%-14s' "$label:") ${display}${_FORM_EL}"$'\n'
@@ -202,7 +195,7 @@ _form_load_dir_suggestions() {
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         _FORM_DIR_SUGGESTIONS+=("$line")
-    done < <(_list_directories 2>/dev/null || true)
+    done < <(_list_directories "" false 2>/dev/null || true)
     _FORM_DIR_SUGGESTIONS_LOADED=true
 }
 
@@ -362,6 +355,22 @@ _form_handle_tab() {
     fi
 }
 
+# Accept the current directory candidate and reveal advanced options.
+_form_open_options() {
+    _form_handle_tab
+    _FORM_OPTIONS_OPEN=true
+    _FORM_MODE="navigate"
+    FORM_CURSOR=1
+}
+
+# Accept the current directory candidate and optionally override the harness.
+_form_launch_from_directory() {
+    local agent="${1:-}"
+    _form_handle_tab
+    [[ -n "$agent" ]] && FORM_VALUES[agent]="$agent"
+    FORM_KEY_RESULT="submit"
+}
+
 # Ensure the directory highlight is within the visible scroll window
 _form_ensure_dir_highlight_visible() {
     local total=${#_FORM_DIR_FILTERED[@]}
@@ -417,7 +426,16 @@ _form_process_key_navigate() {
             local type="${FORM_TYPES[$name]}"
             local disabled="${FORM_DISABLED[$name]:-}"
             case "$type" in
-                text|directory)
+                directory)
+                    if [[ "$disabled" == "true" ]]; then
+                        FORM_KEY_RESULT="continue"
+                    else
+                        _FORM_OPTIONS_OPEN=false
+                        _FORM_MODE="edit"
+                        FORM_KEY_RESULT="continue"
+                    fi
+                    ;;
+                text)
                     if [[ "$disabled" == "true" ]]; then
                         FORM_KEY_RESULT="continue"
                     else
@@ -428,14 +446,18 @@ _form_process_key_navigate() {
                 checkbox|select)
                     FORM_KEY_RESULT="submit"
                     ;;
-                submit)
-                    FORM_KEY_RESULT="submit"
-                    ;;
             esac
             ;;
         $'\x1b')
             if [[ "$extra" == "__unset__" || -z "$extra" ]]; then
-                FORM_KEY_RESULT="cancel"
+                if [[ "$_FORM_OPTIONS_OPEN" == "true" ]]; then
+                    _FORM_OPTIONS_OPEN=false
+                    _FORM_MODE="edit"
+                    FORM_CURSOR=0
+                    FORM_KEY_RESULT="continue"
+                else
+                    FORM_KEY_RESULT="cancel"
+                fi
             else
                 case "$extra" in
                     "[A") _form_handle_up; FORM_KEY_RESULT="continue" ;;
@@ -484,22 +506,29 @@ _form_process_key_edit() {
 
     case "$key" in
         $'\n'|"")
-            # On directory field, Enter accepts highlighted suggestion
             local name="${FORM_FIELDS[$FORM_CURSOR]}"
-            if [[ "${FORM_TYPES[$name]}" == "directory" && ${#_FORM_DIR_FILTERED[@]} -gt 0 ]]; then
-                local idx=$_FORM_DIR_HIGHLIGHT
-                [[ $idx -ge ${#_FORM_DIR_FILTERED[@]} ]] && idx=0
-                local entry="${_FORM_DIR_FILTERED[$idx]}"
-                FORM_VALUES[$name]="${entry%%$'\t'*}"
+            if [[ "${FORM_TYPES[$name]}" == "directory" ]]; then
+                _form_handle_tab
+                if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                    FORM_KEY_RESULT="submit"
+                else
+                    _FORM_MODE="navigate"
+                    FORM_KEY_RESULT="continue"
+                fi
+            else
+                _FORM_MODE="navigate"
+                FORM_KEY_RESULT="continue"
             fi
-            _FORM_MODE="navigate"
-            FORM_KEY_RESULT="continue"
             ;;
         $'\x1b')
             if [[ "$extra" == "__unset__" || -z "$extra" ]]; then
-                # Esc: exit edit mode (not cancel)
-                _FORM_MODE="navigate"
-                FORM_KEY_RESULT="continue"
+                if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                    FORM_KEY_RESULT="cancel"
+                else
+                    # In advanced options, Esc exits field editing.
+                    _FORM_MODE="navigate"
+                    FORM_KEY_RESULT="continue"
+                fi
             else
                 local name="${FORM_FIELDS[$FORM_CURSOR]}"
                 local type="${FORM_TYPES[$name]}"
@@ -538,8 +567,53 @@ _form_process_key_edit() {
             FORM_KEY_RESULT="continue"
             ;;
         $'\t')
-            _form_handle_tab
+            local name="${FORM_FIELDS[$FORM_CURSOR]}"
+            if [[ "$_FORM_OPTIONS_OPEN" == "false" && "${FORM_TYPES[$name]}" == "directory" ]]; then
+                _form_open_options
+            else
+                _form_handle_tab
+            fi
             FORM_KEY_RESULT="continue"
+            ;;
+        $'\x13')
+            # Ctrl-S remains a global launch shortcut, including directory edit.
+            if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                _form_launch_from_directory
+            else
+                FORM_KEY_RESULT="submit"
+            fi
+            ;;
+        $'\x0c')
+            # Ctrl-L: launch Claude from the directory launcher.
+            if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                _form_launch_from_directory "claude"
+            else
+                FORM_KEY_RESULT="continue"
+            fi
+            ;;
+        $'\x18')
+            # Ctrl-X: launch Codex from the directory launcher.
+            if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                _form_launch_from_directory "codex"
+            else
+                FORM_KEY_RESULT="continue"
+            fi
+            ;;
+        $'\x12')
+            # Ctrl-R: launch Cursor from the directory launcher.
+            if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                _form_launch_from_directory "cursor"
+            else
+                FORM_KEY_RESULT="continue"
+            fi
+            ;;
+        $'\x10')
+            # Ctrl-P: launch pi from the directory launcher.
+            if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                _form_launch_from_directory "pi"
+            else
+                FORM_KEY_RESULT="continue"
+            fi
             ;;
         *)
             if [[ "$key" =~ [[:print:]] ]]; then
@@ -551,38 +625,51 @@ _form_process_key_edit() {
 }
 
 # Number of inline directory suggestion lines
-_FORM_DIR_SUGGESTION_LINES=10
+_FORM_DIR_SUGGESTION_LINES=7
 _FORM_DIR_FILTER_MAX=50
 
 # Row where dynamic content starts (after header)
-_FORM_CONTENT_ROW=3
+_FORM_CONTENT_ROW=4
 
-# Draw the static header (called once at form start)
+# Draw a stage-specific header.
 _form_draw_header() {
     printf '%s' "${_FORM_CUP_PREFIX}0;0H" > /dev/tty
-    printf '%s  New Session%s\n' "${_FORM_BOLD}" "${_FORM_RESET}" > /dev/tty
-    printf '  ↑↓: move  ←→/Space: toggle  Enter: edit  Ctrl-S: create  Esc: back/cancel%s\n' "${_FORM_EL}" > /dev/tty
+    if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+        printf '%s  New Session%s\n' "${_FORM_BOLD}" "${_FORM_RESET}" > /dev/tty
+        printf '  Enter: launch %s  Ctrl-L: Claude  Ctrl-X: Codex%s\n' \
+            "${FORM_VALUES[agent]}" "${_FORM_EL}" > /dev/tty
+        printf '  Ctrl-R: Cursor  Ctrl-P: Pi  Tab: options  Esc: cancel%s\n' "${_FORM_EL}" > /dev/tty
+    else
+        printf '%s  New Session — Options%s\n' "${_FORM_BOLD}" "${_FORM_RESET}" > /dev/tty
+        printf '  ↑↓: move  ←→/Space: change  Enter: edit/launch%s\n' "${_FORM_EL}" > /dev/tty
+        printf '  Ctrl-S: launch  Esc: back%s\n' "${_FORM_EL}" > /dev/tty
+    fi
     printf '%s\n' "${_FORM_EL}" > /dev/tty
 }
 
 # Draw the form fields to /dev/tty (not stdout, which may be captured by $()).
-# Header is static (drawn once). Only fields + suggestions are redrawn per keystroke.
-# Directory suggestions always occupy their fixed space to prevent layout shifts.
+# The launcher shows directory suggestions; the options stage shows all fields.
+# The content area is padded so switching stages cannot leave stale rows.
 # All output is buffered into a single write to minimize flicker.
 _form_draw() {
     local row=$_FORM_CONTENT_ROW
     _FORM_BUF="${_FORM_CUP_PREFIX}${row};0H"
+    local rendered_lines=0
 
     # Render each field
     local i name
     for ((i=0; i<${#FORM_FIELDS[@]}; i++)); do
         name="${FORM_FIELDS[$i]}"
+        if [[ "$_FORM_OPTIONS_OPEN" == "false" && "$name" != "directory" ]]; then
+            continue
+        fi
         local focused="false"
         [[ $i -eq $FORM_CURSOR ]] && focused="true"
         _form_render_field "$name" "$focused"
+        rendered_lines=$((rendered_lines + 1))
 
-        # Directory suggestions always shown (stable layout)
-        if [[ "$name" == "directory" ]]; then
+        # Suggestions belong to the fast launcher; options use the selected path.
+        if [[ "$name" == "directory" && "$_FORM_OPTIONS_OPEN" == "false" ]]; then
             local dir_focused="false"
             [[ "$focused" == "true" ]] && dir_focused="true"
             _form_filter_dir_suggestions "${FORM_VALUES[directory]}" "$_FORM_DIR_FILTER_MAX"
@@ -642,11 +729,15 @@ _form_draw() {
                 _FORM_BUF+="${_FORM_EL}"$'\n'
                 ((scount++))
             done
+            rendered_lines=$((rendered_lines + scount))
         fi
     done
 
-    # Clear extra lines for field count changes
-    _FORM_BUF+="${_FORM_EL}"$'\n'"${_FORM_EL}"$'\n'"${_FORM_EL}"$'\n'
+    # Clear stale suggestion or option rows when switching stages.
+    while [[ $rendered_lines -lt $((_FORM_DIR_SUGGESTION_LINES + 3)) ]]; do
+        _FORM_BUF+="${_FORM_EL}"$'\n'
+        rendered_lines=$((rendered_lines + 1))
+    done
 
     # Single write to terminal
     printf '%s' "$_FORM_BUF" > /dev/tty
@@ -666,9 +757,8 @@ _form_run() {
     _form_old_stty=$(stty -g < /dev/tty 2>/dev/null) || true
     stty -ixon < /dev/tty 2>/dev/null || true
 
-    _form_draw_header
-
     while true; do
+        _form_draw_header
         _form_draw
 
         local key=""

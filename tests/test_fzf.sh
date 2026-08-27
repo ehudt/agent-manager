@@ -41,6 +41,15 @@ test_annotated_directories() {
     stripped=$(_strip_annotation "/tmp/plain-path")
     assert_eq "/tmp/plain-path" "$stripped" "strip: handles plain path"
 
+    # Callers on the startup hot path can request bare paths and avoid one Git
+    # subprocess per suggestion.
+    local saved_annotate_directory plain_list
+    saved_annotate_directory=$(declare -f _annotate_directory)
+    _annotate_directory() { echo " branch"; }
+    plain_list=$(_list_directories "" false)
+    assert_not_contains "$plain_list" $'\t' "directory list: annotations can be disabled"
+    eval "$saved_annotate_directory"
+
     rm -rf "$git_dir" "$non_git_dir"
     rm -rf "$AM_DIR"
 

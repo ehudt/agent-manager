@@ -7,6 +7,12 @@ test_tmux() {
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
 
+    # The wrapper primes its config once in the caller instead of regenerating
+    # it in a command-substitution subshell on every tmux invocation.
+    unset _AM_TMUX_CONF_CACHED
+    am_tmux list-sessions >/dev/null 2>&1 || true
+    assert_not_empty "${_AM_TMUX_CONF_CACHED:-}" "am_tmux: config remains cached in caller"
+
     # Test session_exists for non-existent session
     assert_eq "false" "$(tmux_session_exists 'nonexistent-test-session-xyz' && echo true || echo false)" "tmux_session_exists: false for missing"
 
@@ -98,8 +104,8 @@ test_tmux_binding_snippets() {
         "tmux config: keeps clients inside agent-manager when sessions are killed"
     assert_contains "$rendered_conf" "set -g focus-events on" \
         "tmux config: enables focus-events for hosted agents"
-    assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am new\"" \
-        "tmux config: prefix+n opens new-session popup"
+    assert_contains "$rendered_conf" "display-popup -E -w 80 -h 16 \"$PROJECT_DIR/am new\"" \
+        "tmux config: prefix+n opens compact new-session popup"
     assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
         "tmux config: prefix+s opens agent manager popup"
     assert_contains "$rendered_conf" "bind h display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
@@ -190,6 +196,9 @@ test_tmux_pane_border_sidebar_refreshes_without_job_cache() {
     assert_not_contains "$rendered_conf" '#(cat /tmp/am-sidebar/' \
         "pane-border sidebar: does not use cached #() cat job"
 
+    # Launch refreshes asynchronously so popup exit is not blocked; force one
+    # refresh here before asserting the resulting option contents.
+    am_refresh_sidebar_cache
     sidebar=$(am_tmux show-option -qv -t "$s1" @am_sidebar 2>/dev/null || true)
     assert_contains "$sidebar" "$label1" \
         "pane-border sidebar: option contains surviving session before kill"

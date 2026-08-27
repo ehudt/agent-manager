@@ -12,13 +12,15 @@ test_registry() {
     assert_cmd_succeeds "am_init creates registry file" test -f "$AM_REGISTRY"
 
     # Test add
-    registry_add "test-session" "/tmp/test" "main" "claude" "test task"
+    registry_add "test-session" "/tmp/test" "main" "claude" "test task" "true" "false"
     assert_eq "true" "$(registry_exists test-session && echo true || echo false)" "registry_add: session exists"
 
     # Test get_field
     assert_eq "/tmp/test" "$(registry_get_field test-session directory)" "registry_get_field: directory"
     assert_eq "main" "$(registry_get_field test-session branch)" "registry_get_field: branch"
     assert_eq "claude" "$(registry_get_field test-session agent_type)" "registry_get_field: agent_type"
+    assert_eq "true" "$(registry_get_field test-session yolo_mode)" "registry_get_field: yolo mode"
+    assert_eq "false" "$(registry_get_field test-session sandbox_mode)" "registry_get_field: sandbox mode"
 
     # Test update
     registry_update "test-session" "branch" "feature"

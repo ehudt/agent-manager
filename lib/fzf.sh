@@ -10,9 +10,11 @@ _FZF_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # agents.sh is loaded lazily — only the interactive form functions need it
 
 # Helper: List directories for picker (frecent + git repos)
+# Pass false as the second argument to skip per-directory Git annotations.
 # shellcheck disable=SC2120
 _list_directories() {
     local query="${1:-}"
+    local annotate="${2:-true}"
 
     # If query looks like a path, show completions for that path
     if [[ "$query" == /* || "$query" == ~* || "$query" == .* ]]; then
@@ -64,6 +66,10 @@ _list_directories() {
 
     # Output with annotations
     for p in "${unique_paths[@]}"; do
+        if [[ "$annotate" != "true" ]]; then
+            echo "$p"
+            continue
+        fi
         local annotation
         annotation=$(_annotate_directory "$p")
         if [[ -n "$annotation" ]]; then

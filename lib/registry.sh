@@ -42,13 +42,15 @@ _registry_unlock() {
 }
 
 # Add a session to the registry
-# Usage: registry_add <name> <directory> <branch> <agent_type> [task_description]
+# Usage: registry_add <name> <directory> <branch> <agent_type> [task_description] [yolo_mode] [sandbox_mode]
 registry_add() {
     local name="$1"
     local directory="$2"
     local branch="$3"
     local agent_type="$4"
     local task="${5:-}"
+    local yolo_mode="${6:-false}"
+    local sandbox_mode="${7:-false}"
 
     local created_at
     created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -63,13 +65,17 @@ registry_add() {
        --arg agent "$agent_type" \
        --arg created "$created_at" \
        --arg task "$task" \
+       --arg yolo "$yolo_mode" \
+       --arg sandbox "$sandbox_mode" \
        '.sessions[$name] = {
            "name": $name,
            "directory": $dir,
            "branch": $branch,
            "agent_type": $agent,
            "created_at": $created,
-           "task": $task
+           "task": $task,
+           "yolo_mode": $yolo,
+           "sandbox_mode": $sandbox
        }' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
     local rc=$?
     _registry_unlock

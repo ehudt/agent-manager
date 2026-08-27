@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.12.1"
+AM_VERSION="0.13.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -85,7 +85,7 @@ OPTIONS FOR 'status':
 
 KEYBINDINGS (interactive browser):
     Enter           Attach active session or restore inactive session
-    Ctrl-N          Create new session (one-page form)
+    Ctrl-N          Create new session (directory-first launcher)
     Ctrl-X          Kill selected active session
     Ctrl-R          Refresh session list
     ?               Show inline help
@@ -401,7 +401,7 @@ cmd_new() {
                 echo "  --              Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
-                echo "  am new                          # Interactive one-page form"
+                echo "  am new                          # Interactive directory-first launcher"
                 echo "  am new ~/project                # Specific directory"
                 echo "  printf 'Fix bug\n' | am new --detach ~/project"
                 echo "  am new ~/project -- --resume    # With agent args"
@@ -419,7 +419,7 @@ cmd_new() {
         esac
     done
 
-    # One-page form for fully interactive new-session creation
+    # Directory-first launcher for fully interactive new-session creation
     if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && -z "$worktree_name" && ${#agent_args[@]} -eq 0 ]]; then
         _ensure_form
         local form_values flags

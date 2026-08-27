@@ -72,7 +72,7 @@ bind 8 run-shell "$index_cmd 8"
 bind 9 run-shell "$index_cmd 9"
 
 # Prefix + n: open new-session popup
-bind n display-popup -E -w 90% -h 80% "$am_cmd new"
+bind n display-popup -E -w 80 -h 16 "$am_cmd new"
 
 # Prefix + s: open agent manager popup
 bind s display-popup -E -w 90% -h 80% "$am_cmd"
@@ -168,9 +168,10 @@ EOF
 }
 
 am_tmux() {
-    local conf
-    conf=$(am_tmux_config_path)
-    command tmux -L "$AM_TMUX_SOCKET" -f "$conf" "$@"
+    if [[ -z "${_AM_TMUX_CONF_CACHED:-}" ]]; then
+        am_tmux_config_path >/dev/null
+    fi
+    command tmux -L "$AM_TMUX_SOCKET" -f "$_AM_TMUX_CONF_CACHED" "$@"
 }
 
 am_tmux_is_current_server() {
