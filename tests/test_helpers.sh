@@ -322,6 +322,13 @@ setup_integration_env() {
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/codex"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/agent"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/stubagent"
+    TEST_ZOXIDE_LOG="$TEST_AM_DIR/zoxide.log"
+    export TEST_ZOXIDE_LOG
+    cat > "$TEST_STUB_BIN/zoxide" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_ZOXIDE_LOG"
+EOF
+    chmod +x "$TEST_STUB_BIN/zoxide"
     TEST_OLD_PATH="${PATH:-}"
     export PATH="$TEST_STUB_BIN:$PATH"
     # Propagate test env into the tmux server so run-shell commands inherit it
@@ -371,6 +378,7 @@ teardown_integration_env() {
     TEST_AM_DIR=""
     TEST_STUB_BIN=""
     TEST_ZDOTDIR=""
+    unset TEST_ZOXIDE_LOG
     export AM_DIR="${TEST_OLD_AM_DIR:-$HOME/.agent-manager}"
     export AM_REGISTRY="${TEST_OLD_AM_REGISTRY:-$AM_DIR/sessions.json}"
     export AM_CONFIG="${TEST_OLD_AM_CONFIG:-$AM_DIR/config.json}"

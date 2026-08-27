@@ -141,6 +141,8 @@ test_integration_lifecycle() {
         "agent_launch: correct agent_type in registry"
     assert_eq "test task" "$(registry_get_field "$session_name" task)" \
         "agent_launch: correct task in registry"
+    assert_contains "$(cat "$TEST_ZOXIDE_LOG")" "add -- $test_dir" \
+        "agent_launch: records directory in zoxide"
 
     # Verify two panes (agent top + shell bottom)
     local pane_count

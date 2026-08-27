@@ -419,6 +419,12 @@ agent_launch() {
         fi
     fi
 
+    # zoxide's shell hook only observes cd events. tmux starts directly in the
+    # target directory, so explicitly record successful session launches.
+    if command -v zoxide &>/dev/null; then
+        zoxide add -- "$directory" >/dev/null 2>&1 || true
+    fi
+
     # Immediately regenerate sidebar cache so the new session appears in every
     # other session's pane-border without waiting for the 5s status-interval.
     am_refresh_sidebar_cache
