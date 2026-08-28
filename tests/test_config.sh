@@ -18,10 +18,13 @@ test_config() {
     assert_eq "claude" "$(am_default_agent)" "config: default agent fallback"
     assert_eq "false" "$(am_default_yolo_enabled && echo true || echo false)" "config: default yolo fallback"
     assert_eq "true" "$(am_stream_logs_enabled && echo true || echo false)" "config: default logs fallback"
+    assert_eq "true" "$(am_auto_restore_enabled && echo true || echo false)" \
+        "config: reboot recovery defaults on"
 
     am_config_set "default_agent" "codex" "string"
     am_config_set "default_yolo" "true" "boolean"
     am_config_set "stream_logs" "yes" "boolean"
+    am_config_set "auto_restore" "false" "boolean"
 
     assert_eq "codex" "$(am_default_agent)" "config: saved default agent"
     am_config_set "default_agent" "cursor-agent" "string"
@@ -29,6 +32,8 @@ test_config() {
     am_config_set "default_agent" "codex" "string"
     assert_eq "true" "$(am_default_yolo_enabled && echo true || echo false)" "config: saved default yolo"
     assert_eq "true" "$(am_stream_logs_enabled && echo true || echo false)" "config: saved stream logs"
+    assert_eq "false" "$(am_auto_restore_enabled && echo true || echo false)" \
+        "config: saved reboot recovery setting"
     assert_eq "true" "$(am_maybe_apply_default_yolo --resume && echo true || echo false)" "config: applies default yolo when missing"
     assert_eq "false" "$(am_maybe_apply_default_yolo --yolo && echo true || echo false)" "config: does not duplicate yolo flag"
 

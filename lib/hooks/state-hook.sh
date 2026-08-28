@@ -70,8 +70,10 @@
 
 set -euo pipefail
 
-AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
+AM_DIR="${AM_DIR:-${HOME}/.agent-manager}"
+AM_REGISTRY="${AM_REGISTRY:-${AM_DIR}/sessions.json}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
+AM_IDENTITY_DIR="${AM_IDENTITY_DIR:-${AM_DIR}/identities}"
 
 # Canonicalize state values read from files created by am <=0.11. Keep this
 # Bash-3-compatible: the hook runs under /bin/bash on macOS.
@@ -108,6 +110,12 @@ fi
 # Extract hook type
 hook_type=$(printf '%s' "$hook_input" | jq -r '.hook_event_name // empty' 2>/dev/null || true)
 [[ -z "$hook_type" ]] && exit 0
+
+# Cursor background/subagent hook events inherit the parent pane's
+# AM_SESSION_NAME. They describe a different conversation and must never
+# overwrite the parent session's state or durable resume identity.
+is_background_agent=$(printf '%s' "$hook_input" | jq -r '.is_background_agent // false' 2>/dev/null || echo "false")
+[[ "$is_background_agent" == "true" ]] && exit 0
 
 # Guard against infinite loops from the Stop hook
 if [[ "$hook_type" == "Stop" ]]; then
@@ -311,6 +319,7 @@ _family_match() {
 }
 
 session_name=""
+session_resolution=""
 
 # 1. AM_SESSION_NAME — authoritative when set by agent_launch. If set but not
 #    in the registry, the session was removed or renamed; do not fall through
@@ -325,6 +334,7 @@ if [[ -n "${AM_SESSION_NAME:-}" ]]; then
         _hook_debug "AM_SESSION_NAME=$session_name agent_type outside hook family ($hook_family); exiting"
         exit 0
     fi
+    session_resolution="env"
 fi
 
 # 2. TMUX_PANE — agents inherit this from their tmux pane; resolving it to the
@@ -338,6 +348,7 @@ if [[ -z "$session_name" && -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/nul
             _hook_debug "tmux session $session_name agent_type outside hook family ($hook_family); exiting"
             exit 0
         fi
+        [[ -n "$session_name" ]] && session_resolution="tmux"
     fi
 fi
 
@@ -359,6 +370,7 @@ if [[ -z "$session_name" ]]; then
         | select((.value.agent_type // "") as $t | ($fam | split(" ") | index($t)) != null)
         | .key
     ' "$AM_REGISTRY" 2>/dev/null | head -1 || true)
+    [[ -n "$session_name" ]] && session_resolution="cwd"
 fi
 
 if [[ -z "$session_name" ]]; then
@@ -462,8 +474,8 @@ fi
 # fired the hook instead of guessing by cwd, which is ambiguous for duplicate
 # sessions in one repo.
 hook_session_id=$(printf '%s' "$hook_input" | jq -r '.conversation_id // .session_id // .sessionId // empty' 2>/dev/null || true)
+transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 if [[ -z "$hook_session_id" ]]; then
-    transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
     if [[ -n "$transcript_path" ]]; then
         hook_session_id=$(basename "$transcript_path" .jsonl)
     fi
@@ -472,16 +484,59 @@ if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
     printf '%s' "$hook_session_id" > "$AM_STATE_DIR/$session_name.sid"
 fi
 
-# Cursor exposes the exact transcript path in every conversation hook. Persist
-# it alongside the state so restore/title code never has to guess which
-# same-directory conversation belongs to this tmux pane.
-transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 if [[ "$transcript_path" == /* && "$transcript_path" != *$'\n'* ]]; then
     printf '%s' "$transcript_path" > "$AM_STATE_DIR/$session_name.transcript"
 fi
 
+# Durable Cursor identity is a pair. Some events expose a new conversation id
+# without a transcript path; persisting only half would combine unrelated
+# generations. Background agents were rejected above, and durable fields are
+# updated together only from one complete hook payload.
+if [[ "$session_resolution" != "cwd" && "$hook_family" == "cursor" ]]; then
+    if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ \
+        && "$transcript_path" == /* && "$transcript_path" != *$'\n'* ]]; then
+        mkdir -p "$AM_IDENTITY_DIR"
+        durable_sid=""
+        if [[ -f "$AM_IDENTITY_DIR/$session_name.sid" \
+            && -f "$AM_IDENTITY_DIR/$session_name.transcript" ]]; then
+            IFS= read -r durable_sid < "$AM_IDENTITY_DIR/$session_name.sid" 2>/dev/null || true
+        fi
+        # A physical Cursor process is pinned to its first complete identity
+        # pair. Nested agents inherit AM_SESSION_NAME and do not reliably set
+        # is_background_agent, so a later different id is not authoritative.
+        if [[ -f "$AM_IDENTITY_DIR/$session_name.rebind" \
+            || -z "$durable_sid" || "$durable_sid" == "$hook_session_id" ]]; then
+            printf '%s' "$hook_session_id" > "$AM_IDENTITY_DIR/$session_name.sid"
+            printf '%s' "$transcript_path" > "$AM_IDENTITY_DIR/$session_name.transcript"
+            rm -f "$AM_IDENTITY_DIR/$session_name.rebind"
+        fi
+    fi
+elif [[ "$session_resolution" != "cwd" ]]; then
+    mkdir -p "$AM_IDENTITY_DIR"
+    durable_sid=""
+    allow_rebind=false
+    wrote_durable_identity=false
+    if [[ -f "$AM_IDENTITY_DIR/$session_name.sid" ]]; then
+        IFS= read -r durable_sid < "$AM_IDENTITY_DIR/$session_name.sid" 2>/dev/null || true
+    fi
+    [[ -f "$AM_IDENTITY_DIR/$session_name.rebind" ]] && allow_rebind=true
+    if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ \
+        && ( "$allow_rebind" == "true" \
+            || -z "$durable_sid" || "$durable_sid" == "$hook_session_id" ) ]]; then
+        printf '%s' "$hook_session_id" > "$AM_IDENTITY_DIR/$session_name.sid"
+        wrote_durable_identity=true
+    fi
+    if [[ "$transcript_path" == /* && "$transcript_path" != *$'\n'* \
+        && ( "$allow_rebind" == "true" \
+            || -z "$durable_sid" || "$durable_sid" == "$hook_session_id" ) ]]; then
+        printf '%s' "$transcript_path" > "$AM_IDENTITY_DIR/$session_name.transcript"
+    fi
+    if [[ "$allow_rebind" == "true" && "$wrote_durable_identity" == "true" ]]; then
+        rm -f "$AM_IDENTITY_DIR/$session_name.rebind"
+    fi
+fi
+
 # Invalidate list cache so the next fzf reload picks up the new state
-AM_DIR="${AM_DIR:-${HOME}/.agent-manager}"
 rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
 
 # Invalidate title-scan throttle on prompt boundaries so the next status-bar
@@ -490,7 +545,7 @@ rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
 # for busy sessions.
 case "$hook_type" in
     UserPromptSubmit|Stop|beforeSubmitPrompt|stop|sessionStart)
-        rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
+        rm -f "$AM_DIR/.title_scan_last" "$AM_DIR/.restore_scan_last" 2>/dev/null || true
         ;;
 esac
 

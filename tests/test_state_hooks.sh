@@ -12,11 +12,13 @@ test_state_hooks() {
     fi
 
     # Set up isolated temp dirs
-    local tmp_dir registry_dir state_dir
+    local tmp_dir registry_dir state_dir identity_dir
     tmp_dir=$(mktemp -d)
     registry_dir="$tmp_dir/registry"
     state_dir="$tmp_dir/state"
-    mkdir -p "$registry_dir" "$state_dir"
+    identity_dir="$tmp_dir/identities"
+    mkdir -p "$registry_dir" "$state_dir" "$identity_dir"
+    export AM_IDENTITY_DIR="$identity_dir"
 
     local registry="$registry_dir/sessions.json"
     local test_project_dir="$tmp_dir/myproject"
@@ -34,7 +36,8 @@ test_state_hooks() {
     # Helper: run hook with given JSON input
     run_hook() {
         local input="$1"
-        AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="" \
             "$hook_script" <<< "$input"
     }
 
@@ -137,12 +140,16 @@ test_state_hooks() {
 
     # --- session_id sidecar is written when present in hook payload ---
     rm -f "$state_dir/am-abc123" "$state_dir/am-abc123.sid"
-    run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"sid-from-hook\",\"cwd\":\"$real_project_dir\"}"
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-abc123" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"sid-from-hook\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     local sid
     sid=$(cat "$state_dir/am-abc123.sid" 2>/dev/null || echo "")
     assert_eq "running" "$state" "UserPromptSubmit with session_id: writes state"
     assert_eq "sid-from-hook" "$sid" "UserPromptSubmit with session_id: writes sid sidecar"
+    assert_eq "sid-from-hook" "$(cat "$identity_dir/am-abc123.sid" 2>/dev/null || echo "")" \
+        "UserPromptSubmit with session_id: persists durable identity"
 
     # --- Cursor hook events use camelCase names and conversation_id ---
     # Cursor events may only touch cursor-type sessions (agent-family gate),
@@ -155,7 +162,8 @@ test_state_hooks() {
     : > "$cursor_transcript"
     rm -f "$state_dir/am-cur456" "$state_dir/am-cur456.sid" \
         "$state_dir/am-cur456.transcript"
-    AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"sessionStart\",\"conversation_id\":\"cursor-conv-1\",\"session_id\":\"cursor-conv-1\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
     assert_eq "ready" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
         "Cursor sessionStart: writes ready"
@@ -163,11 +171,52 @@ test_state_hooks() {
         "Cursor sessionStart: writes conversation id sidecar"
     assert_eq "$cursor_transcript" "$(cat "$state_dir/am-cur456.transcript" 2>/dev/null || echo)" \
         "Cursor sessionStart: writes transcript path sidecar"
+    assert_eq "$cursor_transcript" \
+        "$(cat "$identity_dir/am-cur456.transcript" 2>/dev/null || echo)" \
+        "Cursor sessionStart: persists durable transcript path"
+
+    local background_transcript="$tmp_dir/background-conv.jsonl"
+    : > "$background_transcript"
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-cur456" \
+        "$hook_script" <<< "{\"hook_event_name\":\"sessionStart\",\"is_background_agent\":true,\"conversation_id\":\"background-conv\",\"session_id\":\"background-conv\",\"transcript_path\":\"$background_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "cursor-conv-1" "$(cat "$identity_dir/am-cur456.sid" 2>/dev/null || echo)" \
+        "Cursor background agent: does not clobber parent durable identity"
+    assert_eq "$cursor_transcript" \
+        "$(cat "$identity_dir/am-cur456.transcript" 2>/dev/null || echo)" \
+        "Cursor background agent: does not clobber parent transcript"
+
+    local nested_transcript="$tmp_dir/nested-conv.jsonl"
+    : > "$nested_transcript"
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-cur456" \
+        "$hook_script" <<< "{\"hook_event_name\":\"sessionStart\",\"conversation_id\":\"nested-conv\",\"session_id\":\"nested-conv\",\"transcript_path\":\"$nested_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "cursor-conv-1" "$(cat "$identity_dir/am-cur456.sid" 2>/dev/null || echo)" \
+        "Cursor nested agent without flag: cannot replace pinned physical-session identity"
+    assert_eq "$cursor_transcript" \
+        "$(cat "$identity_dir/am-cur456.transcript" 2>/dev/null || echo)" \
+        "Cursor nested agent without flag: cannot replace pinned transcript"
+
+    local resumed_transcript="$tmp_dir/resumed-conv.jsonl"
+    : > "$resumed_transcript"
+    : > "$identity_dir/am-cur456.rebind"
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-cur456" \
+        "$hook_script" <<< "{\"hook_event_name\":\"sessionStart\",\"conversation_id\":\"resumed-conv\",\"session_id\":\"resumed-conv\",\"transcript_path\":\"$resumed_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "resumed-conv" "$(cat "$identity_dir/am-cur456.sid" 2>/dev/null || echo)" \
+        "Cursor recovered process: one rebind updates to its new identity"
+    assert_eq "$resumed_transcript" \
+        "$(cat "$identity_dir/am-cur456.transcript" 2>/dev/null || echo)" \
+        "Cursor recovered process: one rebind updates transcript"
+    assert_eq "false" "$(test -f "$identity_dir/am-cur456.rebind" && echo true || echo false)" \
+        "Cursor recovered process: rebind permission is consumed"
 
     AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
-        "$hook_script" <<< "{\"hook_event_name\":\"beforeSubmitPrompt\",\"conversation_id\":\"cursor-conv-1\",\"workspace_roots\":[\"$real_project_dir\"]}"
+        "$hook_script" <<< "{\"hook_event_name\":\"beforeSubmitPrompt\",\"conversation_id\":\"cursor-without-transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
     assert_eq "running" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
         "Cursor beforeSubmitPrompt: writes running"
+    assert_eq "resumed-conv" "$(cat "$identity_dir/am-cur456.sid" 2>/dev/null || echo)" \
+        "Cursor hook without transcript: keeps last complete durable identity pair"
 
     AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"cursor-conv-1\",\"status\":\"completed\",\"loop_count\":0,\"workspace_roots\":[\"$real_project_dir\"]}"
@@ -450,7 +499,8 @@ test_state_hooks() {
     # Cursor stop via cwd fallback: must skip the pi session (listed first)
     # and land on the cursor session — including the sidecars.
     rm -f "$state_dir/am-pi" "$state_dir/am-pi.sid" "$state_dir/am-pi.transcript" \
-        "$state_dir/am-cur" "$state_dir/am-cur.sid"
+        "$state_dir/am-cur" "$state_dir/am-cur.sid" "$identity_dir/am-cur.sid" \
+        "$identity_dir/am-cur.transcript"
     AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
         "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-x\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
     assert_eq "" "$(cat "$state_dir/am-pi" 2>/dev/null || echo)" \
@@ -461,6 +511,8 @@ test_state_hooks() {
         "family gate: Cursor stop leaves pi transcript sidecar untouched"
     assert_eq "ready" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
         "family gate: Cursor stop targets the cursor session"
+    assert_eq "" "$(cat "$identity_dir/am-cur.sid" 2>/dev/null || echo)" \
+        "cwd fallback: cannot establish durable recovery identity"
 
     # Claude Stop via cwd fallback with only pi + cursor sessions in the
     # directory: no session may be written.
@@ -492,9 +544,30 @@ test_state_hooks() {
         > "$codex_registry"
     rm -f "$state_dir/am-codex"
     AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"session_id\":\"rogue-cwd-id\",\"cwd\":\"$real_project_dir\"}"
     assert_eq "ready" "$(cat "$state_dir/am-codex" 2>/dev/null || echo)" \
         "family gate: CamelCase Stop may target a codex session"
+    assert_eq "" "$(cat "$identity_dir/am-codex.sid" 2>/dev/null || echo)" \
+        "Codex cwd fallback: cannot establish durable recovery identity"
+
+    AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-codex" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"codex-parent\",\"cwd\":\"$real_project_dir\"}"
+    AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-codex" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"codex-nested\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "codex-parent" "$(cat "$identity_dir/am-codex.sid" 2>/dev/null || echo)" \
+        "Codex nested same-family hook: cannot replace pinned physical identity"
+
+    : > "$identity_dir/am-codex.rebind"
+    AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-codex" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+    assert_eq "true" "$(test -f "$identity_dir/am-codex.rebind" && echo true || echo false)" \
+        "Codex recovered process: id-less hook does not consume rebind"
+    AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-codex" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"codex-resumed\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "codex-resumed" "$(cat "$identity_dir/am-codex.sid" 2>/dev/null || echo)" \
+        "Codex recovered process: exact identity consumes rebind"
+    assert_eq "false" "$(test -f "$identity_dir/am-codex.rebind" && echo true || echo false)" \
+        "Codex recovered process: rebind consumed only after exact identity"
 
     # --- No matching session → no state file written ---
     rm -f "$state_dir/am-abc123"
@@ -510,6 +583,7 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "" "$state" "Unknown event: no state file written"
 
+    unset AM_IDENTITY_DIR
     rm -rf "$tmp_dir"
 
     $SUMMARY_MODE || echo ""
@@ -590,12 +664,71 @@ test_state_from_hook_invalid_state() {
     rm -rf "$state_dir"
 }
 
+test_pi_durable_identity_guard() {
+    $SUMMARY_MODE || echo "=== Testing pi durable identity guard ==="
+
+    local tmp_dir registry state_dir identity_dir
+    tmp_dir=$(mktemp -d)
+    registry="$tmp_dir/sessions.json"
+    state_dir="$tmp_dir/state"
+    identity_dir="$tmp_dir/identities"
+    mkdir -p "$state_dir" "$identity_dir"
+
+    jq -n '{sessions: {"am-pi-guard": {name: "am-pi-guard", agent_type: "cursor"}}}' > "$registry"
+    local rc=0
+    AM_DIR="$tmp_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-pi-guard" \
+        EXPECT_PI_REGISTERED=false TEST_PI_SESSION_ID=nested-pi \
+        node "$PROJECT_DIR/tests/pi_identity_probe.mjs" || rc=$?
+    assert_eq "0" "$rc" "pi identity: extension rejects non-pi registry session"
+    assert_eq "false" "$(test -f "$identity_dir/am-pi-guard.sid" && echo true || echo false)" \
+        "pi identity: foreign session remains untouched"
+
+    rm -f "$registry"
+    rc=0
+    AM_DIR="$tmp_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-pi-guard" \
+        AM_AGENT_TYPE="cursor" EXPECT_PI_REGISTERED=false TEST_PI_SESSION_ID=nested-pi \
+        node "$PROJECT_DIR/tests/pi_identity_probe.mjs" || rc=$?
+    assert_eq "0" "$rc" "pi identity: sandbox environment rejects wrong agent family"
+
+    EXPECT_PI_REGISTERED=true TEST_PI_SESSION_ID=pi-sandbox \
+        AM_DIR="$tmp_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-pi-guard" AM_AGENT_TYPE="pi" \
+        node "$PROJECT_DIR/tests/pi_identity_probe.mjs"
+    assert_eq "pi-sandbox" "$(cat "$identity_dir/am-pi-guard.sid")" \
+        "pi identity: sandbox pi session persists durable identity without registry"
+
+    jq -n '{sessions: {"am-pi-guard": {name: "am-pi-guard", agent_type: "pi"}}}' > "$registry"
+    rm -f "$identity_dir/am-pi-guard.sid"
+    printf '%s' "pi-parent" > "$identity_dir/am-pi-guard.sid"
+    EXPECT_PI_REGISTERED=true TEST_PI_SESSION_ID=pi-nested \
+        AM_DIR="$tmp_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-pi-guard" AM_AGENT_TYPE="pi" \
+        node "$PROJECT_DIR/tests/pi_identity_probe.mjs"
+    assert_eq "pi-parent" "$(cat "$identity_dir/am-pi-guard.sid")" \
+        "pi identity: nested process cannot replace pinned identity"
+
+    : > "$identity_dir/am-pi-guard.rebind"
+    EXPECT_PI_REGISTERED=true TEST_PI_SESSION_ID=pi-resumed \
+        AM_DIR="$tmp_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-pi-guard" AM_AGENT_TYPE="pi" \
+        node "$PROJECT_DIR/tests/pi_identity_probe.mjs"
+    assert_eq "pi-resumed" "$(cat "$identity_dir/am-pi-guard.sid")" \
+        "pi identity: recovered physical process consumes one rebind"
+    assert_eq "false" "$(test -f "$identity_dir/am-pi-guard.rebind" && echo true || echo false)" \
+        "pi identity: rebind permission is consumed"
+
+    rm -rf "$tmp_dir"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_from_hook_reads_file
     _run_test test_state_from_hook_missing_file
     _run_test test_state_from_hook_stale_file
     _run_test test_state_from_hook_invalid_state
+    _run_test test_pi_durable_identity_guard
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

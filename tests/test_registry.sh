@@ -5,6 +5,7 @@ test_registry() {
     $SUMMARY_MODE || echo "=== Testing registry.sh ==="
 
     source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
     source "$LIB_DIR/registry.sh"
 
     # Test init
@@ -50,6 +51,11 @@ test_registry_extended() {
     source "$LIB_DIR/registry.sh"
 
     setup_isolated_am_dir
+
+    mkdir -p "$AM_DIR/identities"
+    printf '%s' "durable-session-id" > "$AM_DIR/identities/am-durable.sid"
+    assert_eq "durable-session-id" "$(_sessions_log_sidecar_id am-durable)" \
+        "session identity: durable sidecar survives runtime state loss"
 
     # Test: get_field on nonexistent session returns empty
     local result
@@ -146,6 +152,15 @@ test_registry_extended() {
         || pass "restorable: pi without jsonl dropped"
     unset AM_PI_SESSIONS_DIR
 
+    # --- Codex exact hook identities use the native `codex resume ID` store ---
+    local codex_log; codex_log=$(mktemp)
+    printf '%s\n' \
+        '{"session_name":"am-codex1","session_id":"codex-exact-1","directory":"/tmp","branch":"main","agent_type":"codex","task":"Codex task","created_at":"2026-07-19T08:00:00Z","closed_at":"2026-07-19T09:00:00Z","snapshot_file":""}' \
+        > "$codex_log"
+    local codex_out
+    codex_out=$(AM_SESSIONS_LOG="$codex_log" sessions_log_restorable)
+    assert_contains "$codex_out" "am-codex1" "restorable: Codex exact id kept"
+
     # --- Cursor transcript path is authoritative for restore ---
     local cr_home; cr_home=$(mktemp -d)
     local cr_dir="$cr_home/project"; mkdir -p "$cr_dir"
@@ -154,6 +169,8 @@ test_registry_extended() {
     touch "$cr_transcript"
     assert_cmd_succeeds "Cursor jsonl exists by exact transcript path" \
         _sessions_log_jsonl_exists "$cr_dir" "cursor-conv-1" "cursor" "$cr_transcript"
+    assert_cmd_succeeds "Cursor resumed id accepts hook-reported transcript path" \
+        _sessions_log_jsonl_exists "$cr_dir" "cursor-resumed-id" "cursor" "$cr_transcript"
     assert_cmd_fails "Cursor missing exact transcript path" \
         _sessions_log_jsonl_exists "$cr_dir" "cursor-conv-1" "cursor" "$cr_home/missing.jsonl"
 
@@ -168,7 +185,7 @@ test_registry_extended() {
         || fail "restorable: Cursor exact transcript kept"
     echo "$cr_out" | grep -q "am-cursor2" && fail "restorable: Cursor missing transcript dropped" \
         || pass "restorable: Cursor missing transcript dropped"
-    rm -rf "$cr_home" "$cr_log" "$pr_home" "$pr_log"
+    rm -rf "$cr_home" "$cr_log" "$pr_home" "$pr_log" "$codex_log"
 
     teardown_isolated_am_dir
 
@@ -859,6 +876,20 @@ test_registry_concurrency() {
     done
     assert_eq "0" "$lost" \
         "concurrency: no added row clobbered during storm (lost=$lost of $n)"
+
+    # --- Sessions-log append/update uses the same cross-process lock ---
+    for ((i = 1; i <= n; i++)); do
+        ( sessions_log_append "slog-$i" "/tmp/s$i" "main" "claude" "" ) &
+    done
+    wait
+    assert_eq "$n" "$(jq -s 'length' "$AM_SESSIONS_LOG")" \
+        "concurrency: all parallel sessions-log appends persisted"
+    for ((i = 1; i <= n; i++)); do
+        ( sessions_log_update "slog-$i" "task" "task-$i" ) &
+    done
+    wait
+    assert_eq "$n" "$(jq -s '[.[] | select(.task | startswith("task-"))] | length' "$AM_SESSIONS_LOG")" \
+        "concurrency: all parallel sessions-log updates persisted"
 
     teardown_isolated_am_dir
 

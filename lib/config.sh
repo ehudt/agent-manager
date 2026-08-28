@@ -14,6 +14,7 @@ am_config_init() {
   "default_agent": "claude",
   "default_yolo": false,
   "default_sandbox": false,
+  "auto_restore": true,
   "stream_logs": true,
   "sb_network_restrict": true,
   "sb_allowed_hosts": "",
@@ -122,6 +123,19 @@ am_stream_logs_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
+am_auto_restore_enabled() {
+    if [[ -n "${AM_AUTO_RESTORE:-}" ]]; then
+        am_bool_is_true "${AM_AUTO_RESTORE,,}"
+        return $?
+    fi
+
+    local configured
+    configured=$(jq -r 'if has("auto_restore") then (.auto_restore | tostring) else "missing" end' \
+        "$AM_CONFIG" 2>/dev/null)
+    [[ "$configured" == "missing" || -z "$configured" ]] && return 0
+    am_bool_is_true "${configured,,}"
+}
+
 am_sb_network_restrict_enabled() {
     if [[ -n "${AM_SB_NETWORK_RESTRICT:-}" ]]; then
         am_bool_is_true "${AM_SB_NETWORK_RESTRICT,,}"
@@ -176,6 +190,7 @@ am_config_key_alias() {
         agent|default-agent|default_agent) echo "default_agent" ;;
         yolo|default-yolo|default_yolo) echo "default_yolo" ;;
         sandbox|default-sandbox|default_sandbox) echo "default_sandbox" ;;
+        auto-restore|auto_restore|restore-on-startup) echo "auto_restore" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         sb-network-restrict|sb_network_restrict) echo "sb_network_restrict" ;;
         sb-allowed-hosts|sb_allowed_hosts) echo "sb_allowed_hosts" ;;
@@ -187,7 +202,7 @@ am_config_key_alias() {
 am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
-        default_yolo|default_sandbox|stream_logs|sb_network_restrict) echo "boolean" ;;
+        default_yolo|default_sandbox|auto_restore|stream_logs|sb_network_restrict) echo "boolean" ;;
         sb_allowed_hosts|sandbox.shares) echo "string" ;;
         *) return 1 ;;
     esac
@@ -200,7 +215,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        default_yolo|default_sandbox|stream_logs|sb_network_restrict)
+        default_yolo|default_sandbox|auto_restore|stream_logs|sb_network_restrict)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         sb_allowed_hosts|sandbox.shares)
@@ -213,7 +228,7 @@ am_config_value_is_valid() {
 }
 
 am_config_print() {
-    local default_agent_value default_yolo_value default_sandbox_value stream_logs_value
+    local default_agent_value default_yolo_value default_sandbox_value auto_restore_value stream_logs_value
     default_agent_value=$(am_default_agent)
     if am_default_yolo_enabled; then
         default_yolo_value=true
@@ -230,6 +245,11 @@ am_config_print() {
     else
         stream_logs_value=false
     fi
+    if am_auto_restore_enabled; then
+        auto_restore_value=true
+    else
+        auto_restore_value=false
+    fi
     local sb_network_restrict_value
     if am_sb_network_restrict_enabled; then
         sb_network_restrict_value=true
@@ -244,6 +264,7 @@ am_config_print() {
 default_agent=$default_agent_value
 default_yolo=$default_yolo_value
 default_sandbox=$default_sandbox_value
+auto_restore=$auto_restore_value
 stream_logs=$stream_logs_value
 sb_network_restrict=$sb_network_restrict_value
 sb_allowed_hosts=$sb_allowed_hosts_value

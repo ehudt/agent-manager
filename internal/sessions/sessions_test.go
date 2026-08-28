@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -111,6 +112,62 @@ func TestReadRegistryValid(t *testing.T) {
 	s := got.Sessions["am-abc"]
 	if s.Task != "Test task" {
 		t.Errorf("expected task 'Test task', got %q", s.Task)
+	}
+}
+
+func TestRegistryRoundTripPreservesKnownAndFutureMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+	want := registryMetadataDocument("am-abc", "Test task")
+	writeJSONDocument(t, path, want)
+
+	reg := ReadRegistry(path)
+	session := reg.Sessions["am-abc"]
+	if session.YoloMode != "true" ||
+		session.SandboxMode != "true" ||
+		session.ContainerName != "am-abc" ||
+		session.WorktreePath != "/container/worktree" ||
+		session.WorktreeHostPath != "/host/worktree" ||
+		session.WorktreeName != "feature-recovery" ||
+		session.LogicalID != "logical-abc" ||
+		session.OrderKey != "000001" {
+		t.Fatalf("known recovery metadata was not decoded: %#v", session)
+	}
+
+	writeRegistryAtomic(path, reg)
+	got := readJSONDocument(t, path)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("registry metadata changed across read/rewrite:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func registryMetadataDocument(name, task string) map[string]any {
+	return map[string]any{
+		"schema_version": float64(2),
+		"registry_meta": map[string]any{
+			"future": []any{"value", float64(7), true},
+		},
+		"sessions": map[string]any{
+			name: map[string]any{
+				"name":               name,
+				"directory":          "/tmp/test",
+				"branch":             "dev",
+				"agent_type":         "claude",
+				"task":               task,
+				"created_at":         "2026-08-28T07:00:00Z",
+				"yolo_mode":          "true",
+				"sandbox_mode":       "true",
+				"container_name":     name,
+				"worktree_path":      "/container/worktree",
+				"worktree_host_path": "/host/worktree",
+				"worktree_name":      "feature-recovery",
+				"logical_id":         "logical-abc",
+				"order_key":          "000001",
+				"future_metadata": map[string]any{
+					"nested": []any{float64(1), "two", false},
+				},
+			},
+		},
 	}
 }
 
@@ -229,6 +286,30 @@ func writeClaudeJSONL(t *testing.T, home, dir, sessionID string) {
 	}
 }
 
+func writeJSONDocument(t *testing.T, path string, document map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("marshal JSON document: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write JSON document: %v", err)
+	}
+}
+
+func readJSONDocument(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read JSON document: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decode JSON document: %v", err)
+	}
+	return document
+}
+
 func TestEnvOr(t *testing.T) {
 	// Unset key should return default
 	os.Unsetenv("__TEST_ENVOR_KEY__")
@@ -282,6 +363,9 @@ func TestRestorableEntriesIncludeCursorTranscript(t *testing.T) {
 	if err := os.WriteFile(transcript, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if !cursorJSONLExists(home, home, "cursor-resumed-id", transcript) {
+		t.Fatal("hook-reported Cursor transcript should remain valid after resume id changes")
+	}
 	logs := []SessionLogEntry{
 		{SessionName: "am-cursor1", SessionID: "cursor-1", TranscriptPath: transcript, Directory: home, AgentType: "cursor"},
 		{SessionName: "am-cursor2", SessionID: "cursor-2", TranscriptPath: filepath.Join(home, "missing.jsonl"), Directory: home, AgentType: "cursor"},
@@ -292,6 +376,16 @@ func TestRestorableEntriesIncludeCursorTranscript(t *testing.T) {
 	}
 	if entries[0].RestoreSessionID != "cursor-1" {
 		t.Fatalf("wrong sid: %s", entries[0].RestoreSessionID)
+	}
+}
+
+func TestRestorableEntriesIncludeCodexExactID(t *testing.T) {
+	logs := []SessionLogEntry{
+		{SessionName: "am-codex1", SessionID: "codex-1", Directory: "/tmp", AgentType: "codex"},
+	}
+	entries := restorableEntriesFromLog(logs, t.TempDir(), t.TempDir(), map[string]bool{}, time.Now())
+	if len(entries) != 1 || entries[0].RestoreSessionID != "codex-1" {
+		t.Fatalf("Codex restorable entries = %#v, want exact id", entries)
 	}
 }
 

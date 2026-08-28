@@ -85,7 +85,7 @@ myapp/feature/auth [claude] implement user auth flow (2h ago)
 - `capture-pane -p` outputs directly to stdout (no temp files)
 - `session_activity` timestamp for detecting recent activity
 - Rich format strings (`-F`) for scripting
-- Plugin ecosystem (tmux-resurrect for reboot persistence)
+- Native conversation resume can rebuild sessions without serializing tmux processes
 
 **Session structure:**
 ```
@@ -323,7 +323,6 @@ am new -w my-feature ~/project   # worktree at .claude/worktrees/my-feature
   - git (for branch detection)
 
 - **Optional:**
-  - tmux-resurrect (for reboot persistence)
   - bat (for syntax highlighting in preview)
 
 ## Future Enhancements
@@ -334,4 +333,4 @@ am new -w my-feature ~/project   # worktree at .claude/worktrees/my-feature
 4. **Remote sessions:** SSH tunnel support
 5. **Web UI:** Optional browser-based view
 6. ~~**Notifications:** Alert when agent needs input~~ *(Done: `am wait`, state detection)*
-7. **Reboot persistence:** tmux-resurrect integration or custom solution
+7. ~~**Reboot persistence:** rebuild desired sessions with native harness resume~~ *(Done)*

@@ -34,7 +34,8 @@ exception because Cursor exposes no background-work lifecycle event.
 | Dedicated tmux server | All am sessions live on socket `agent-manager` (the `am_tmux` wrapper), isolated from the user's own tmux config and sessions. | Foundational | `lib/utils.sh` (`AM_TMUX_SOCKET`), `lib/tmux.sh:am_tmux` | verified (the *why* — config isolation — is inferred from `lib/tmux.sh` comments) |
 | State | Eight values: `starting · running · background · waiting_user · ready · idle · unknown · dead`. The product's core datum. | Foundational | `lib/state.sh` | verified |
 | Registry | Live-session metadata (dir, branch, agent type, task, flags) in one JSON file. Removed on kill. | Structural | `lib/registry.sh:registry_add` | verified |
-| Sessions log | Append-only JSONL afterlife of Claude sessions — the substrate for `am restore` (resume via `claude --resume <sid>`). | Structural | `lib/registry.sh:sessions_log_*` | verified |
+| Sessions log | Append-only JSONL afterlife of resumable harness sessions — the substrate for manual native resume through `am restore`. | Structural | `lib/registry.sh:sessions_log_*` | verified |
+| Desired sessions | Durable future intent: sessions remain open across reboot until an explicit `am kill`. Reconciled progressively against physical tmux sessions when the interactive browser opens. | Structural | `lib/recovery.sh` | verified |
 | Sandbox | Optional per-session Docker container (agent runs inside; shell pane attaches) with an egress-filtering proxy sidecar. | Structural | `lib/sandbox.sh` | verified |
 | Go mirror | Hot-path logic (session list, browser TUI, title refresh, orphan reaping) re-implemented in Go for latency; bash remains the semantic reference. | Structural | `internal/sessions/` | verified |
 | A2A primitives | `am new --detach` / `send` / `peek` / `wait`: transport for agent-to-agent orchestration. Deliberately *not* semantic — they move bytes and report state, never interpret task completion. | Structural | `am` help text, AGENTS.md | verified |
@@ -93,7 +94,9 @@ flowchart TD
   identifies its session as `AM_SESSION_NAME` → `TMUX_PANE` → cwd match,
   and if `AM_SESSION_NAME` is set but missing from the registry it *exits*
   rather than fall through and clobber another session sharing the
-  directory.
+  directory. Cursor's durable identity is pinned to the first complete
+  conversation-id/transcript pair because nested agents inherit
+  `AM_SESSION_NAME` and do not reliably identify themselves as background.
 - **Staleness gates are fallback-only.** Claude, Cursor, and pi have reliable
   turn-boundary events and are read ungated; the 180s gate applies only to
   other agents. File mtime and tmux activity routinely go quiet during live
@@ -118,13 +121,15 @@ config). Verified installed live.
 | Store | Path | Tense | Contract |
 |---|---|---|---|
 | Registry | `~/.agent-manager/sessions.json` | present | Live sessions only. Written by launch/kill/title-scan; read by everything. GC'd against actual tmux sessions (`registry_gc`, mirrored in Go as `ReapOrphans`). |
-| Hook state + sid sidecar | `/tmp/am-state/<session>[.sid]` | now | One word per session; **mtime = entry time**. Written by the hook (plus one self-heal in the resolver). The `.sid` sidecar is *authoritative* for the Claude conversation UUID. |
+| Hook state + sid sidecar | `/tmp/am-state/<session>[.sid]` | now | One word per session; **mtime = entry time**. Written by the hook (plus one self-heal in the resolver). |
+| Desired sessions + durable identity | `~/.agent-manager/desired_sessions.json` and `identities/<session>.*` | future | Exact conversation identity, safe launch profile, and user intent to keep a session open. Runtime sidecars are mirrored durably because `/tmp` disappears on reboot. |
 | Sessions log + snapshots | `~/.agent-manager/sessions_log.jsonl` | past | Append-only afterlife. Rolling pane snapshots and session-id backfill feed `am restore`; entries GC'd when the Claude JSONL disappears. |
 | Pane logs | `/tmp/am-logs/<session>/{agent,shell}.log` | now | Streamed scrollback via tmux pipe-pane; powers `am peek --follow/--history`. Transport, not truth. |
 | Throttle markers & caches | `$AM_DIR/.title_scan_last · .gc_last · .list_cache …` | — | Coordination, not data. Bash and Go share markers; bash-only work runs on *separate* markers (`.gc_extras_last`, `.restore_scan_last`) so Go stamping can't starve it. Hooks delete caches to force fast refresh. |
 
 **Rule of thumb:** registry = present tense, sessions log = past tense,
-state dir = right now. A new fact's tense decides its store.
+state dir = right now, desired sessions = future intent. A new fact's tense
+decides its store.
 
 ## Representative flows: birth, death, resurrection
 
@@ -143,7 +148,12 @@ flowchart LR
     subgraph restore["am restore"]
       R1["sessions_log_restorable:<br/>not alive ∧ JSONL exists"] --> R2["agent_launch(dir,<br/>claude --resume sid)"]
     end
+    subgraph reboot["first interactive am after reboot"]
+      B1["desired open ∧<br/>prior boot ∧ no tmux"] --> B2["exact identity +<br/>runtime preflight"]
+      B2 --> B3["background native resume;<br/>browser shows progress"]
+    end
     launch --> kill --> restore
+    launch --> reboot
 ```
 
 Failure behavior worth knowing (verified): if the sandbox is requested but

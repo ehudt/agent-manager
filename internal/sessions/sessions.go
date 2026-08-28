@@ -17,17 +17,118 @@ import (
 
 // Registry matches the sessions.json structure.
 type Registry struct {
-	Sessions map[string]Session `json:"sessions"`
+	Sessions    map[string]Session         `json:"sessions"`
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 // Session holds per-session metadata from the registry.
 type Session struct {
-	Name      string `json:"name"`
-	Directory string `json:"directory"`
-	Branch    string `json:"branch"`
-	AgentType string `json:"agent_type"`
-	Task      string `json:"task"`
-	CreatedAt string `json:"created_at"`
+	Name             string `json:"name"`
+	Directory        string `json:"directory"`
+	Branch           string `json:"branch"`
+	AgentType        string `json:"agent_type"`
+	Task             string `json:"task"`
+	CreatedAt        string `json:"created_at"`
+	YoloMode         string `json:"yolo_mode"`
+	SandboxMode      string `json:"sandbox_mode"`
+	ContainerName    string `json:"container_name"`
+	WorktreePath     string `json:"worktree_path"`
+	WorktreeHostPath string `json:"worktree_host_path"`
+	WorktreeName     string `json:"worktree_name"`
+	LogicalID        string `json:"logical_id"`
+	OrderKey         string `json:"order_key"`
+
+	// ExtraFields keeps registry metadata added by Bash or a newer Go binary
+	// intact across read-modify-write cycles.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON retains unknown top-level registry fields so Go rewrites do
+// not erase metadata introduced by Bash or newer versions.
+func (r *Registry) UnmarshalJSON(data []byte) error {
+	type registryFields Registry
+	var decoded registryFields
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	extra, err := decodeExtraJSONFields(data, decoded)
+	if err != nil {
+		return err
+	}
+	*r = Registry(decoded)
+	r.ExtraFields = extra
+	return nil
+}
+
+// MarshalJSON merges retained top-level registry fields with known fields.
+// Known struct fields win if an ExtraFields key collides.
+func (r Registry) MarshalJSON() ([]byte, error) {
+	type registryFields Registry
+	return encodeJSONWithExtraFields(registryFields(r), r.ExtraFields)
+}
+
+// UnmarshalJSON retains unknown per-session metadata for forward-compatible
+// registry rewrites.
+func (s *Session) UnmarshalJSON(data []byte) error {
+	type sessionFields Session
+	var decoded sessionFields
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	extra, err := decodeExtraJSONFields(data, decoded)
+	if err != nil {
+		return err
+	}
+	*s = Session(decoded)
+	s.ExtraFields = extra
+	return nil
+}
+
+// MarshalJSON merges retained per-session metadata with known fields. Known
+// struct fields win if an ExtraFields key collides.
+func (s Session) MarshalJSON() ([]byte, error) {
+	type sessionFields Session
+	return encodeJSONWithExtraFields(sessionFields(s), s.ExtraFields)
+}
+
+func decodeExtraJSONFields(data []byte, known any) (map[string]json.RawMessage, error) {
+	var allFields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &allFields); err != nil {
+		return nil, err
+	}
+
+	knownData, err := json.Marshal(known)
+	if err != nil {
+		return nil, err
+	}
+	var knownFields map[string]json.RawMessage
+	if err := json.Unmarshal(knownData, &knownFields); err != nil {
+		return nil, err
+	}
+	for key := range knownFields {
+		delete(allFields, key)
+	}
+	if len(allFields) == 0 {
+		return nil, nil
+	}
+	return allFields, nil
+}
+
+func encodeJSONWithExtraFields(known any, extra map[string]json.RawMessage) ([]byte, error) {
+	knownData, err := json.Marshal(known)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(knownData, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range extra {
+		if _, isKnown := fields[key]; !isKnown {
+			fields[key] = value
+		}
+	}
+	return json.Marshal(fields)
 }
 
 // TmuxSession holds parsed tmux list-sessions output.
@@ -39,8 +140,10 @@ type TmuxSession struct {
 type EntryKind string
 
 const (
-	EntryActive   EntryKind = "active"
-	EntryInactive EntryKind = "inactive"
+	EntryActive    EntryKind = "active"
+	EntryRestoring EntryKind = "restoring"
+	EntryBlocked   EntryKind = "blocked"
+	EntryInactive  EntryKind = "inactive"
 )
 
 // SessionLogEntry matches one JSONL row from sessions_log.jsonl.
@@ -70,6 +173,7 @@ type Entry struct {
 	// Inactive restore rows.
 	RestoreSessionID string
 	SnapshotPath     string
+	RecoveryError    string
 }
 
 // ListTmuxSessions runs tmux list-sessions and returns matching sessions.
@@ -247,8 +351,18 @@ func LoadBrowserEntries() []Entry {
 
 	now := time.Now()
 	active := loadActiveEntries(amDir, socket, tmuxSessions, now)
+	desiredStore := LoadDesiredStore(amDir)
+	desired := desiredEntriesFromStore(desiredStore, live)
 	inactive := LoadRestorableEntries(amDir, home, live, now)
-	return append(active, inactive...)
+	excludedIDs := desiredOpenSessionIDs(desiredStore)
+	filteredInactive := inactive[:0]
+	for _, entry := range inactive {
+		if !excludedIDs[entry.RestoreSessionID] {
+			filteredInactive = append(filteredInactive, entry)
+		}
+	}
+	entries := append(active, desired...)
+	return append(entries, filteredInactive...)
 }
 
 func loadActiveEntries(amDir, socket string, tmuxSessions []TmuxSession, now time.Time) []Entry {
@@ -337,7 +451,7 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 	var entries []Entry
 	for i := len(logs) - 1; i >= 0; i-- {
 		log := logs[i]
-		if (log.AgentType != "claude" && log.AgentType != "pi" && log.AgentType != "cursor") || log.SessionID == "" {
+		if (log.AgentType != "claude" && log.AgentType != "codex" && log.AgentType != "pi" && log.AgentType != "cursor") || log.SessionID == "" {
 			continue
 		}
 		if liveSessions != nil && liveSessions[log.SessionName] {
@@ -347,7 +461,11 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 			continue
 		}
 		exists := false
-		if log.AgentType == "pi" {
+		if log.AgentType == "codex" {
+			// Current Codex exposes exact native resume by id, but does not
+			// expose one stable rollout-file location for local preflight.
+			exists = true
+		} else if log.AgentType == "pi" {
 			exists = piJSONLExists(home, log.Directory, log.SessionID)
 		} else if log.AgentType == "cursor" {
 			exists = cursorJSONLExists(home, log.Directory, log.SessionID, log.TranscriptPath)
@@ -466,8 +584,7 @@ func cursorStandardTranscriptPath(home, dir, sessionID string) string {
 
 func cursorJSONLExists(home, dir, sessionID, transcriptPath string) bool {
 	if transcriptPath != "" {
-		if st, err := os.Stat(transcriptPath); err == nil && !st.IsDir() &&
-			filepath.Base(transcriptPath) == sessionID+".jsonl" {
+		if st, err := os.Stat(transcriptPath); err == nil && !st.IsDir() {
 			return true
 		}
 	}

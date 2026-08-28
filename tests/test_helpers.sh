@@ -261,6 +261,8 @@ setup_isolated_am_dir() {
     TEST_ISO_OLD_AM_SESSIONS_LOG="${AM_SESSIONS_LOG:-}"
     TEST_ISO_OLD_AM_SNAPSHOTS_DIR="${AM_SNAPSHOTS_DIR:-}"
     TEST_ISO_OLD_AM_STATE_DIR="${AM_STATE_DIR:-}"
+    TEST_ISO_OLD_AM_IDENTITY_DIR="${AM_IDENTITY_DIR:-}"
+    TEST_ISO_OLD_AM_DESIRED_SESSIONS="${AM_DESIRED_SESSIONS:-}"
     AM_DIR=$(mktemp -d)
     export AM_DIR
     export AM_REGISTRY="$AM_DIR/sessions.json"
@@ -268,6 +270,8 @@ setup_isolated_am_dir() {
     export AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
     export AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
     export AM_STATE_DIR="$AM_DIR/state"
+    export AM_IDENTITY_DIR="$AM_DIR/identities"
+    export AM_DESIRED_SESSIONS="$AM_DIR/desired_sessions.json"
     am_init
 }
 
@@ -282,6 +286,16 @@ teardown_isolated_am_dir() {
         export AM_STATE_DIR="$TEST_ISO_OLD_AM_STATE_DIR"
     else
         unset AM_STATE_DIR
+    fi
+    if [[ -n "$TEST_ISO_OLD_AM_IDENTITY_DIR" ]]; then
+        export AM_IDENTITY_DIR="$TEST_ISO_OLD_AM_IDENTITY_DIR"
+    else
+        unset AM_IDENTITY_DIR
+    fi
+    if [[ -n "$TEST_ISO_OLD_AM_DESIRED_SESSIONS" ]]; then
+        export AM_DESIRED_SESSIONS="$TEST_ISO_OLD_AM_DESIRED_SESSIONS"
+    else
+        unset AM_DESIRED_SESSIONS
     fi
 }
 
@@ -302,6 +316,8 @@ setup_integration_env() {
     TEST_OLD_AM_SNAPSHOTS_DIR="${AM_SNAPSHOTS_DIR:-$TEST_OLD_AM_DIR/snapshots}"
     TEST_OLD_AM_TMUX_CONF="${AM_TMUX_CONF:-$TEST_OLD_AM_DIR/tmux.conf}"
     TEST_OLD_AM_SESSION_PREFIX="${AM_SESSION_PREFIX:-am-}"
+    TEST_OLD_AM_IDENTITY_DIR="${AM_IDENTITY_DIR:-}"
+    TEST_OLD_AM_DESIRED_SESSIONS="${AM_DESIRED_SESSIONS:-}"
 
     TEST_AM_DIR=$(mktemp -d)
     TEST_STUB_DIR="$TEST_DIR"  # stub_agent lives in tests/
@@ -313,6 +329,8 @@ setup_integration_env() {
     export AM_SESSIONS_LOG="$AM_DIR/sessions_log.jsonl"
     export AM_SNAPSHOTS_DIR="$AM_DIR/snapshots"
     export AM_TMUX_CONF="$AM_DIR/tmux.conf"
+    export AM_IDENTITY_DIR="$AM_DIR/identities"
+    export AM_DESIRED_SESSIONS="$AM_DIR/desired_sessions.json"
     export AM_SESSION_PREFIX="test-am-"
     unset _AM_TMUX_CONF_CACHED
     am_init
@@ -386,6 +404,16 @@ teardown_integration_env() {
     export AM_SNAPSHOTS_DIR="${TEST_OLD_AM_SNAPSHOTS_DIR:-$AM_DIR/snapshots}"
     export AM_TMUX_CONF="${TEST_OLD_AM_TMUX_CONF:-$AM_DIR/tmux.conf}"
     export AM_SESSION_PREFIX="${TEST_OLD_AM_SESSION_PREFIX:-am-}"
+    if [[ -n "$TEST_OLD_AM_IDENTITY_DIR" ]]; then
+        export AM_IDENTITY_DIR="$TEST_OLD_AM_IDENTITY_DIR"
+    else
+        unset AM_IDENTITY_DIR
+    fi
+    if [[ -n "$TEST_OLD_AM_DESIRED_SESSIONS" ]]; then
+        export AM_DESIRED_SESSIONS="$TEST_OLD_AM_DESIRED_SESSIONS"
+    else
+        unset AM_DESIRED_SESSIONS
+    fi
     unset _AM_TMUX_CONF_CACHED
     export PATH="${TEST_OLD_PATH:-$PATH}"
 }

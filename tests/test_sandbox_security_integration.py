@@ -56,6 +56,7 @@ def sandbox_env(tmp_path):
     env["AM_SCRIPT_DIR"] = str(REPO_ROOT)
     env["AM_DIR"] = str(am_dir)
     env["AM_CONFIG"] = str(am_dir / "config.json")
+    env["AM_IDENTITY_DIR"] = str(am_dir / "identities")
     env["SB_HOME_DIR"] = str(sb_home)
     env["SB_UNSAFE_ROOT"] = "0"
     env["SB_PIDS_LIMIT"] = "128"
@@ -77,6 +78,7 @@ def _shell(command, env, check=True):
         f"export AM_SCRIPT_DIR='{REPO_ROOT}'; "
         f"export AM_DIR='{env['AM_DIR']}'; "
         f"export AM_CONFIG='{env['AM_CONFIG']}'; "
+        f"export AM_IDENTITY_DIR='{env['AM_IDENTITY_DIR']}'; "
         f"export SB_HOME_DIR='{env['SB_HOME_DIR']}'; "
         f"export HOME='{env['HOME']}'; "
         f"source '{LIB_DIR / 'utils.sh'}'; "
@@ -114,7 +116,13 @@ def test_sandbox_start_uses_home_bind_mount_and_project_mount_only_by_default(
     state_dest = "/tmp/am-state"
     assert state_dest in mounts
     assert mounts[state_dest]["Type"] == "bind"
-    assert len(mounts) == 3
+    identity_dest = "/tmp/am-identities"
+    assert identity_dest in mounts
+    assert mounts[identity_dest]["Type"] == "bind"
+    assert mounts[identity_dest]["Source"] == str(
+        pathlib.Path(sandbox_env["AM_DIR"]) / "identities"
+    )
+    assert len(mounts) == 4
 
     caps = {
         cap.removeprefix("CAP_") for cap in (inspect["HostConfig"].get("CapAdd") or [])

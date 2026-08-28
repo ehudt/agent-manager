@@ -18,8 +18,12 @@ test_sandbox() {
 
     # --- sandbox_exec_cmd exports AM_SESSION_NAME ---
     local exec_cmd
-    exec_cmd=$(sandbox_exec_cmd "am-sbtest" "/tmp" "echo hi")
+    exec_cmd=$(sandbox_exec_cmd "am-sbtest" "/tmp" "echo hi" "pi")
     assert_contains "$exec_cmd" "AM_SESSION_NAME=am-sbtest" "sandbox_exec_cmd: AM_SESSION_NAME exported"
+    assert_contains "$exec_cmd" "AM_IDENTITY_DIR=/tmp/am-identities" \
+        "sandbox_exec_cmd: durable identity channel exported"
+    assert_contains "$exec_cmd" "AM_AGENT_TYPE=pi" \
+        "sandbox_exec_cmd: registered agent family exported"
 
     # shellcheck disable=SC2088 # Tildes in quotes are intentional — testing tilde expansion
     assert_eq "$HOME/demo" "$(sb_expand_path "~/demo")" "sb_expand_path: expands tilde"
@@ -27,6 +31,16 @@ test_sandbox() {
     assert_eq "$HOME/.vimrc|$HOME/.vimrc|ro" "$(_sb_share_spec_parse "~/.vimrc:ro")" "share parse: host+mode"
     # shellcheck disable=SC2088
     assert_eq "$HOME/.ssh|$SB_CONTAINER_HOME/.ssh|rw" "$(_sb_share_spec_parse "~/.ssh:~/.ssh:rw")" "share parse: explicit target+mode"
+
+    local saved_config_get exact_shares
+    saved_config_get=$(declare -f am_config_get)
+    am_config_get() { echo "$HOME:/configured:ro"; }
+    exact_shares=$(AM_SANDBOX_SHARES_EXACT=1 _sb_collect_share_specs "/tmp:/explicit:rw")
+    assert_contains "$exact_shares" "/tmp|/explicit|rw" \
+        "sandbox recovery: exact stored share is replayed"
+    assert_not_contains "$exact_shares" "/configured" \
+        "sandbox recovery: changed config shares are not merged"
+    eval "$saved_config_get"
 
     _sb_home_ensure
     assert_cmd_succeeds "_sb_home_ensure: creates home dir" test -d "$SB_HOME_DIR"

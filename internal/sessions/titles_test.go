@@ -3,6 +3,7 @@ package sessions
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,32 @@ func TestLeadingNonAlnumStrip(t *testing.T) {
 		if got != want {
 			t.Errorf("strip(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRefreshTitlesPreservesRegistryMetadata(t *testing.T) {
+	amDir := t.TempDir()
+	regPath := filepath.Join(amDir, "sessions.json")
+	want := registryMetadataDocument("am-title", "Old task")
+	writeJSONDocument(t, regPath, want)
+
+	binDir := t.TempDir()
+	tmuxPath := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte("#!/bin/sh\nprintf '%s\\n' 'Updated task'\n"), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AM_STATE_DIR", t.TempDir())
+
+	wantSession := want["sessions"].(map[string]any)["am-title"].(map[string]any)
+	wantSession["task"] = "Updated task"
+
+	RefreshTitles(amDir, "test-socket", []TmuxSession{{Name: "am-title"}})
+
+	got := readJSONDocument(t, regPath)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RefreshTitles changed non-task registry metadata:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 

@@ -44,6 +44,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `am` | Main entry point. Handles CLI args, routes to commands. |
 | `lib/utils.sh` | Shared: colors, logging, time formatting, paths, agent JSONL extraction |
 | `lib/registry.sh` | JSON storage for session metadata, sessions log (restore), auto-titling |
+| `lib/recovery.sh` | Durable desired-session store, boot/machine identity, reboot preflight, and progressive recovery worker |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit) |
@@ -81,7 +82,8 @@ Ctrl-N in browser → am_new_session_form() → _form_run()
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
-am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session)
+am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session, codex → resume)
+bare `am` → recovery_start_for_browser() → migrate live intent → prior-boot candidates queued → am-browse shows restoring rows while recovery_run() recreates sessions detached
 ```
 
 ## State Detection (hooks + title paint)
@@ -169,6 +171,10 @@ filters candidates by family. Without the gate, an unmanaged agent process
 (e.g. a Cursor conversation run outside am) whose cwd hosts another agent's
 am session clobbers that session's state and `.sid`/`.transcript` sidecars
 (observed live: a stray Cursor run flipped a mid-turn pi session to `ready`).
+Cursor nested agents are a same-family exception: they inherit
+`AM_SESSION_NAME` and do not reliably set `is_background_agent`, so reboot
+identity is pinned to the physical session's first complete
+conversation-id/transcript pair.
 
 `background` (Claude's main turn ended but a background agent/task/
 workflow/shell is still running) is written directly by the hook: the `Stop`
@@ -338,8 +344,8 @@ am restore
 ```
 
 - Opens an fzf picker showing closed sessions with pane snapshot previews.
-- Sessions are available as long as their Claude conversation JSONL exists on disk.
-- Enter resumes via `claude --resume <session_id>` in the original directory.
+- Sessions are available as long as their harness conversation identity remains resumable.
+- Enter uses the harness-native adapter (Claude/Cursor `--resume`, pi `--session`, Codex `resume`).
 - Also available as `Ctrl-H` in the main session browser (`am` with no args).
 
 ## Key Functions
@@ -352,6 +358,13 @@ am restore
 - `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude and pi sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
 - `agent_resume_args(agent_type, session_id)` - Build agent-specific resume args (claude → --resume, pi → --session)
 
+**Reboot recovery (`lib/recovery.sh`):**
+- `recovery_desired_upsert/remove/identity()` - Maintain `desired_sessions.json`, the durable set of sessions the user still considers open
+- `recovery_migrate_live_registry()` - One-time/idempotent capture of already-live sessions after upgrade
+- `recovery_desired_candidates()` - Return exact-identity, prior-boot sessions missing from tmux
+- `recovery_start_for_browser()` - Queue recovery only for the interactive browser and launch the detached worker
+- `recovery_run()` / `recovery_restore_one()` - Locked, bounded-concurrency coordinator and per-session preflight/native resume
+
 **Title helpers:**
 - `_title_valid(title)` - Validate title (<=60 chars, no newlines)
 
@@ -363,7 +376,7 @@ am restore
 - `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
 - `sessions_log_update(session_name, field, value)` - Update field in most recent log entry for a session
 - `sessions_log_snapshot(session_name, [snapshot_key])` - Capture pane text to `~/.agent-manager/snapshots/`
-- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude and pi sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. The hook sidecar is authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
+- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude, Codex, Cursor, and pi sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. Ephemeral and durable hook sidecars are authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
 - `sessions_log_gc()` - Remove entries whose JSONL no longer exists
 - `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
 - `_sessions_log_detect_id(directory, [not_before_iso], [agent])` - Detect session UUID from JSONL filename (agent defaults to claude; newest-mtime guess; callers must not use it when the directory hosts multiple sessions)

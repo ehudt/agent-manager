@@ -204,8 +204,8 @@ am peek --lines 100 am-abc123            # Include the last 100 lines
 
 ### Restoring closed sessions
 
-Closed a session and want to pick it back up? Recently closed Claude, Cursor,
-and pi sessions appear below active sessions in the main `am` browser. Select
+Closed a session and want to pick it back up? Recently closed Claude, Codex,
+Cursor, and pi sessions appear below active sessions in the main `am` browser. Select
 an inactive session and press Enter to resume it exactly where you left off.
 
 You can also open the standalone restore picker directly:
@@ -222,6 +222,31 @@ flag in the original directory, with full conversation history intact.
 Sessions stay restorable as long as the agent's conversation file exists on
 disk. Cursor restore is bound to the exact hook-reported transcript path, so
 multiple conversations in one directory do not get mixed up.
+
+### Restoring the open workspace after reboot
+
+`am` treats sessions as open until they are explicitly closed with `am kill`.
+When the default interactive browser first opens after a machine reboot, it
+recreates missing open sessions in the background and shows them as
+`restoring`. The browser remains usable while recovery progresses and never
+auto-attaches a session.
+
+Recovery requires an exact hook-reported conversation identity and the same
+runtime policy as the original session. A missing directory, worktree, sandbox
+share, harness command, conversation file, or Docker daemon leaves that row
+visible as `blocked` instead of silently starting a different environment.
+Press Enter to retry a blocked row after fixing its prerequisite, or Ctrl-X to
+forget it. Explicit commands and automation (`am list`, `am new`, `am wait`,
+and similar) never start recovery.
+
+Claude and Cursor resume by conversation ID, pi by session ID, and Codex via
+its native `codex resume ID` command. Conversation history and filesystem state
+survive; interrupted tool calls, shell processes, and background jobs do not.
+Disable automatic recovery with:
+
+```bash
+am config set auto-restore false
+```
 
 ## Agent-to-Agent Orchestration
 
@@ -477,7 +502,7 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 | `am wait <session>` | Block until agent reaches a target state |
 | `am interrupt <session>` | Send Ctrl-C to the agent pane |
 | `am attach <session>` | Attach to a session |
-| `am restore` | Browse and resume closed Claude, Cursor, and pi sessions |
+| `am restore` | Browse and resume closed Claude, Codex, Cursor, and pi sessions |
 | `am kill <session>` | Kill a session |
 | `am status [--json]` | Show detailed session info |
 | `am config` | Show or change saved defaults |

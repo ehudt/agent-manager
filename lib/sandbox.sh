@@ -156,16 +156,17 @@ _sandbox_wait_ready() {
 # Build a docker exec command that runs a command inside the container directly.
 # Unlike sandbox_enter_cmd (interactive shell + reconnect loop), this runs the
 # given command via zsh -lc, avoiding race conditions with tty buffering.
-# Usage: sandbox_exec_cmd <session-name> <directory> <command>
+# Usage: sandbox_exec_cmd <session-name> <directory> <command> [agent-type]
 sandbox_exec_cmd() {
     local session_name="$1"
     local directory="$2"
     local cmd="$3"
+    local agent_type="${4:-}"
     _sandbox_ensure_host_identity
     local target_dir="${directory:-$HOME}"
     local quoted_cmd
     printf -v quoted_cmd '%q' "$cmd"
-    printf "%s" "docker exec -it -u ubuntu -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'AM_SESSION_NAME=$session_name' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh -lc $quoted_cmd"
+    printf "%s" "docker exec -it -u ubuntu -w '$target_dir' -e 'HOST_UID=$_SB_HOST_UID' -e 'HOST_GID=$_SB_HOST_GID' -e 'AM_SESSION_NAME=$session_name' -e 'AM_AGENT_TYPE=$agent_type' -e 'AM_IDENTITY_DIR=/tmp/am-identities' -e 'TERM=\${TERM:-xterm-256color}' '$session_name' zsh -lc $quoted_cmd"
 }
 
 _sandbox_list_containers() {
@@ -291,7 +292,10 @@ _sb_preseed_share_target() {
 _sb_collect_share_specs() {
     local cli_specs=("$@")
     local cfg raw parsed
-    cfg=$(am_config_get "sandbox.shares")
+    cfg=""
+    if [[ "${AM_SANDBOX_SHARES_EXACT:-0}" != "1" ]]; then
+        cfg=$(am_config_get "sandbox.shares")
+    fi
     if [[ -n "$cfg" && "$cfg" != "null" ]]; then
         IFS=',' read -ra _cfg_specs <<< "$cfg"
         for raw in "${_cfg_specs[@]}"; do
@@ -367,6 +371,9 @@ sandbox_start() {
     local host_state_dir="${AM_STATE_DIR:-/tmp/am-state}"
     mkdir -p "$host_state_dir"
     mounts+=(-v "$host_state_dir:/tmp/am-state")
+    local host_identity_dir="${AM_IDENTITY_DIR:-$AM_DIR/identities}"
+    mkdir -p "$host_identity_dir"
+    mounts+=(-v "$host_identity_dir:/tmp/am-identities")
 
     # Seed the pi state extension into the sandbox home (a host symlink
     # cannot cross the bind mount, so copy; idempotent, refreshed each start).

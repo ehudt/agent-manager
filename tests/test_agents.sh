@@ -60,6 +60,8 @@ test_agents() {
         "agent_resume_args: cursor"
     assert_eq "--session|abc123" "$(agent_resume_args pi abc123 | paste -sd'|' -)" \
         "agent_resume_args: pi"
+    assert_eq "resume|abc123" "$(agent_resume_args codex abc123 | paste -sd'|' -)" \
+        "agent_resume_args: codex"
 
     # --- Cursor worktrees are managed by the CLI under ~/.cursor ---
     assert_eq "true" "$(agent_supports_worktree cursor && echo true || echo false)" \
@@ -141,6 +143,9 @@ test_integration_lifecycle() {
         "agent_launch: correct agent_type in registry"
     assert_eq "test task" "$(registry_get_field "$session_name" task)" \
         "agent_launch: correct task in registry"
+    assert_eq "open" \
+        "$(jq -r --arg name "$session_name" '.sessions[$name].desired_state // ""' "$AM_DIR/desired_sessions.json")" \
+        "agent_launch: records durable open intent"
     assert_contains "$(cat "$TEST_ZOXIDE_LOG")" "add -- $test_dir" \
         "agent_launch: records directory in zoxide"
 
@@ -158,6 +163,9 @@ test_integration_lifecycle() {
         "agent_kill: tmux session removed"
     assert_eq "false" "$(registry_exists "${session_name:-__none__}" && echo true || echo false)" \
         "agent_kill: registry entry removed"
+    assert_eq "false" \
+        "$(jq -r --arg name "$session_name" '.sessions | has($name)' "$AM_DIR/desired_sessions.json")" \
+        "agent_kill: removes durable open intent"
 
     # --- Test: kill multiple sessions (by name, NOT agent_kill_all which is global) ---
     local s1 s2
@@ -212,6 +220,12 @@ test_worktree() {
     wt_path=$(registry_get_field "$session_name" worktree_path)
     assert_eq "$git_dir/.claude/worktrees/my-wt" "$wt_path" \
         "worktree launch: registry has correct worktree_path"
+    assert_eq "my-wt" \
+        "$(jq -r --arg id "$session_name" '.sessions[$id].worktree_name' "$AM_DIR/desired_sessions.json")" \
+        "worktree launch: recovery recipe preserves worktree name"
+    assert_eq "$wt_path" \
+        "$(jq -r --arg id "$session_name" '.sessions[$id].effective_directory' "$AM_DIR/desired_sessions.json")" \
+        "worktree launch: recovery recipe preserves effective directory"
 
     # Verify the agent info shows the worktree
     local info_output
@@ -328,6 +342,9 @@ test_sandbox_yolo_independence() {
         "yolo-only: yolo_mode is true"
     assert_eq "" "$(registry_get_field "$session_name" container_name)" \
         "yolo-only: no container_name"
+    assert_eq "true" \
+        "$(jq -r --arg id "$session_name" '.sessions[$id].yolo_mode' "$AM_DIR/desired_sessions.json")" \
+        "yolo-only: recovery recipe preserves yolo policy"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
     # Test: sandbox without docker fails with descriptive error

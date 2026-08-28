@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.13.0"
+AM_VERSION="0.14.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -194,6 +194,8 @@ cmd_list() {
 
 # Command: browse (interactive fzf session picker — default when no args)
 cmd_browse() {
+    recovery_start_for_browser
+
     local result
     result=$(fzf_main)
 
@@ -210,6 +212,14 @@ cmd_browse() {
         # Create new session from form values
         # shellcheck disable=SC2086
         cmd_new_internal "$directory" "$agent_type" "$task" "$worktree_name" $flags
+    elif [[ "$result" == $'__RETRY_RECOVERY__\x1f'* ]]; then
+        local recovery_id="${result#*$'\x1f'}"
+        recovery_desired_retry "$recovery_id"
+        cmd_browse
+    elif [[ "$result" == $'__FORGET_RECOVERY__\x1f'* ]]; then
+        local recovery_id="${result#*$'\x1f'}"
+        recovery_desired_remove "$recovery_id"
+        cmd_browse
     elif [[ -n "$result" ]]; then
         # Attach to selected session. The session set is unchanged, so the
         # precomputed @am_status_left option (written when sessions were
@@ -218,6 +228,19 @@ cmd_browse() {
         # state glyphs current.
         tmux_attach "$result"
     fi
+}
+
+# Internal worker used by the interactive browser's progressive reboot recovery.
+cmd_recover_open() {
+    case "${1:-}" in
+        --worker|"")
+            recovery_run
+            ;;
+        *)
+            log_error "Unknown recover-open option: $1"
+            return 1
+            ;;
+    esac
 }
 
 # Internal: create session from form data (called from fzf_main)
@@ -263,6 +286,7 @@ cmd_restore_internal() {
         # directory-scan guess; the sidecar-authoritative scan corrects it if
         # the agent forks the resume to a new id.
         sessions_log_update "$session_name" "session_id" "$session_id"
+        recovery_desired_identity "$session_name" "$session_id" "" "resume"
         tmux_attach "$session_name"
     fi
 }
@@ -273,7 +297,7 @@ cmd_restore() {
         cat <<'EOF'
 Usage: am restore
 
-Browse recently closed Claude, Cursor, and pi sessions and resume one.
+Browse recently closed Claude, Codex, Cursor, and pi sessions and resume one.
 Shows pane snapshots in the preview panel for visual recall.
 
 Sessions are available as long as their conversation file exists.
@@ -1553,6 +1577,9 @@ main() {
             ;;
         restore)
             cmd_restore "$@"
+            ;;
+        recover-open)
+            cmd_recover_open "$@"
             ;;
         sandbox|sb)
             cmd_sandbox "$@"

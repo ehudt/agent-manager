@@ -393,8 +393,8 @@ auto_title_scan() {
     _titler_log "scan done: $scanned scanned, $updated updated"
 }
 
-# Rolling snapshots + session_id backfill + sessions-log task sync (Claude
-# sessions only). Bash-only restore plumbing with no Go twin, so it runs on
+# Rolling snapshots + session_id backfill + sessions-log task sync for
+# resumable harness sessions. Bash-only restore plumbing with no Go twin, so it runs on
 # its own throttle marker (.restore_scan_last) — the Go title scanner stamping
 # .title_scan_last must not starve it.
 # Usage: sessions_log_scan [force]
@@ -439,7 +439,7 @@ sessions_log_scan() {
 
     local name snap_count=0
     for name in "${!reg_agent[@]}"; do
-        case "${reg_agent[$name]}" in claude|pi|cursor) ;; *) continue ;; esac
+        case "${reg_agent[$name]}" in claude|codex|pi|cursor) ;; *) continue ;; esac
         # Only process sessions that have a log entry
         [[ -n "${slog_sid[$name]+x}" ]] || continue
 
@@ -463,7 +463,8 @@ sessions_log_scan() {
         local sidecar_sid=""
         if [[ -n "${reg_dir[$name]}" ]]; then
             sidecar_sid=$(_sessions_log_sidecar_id "$name")
-            if [[ -n "$sidecar_sid" ]] && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid" "${reg_agent[$name]}" "$transcript"; then
+            if [[ -n "$sidecar_sid" && "${reg_agent[$name]}" != "codex" ]] \
+                && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid" "${reg_agent[$name]}" "$transcript"; then
                 sidecar_sid=""
             fi
         fi
@@ -502,7 +503,7 @@ sessions_log_scan() {
 
     # Also sync task into the sessions log
     for name in "${!reg_agent[@]}"; do
-        case "${reg_agent[$name]}" in claude|pi|cursor) ;; *) continue ;; esac
+        case "${reg_agent[$name]}" in claude|codex|pi|cursor) ;; *) continue ;; esac
         [[ -n "${slog_sid[$name]+x}" ]] || continue
         local current_task="${reg_task[$name]}"
         [[ -n "$current_task" ]] && sessions_log_update "$name" "task" "$current_task"
@@ -510,8 +511,8 @@ sessions_log_scan() {
 }
 
 # --- Sessions Log (for session restore) ---
-# Persistent log of all sessions with Claude session IDs and pane snapshots.
-# Pruned when the backing Claude JSONL is deleted, not by time.
+# Persistent log of resumable sessions with exact IDs and pane snapshots.
+# Pruned when the backing conversation artifact is deleted, not by time.
 
 # Append a new session to the sessions log.
 # Usage: sessions_log_append <session_name> <directory> <branch> <agent_type> [task]
@@ -528,7 +529,8 @@ sessions_log_append() {
     local created_at
     created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    printf '%s\n' "$(jq -cn \
+    local line
+    line=$(jq -cn \
         --arg sname "$session_name" \
         --arg sid "" \
         --arg dir "$directory" \
@@ -539,8 +541,10 @@ sessions_log_append() {
         --arg snap "" \
         '{session_name: $sname, session_id: $sid, directory: $dir, branch: $branch,
           agent_type: $agent, task: $task, created_at: $created, closed_at: null,
-          snapshot_file: $snap, transcript_path: ""}')" \
-        >> "$AM_SESSIONS_LOG"
+          snapshot_file: $snap, transcript_path: ""}')
+    _registry_lock
+    printf '%s\n' "$line" >> "$AM_SESSIONS_LOG"
+    _registry_unlock
 }
 
 # Update a field in the most recent sessions log entry for a session.
@@ -553,9 +557,10 @@ sessions_log_update() {
     [[ -f "$AM_SESSIONS_LOG" ]] || return 0
 
     local tmp_file
-    tmp_file=$(mktemp)
+    tmp_file=$(mktemp "$AM_DIR/.sessions-log.XXXXXX")
 
-    # Single jq -sc call: slurp all lines, find and update the last matching entry
+    _registry_lock
+    # Single jq -sc call: slurp all lines, find and update the last matching entry.
     if jq -sc --arg sname "$session_name" --arg field "$field" --arg value "$value" '
         . as $arr |
         (reduce range(length) as $i (-1;
@@ -564,8 +569,11 @@ sessions_log_update() {
         .[]
     ' "$AM_SESSIONS_LOG" > "$tmp_file" 2>/dev/null; then
         command mv "$tmp_file" "$AM_SESSIONS_LOG"
+        _registry_unlock
     else
         rm -f "$tmp_file"
+        _registry_unlock
+        return 1
     fi
 }
 
@@ -640,11 +648,14 @@ _sessions_log_valid_id() {
 
 _sessions_log_sidecar_id() {
     local session_name="$1"
+    local durable_file="${AM_IDENTITY_DIR:-$AM_DIR/identities}/$session_name.sid"
     local sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
-    [[ -f "$sid_file" ]] || return 0
+    local source_file="$sid_file"
+    [[ -f "$durable_file" ]] && source_file="$durable_file"
+    [[ -f "$source_file" ]] || return 0
 
     local sid=""
-    IFS= read -r sid < "$sid_file" 2>/dev/null || true
+    IFS= read -r sid < "$source_file" 2>/dev/null || true
     if _sessions_log_valid_id "$sid"; then
         echo "$sid"
     fi
@@ -652,7 +663,9 @@ _sessions_log_sidecar_id() {
 
 _sessions_log_sidecar_transcript() {
     local session_name="$1"
+    local durable_file="${AM_IDENTITY_DIR:-$AM_DIR/identities}/$session_name.transcript"
     local path_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript"
+    [[ -f "$durable_file" ]] && path_file="$durable_file"
     [[ -f "$path_file" ]] || return 0
 
     local transcript=""
@@ -703,11 +716,14 @@ _sessions_log_detect_id_for_session() {
     local agent="${4:-claude}"
 
     local sid sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
+    local durable_sid_file="${AM_IDENTITY_DIR:-$AM_DIR/identities}/$session_name.sid"
     sid=$(_sessions_log_sidecar_id "$session_name")
-    if [[ -f "$sid_file" ]]; then
+    if [[ -f "$sid_file" || -f "$durable_sid_file" ]]; then
         local sidecar_transcript=""
         [[ "$agent" == "cursor" ]] && sidecar_transcript=$(_sessions_log_sidecar_transcript "$session_name")
-        if [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$sidecar_transcript"; then
+        if [[ -n "$sid" && "$agent" == "codex" ]]; then
+            echo "$sid"
+        elif [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$sidecar_transcript"; then
             echo "$sid"
         fi
         return 0
@@ -740,6 +756,8 @@ _sessions_log_detect_id() {
     if [[ -n "$not_before" ]]; then
         min_epoch=$(_slog_iso_epoch "$not_before" 2>/dev/null || echo 0)
     fi
+
+    [[ "$agent" == "codex" ]] && return 0
 
     if [[ "$agent" == "pi" ]]; then
         local pi_dir
@@ -810,6 +828,11 @@ _sessions_log_jsonl_exists() {
     local resolved
     resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
 
+    if [[ "$agent" == "codex" ]]; then
+        _sessions_log_valid_id "$session_id"
+        return
+    fi
+
     if [[ "$agent" == "pi" ]]; then
         local pi_dir
         pi_dir="$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"
@@ -819,7 +842,7 @@ _sessions_log_jsonl_exists() {
     fi
 
     if [[ "$agent" == "cursor" ]]; then
-        if [[ -n "$transcript_path" && -f "$transcript_path" && "$(basename "$transcript_path")" == "$session_id.jsonl" ]]; then
+        if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             return 0
         fi
         local cursor_dir
@@ -838,10 +861,12 @@ _sessions_log_jsonl_exists() {
 # Usage: sessions_log_gc
 sessions_log_gc() {
     [[ -f "$AM_SESSIONS_LOG" ]] || return 0
+    _registry_lock
 
     # Bulk-parse all fields in one jq call
     local all_fields
-    all_fields=$(jq -r '[.agent_type // "", .session_id // "", .directory // "", .created_at // "", .snapshot_file // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
+    all_fields=$(jq -r '[.agent_type // "", .session_id // "", .directory // "", .created_at // "", .snapshot_file // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) \
+        || { _registry_unlock; return 0; }
 
     # Read raw lines and parsed fields into parallel arrays
     local lines=() fields_arr=()
@@ -862,7 +887,7 @@ sessions_log_gc() {
         || date -u -d "24 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
 
     local tmp_file
-    tmp_file=$(mktemp)
+    tmp_file=$(mktemp "$AM_DIR/.sessions-log.XXXXXX")
 
     local i
     for (( i=0; i<${#lines[@]}; i++ )); do
@@ -871,11 +896,11 @@ sessions_log_gc() {
 
         local keep=true
 
-        if [[ ( "$agent" == "claude" || "$agent" == "pi" || "$agent" == "cursor" ) && -n "$sid" && -n "$dir" ]]; then
+        if [[ ( "$agent" == "claude" || "$agent" == "codex" || "$agent" == "pi" || "$agent" == "cursor" ) && -n "$sid" && -n "$dir" ]]; then
             if ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$transcript"; then
                 keep=false
             fi
-        elif [[ ( "$agent" == "claude" || "$agent" == "pi" || "$agent" == "cursor" ) && -z "$sid" ]]; then
+        elif [[ ( "$agent" == "claude" || "$agent" == "codex" || "$agent" == "pi" || "$agent" == "cursor" ) && -z "$sid" ]]; then
             # ISO 8601 UTC timestamps sort lexicographically
             if [[ -n "$created_at" && "$created_at" < "$cutoff_iso" ]]; then
                 keep=false
@@ -891,6 +916,7 @@ sessions_log_gc() {
     done
 
     command mv "$tmp_file" "$AM_SESSIONS_LOG"
+    _registry_unlock
 
     if (( removed > 0 )); then
         log_info "Sessions log: pruned $removed stale entries"
@@ -932,7 +958,7 @@ sessions_log_restorable() {
         local sname sid agent dir transcript
         IFS='|' read -r sname sid agent dir transcript <<< "${fields_arr[$i]}"
 
-        case "$agent" in claude|pi|cursor) ;; *) continue ;; esac
+        case "$agent" in claude|codex|pi|cursor) ;; *) continue ;; esac
         [[ -n "$sid" ]] || continue
         [[ -z "${live_sessions[$sname]:-}" ]] || continue
         [[ -z "${seen_ids[$sid]:-}" ]] || continue

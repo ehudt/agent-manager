@@ -169,7 +169,7 @@ replay_output() {
 
 WORKER_PLAN=(
     "1:fast:run_utils_tests run_config_tests run_form_tests run_fzf_tests run_sandbox_tests run_install_tests run_state_hooks_tests"
-    "2:fast:run_registry_tests run_tmux_tests"
+    "2:fast:run_registry_tests run_tmux_tests run_recovery_tests"
     "3:fast:run_agents_tests"
     "4:fast:run_state_tests run_state_lab_tests"
     "5:fast:run_cli_tests"

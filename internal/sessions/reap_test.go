@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -85,6 +86,35 @@ func TestReapOrphansRemovesDeadAndKeepsLive(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(stateDir, dead+".transcript")); !os.IsNotExist(err) {
 			t.Errorf("dead sidecar %s.transcript still present: err=%v", dead, err)
 		}
+	}
+}
+
+func TestReapOrphansPreservesLiveRegistryMetadata(t *testing.T) {
+	amDir := t.TempDir()
+	stateDir := t.TempDir()
+	regPath := filepath.Join(amDir, "sessions.json")
+	want := registryMetadataDocument("am-live", "Keep metadata")
+	sessions := want["sessions"].(map[string]any)
+	sessions["am-dead"] = map[string]any{
+		"name":       "am-dead",
+		"agent_type": "claude",
+	}
+	writeJSONDocument(t, regPath, want)
+
+	delete(sessions, "am-dead")
+	removed := reapOrphansAt(
+		amDir,
+		stateDir,
+		[]TmuxSession{{Name: "am-live"}},
+		time.Now(),
+	)
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+
+	got := readJSONDocument(t, regPath)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReapOrphans changed live registry metadata:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 

@@ -36,18 +36,21 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const sessionName = process.env.AM_SESSION_NAME ?? "";
 const stateDir = process.env.AM_STATE_DIR ?? "/tmp/am-state";
 const amDir = process.env.AM_DIR ?? join(homedir(), ".agent-manager");
+const identityDir = process.env.AM_IDENTITY_DIR ?? join(amDir, "identities");
 const registryPath = process.env.AM_REGISTRY ?? join(amDir, "sessions.json");
 const tmuxSocket = process.env.AM_TMUX_SOCKET ?? "agent-manager";
+const registeredAgentType = process.env.AM_AGENT_TYPE ?? "";
 
 function sessionRegistered(): boolean {
-  if (!existsSync(registryPath)) return true;
+  if (!existsSync(registryPath)) return registeredAgentType === "pi";
   try {
     const reg = JSON.parse(readFileSync(registryPath, "utf8")) as {
-      sessions?: Record<string, unknown>;
+      sessions?: Record<string, { agent_type?: string }>;
     };
-    return Boolean(reg.sessions && sessionName in reg.sessions);
+    const registryType = reg.sessions?.[sessionName]?.agent_type;
+    return registryType === "pi" && (!registeredAgentType || registeredAgentType === "pi");
   } catch {
-    return true;
+    return registeredAgentType === "pi";
   }
 }
 
@@ -85,6 +88,20 @@ function writeSid(sid: string | undefined): void {
   try {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, `${sessionName}.sid`), sid);
+    mkdirSync(identityDir, { recursive: true });
+    const durableSidPath = join(identityDir, `${sessionName}.sid`);
+    const rebindPath = join(identityDir, `${sessionName}.rebind`);
+    let durableSid = "";
+    try {
+      durableSid = readFileSync(durableSidPath, "utf8").trim();
+    } catch {
+      /* no durable identity yet */
+    }
+    if (!durableSid || durableSid === sid || existsSync(rebindPath)) {
+      writeFileSync(durableSidPath, sid);
+      rmSync(rebindPath, { force: true });
+    }
+    rmSync(join(amDir, ".restore_scan_last"), { force: true });
   } catch {
     /* best-effort */
   }

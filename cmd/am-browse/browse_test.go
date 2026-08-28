@@ -60,7 +60,7 @@ func TestWordPrefix(t *testing.T) {
 		text, query string
 		want        bool
 	}{
-		{"a/proj", "proj", true},  // after '/'
+		{"a/proj", "proj", true},   // after '/'
 		{"x [proj]", "proj", true}, // after '['
 		{"foo-proj", "proj", true}, // after '-'
 		{"foo proj", "proj", true}, // after ' '
@@ -101,7 +101,7 @@ func TestApplyFilterRanksByTierThenRecency(t *testing.T) {
 func TestApplyFilterKeepsActiveInactiveSplit(t *testing.T) {
 	m := newModel()
 	m.entries = []sessions.Entry{
-		{Kind: sessions.EntryActive, Display: "p_qr_os_j [c]", RecencyUnix: 100},  // tier 1 (subsequence)
+		{Kind: sessions.EntryActive, Display: "p_qr_os_j [c]", RecencyUnix: 100},      // tier 1 (subsequence)
 		{Kind: sessions.EntryInactive, Display: "proj-restore [c]", RecencyUnix: 999}, // tier 4
 	}
 	m.filter.SetValue("proj")
@@ -177,6 +177,53 @@ func TestEnterInactiveOutputsRestoreProtocol(t *testing.T) {
 	want := "__RESTORE__\x1f/tmp/my-site\x1fsid-123\x1fclaude"
 	if got != want {
 		t.Errorf("inactive enter output = %q, want %q", got, want)
+	}
+}
+
+func TestBlockedRecoveryActionsUseRecoveryProtocols(t *testing.T) {
+	entry := sessions.Entry{
+		Kind: sessions.EntryBlocked,
+		Meta: sessions.Session{LogicalID: "logical-1", Name: "am-old"},
+	}
+
+	m := newModel()
+	m.entries = []sessions.Entry{entry}
+	m.applyFilter()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got, want := updated.(model).output, "__RETRY_RECOVERY__\x1flogical-1"; got != want {
+		t.Errorf("blocked enter output = %q, want %q", got, want)
+	}
+
+	m = newModel()
+	m.entries = []sessions.Entry{entry}
+	m.applyFilter()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if got, want := updated.(model).output, "__FORGET_RECOVERY__\x1flogical-1"; got != want {
+		t.Errorf("blocked ctrl-x output = %q, want %q", got, want)
+	}
+
+	m = newModel()
+	entry.Kind = sessions.EntryRestoring
+	m.entries = []sessions.Entry{entry}
+	m.applyFilter()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if got, want := updated.(model).output, "__FORGET_RECOVERY__\x1flogical-1"; got != want {
+		t.Errorf("restoring ctrl-x output = %q, want %q", got, want)
+	}
+}
+
+func TestRestoringEntrySchedulesPolling(t *testing.T) {
+	m := newModel()
+	updated, cmd := m.Update(sessionsLoadedMsg{entries: []sessions.Entry{{Kind: sessions.EntryRestoring}}})
+	if !hasRestoringEntries(updated.(model).entries) {
+		t.Fatal("restoring entry was not retained")
+	}
+	if cmd == nil {
+		t.Fatal("restoring load did not schedule refresh polling")
+	}
+	msg := cmd()
+	if _, ok := msg.(recoveryTickMsg); !ok {
+		t.Fatalf("restoring load command returned %T, want recoveryTickMsg", msg)
 	}
 }
 

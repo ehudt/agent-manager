@@ -7,6 +7,7 @@ _AGENTS_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ "$(type -t am_stream_logs_enabled)" != "function" ]] && source "$_AGENTS_LIB_DIR/config.sh"
 [[ "$(type -t tmux_create_session)" != "function" ]] && source "$_AGENTS_LIB_DIR/tmux.sh"
 [[ "$(type -t registry_add)" != "function" ]] && source "$_AGENTS_LIB_DIR/registry.sh"
+[[ "$(type -t recovery_desired_upsert)" != "function" ]] && source "$_AGENTS_LIB_DIR/recovery.sh"
 
 # Supported agent types and their commands
 declare -A AGENT_COMMANDS=(
@@ -54,8 +55,9 @@ agent_resume_args() {
     agent_type=$(agent_normalize_type "$1")
     local session_id="$2"
     case "$agent_type" in
-        pi) printf '%s\n' "--session" "$session_id" ;;
-        *)  printf '%s\n' "--resume" "$session_id" ;;
+        codex) printf '%s\n' "resume" "$session_id" ;;
+        pi)    printf '%s\n' "--session" "$session_id" ;;
+        *)     printf '%s\n' "--resume" "$session_id" ;;
     esac
 }
 
@@ -179,7 +181,11 @@ agent_launch() {
     shift 4 2>/dev/null || shift $#
     local agent_args=("$@")
     local initial_prompt="${_AM_LAUNCH_PROMPT:-}"
+    local recovery_mode="${_AM_RECOVERY_MODE:-0}"
+    local defer_sidebar_refresh="${_AM_DEFER_SIDEBAR_REFRESH:-0}"
     _AM_LAUNCH_PROMPT=""
+    _AM_RECOVERY_MODE=0
+    _AM_DEFER_SIDEBAR_REFRESH=0
 
     # Validate directory
     if [[ ! -d "$directory" ]]; then
@@ -203,6 +209,8 @@ agent_launch() {
     local normalized_args=()
     local wants_yolo=false
     local wants_sandbox=false
+    local sandbox_shares=()
+    local recovery_shares=()
     local arg
     for arg in "${agent_args[@]}"; do
         case "$arg" in
@@ -227,6 +235,9 @@ agent_launch() {
         [[ -n "$_yolo_flag" ]] && normalized_args+=("$_yolo_flag")
     fi
     agent_args=("${normalized_args[@]}")
+    if declare -p AM_SANDBOX_SHARES >/dev/null 2>&1; then
+        sandbox_shares=("${AM_SANDBOX_SHARES[@]}")
+    fi
 
     # Check if agent command exists
     if ! command -v "$agent_cmd" &>/dev/null; then
@@ -240,7 +251,12 @@ agent_launch() {
 
     # Generate session name
     local session_name
-    session_name=$(generate_session_name "$directory")
+    if [[ -n "${_AM_SESSION_NAME_OVERRIDE:-}" ]]; then
+        session_name="$_AM_SESSION_NAME_OVERRIDE"
+        _AM_SESSION_NAME_OVERRIDE=""
+    else
+        session_name=$(generate_session_name "$directory")
+    fi
 
     local session_directory="$directory"
     local sandbox_directory="$directory"
@@ -293,7 +309,7 @@ agent_launch() {
         "$wants_yolo" "$wants_sandbox"
 
     # Append to sessions log for restore support.
-    if [[ "$agent_type" == "claude" || "$agent_type" == "pi" || "$agent_type" == "cursor" ]]; then
+    if [[ "$agent_type" == "claude" || "$agent_type" == "codex" || "$agent_type" == "pi" || "$agent_type" == "cursor" ]]; then
         sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
     fi
 
@@ -311,8 +327,15 @@ agent_launch() {
     # Export AM_SESSION_NAME so the state-detection hook can identify which am
     # session fired it without relying on cwd (which is ambiguous when two am
     # sessions share a directory).
+    local identity_dir
+    identity_dir=$(_recovery_identity_dir)
+    mkdir -p "$identity_dir"
     tmux_send_keys "$session_name:.{top}" " export AM_SESSION_NAME='$session_name'" Enter
     tmux_send_keys "$session_name:.{bottom}" " export AM_SESSION_NAME='$session_name'" Enter
+    tmux_send_keys "$session_name:.{top}" " export AM_AGENT_TYPE='$agent_type'" Enter
+    tmux_send_keys "$session_name:.{bottom}" " export AM_AGENT_TYPE='$agent_type'" Enter
+    tmux_send_keys "$session_name:.{top}" " export AM_IDENTITY_DIR='$identity_dir'" Enter
+    tmux_send_keys "$session_name:.{bottom}" " export AM_IDENTITY_DIR='$identity_dir'" Enter
 
     # Set up log streaming if enabled
     if am_stream_logs_enabled; then
@@ -374,15 +397,17 @@ agent_launch() {
     if $wants_sandbox; then
         # Lazy-load sandbox.sh
         [[ "$(type -t sandbox_start)" != "function" ]] && source "$_AGENTS_LIB_DIR/sandbox.sh"
+        local parsed_share share_host share_target share_mode
+        while IFS= read -r parsed_share; do
+            [[ -n "$parsed_share" ]] || continue
+            IFS='|' read -r share_host share_target share_mode <<< "$parsed_share"
+            recovery_shares+=("$share_host:$share_target:$share_mode")
+        done < <(_sb_collect_share_specs "${sandbox_shares[@]}")
         if ! am_docker_available; then
             log_error "Sandbox requires Docker but docker is not available"
             tmux_kill_session "$session_name" 2>/dev/null
             registry_remove "$session_name"
             return 1
-        fi
-        local sandbox_shares=()
-        if declare -p AM_SANDBOX_SHARES >/dev/null 2>&1; then
-            sandbox_shares=("${AM_SANDBOX_SHARES[@]}")
         fi
         sandbox_start "$session_name" "$sandbox_directory" "${sandbox_shares[@]}"
         registry_update "$session_name" "container_name" "$session_name"
@@ -390,7 +415,7 @@ agent_launch() {
         attach_cmd=$(sandbox_enter_cmd "$session_name" "$session_directory")
         tmux_send_keys "$session_name:.{bottom}" "$attach_cmd" Enter
         local exec_cmd
-        exec_cmd=$(sandbox_exec_cmd "$session_name" "$session_directory" "$full_cmd")
+        exec_cmd=$(sandbox_exec_cmd "$session_name" "$session_directory" "$full_cmd" "$agent_type")
         tmux_send_keys "$session_name:.{top}" "$exec_cmd" Enter
     else
         tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
@@ -424,10 +449,23 @@ agent_launch() {
         zoxide add -- "$directory" >/dev/null 2>&1 || true
     fi
 
+    local effective_directory="${worktree_ready_path:-$session_directory}"
+    local shares_json
+    shares_json=$(printf '%s\n' "${recovery_shares[@]}" \
+        | jq -Rsc 'split("\n") | map(select(length > 0))')
+    if [[ "$recovery_mode" != "1" ]]; then
+        recovery_desired_upsert "$session_name" "$directory" "$agent_type" "$task" \
+            "$wants_yolo" "$wants_sandbox" "$worktree_name" "$effective_directory" \
+            "$worktree_ready_path" "$shares_json" \
+            || log_warn "Could not persist reboot recovery for $session_name"
+    fi
+
     # Refresh sidebar metadata without keeping the launcher popup open. The
     # client-session-changed hook also refreshes after an attached launch; this
     # background refresh covers detached launches and other clients.
-    (am_refresh_sidebar_cache) >/dev/null 2>&1 &
+    if [[ "$defer_sidebar_refresh" != "1" ]]; then
+        (am_refresh_sidebar_cache) >/dev/null 2>&1 &
+    fi
 
     log_success "Created session: $session_name"
     echo "$session_name"
@@ -522,13 +560,16 @@ agent_kill() {
     local session_name="$1"
     local rc=0
 
+    # Explicit close wins even if runtime teardown is interrupted.
+    recovery_desired_remove "$session_name" 2>/dev/null || true
+
     # Bulk-read registry fields (one jq call instead of four)
     local agent_type dir created_at container_name
     IFS='|' read -r agent_type dir created_at container_name \
         <<< "$(registry_get_fields "$session_name" agent_type directory created_at container_name)"
 
     # Final snapshot + close timestamp for session restore (before killing tmux)
-    if [[ ( "$agent_type" == "claude" || "$agent_type" == "pi" || "$agent_type" == "cursor" ) ]] && tmux_session_exists "$session_name"; then
+    if [[ ( "$agent_type" == "claude" || "$agent_type" == "codex" || "$agent_type" == "pi" || "$agent_type" == "cursor" ) ]] && tmux_session_exists "$session_name"; then
         # Bind the conversation id: sidecar (authoritative) → already-logged
         # sid → guarded directory detection. A kill-time guess must never
         # overwrite a binding established while hooks were alive.
@@ -573,7 +614,10 @@ agent_kill() {
     registry_remove "$session_name"
     rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid" \
-          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript"
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript" \
+          "$(_recovery_identity_dir)/$session_name.sid" \
+          "$(_recovery_identity_dir)/$session_name.transcript" \
+          "$(_recovery_identity_dir)/$session_name.rebind"
 
     # Rebuild sidebar cache for surviving sessions so the killed entry
     # disappears from every pane-border immediately.

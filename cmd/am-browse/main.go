@@ -86,6 +86,8 @@ type killDoneMsg struct {
 	session string
 }
 
+type recoveryTickMsg struct{}
+
 // --- Styles (initialized in initStyles after tty is opened) ---
 
 var (
@@ -157,6 +159,21 @@ func loadSessions() tea.Msg {
 	return sessionsLoadedMsg{entries: entries}
 }
 
+func recoveryTick() tea.Cmd {
+	return tea.Tick(350*time.Millisecond, func(time.Time) tea.Msg {
+		return recoveryTickMsg{}
+	})
+}
+
+func hasRestoringEntries(entries []sessions.Entry) bool {
+	for _, entry := range entries {
+		if entry.Kind == sessions.EntryRestoring {
+			return true
+		}
+	}
+	return false
+}
+
 func loadPreview(entry sessions.Entry) tea.Cmd {
 	return func() tea.Msg {
 		key := previewKey(entry)
@@ -170,6 +187,18 @@ func loadPreview(entry sessions.Entry) tea.Cmd {
 				}
 			}
 			return previewLoadedMsg{key: key, content: "No snapshot available"}
+		}
+		if entry.Kind == sessions.EntryRestoring {
+			return previewLoadedMsg{key: key, content: "Restoring this interrupted session…"}
+		}
+		if entry.Kind == sessions.EntryBlocked {
+			content := entry.RecoveryError
+			if content == "" {
+				content = "Session ended during this boot. Press Enter to retry recovery."
+			} else {
+				content += "\n\nPress Enter to retry, or Ctrl-X to forget this open session."
+			}
+			return previewLoadedMsg{key: key, content: content}
 		}
 		if previewCmd == "" || entry.Name == "" {
 			return previewLoadedMsg{key: key, content: ""}
@@ -212,7 +241,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entries = msg.entries
 		m.loading = false
 		m.applyFilter()
-		return m, m.requestPreview()
+		cmds := []tea.Cmd{m.requestPreview()}
+		if hasRestoringEntries(m.entries) {
+			cmds = append(cmds, recoveryTick())
+		}
+		return m, tea.Batch(cmds...)
+
+	case recoveryTickMsg:
+		return m, loadSessions
 
 	case previewLoadedMsg:
 		// Only accept if still relevant
@@ -240,9 +276,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyEnter:
 			if entry, ok := m.selectedEntry(); ok {
-				if entry.Kind == sessions.EntryInactive {
+				switch entry.Kind {
+				case sessions.EntryInactive:
 					m.output = "__RESTORE__\x1f" + entry.Meta.Directory + "\x1f" + entry.RestoreSessionID + "\x1f" + entry.Meta.AgentType
-				} else {
+				case sessions.EntryBlocked:
+					m.output = "__RETRY_RECOVERY__\x1f" + entry.Meta.LogicalID
+				case sessions.EntryRestoring:
+					return m, nil
+				default:
 					m.output = entry.Name
 				}
 				return m, tea.Quit
@@ -260,6 +301,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyCtrlX:
+			if entry, ok := m.selectedEntry(); ok &&
+				(entry.Kind == sessions.EntryBlocked || entry.Kind == sessions.EntryRestoring) {
+				m.output = "__FORGET_RECOVERY__\x1f" + entry.Meta.LogicalID
+				return m, tea.Quit
+			}
 			if s := m.selectedSession(); s != "" {
 				return m, killSession(s)
 			}
@@ -330,28 +376,33 @@ func (m *model) applyFilter() {
 		return
 	}
 
-	// Rank active and inactive as two independent lists so the active/inactive
-	// split (and the inactive divider) is preserved. Within each list: coarse
-	// match tier first, then recency (most recent wins ties).
+	// Rank active, interrupted, and inactive as independent lists so section
+	// boundaries remain stable under filtering.
 	type hit struct {
 		idx  int
 		tier int
 		rec  int64
 	}
-	var active, inactive []hit
+	var active, interrupted, inactive []hit
 	for i, e := range m.entries {
 		haystack := strings.ToLower(e.Display)
-		if e.Kind == sessions.EntryInactive {
+		switch e.Kind {
+		case sessions.EntryInactive:
 			haystack += " inactive restore closed"
+		case sessions.EntryRestoring, sessions.EntryBlocked:
+			haystack += " interrupted recovery restoring blocked"
 		}
 		tier := matchTier(haystack, query)
 		if tier == 0 {
 			continue
 		}
 		h := hit{idx: i, tier: tier, rec: e.RecencyUnix}
-		if e.Kind == sessions.EntryInactive {
+		switch e.Kind {
+		case sessions.EntryInactive:
 			inactive = append(inactive, h)
-		} else {
+		case sessions.EntryRestoring, sessions.EntryBlocked:
+			interrupted = append(interrupted, h)
+		default:
 			active = append(active, h)
 		}
 	}
@@ -365,9 +416,13 @@ func (m *model) applyFilter() {
 		}
 	}
 	sort.SliceStable(active, byScore(active))
+	sort.SliceStable(interrupted, byScore(interrupted))
 	sort.SliceStable(inactive, byScore(inactive))
 
 	for _, h := range active {
+		m.filtered = append(m.filtered, h.idx)
+	}
+	for _, h := range interrupted {
 		m.filtered = append(m.filtered, h.idx)
 	}
 	for _, h := range inactive {
@@ -441,7 +496,7 @@ func (m model) selectedEntry() (sessions.Entry, bool) {
 
 func (m model) selectedSession() string {
 	entry, ok := m.selectedEntry()
-	if !ok || entry.Kind == sessions.EntryInactive {
+	if !ok || entry.Kind != sessions.EntryActive {
 		return ""
 	}
 	return entry.Name
@@ -462,6 +517,12 @@ func previewKey(entry sessions.Entry) string {
 		}
 		return "inactive:" + entry.RestoreSessionID
 	}
+	if entry.Kind == sessions.EntryRestoring || entry.Kind == sessions.EntryBlocked {
+		if entry.Meta.LogicalID == "" {
+			return ""
+		}
+		return "recovery:" + entry.Meta.LogicalID + ":" + string(entry.Kind)
+	}
 	if entry.Name == "" {
 		return ""
 	}
@@ -478,24 +539,34 @@ func (m *model) moveToFirstKind(kind sessions.EntryKind) bool {
 	return false
 }
 
-func (m model) entryCounts() (active, inactive int) {
+func (m model) entryCounts() (active, restoring, blocked, inactive int) {
 	for _, entry := range m.entries {
 		switch entry.Kind {
+		case sessions.EntryActive:
+			active++
+		case sessions.EntryRestoring:
+			restoring++
+		case sessions.EntryBlocked:
+			blocked++
 		case sessions.EntryInactive:
 			inactive++
-		default:
-			active++
 		}
 	}
-	return active, inactive
+	return active, restoring, blocked, inactive
 }
 
 func (m model) listRows() ([]listRow, int) {
 	rows := make([]listRow, 0, len(m.filtered)+1)
 	cursorRow := -1
+	recoveryDividerAdded := false
 	inactiveDividerAdded := false
 	for pos, idx := range m.filtered {
-		if m.entries[idx].Kind == sessions.EntryInactive && !inactiveDividerAdded {
+		kind := m.entries[idx].Kind
+		if (kind == sessions.EntryRestoring || kind == sessions.EntryBlocked) && !recoveryDividerAdded {
+			rows = append(rows, listRow{divider: true, label: "Interrupted sessions"})
+			recoveryDividerAdded = true
+		}
+		if kind == sessions.EntryInactive && !inactiveDividerAdded {
 			rows = append(rows, listRow{divider: true, label: "Inactive sessions"})
 			inactiveDividerAdded = true
 		}
@@ -528,11 +599,18 @@ func (m model) View() string {
 
 	// Header: accent bar + title + session count
 	b.WriteByte('\n')
-	activeCount, inactiveCount := m.entryCounts()
-	countLabel := fmt.Sprintf("%d active", activeCount)
-	if inactiveCount > 0 {
-		countLabel = fmt.Sprintf("%d active, %d inactive", activeCount, inactiveCount)
+	activeCount, restoringCount, blockedCount, inactiveCount := m.entryCounts()
+	countParts := []string{fmt.Sprintf("%d active", activeCount)}
+	if restoringCount > 0 {
+		countParts = append(countParts, fmt.Sprintf("%d restoring", restoringCount))
 	}
+	if blockedCount > 0 {
+		countParts = append(countParts, fmt.Sprintf("%d blocked", blockedCount))
+	}
+	if inactiveCount > 0 {
+		countParts = append(countParts, fmt.Sprintf("%d inactive", inactiveCount))
+	}
+	countLabel := strings.Join(countParts, ", ")
 	countStr := dimStyle.Render(countLabel)
 	title := "  " + accentStyle.Render("▎") + " " + titleStyle.Render("Agent Sessions")
 	// Right-align count: pad between title and count
@@ -742,10 +820,10 @@ func helpText() string {
 
   Keybindings
     Up/Down     Move selection
-    Enter       Attach active session or restore inactive session
+    Enter       Open, restore, or retry selected session
     Esc/q       Exit without action
     Ctrl-N      Create new session
-    Ctrl-X      Kill selected active session
+    Ctrl-X      Kill active or forget blocked session
     Ctrl-R      Refresh session list
     ?           Show this help
 
