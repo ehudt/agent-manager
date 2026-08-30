@@ -19,7 +19,7 @@
 
 AI coding agents work best with focused context. Real work often needs several of them at once — one debugging tests, another implementing a feature, a third reviewing a diff. Switching between terminal tabs and losing track of what's running where slows you down.
 
-`am` gives you a single interface to launch, browse, and manage agent sessions. Each session is a persistent tmux split — agent on top, shell on the bottom — so you can check on any agent, send it new instructions, or hand it off to a teammate without losing state.
+`am` gives you a single interface to launch, browse, and manage agent sessions. Each session is a persistent tmux session running the agent full-screen, with a collapsible shell panel one keystroke away — so you can check on any agent, send it new instructions, or hand it off to a teammate without losing state.
 
 It works equally well whether **you** are driving from the keyboard or whether **another agent** is dispatching workers programmatically.
 
@@ -41,7 +41,7 @@ cd agent-manager
 am new ~/my-project
 ```
 
-That's it. You're in a tmux session with Claude running in the top pane and a shell in the bottom. Press `Prefix + d` to detach, or `Prefix + s` to browse all your sessions.
+That's it. You're in a tmux session with Claude running full-screen. Press ``Prefix + ` `` to pop open a shell panel below the agent (VS Code-style — toggling it again hides it without losing its state), `Prefix + d` to detach, or `Prefix + s` to browse all your sessions.
 
 <!-- TODO: Video (15-20s) — terminal recording showing: `am new ~/project` → agent starts → user detaches → `am` opens browser → user selects session → reattaches. Keep it fast. -->
 
@@ -163,16 +163,21 @@ Run `am` to open the session browser:
 
 ### Inside a session
 
-Each session is a tmux split pane — agent on top, shell on the bottom, both in the same working directory:
+Each session runs the agent full-screen, with a collapsible shell panel (VS Code-style) that opens below it on demand in the same working directory:
 
 ```
 ┌─────────────────────────────────────┐
-│  Agent (Claude/Cursor/Codex/pi)     │  ← top pane
+│  Agent (Claude/Cursor/Codex/pi)     │  ← agent pane
 │                                     │
 ├─────────────────────────────────────┤
-│  Shell                              │  ← bottom pane, same directory
+│  Shell (optional, Prefix + `)       │  ← collapsible panel
 └─────────────────────────────────────┘
 ```
+
+The panel is created on first toggle; hiding it parks the pane rather than
+killing it, so its cwd, history, and any running jobs survive until the next
+toggle. To launch with the panel already open, pass `--shell` to `am new` or
+set `am config set shell true`.
 
 Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don't interfere with your regular tmux setup.
 
@@ -184,7 +189,8 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix + s` | Open am browser popup |
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
-| `Prefix ↑/↓` | Switch between agent and shell panes |
+| ``Prefix + ` `` | Toggle the shell panel (open on first use, then hide/show) |
+| `Prefix ↑/↓` | Switch between agent and shell panes (panel open) |
 | `:am` | Open am browser as a tmux command |
 
 The status bar shows all sessions as numbered slots with the current session
@@ -197,10 +203,14 @@ Check on a session without attaching to it:
 
 ```bash
 am peek am-abc123                        # Snapshot of agent pane
-am peek --pane shell am-abc123           # Snapshot of shell pane
+am peek --pane shell am-abc123           # Snapshot of shell panel (if opened)
 am peek --follow am-abc123               # Stream agent output in real time
 am peek --lines 100 am-abc123            # Include the last 100 lines
 ```
+
+`--pane shell` works while the panel is open *or* hidden (the parked pane
+keeps running); on a session whose panel was never opened it explains how to
+open one (`am shell <session>`).
 
 ### Restoring closed sessions
 

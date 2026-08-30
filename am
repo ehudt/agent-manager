@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.15.0"
+AM_VERSION="0.16.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -41,6 +41,7 @@ COMMANDS:
     send                Send a prompt to a running session
     peek                Show or follow another session's pane output
     attach              Attach to a session by name (exact, prefix, or fuzzy)
+    shell               Toggle a session's shell panel (open on first use, then hide/show)
     kill                Kill a session
     config              Show or change saved defaults
     status              Show detailed session info
@@ -63,6 +64,8 @@ OPTIONS FOR 'new':
     --sandbox       Run session in Docker sandbox container
     --no-sandbox    Disable sandbox even if enabled by default
     --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])
+    --shell         Open the shell panel at launch (default: agent-only)
+    --no-shell      Start agent-only even if shell_pane is enabled by default
     --detach        Create the session without attaching
     --print-session Print the created session name to stdout
     --              Pass remaining args to agent (e.g., -- --resume)
@@ -96,7 +99,8 @@ KEYBINDINGS (inside tmux session):
     Prefix + s      Open am browser popup
     Prefix + x      Kill the current am session
     Prefix + d      Detach from session
-    Prefix Up/Down  Switch panes (agent/shell)
+    Prefix + `      Toggle the shell panel (open on first use, then hide/show)
+    Prefix Up/Down  Switch panes (when the shell panel is open)
     :am             Open am browser (tmux command)
 
 EXAMPLES:
@@ -389,6 +393,14 @@ cmd_new() {
                 sandbox_override="false"
                 shift
                 ;;
+            --shell)
+                agent_args+=("--shell")
+                shift
+                ;;
+            --no-shell)
+                agent_args+=("--no-shell")
+                shift
+                ;;
             --no-worktree)
                 # shellcheck disable=SC2034
                 worktree_override="false"
@@ -420,6 +432,8 @@ cmd_new() {
                 echo "  --sandbox       Run session in Docker sandbox container"
                 echo "  --no-sandbox    Disable sandbox even if enabled by default"
                 echo "  --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])"
+                echo "  --shell         Open the shell panel at launch (default: agent-only)"
+                echo "  --no-shell      Start agent-only even if shell_pane is enabled by default"
                 echo "  --detach        Create the session without attaching"
                 echo "  --print-session  Print the created session name"
                 echo "  --              Pass remaining args to agent command"
@@ -588,6 +602,41 @@ cmd_attach() {
     if [[ -n "$selected" ]]; then
         tmux_attach "$selected"
     fi
+}
+
+# Command: shell — toggle a session's shell panel
+cmd_shell() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        cat <<'EOF'
+Usage: am shell [session-name]
+
+Toggle the session's shell panel (VS Code-style): first use opens a shell
+pane below the agent; after that it hides/shows the same pane, preserving
+cwd, history, and running jobs. Defaults to the current session when run
+inside one. Also bound to prefix+` inside am sessions.
+EOF
+        return 0
+    fi
+
+    local name="${1:-}"
+    local resolved=""
+    if [[ -n "$name" ]]; then
+        if ! resolved=$(resolve_session_fuzzy "$name"); then
+            log_error "Session not found: $name"
+            return 1
+        fi
+    else
+        if am_tmux_is_current_server; then
+            resolved=$(am_tmux display-message -p '#{session_name}' 2>/dev/null || true)
+        fi
+        if [[ "$resolved" != "${AM_SESSION_PREFIX}"* ]]; then
+            log_error "Session name required (not inside an am session)"
+            echo "Usage: am shell [session-name]" >&2
+            return 1
+        fi
+    fi
+
+    agent_shell_pane_toggle "$resolved"
 }
 
 cmd_send() {
@@ -829,6 +878,13 @@ cmd_peek() {
             ;;
     esac
 
+    # Sessions start agent-only; a shell pane exists only after it was opened.
+    if [[ "$pane_name" == "shell" ]] && [[ "$(tmux_shell_pane_state "$resolved")" == "absent" ]]; then
+        log_error "Session has no shell pane: $resolved"
+        log_error "Open one with: am shell $resolved (or prefix+\` inside tmux)"
+        return 1
+    fi
+
     if $history; then
         peek_history_output "$resolved" "$pane_name" "$lines" "$grep_pattern"
     elif $follow; then
@@ -915,6 +971,9 @@ cmd_config() {
                 stream_logs)
                     am_stream_logs_enabled && echo true || echo false
                     ;;
+                shell_pane)
+                    am_shell_pane_enabled && echo true || echo false
+                    ;;
                 sb_network_restrict|sb_allowed_hosts|sandbox.shares)
                     am_config_get "$key"
                     ;;
@@ -970,6 +1029,7 @@ Keys:
   yolo     Default yolo mode (true/false)
   sandbox  Default sandbox mode (true/false)
   logs            Default pane log streaming (true/false)
+  shell           New sessions open with the shell panel visible (true/false)
   sandbox-shares  Sticky sandbox bind mounts (<host>[:container][:ro|rw], comma-separated)
 
 Precedence:
@@ -1556,6 +1616,9 @@ main() {
             ;;
         attach|a)
             cmd_attach "$@"
+            ;;
+        shell)
+            cmd_shell "$@"
             ;;
         kill|rm|k)
             cmd_kill "$@"

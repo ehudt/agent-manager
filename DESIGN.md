@@ -90,10 +90,18 @@ myapp/feature/auth [claude] implement user auth flow (2h ago)
 **Session structure:**
 ```
 tmux session: am-abc123
-  └── window 0: agent
-        ├── pane 0 (top): agent (claude, codex)  ← preview captures this
-        └── pane 1 (bottom, 15 lines): shell             ← same working directory
+  ├── window 0: agent
+  │     ├── pane (top): agent (claude, codex)        ← preview captures this
+  │     └── pane (bottom, 15 lines): shell panel     ← optional, same working
+  │                                                     directory; opened via
+  │                                                     prefix+` / am shell
+  └── window "_amshell": parked shell panel          ← only while hidden
 ```
+
+The shell panel is collapsible (VS Code-style): sessions launch agent-only
+by default, the panel is created on first toggle, and hiding it breaks the
+pane into the hidden `_amshell` window (cwd, history, jobs, and shell.log
+streaming survive) instead of killing it.
 
 ### 4. Preview System
 
@@ -309,7 +317,7 @@ am new -w my-feature ~/project   # worktree at .claude/worktrees/my-feature
 ```
 
 - Only applies to Claude agent type in git repositories
-- Shell pane auto-`cd`s into worktree once created
+- The shell panel `cd`s into the worktree when it is opened
 - Worktree path stored in registry as `worktree_path`
 - Claude is launched with `-w <name>` flag
 

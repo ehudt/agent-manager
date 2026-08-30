@@ -148,13 +148,17 @@ done < <(am_tmux list-clients -F '#{client_width}' 2>/dev/null || true)
 # Bulk pane-pid + pane-title fetch: one tmux list-panes call indexes the top
 # pane for each session. Replaces N `display-message` forks inside the loop.
 # Title is the last field so embedded '|' in a title cannot shift the parse.
+# A hidden shell panel (parked in the $AM_SHELL_WINDOW window) is also "at
+# top" of its own window and must be skipped, or its shell pid would clobber
+# the agent pid and flip running sessions to idle.
 declare -A SESSION_TOP_PID=() SESSION_TITLE=()
-while IFS='|' read -r _bp_sess _bp_top _bp_pid _bp_title; do
+while IFS='|' read -r _bp_sess _bp_top _bp_win _bp_pid _bp_title; do
     [[ "$_bp_top" == "1" ]] || continue
+    [[ "$_bp_win" == "$AM_SHELL_WINDOW" ]] && continue
     [[ "$_bp_sess" == "${AM_SESSION_PREFIX}"* ]] || continue
     SESSION_TOP_PID[$_bp_sess]=$_bp_pid
     SESSION_TITLE[$_bp_sess]=$_bp_title
-done < <(am_tmux list-panes -a -F '#{session_name}|#{pane_at_top}|#{pane_pid}|#{pane_title}' 2>/dev/null || true)
+done < <(am_tmux list-panes -a -F '#{session_name}|#{pane_at_top}|#{window_name}|#{pane_pid}|#{pane_title}' 2>/dev/null || true)
 
 # Bulk process-table fetch: one ps -eo call yields comm + children for every
 # pid. Replaces ~3 ps forks per session in _state_pane_is_shell.

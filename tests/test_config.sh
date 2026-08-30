@@ -54,6 +54,20 @@ test_config() {
     assert_eq "false" "$(am_default_sandbox_enabled && echo true || echo false)" "config: env overrides saved sandbox"
     unset AM_DEFAULT_SANDBOX
 
+    # Shell panel config
+    assert_eq "false" "$(am_shell_pane_enabled && echo true || echo false)" "config: shell panel defaults closed"
+    assert_eq "shell_pane" "$(am_config_key_alias shell)" "config: shell alias maps to shell_pane"
+    assert_eq "boolean" "$(am_config_key_type shell_pane)" "config: shell_pane is boolean"
+
+    am_config_set "shell_pane" "true" "boolean"
+    assert_eq "true" "$(am_shell_pane_enabled && echo true || echo false)" "config: saved shell panel default"
+    assert_contains "$(am_config_print)" "shell_pane=true" "config: print shows shell_pane"
+
+    export AM_SHELL_PANE="false"
+    assert_eq "false" "$(am_shell_pane_enabled && echo true || echo false)" "config: env overrides saved shell panel"
+    unset AM_SHELL_PANE
+    am_config_set "shell_pane" "false" "boolean"
+
     am_config_unset "default_agent"
     unset AM_DEFAULT_AGENT AM_DEFAULT_YOLO AM_STREAM_LOGS
     assert_eq "claude" "$(am_default_agent)" "config: unset falls back to built-in default"

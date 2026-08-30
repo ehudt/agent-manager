@@ -71,9 +71,10 @@ test_cli_extended() {
     local test_dir
     test_dir=$(mktemp -d)
 
-    # Create a session for testing against
+    # Create a session for testing against (--shell: the peek tests below
+    # exercise the shell pane, which is opt-in since 0.16)
     local session_name
-    session_name=$(set +u; agent_launch "$test_dir" "claude" "cli test" 2>/dev/null)
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "cli test" "" --shell 2>/dev/null)
 
     if [[ -z "$session_name" ]]; then
         skip_test "cli extended tests (agent_launch failed)"
@@ -167,6 +168,22 @@ test_cli_extended() {
         assert_not_contains "$follow_output" "follow-tail-old" "am peek --follow --lines: excludes older log output"
     else
         skip_test "am peek --follow --lines: log streaming disabled"
+    fi
+
+    # --- Test: am peek --pane shell errors clearly on an agent-only session ---
+    local noshell_session
+    noshell_session=$(set +u; agent_launch "$test_dir" "claude" "no shell" 2>/dev/null)
+    if [[ -n "$noshell_session" ]]; then
+        local noshell_err
+        noshell_err=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
+            "$PROJECT_DIR/am" peek --pane shell "$noshell_session" 2>&1 || true)
+        assert_contains "$noshell_err" "no shell pane" \
+            "am peek --pane shell: explains missing shell pane"
+        assert_contains "$noshell_err" "am shell" \
+            "am peek --pane shell: suggests am shell"
+        agent_kill "$noshell_session" 2>/dev/null
+    else
+        skip_test "am peek --pane shell error (agent_launch failed)"
     fi
 
     # --- Test: am status <session> shows detailed info plus state ---

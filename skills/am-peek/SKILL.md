@@ -7,10 +7,14 @@ description: Inspect another `am` session's shell history — commands run, grep
 
 Read the **full shell scrollback** of another `am` session without attaching.
 
-The shell pane of every `am` session is streamed (ANSI-stripped) to
-`/tmp/am-logs/<session>/shell.log` while the session is alive. `am peek
---pane shell --history` is the canonical entry point — bounded reads, optional
-grep, no live tail.
+A session's shell panel is streamed (ANSI-stripped) to
+`/tmp/am-logs/<session>/shell.log` while it exists — including while it is
+hidden (toggled away). `am peek --pane shell --history` is the canonical
+entry point — bounded reads, optional grep, no live tail.
+
+Note: sessions start agent-only; the shell panel (and its log) exists only
+after someone opened it (prefix+` in the session, or `am shell <session>`).
+If peek reports "no shell pane", there is no shell history to read.
 
 ## When to use
 

@@ -34,6 +34,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - Registry writes must go through `registry_add/update/remove` (or Go's `lockRegistry`-wrapped paths) — a bare jq-rewrite of `sessions.json` bypasses the write lock and reintroduces lost updates. Don't spawn background jobs while `_registry_lock` is held (children inherit the lock fd and keep the lock alive until they exit)
 - Sourced libs derive their own dir as `_<MODULE>_LIB_DIR` from `AM_LIB_DIR` (exported by the `am` entry point); standalone scripts like `lib/status-bar` set their own `SCRIPT_DIR`
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
+- The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
 - Sandbox containers always run as the `ubuntu` user (UID/GID aligned to host). Use `SB_CONTAINER_HOME` for container-side path expansion, not `$HOME`
 - Agents in sandbox can `sudo apt-get install` without a password. Full sudo requires `SB_UNSAFE_ROOT=1`
 
@@ -65,7 +66,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/sandbox.sh` | Docker sandbox lifecycle and fleet ops |
 | `sandbox/Dockerfile` | Docker image definition for sandbox containers |
 | `sandbox/entrypoint.sh` | Container init: UID/GID alignment, skeleton seeding, sudoers |
-| `bin/sandbox-shell` | Reconnecting shell loop for sandbox containers (used by shell pane) |
+| `bin/sandbox-shell` | Reconnecting shell loop for sandbox containers (used by the shell panel) |
+| `bin/toggle-shell` | tmux helper (prefix+\`): toggle the collapsible shell panel — create on first use via `am shell`, then hide/show by parking the pane in the hidden `_amshell` window |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/switch-cycle` | tmux helper: cycle next/prev in canonical sidebar order |
 | `bin/switch-index` | tmux helper: jump to Nth slot in canonical sidebar order |
@@ -79,7 +81,8 @@ am → fzf_main() → am-browse (Go TUI) → stdout protocol → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
 am list-internal → am-list-internal (Go binary) → stdout
 Ctrl-N in browser → am_new_session_form() → _form_run()
-am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_enter_cmd (shell pane) + sandbox_exec_cmd (agent pane) → agent runs in container
+am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_exec_cmd (agent pane) → agent runs in container; opening the shell panel later runs sandbox_enter_cmd in it
+prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
 am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
 am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session, codex → resume)
@@ -312,7 +315,7 @@ am peek --pane shell --history --lines 200 am-abc123
 am peek --pane shell --history --grep "ERROR|FAIL" --lines 50 am-abc123
 ```
 
-- Default pane is `agent` (top pane). `--pane shell` targets the lower shell pane.
+- Default pane is `agent` (top pane). `--pane shell` targets the shell panel — it follows the panel into the hidden `_amshell` window when toggled away, and errors with guidance (`am shell <session>`) when the panel was never opened (sessions start agent-only).
 - Plain `am peek` returns a snapshot using tmux pane capture.
 - `am peek --follow` prefers streamed pane logs when available and falls back to polling tmux output.
 - `am peek --pane shell --history` reads the full streamed scrollback from `/tmp/am-logs/<session>/shell.log` instead of the viewport. Supports `--lines N` (default 200) and `--grep PAT` (filtered via `grep -E` then `tail`). Output is already ANSI-stripped. Mutually exclusive with `--follow`. See `skills/am-peek/SKILL.md` for context-conserving usage patterns.
@@ -357,6 +360,13 @@ am restore
 - `agent_info(name)` - Show session info
 - `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude and pi sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
 - `agent_resume_args(agent_type, session_id)` - Build agent-specific resume args (claude → --resume, pi → --session)
+
+**Shell panel (collapsible; sessions launch agent-only by default):**
+- `agent_shell_pane_add(session_name)` - Create the shell panel below the agent: split (worktree-aware cwd), wire `AM_SESSION_NAME`/`AM_AGENT_TYPE`/`AM_IDENTITY_DIR`/`AM_LOG_DIR` exports + shell.log pipe-pane, run `sandbox_enter_cmd` for sandboxed sessions, cd into a CLI-managed worktree once it exists. Registry-driven, so it serves both `--shell` at launch and on-demand opening
+- `agent_shell_pane_toggle(session_name)` - absent → add, open → hide, hidden → show; backs `am shell` and prefix+\` (via bin/toggle-shell)
+- `tmux_shell_pane_state(session)` - Print absent/open/hidden from live tmux (no persisted layout state)
+- `tmux_shell_pane_hide(session)` / `tmux_shell_pane_show(session)` - Park the panel in the hidden _amshell window / rejoin it below the agent (tmux break-pane/join-pane; the pane keeps running, so cwd, history, jobs, and pipe-pane streaming survive). Hide/show also toggle the window's pane-border-status so a lone agent pane wastes no row
+- `tmux_main_window_id(session)` - @id of the session's non-_amshell window; unambiguous even when the current window is the hidden one
 
 **Reboot recovery (`lib/recovery.sh`):**
 - `recovery_desired_upsert/remove/identity()` - Maintain `desired_sessions.json`, the durable set of sessions the user still considers open
@@ -408,6 +418,7 @@ am restore
 - `tmux_get_activity(name)` - Last activity timestamp
 - `tmux_get_created(name)` - Session creation timestamp
 - `tmux_enable_pipe_pane(session, pane, file)` - Stream pane output to log file
+- `tmux_pipe_pane(target, file)` - Same, for a raw pane target (e.g. a `%id`)
 - `tmux_cleanup_logs(name)` - Remove log directory for a session
 - `tmux_list_am_sessions()` - List all am-* session names
 - `tmux_send_keys(session, keys)` - Send keys to a tmux pane
@@ -458,6 +469,7 @@ am restore
 - `am_config_get(key)` / `am_config_set(key, value)` - Read/write config
 - `am_default_agent()` - Get default agent type
 - `am_stream_logs_enabled()` - Check if log streaming is enabled
+- `am_shell_pane_enabled()` - Whether new sessions open with the shell panel visible (shell_pane key, default false)
 - `am_config_key_alias()` / `am_config_key_type()` / `am_config_value_is_valid()` - Normalize and validate config keys and values
 
 ## Session Naming

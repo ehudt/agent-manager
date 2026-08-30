@@ -5,7 +5,7 @@ description: Use when a task has 2+ independent work streams, needs background a
 
 # Agent Manager Dispatch
 
-Dispatch and monitor background AI agent sessions using the `am` CLI. Each session runs in its own tmux with a dedicated agent + shell pane.
+Dispatch and monitor background AI agent sessions using the `am` CLI. Each session runs in its own tmux with a dedicated agent pane (plus an optional collapsible shell panel).
 
 ## When to Use
 
@@ -157,7 +157,7 @@ am send "$session" "Ignore the previous approach. Instead, ..."
 
 ## Logs
 
-Each session streams pane output to `/tmp/am-logs/<session>/{agent,shell}.log` (both panes export `$AM_LOG_DIR`). `tail -f` works without tmux. For bounded, grep-able shell-history reads, use the am-peek skill.
+Each session streams pane output to `/tmp/am-logs/<session>/agent.log` (panes export `$AM_LOG_DIR`). `shell.log` exists once the session's optional shell panel has been opened (`am shell <session>`). `tail -f` works without tmux. For bounded, grep-able shell-history reads, use the am-peek skill.
 
 ## Safety
 

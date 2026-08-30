@@ -836,8 +836,9 @@ func helpText() string {
     Prefix + s  Open am browser popup
     Prefix + x  Kill current am session
     Prefix + d  Detach from session
+    Prefix + ` + "`" + `  Toggle the shell panel
     Prefix Up/Down
-                Switch panes (agent/shell)
+                Switch panes (panel open)
     :am         Open am browser (tmux command)`
 }
 

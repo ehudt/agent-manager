@@ -149,10 +149,14 @@ test_integration_lifecycle() {
     assert_contains "$(cat "$TEST_ZOXIDE_LOG")" "add -- $test_dir" \
         "agent_launch: records directory in zoxide"
 
-    # Verify two panes (agent top + shell bottom)
+    # Verify agent-only launch by default (shell panel is opt-in)
     local pane_count
     pane_count=$(am_tmux list-panes -t "$session_name" 2>/dev/null | wc -l | tr -d ' ')
-    assert_eq "2" "$pane_count" "agent_launch: two panes created"
+    assert_eq "1" "$pane_count" "agent_launch: single agent pane by default"
+    assert_eq "absent" "$(tmux_shell_pane_state "$session_name")" \
+        "agent_launch: shell panel absent by default"
+    assert_contains "$(am_tmux show-options -w -t "$session_name:" pane-border-status 2>/dev/null)" \
+        "off" "agent_launch: pane-border-status off for lone agent pane"
 
     # --- Test: agent_kill cleans up ---
     # Safety: never call agent_kill with empty name (tmux -t "" kills current session)
@@ -545,10 +549,91 @@ test_send_prompt_sandbox_delay() {
     $SUMMARY_MODE || echo ""
 }
 
+test_shell_panel() {
+    $SUMMARY_MODE || echo "=== Testing Shell Panel (open/hide/show) ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir
+    test_dir=$(mktemp -d)
+
+    # --- Test: --shell opens the panel at launch ---
+    local session_name
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "shell test" "" --shell 2>/dev/null)
+    assert_not_empty "$session_name" "shell panel: --shell launch returns session name"
+
+    local pane_count
+    pane_count=$(am_tmux list-panes -t "$session_name" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "2" "$pane_count" "shell panel: --shell creates agent + shell panes"
+    assert_eq "open" "$(tmux_shell_pane_state "$session_name")" \
+        "shell panel: state open after --shell launch"
+
+    # Mark the shell so we can prove hide/show preserves the same pane
+    tmux_send_keys "$session_name:.{bottom}" "SHELL_PANEL_MARKER=alive; echo panel-marker-set" Enter
+    wait_for_text "panel-marker-set" \
+        am_tmux capture-pane -t "$session_name:.{bottom}" -p >/dev/null
+
+    # Streamed shell.log picks up pane output while the panel is open
+    local shell_log="/tmp/am-logs/${session_name}/shell.log"
+    wait_for_text "panel-marker-set" cat "$shell_log" >/dev/null
+    assert_contains "$(cat "$shell_log" 2>/dev/null)" "panel-marker-set" \
+        "shell panel: shell.log streams while open"
+
+    # --- Test: toggle hides the panel (pane parked, not killed) ---
+    agent_shell_pane_toggle "$session_name"
+    assert_eq "hidden" "$(tmux_shell_pane_state "$session_name")" \
+        "shell panel: toggle parks the open panel"
+    pane_count=$(am_tmux list-panes -t "$(tmux_main_window_id "$session_name")" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "1" "$pane_count" "shell panel: main window back to one pane when hidden"
+
+    # peek --pane shell follows the panel into the hidden window
+    local hidden_target
+    hidden_target=$(tmux_session_pane_target "$session_name" shell)
+    assert_not_empty "$hidden_target" "shell panel: resolver targets hidden panel"
+
+    # pipe-pane survives break-pane: output while hidden still reaches shell.log
+    am_tmux send-keys -t "$hidden_target" 'echo "hidden-marker-$SHELL_PANEL_MARKER"' Enter
+    wait_for_text "hidden-marker-alive" cat "$shell_log" >/dev/null
+    assert_contains "$(cat "$shell_log" 2>/dev/null)" "hidden-marker-alive" \
+        "shell panel: shell state and shell.log streaming survive hide"
+
+    # --- Test: toggle shows the panel again ---
+    agent_shell_pane_toggle "$session_name"
+    assert_eq "open" "$(tmux_shell_pane_state "$session_name")" \
+        "shell panel: toggle rejoins the parked panel"
+    pane_count=$(am_tmux list-panes -t "$session_name" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "2" "$pane_count" "shell panel: two panes after show"
+    assert_eq "" "$(am_tmux list-windows -t "$session_name" -F '#{window_name}' | grep -x _amshell || true)" \
+        "shell panel: hidden window gone after show"
+
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: toggle on an agent-only session creates the panel ---
+    local plain_session
+    plain_session=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
+    assert_eq "absent" "$(tmux_shell_pane_state "$plain_session")" \
+        "shell panel: absent on default launch"
+    agent_shell_pane_toggle "$plain_session"
+    assert_eq "open" "$(tmux_shell_pane_state "$plain_session")" \
+        "shell panel: toggle creates panel on first use"
+    [[ -n "$plain_session" ]] && agent_kill "$plain_session" 2>/dev/null
+
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_agents_tests() {
     _run_test test_agents
     _run_test test_agents_extended
     _run_test test_integration_lifecycle
+    _run_test test_shell_panel
     _run_test test_worktree
     _run_test test_sandbox_yolo_independence
     _run_test test_resolve_session

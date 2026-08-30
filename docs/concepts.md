@@ -30,13 +30,13 @@ exception because Cursor exposes no background-work lifecycle event.
 
 | Concept | Definition | Leverage | Evidence | Confidence |
 |---|---|---|---|---|
-| Session | One agent in one tmux session named `am-<6-hex>`, split into an **agent pane** (top) and **shell pane** (bottom, 15 lines). Both panes export `AM_SESSION_NAME`. | Foundational | `lib/agents.sh:agent_launch` | verified |
+| Session | One agent in one tmux session named `am-<6-hex>`: an **agent pane** running full-screen, plus a collapsible **shell panel** (15 lines, below) opened on demand via prefix+` / `am shell` or `--shell` at launch; hiding parks the pane in a hidden `_amshell` window rather than killing it. All panes export `AM_SESSION_NAME`. | Foundational | `lib/agents.sh:agent_launch`, `agent_shell_pane_add` | verified |
 | Dedicated tmux server | All am sessions live on socket `agent-manager` (the `am_tmux` wrapper), isolated from the user's own tmux config and sessions. | Foundational | `lib/utils.sh` (`AM_TMUX_SOCKET`), `lib/tmux.sh:am_tmux` | verified (the *why* — config isolation — is inferred from `lib/tmux.sh` comments) |
 | State | Eight values: `starting · running · background · waiting_user · ready · idle · unknown · dead`. The product's core datum. | Foundational | `lib/state.sh` | verified |
 | Registry | Live-session metadata (dir, branch, agent type, task, flags) in one JSON file. Removed on kill. | Structural | `lib/registry.sh:registry_add` | verified |
 | Sessions log | Append-only JSONL afterlife of resumable harness sessions — the substrate for manual native resume through `am restore`. | Structural | `lib/registry.sh:sessions_log_*` | verified |
 | Desired sessions | Durable future intent: sessions remain open across reboot until an explicit `am kill`. Reconciled progressively against physical tmux sessions when the interactive browser opens. | Structural | `lib/recovery.sh` | verified |
-| Sandbox | Optional per-session Docker container (agent runs inside; shell pane attaches) with an egress-filtering proxy sidecar. | Structural | `lib/sandbox.sh` | verified |
+| Sandbox | Optional per-session Docker container (agent runs inside; the shell panel attaches when opened) with an egress-filtering proxy sidecar. | Structural | `lib/sandbox.sh` | verified |
 | Go mirror | Hot-path logic (session list, browser TUI, title refresh, orphan reaping) re-implemented in Go for latency; bash remains the semantic reference. | Structural | `internal/sessions/` | verified |
 | A2A primitives | `am new --detach` / `send` / `peek` / `wait`: transport for agent-to-agent orchestration. Deliberately *not* semantic — they move bytes and report state, never interpret task completion. | Structural | `am` help text, AGENTS.md | verified |
 
@@ -137,7 +137,7 @@ decides its store.
 flowchart LR
     subgraph launch["am new ~/proj  (agent_launch)"]
       L1["create tmux session<br/>on am socket"] --> L2["registry_add +<br/>sessions_log_append"]
-      L2 --> L3["split panes ·<br/>export AM_SESSION_NAME ·<br/>pipe-pane logs"]
+      L2 --> L3["export AM_SESSION_NAME ·<br/>pipe-pane logs<br/>(agent pane only;<br/>shell panel is on-demand)"]
       L3 --> L4["send agent command<br/>(± sandbox exec,<br/>± worktree, ± piped prompt)"]
       L4 --> L5["am_refresh_sidebar_cache"]
     end
@@ -184,8 +184,8 @@ Schema changes to the registry or sessions log must move the Go structs
 ## Containment: a session with walls
 
 `am new --sandbox` gives the session a per-session Docker container: the
-agent pane runs *inside* it, the shell pane attaches via a reconnecting
-loop, and a shared home (`~/.agent-manager/sandbox-home`) bind-mounts as
+agent pane runs *inside* it, the shell panel (when opened) attaches via a
+reconnecting loop, and a shared home (`~/.agent-manager/sandbox-home`) bind-mounts as
 `/home/ubuntu`. Egress is filtered: each container gets its own network
 plus a **tinyproxy sidecar** with a domain filter list
 (`lib/sandbox.sh:_sandbox_start_proxy`). The container runs as `ubuntu`

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Toggle the shell panel of an am session (VS Code-style): first use creates
+# it via `am shell`; after that it hides (break-pane into the hidden _amshell
+# window) or shows (join-pane back) the same pane, so cwd, history, running
+# jobs, and shell.log streaming survive. Bound to prefix+` by the generated
+# tmux config, which passes #{session_name}.
+
+set -euo pipefail
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+    script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+    script_path="$(readlink "$script_path")"
+    [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
+done
+script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+repo_dir="$(cd "$script_dir/.." && pwd -P)"
+
+source "$repo_dir/lib/utils.sh"
+source "$repo_dir/lib/tmux.sh"
+
+session="${1:-}"
+if [[ -z "$session" ]]; then
+    session=$(am_tmux display-message -p '#{session_name}' 2>/dev/null || true)
+fi
+[[ "$session" == "${AM_SESSION_PREFIX}"* ]] || exit 0
+
+case "$(tmux_shell_pane_state "$session")" in
+    open) tmux_shell_pane_hide "$session" ;;
+    hidden) tmux_shell_pane_show "$session" ;;
+    *) exec "$repo_dir/am" shell "$session" ;;
+esac

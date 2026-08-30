@@ -16,6 +16,7 @@ am_config_init() {
   "default_sandbox": false,
   "auto_restore": true,
   "stream_logs": true,
+  "shell_pane": false,
   "sb_network_restrict": true,
   "sb_allowed_hosts": "",
   "sandbox.shares": ""
@@ -123,6 +124,20 @@ am_stream_logs_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
+# Whether new sessions open with the shell panel already visible.
+# Default false: sessions start agent-only; prefix+` / `am shell` opens the
+# panel on demand.
+am_shell_pane_enabled() {
+    if [[ -n "${AM_SHELL_PANE:-}" ]]; then
+        am_bool_is_true "${AM_SHELL_PANE,,}"
+        return $?
+    fi
+
+    local configured
+    configured=$(am_config_get "shell_pane")
+    am_bool_is_true "${configured,,}"
+}
+
 am_auto_restore_enabled() {
     if [[ -n "${AM_AUTO_RESTORE:-}" ]]; then
         am_bool_is_true "${AM_AUTO_RESTORE,,}"
@@ -192,6 +207,7 @@ am_config_key_alias() {
         sandbox|default-sandbox|default_sandbox) echo "default_sandbox" ;;
         auto-restore|auto_restore|restore-on-startup) echo "auto_restore" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
+        shell|shell-pane|shell_pane) echo "shell_pane" ;;
         sb-network-restrict|sb_network_restrict) echo "sb_network_restrict" ;;
         sb-allowed-hosts|sb_allowed_hosts) echo "sb_allowed_hosts" ;;
         sandbox-shares|sandbox_shares|sandbox.shares) echo "sandbox.shares" ;;
@@ -202,7 +218,7 @@ am_config_key_alias() {
 am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
-        default_yolo|default_sandbox|auto_restore|stream_logs|sb_network_restrict) echo "boolean" ;;
+        default_yolo|default_sandbox|auto_restore|stream_logs|shell_pane|sb_network_restrict) echo "boolean" ;;
         sb_allowed_hosts|sandbox.shares) echo "string" ;;
         *) return 1 ;;
     esac
@@ -215,7 +231,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        default_yolo|default_sandbox|auto_restore|stream_logs|sb_network_restrict)
+        default_yolo|default_sandbox|auto_restore|stream_logs|shell_pane|sb_network_restrict)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         sb_allowed_hosts|sandbox.shares)
@@ -245,6 +261,12 @@ am_config_print() {
     else
         stream_logs_value=false
     fi
+    local shell_pane_value
+    if am_shell_pane_enabled; then
+        shell_pane_value=true
+    else
+        shell_pane_value=false
+    fi
     if am_auto_restore_enabled; then
         auto_restore_value=true
     else
@@ -266,6 +288,7 @@ default_yolo=$default_yolo_value
 default_sandbox=$default_sandbox_value
 auto_restore=$auto_restore_value
 stream_logs=$stream_logs_value
+shell_pane=$shell_pane_value
 sb_network_restrict=$sb_network_restrict_value
 sb_allowed_hosts=$sb_allowed_hosts_value
 sandbox.shares=$sandbox_shares_value

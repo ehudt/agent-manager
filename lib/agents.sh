@@ -209,6 +209,7 @@ agent_launch() {
     local normalized_args=()
     local wants_yolo=false
     local wants_sandbox=false
+    local wants_shell=""
     local sandbox_shares=()
     local recovery_shares=()
     local arg
@@ -223,11 +224,20 @@ agent_launch() {
             --no-sandbox)
                 wants_sandbox=false
                 ;;
+            --shell)
+                wants_shell=true
+                ;;
+            --no-shell)
+                wants_shell=false
+                ;;
             *)
                 normalized_args+=("$arg")
                 ;;
         esac
     done
+    if [[ -z "$wants_shell" ]]; then
+        if am_shell_pane_enabled; then wants_shell=true; else wants_shell=false; fi
+    fi
 
     if $wants_yolo; then
         local _yolo_flag
@@ -313,13 +323,10 @@ agent_launch() {
         sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
     fi
 
-    # Create horizontal split: top pane for agent, bottom pane (15 lines) for shell
-    # Split without size, then resize (workaround for detached session sizing issues)
-    am_tmux split-window -t "$session_name" -v -c "$session_directory"
-    am_tmux resize-pane -t "$session_name:.{bottom}" -y 15
-
-    # Select top pane for the agent and set its border title
-    am_tmux select-pane -t "$session_name:.{top}"
+    # The session starts agent-only: the shell panel is a collapsible pane
+    # added on demand (prefix+` / `am shell`), or at the end of this launch
+    # when --shell / the shell_pane config default asks for it — by then the
+    # sandbox and worktree metadata it needs are registered.
     local _pane_title="${task:-$(dir_basename "$directory")}"
     _pane_title=$(truncate "$_pane_title" 60)
     am_tmux select-pane -t "$session_name:.{top}" -T "$_pane_title"
@@ -331,20 +338,15 @@ agent_launch() {
     identity_dir=$(_recovery_identity_dir)
     mkdir -p "$identity_dir"
     tmux_send_keys "$session_name:.{top}" " export AM_SESSION_NAME='$session_name'" Enter
-    tmux_send_keys "$session_name:.{bottom}" " export AM_SESSION_NAME='$session_name'" Enter
     tmux_send_keys "$session_name:.{top}" " export AM_AGENT_TYPE='$agent_type'" Enter
-    tmux_send_keys "$session_name:.{bottom}" " export AM_AGENT_TYPE='$agent_type'" Enter
     tmux_send_keys "$session_name:.{top}" " export AM_IDENTITY_DIR='$identity_dir'" Enter
-    tmux_send_keys "$session_name:.{bottom}" " export AM_IDENTITY_DIR='$identity_dir'" Enter
 
     # Set up log streaming if enabled
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
         mkdir -p "$log_dir"
         tmux_enable_pipe_pane "$session_name" ".{top}" "$log_dir/agent.log"
-        tmux_enable_pipe_pane "$session_name" ".{bottom}" "$log_dir/shell.log"
         tmux_send_keys "$session_name:.{top}" " export AM_LOG_DIR='$log_dir'" Enter
-        tmux_send_keys "$session_name:.{bottom}" " export AM_LOG_DIR='$log_dir'" Enter
     fi
 
     # Build the full agent command with shell-safe argument quoting.
@@ -411,9 +413,6 @@ agent_launch() {
         fi
         sandbox_start "$session_name" "$sandbox_directory" "${sandbox_shares[@]}"
         registry_update "$session_name" "container_name" "$session_name"
-        local attach_cmd
-        attach_cmd=$(sandbox_enter_cmd "$session_name" "$session_directory")
-        tmux_send_keys "$session_name:.{bottom}" "$attach_cmd" Enter
         local exec_cmd
         exec_cmd=$(sandbox_exec_cmd "$session_name" "$session_directory" "$full_cmd" "$agent_type")
         tmux_send_keys "$session_name:.{top}" "$exec_cmd" Enter
@@ -426,21 +425,23 @@ agent_launch() {
         ( sleep 5; rm -f "$prompt_file" ) >/dev/null 2>&1 &
     fi
 
-    # Background: wait for CLI-managed worktrees to appear, then cd shell pane into them.
+    # Record worktree paths; the shell panel cds into them when it is opened
+    # (agent_shell_pane_add reads these fields).
     if [[ -n "$worktree_path" ]]; then
         registry_update "$session_name" "worktree_path" "$worktree_path"
         if [[ -n "$worktree_ready_path" && "$worktree_ready_path" != "$worktree_path" ]]; then
             registry_update "$session_name" "worktree_host_path" "$worktree_ready_path"
         fi
-        if [[ "$session_directory" != "$worktree_path" ]]; then
-            (for _i in $(seq 1 20); do
-                if [ -d "${worktree_ready_path:-$worktree_path}" ]; then
-                    am_tmux send-keys -t "${session_name}:.{bottom}" "cd '$worktree_path'" Enter
-                    break
-                fi
-                sleep 0.5
-            done) >/dev/null 2>&1 &
-        fi
+    fi
+
+    # Shell panel: open now when requested, otherwise leave the session
+    # agent-only and drop the pane-border line so the agent keeps the full
+    # window height (prefix+` / `am shell` opens the panel on demand).
+    if $wants_shell; then
+        agent_shell_pane_add "$session_name"
+        am_tmux select-pane -t "$session_name:.{top}"
+    else
+        am_tmux set-option -w -t "$session_name:" pane-border-status off
     fi
 
     # zoxide's shell hook only observes cd events. tmux starts directly in the
@@ -469,6 +470,92 @@ agent_launch() {
 
     log_success "Created session: $session_name"
     echo "$session_name"
+}
+
+# Create the shell panel for an existing session: split below the agent,
+# wire env exports + log streaming, enter the sandbox container when the
+# session is sandboxed, and cd into the worktree once it exists. Reads
+# session metadata from the registry, so it serves both launch (--shell)
+# and on-demand opening (`am shell` / prefix+`). The new pane gets focus.
+# Usage: agent_shell_pane_add <session_name>
+agent_shell_pane_add() {
+    local session_name="$1"
+
+    local fields directory agent_type sandbox_mode worktree_path worktree_host_path
+    fields=$(registry_get_fields "$session_name" directory agent_type sandbox_mode worktree_path worktree_host_path)
+    IFS='|' read -r directory agent_type sandbox_mode worktree_path worktree_host_path <<< "$fields"
+    if [[ -z "$directory" ]]; then
+        log_error "Session not in registry: $session_name"
+        return 1
+    fi
+
+    local main_id
+    main_id=$(tmux_main_window_id "$session_name")
+    if [[ -z "$main_id" ]]; then
+        log_error "Session not found: $session_name"
+        return 1
+    fi
+
+    # Split at the worktree when it is host-visible; a container-side
+    # worktree path (cursor sandbox) is handled by the cd below instead.
+    local split_dir="$directory"
+    if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
+        split_dir="$worktree_path"
+    fi
+
+    # Split without size, then resize (workaround for detached session sizing
+    # issues). -P returns the new pane's %id — unambiguous for the follow-up
+    # wiring even if the user rearranges panes.
+    local shell_pane
+    shell_pane=$(am_tmux split-window -t "$main_id" -v -c "$split_dir" -P -F '#{pane_id}') || return 1
+    am_tmux resize-pane -t "$shell_pane" -y 15
+    # Two panes again: restore the pane-border sidebar divider.
+    am_tmux set-option -w -u -t "$main_id" pane-border-status
+
+    local identity_dir
+    identity_dir=$(_recovery_identity_dir)
+    tmux_send_keys "$shell_pane" " export AM_SESSION_NAME='$session_name'" Enter
+    tmux_send_keys "$shell_pane" " export AM_AGENT_TYPE='$agent_type'" Enter
+    tmux_send_keys "$shell_pane" " export AM_IDENTITY_DIR='$identity_dir'" Enter
+
+    if am_stream_logs_enabled; then
+        local log_dir="/tmp/am-logs/${session_name}"
+        mkdir -p "$log_dir"
+        tmux_pipe_pane "$shell_pane" "$log_dir/shell.log"
+        tmux_send_keys "$shell_pane" " export AM_LOG_DIR='$log_dir'" Enter
+    fi
+
+    if am_bool_is_true "$sandbox_mode"; then
+        [[ "$(type -t sandbox_enter_cmd)" != "function" ]] && source "$_AGENTS_LIB_DIR/sandbox.sh"
+        local attach_cmd
+        attach_cmd=$(sandbox_enter_cmd "$session_name" "$split_dir")
+        tmux_send_keys "$shell_pane" "$attach_cmd" Enter
+    fi
+
+    # Background: wait for a CLI-managed worktree to appear, then cd into it
+    # (inside the container shell for sandboxed sessions).
+    if [[ -n "$worktree_path" && "$split_dir" != "$worktree_path" ]]; then
+        local ready_path="${worktree_host_path:-$worktree_path}"
+        (for _i in $(seq 1 20); do
+            if [ -d "$ready_path" ]; then
+                am_tmux send-keys -t "$shell_pane" "cd '$worktree_path'" Enter
+                break
+            fi
+            sleep 0.5
+        done) >/dev/null 2>&1 &
+    fi
+}
+
+# Toggle the shell panel: create it on first use, park it when open,
+# rejoin it when hidden.
+# Usage: agent_shell_pane_toggle <session_name>
+agent_shell_pane_toggle() {
+    local session_name="$1"
+    case "$(tmux_shell_pane_state "$session_name")" in
+        open) tmux_shell_pane_hide "$session_name" ;;
+        hidden) tmux_shell_pane_show "$session_name" ;;
+        *) agent_shell_pane_add "$session_name" ;;
+    esac
 }
 
 # Send a prompt to a running agent session.
