@@ -56,8 +56,61 @@ test_annotated_directories() {
     $SUMMARY_MODE || echo ""
 }
 
+test_dir_repo_cache() {
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Directory Repo-Scan Cache Tests ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/tmux.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+    source "$LIB_DIR/fzf.sh"
+
+    local _tmpdir
+    _tmpdir=$(mktemp -d)
+    export AM_DIR="$_tmpdir"
+    export AM_REGISTRY="$AM_DIR/sessions.json"
+    am_init
+
+    local saved_scan
+    saved_scan=$(declare -f _dir_repo_scan)
+    _dir_repo_scan() { echo "/tmp/scanned-repo"; }
+
+    local cache="$AM_DIR/.dir_repo_cache"
+
+    # Cold cache: returns nothing now (the $() must not hang on the
+    # background refresh) and builds the cache for the next open.
+    local out i
+    out=$(_dir_repo_scan_cached)
+    assert_eq "" "$out" "repo cache: cold cache returns nothing"
+    for ((i=0; i<40; i++)); do [[ -f "$cache" ]] && break; sleep 0.05; done
+    assert_eq "/tmp/scanned-repo" "$(cat "$cache" 2>/dev/null)" \
+        "repo cache: background refresh built the cache"
+
+    # Warm cache: served as-is, no rescan
+    echo "/tmp/cached-repo" > "$cache"
+    out=$(_dir_repo_scan_cached)
+    assert_eq "/tmp/cached-repo" "$out" "repo cache: warm cache is served as-is"
+
+    # Stale cache: still served instantly, then refreshed in the background
+    out=$(AM_DIR_REPO_CACHE_TTL=0 _dir_repo_scan_cached)
+    assert_eq "/tmp/cached-repo" "$out" "repo cache: stale cache is served instantly"
+    for ((i=0; i<40; i++)); do
+        [[ "$(cat "$cache" 2>/dev/null)" == "/tmp/scanned-repo" ]] && break
+        sleep 0.05
+    done
+    assert_eq "/tmp/scanned-repo" "$(cat "$cache" 2>/dev/null)" \
+        "repo cache: stale cache is refreshed in the background"
+
+    eval "$saved_scan"
+    rm -rf "$_tmpdir"
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_fzf_tests() {
     _run_test test_annotated_directories
+    _run_test test_dir_repo_cache
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

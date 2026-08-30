@@ -436,6 +436,7 @@ am restore
 - `_form_process_key(key, [extra_seq])` - Route to `_form_process_key_navigate` or `_form_process_key_edit` based on `_FORM_MODE`
 - `_form_draw()` - Buffer all fields + directory suggestions into `_FORM_BUF`, single write to `/dev/tty`
 - `_form_filter_dir_suggestions(query, max)` - Filter cached zoxide/frecent list into `_FORM_DIR_FILTERED` array (no subshell)
+- `_form_size_to_terminal()` - Grow `_FORM_DIR_SUGGESTION_LINES` (default 7) to fill the terminal height; called once by `_form_run`
 - `_form_output()` - Format form values as `directory\tagent\ttask\tworktree\tflags` (same contract as fzf form)
 
 **Session browser (Go TUI — `cmd/am-browse`):**
@@ -449,6 +450,7 @@ am restore
 - `fzf_list_simple()` - Plain text session list for `am list`
 - `fzf_pick_directory()` - Directory picker with git-branch annotations and path completion
 - `_annotate_directory(path)` - Annotate path with its current git branch
+- `_dir_repo_scan_cached()` - Git-repo suggestions for `_list_directories`, served from `$AM_DIR/.dir_repo_cache` and refreshed in the background when older than `AM_DIR_REPO_CACHE_TTL` (default 1h); the raw `_dir_repo_scan` find is ~1s+ on large trees and never runs on the interactive path
 - `fzf_restore_picker()` - Browse closed sessions, select to resume via `claude --resume`
 
 **Config:**

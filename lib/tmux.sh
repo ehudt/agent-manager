@@ -71,8 +71,8 @@ bind 7 run-shell "$index_cmd 7"
 bind 8 run-shell "$index_cmd 8"
 bind 9 run-shell "$index_cmd 9"
 
-# Prefix + n: open new-session popup
-bind n display-popup -E -w 80 -h 16 "$am_cmd new"
+# Prefix + n: open new-session popup (tmux clamps to the client size)
+bind n display-popup -E -w 160 -h 32 "$am_cmd new"
 
 # Prefix + s: open agent manager popup
 bind s display-popup -E -w 90% -h 80% "$am_cmd"

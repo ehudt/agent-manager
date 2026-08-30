@@ -9,6 +9,35 @@ _FZF_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ "$(type -t registry_get_field)" != "function" ]] && source "$_FZF_LIB_DIR/registry.sh"
 # agents.sh is loaded lazily — only the interactive form functions need it
 
+# Scan configured roots for git repos. Slow (~1s+ on large trees like
+# ~/code), so callers go through _dir_repo_scan_cached instead.
+_dir_repo_scan() {
+    local search_paths=("$HOME/code" "$HOME/projects" "$HOME/src" "$HOME/dev" "$HOME/work")
+    local search_path
+    for search_path in "${search_paths[@]}"; do
+        [[ -d "$search_path" ]] || continue
+        find "$search_path" -maxdepth 3 -type d -name ".git" 2>/dev/null | sed 's/\/\.git$//' | head -20
+    done
+}
+
+# Serve the repo list from a cache file instantly; refresh it in the
+# background when stale. On a cold cache nothing is returned — zoxide
+# results still fill the picker — and the cache is built for the next open.
+_dir_repo_scan_cached() {
+    local cache="${AM_DIR:-$HOME/.agent-manager}/.dir_repo_cache"
+    local ttl="${AM_DIR_REPO_CACHE_TTL:-3600}"
+    if [[ -f "$cache" ]]; then
+        cat "$cache" 2>/dev/null
+        local now mtime
+        now=$(date +%s)
+        mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null || echo 0)
+        (( now - mtime < ttl )) && return 0
+    fi
+    # Detached refresh: double-fork and redirect so no descendant holds a
+    # pipe a $() capture may be waiting on.
+    ( ( _dir_repo_scan > "$cache.tmp.$$" 2>/dev/null && mv -f "$cache.tmp.$$" "$cache" ) & ) >/dev/null 2>&1
+}
+
 # Helper: List directories for picker (frecent + git repos)
 # Pass false as the second argument to skip per-directory Git annotations.
 # shellcheck disable=SC2120
@@ -45,14 +74,9 @@ _list_directories() {
         done < <(zoxide query -l 2>/dev/null | head -30)
     fi
 
-    local search_paths=("$HOME/code" "$HOME/projects" "$HOME/src" "$HOME/dev" "$HOME/work")
-    for search_path in "${search_paths[@]}"; do
-        if [[ -d "$search_path" ]]; then
-            while IFS= read -r p; do
-                paths+=("$p")
-            done < <(find "$search_path" -maxdepth 3 -type d -name ".git" 2>/dev/null | sed 's/\/\.git$//' | head -20)
-        fi
-    done
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && paths+=("$p")
+    done < <(_dir_repo_scan_cached)
 
     # Deduplicate preserving order
     local -A seen
@@ -105,6 +129,8 @@ _strip_annotation() {
 fzf_pick_directory() {
     # Export helpers for fzf reload
     export -f _list_directories
+    export -f _dir_repo_scan
+    export -f _dir_repo_scan_cached
     export -f _annotate_directory
     export -f _strip_annotation
     local initial_list

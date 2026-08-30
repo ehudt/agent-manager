@@ -104,8 +104,8 @@ test_tmux_binding_snippets() {
         "tmux config: keeps clients inside agent-manager when sessions are killed"
     assert_contains "$rendered_conf" "set -g focus-events on" \
         "tmux config: enables focus-events for hosted agents"
-    assert_contains "$rendered_conf" "display-popup -E -w 80 -h 16 \"$PROJECT_DIR/am new\"" \
-        "tmux config: prefix+n opens compact new-session popup"
+    assert_contains "$rendered_conf" "display-popup -E -w 160 -h 32 \"$PROJECT_DIR/am new\"" \
+        "tmux config: prefix+n opens new-session popup"
     assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
         "tmux config: prefix+s opens agent manager popup"
     assert_contains "$rendered_conf" "bind h display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \

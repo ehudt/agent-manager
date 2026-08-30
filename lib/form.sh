@@ -624,9 +624,23 @@ _form_process_key_edit() {
     esac
 }
 
-# Number of inline directory suggestion lines
+# Number of inline directory suggestion lines. Default suits the smallest
+# supported popup; _form_run grows it to fill the actual terminal height.
 _FORM_DIR_SUGGESTION_LINES=7
 _FORM_DIR_FILTER_MAX=50
+
+# Grow the suggestion window to the terminal: header (3 lines + blank) +
+# directory field + suggestions + 2 padding rows must stay above the bottom
+# row, or the trailing newline scrolls the popup.
+_form_size_to_terminal() {
+    local rows=""
+    rows=$(stty size < /dev/tty 2>/dev/null) || return 0
+    rows="${rows%% *}"
+    [[ "$rows" =~ ^[0-9]+$ ]] || return 0
+    if (( rows - 7 > _FORM_DIR_SUGGESTION_LINES )); then
+        _FORM_DIR_SUGGESTION_LINES=$(( rows - 7 ))
+    fi
+}
 
 # Row where dynamic content starts (after header)
 _FORM_CONTENT_ROW=4
@@ -747,6 +761,7 @@ _form_draw() {
 # Returns form values on stdout.
 # All rendering and input go through /dev/tty so this works inside $() capture.
 _form_run() {
+    _form_size_to_terminal
     printf '%s' "${_FORM_HIDE_CURSOR}" > /dev/tty
     # Use smcup via tput (only called once, not per-frame)
     tput smcup > /dev/tty 2>/dev/null || true
