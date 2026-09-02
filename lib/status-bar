@@ -72,6 +72,18 @@ declare -A COLOR=(
     [unknown]='colour244'
     [dead]='colour196'
 )
+# Age shade per state: the tab's own hue, a step darker. A neutral grey age
+# floated between two tabs and read as belonging to either; the matching hue
+# ties it to its tab while still sitting behind the label and title.
+declare -A COLOR_DIM=(
+    [running]='colour67'
+    [ready]='colour71'
+    [waiting_user]='colour172'
+    [background]='colour37'
+    [starting]='colour179'
+    [unknown]='colour240'
+    [dead]='colour124'
+)
 
 # Truncate to `_T` with a single-col ellipsis (no $() fork). Caller reads `$_T`.
 _trunc() {
@@ -187,7 +199,7 @@ done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
 # @am_status_left option holds a strip with itself marked as current. tmux
 # then reads the precomputed option on session switch — instant feedback,
 # no async #() job to wait on.
-declare -a S_NAME S_LABEL_FULL S_LABEL_SHORT S_STATE S_GLYPH S_COLOR S_TASK S_AGE
+declare -a S_NAME S_LABEL_FULL S_LABEL_SHORT S_STATE S_GLYPH S_COLOR S_DIM S_TASK S_AGE
 
 for i in "${!session_meta[@]}"; do
     # Bash-only parse of "<created> <activity> <name>" — no awk fork.
@@ -249,6 +261,7 @@ for i in "${!session_meta[@]}"; do
     S_STATE[i]=$state
     S_GLYPH[i]="${GLYPH[$state]:-○}"
     S_COLOR[i]="${COLOR[$state]:-colour240}"
+    S_DIM[i]="${COLOR_DIM[$state]:-colour238}"
     S_TASK[i]=$task
     S_AGE[i]=$age
 done
@@ -368,7 +381,7 @@ _use_fit() {
 
 # Body of tab i under the loaded fit — "idx glyph text" without pads or
 # colours — to `_BODY`; its age (or empty) to `_AGE_PART`, kept separate so
-# the caller can dim it.
+# the caller can shade it.
 _render_tab() {
     local i="$1" idx=$(( i + 1 )) text
     _tab_fields "$i" "$_FIT_LABELS" "$_FIT_TASKS"
@@ -402,7 +415,7 @@ _build_strip() {
             entry="#[fg=${cur_fg},bg=${color},bold] ${_BODY}${age_fmt} #[default]"
         else
             age_fmt=""
-            [[ -n "$_AGE_PART" ]] && age_fmt=" #[fg=colour245]${_AGE_PART}"
+            [[ -n "$_AGE_PART" ]] && age_fmt=" #[fg=${S_DIM[$i]}]${_AGE_PART}"
             entry="#[fg=${color},bg=colour234] ${_BODY}${age_fmt} #[default]"
         fi
         (( i > 0 )) && strip+="$TAB_SEP"

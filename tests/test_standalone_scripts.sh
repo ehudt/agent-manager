@@ -401,6 +401,10 @@ test_standalone_status_bar_layout() {
     # the scan would replace every task with the shell pane's hostname title).
     date +%s | tee "$AM_DIR/.title_scan_last" > "$AM_DIR/.restore_scan_last"
 
+    # Ages render as "<n><s|m|h|d>" right before a tab's closing pad; the
+    # fixture titles and labels carry no digits, so the pattern is unambiguous.
+    _has_age() { printf '%s' "$1" | grep -Eq ' [0-9]+[smhd] '; }
+
     # Rung 1 — wide: everything in full, default branch hidden, no placeholder
     # for the untitled session.
     raw=$(AM_STATUS_WIDTH=400 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
@@ -417,8 +421,8 @@ test_standalone_status_bar_layout() {
         "status-bar layout: wide → no ∅ placeholder"
     assert_not_contains "$out" "..." \
         "status-bar layout: wide → nothing truncated"
-    assert_contains "$raw" "#[fg=colour245]" \
-        "status-bar layout: wide → ages rendered (dimmed)"
+    assert_cmd_succeeds "status-bar layout: wide → ages rendered" \
+        _has_age "$out"
     sidebar=$(am_tmux show-option -t "$n1" -qv @am_sidebar 2>/dev/null || true)
     sidebar=$(printf '%s' "$sidebar" | sed -E 's/#\[[^]]*\]//g')
     assert_contains "$sidebar" "alpha-repo/feature-branch-one" \
@@ -448,14 +452,14 @@ test_standalone_status_bar_layout() {
         "status-bar layout: narrow → title is the primary field"
     assert_contains "$out" "fix/login-timeo" \
         "status-bar layout: narrow → untitled session falls back to its label"
-    assert_contains "$raw" "#[fg=colour245]" \
-        "status-bar layout: narrow → ages still rendered"
+    assert_cmd_succeeds "status-bar layout: narrow → ages still rendered" \
+        _has_age "$out"
 
     # Rung 4 — tiny: ages dropped to keep the title readable.
     raw=$(AM_STATUS_WIDTH=60 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
     out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
-    assert_not_contains "$raw" "#[fg=colour245]" \
-        "status-bar layout: tiny → ages dropped"
+    assert_cmd_fails "status-bar layout: tiny → ages dropped" \
+        _has_age "$out"
     assert_contains "$out" "Inve" \
         "status-bar layout: tiny → remaining width goes to the title"
     assert_contains "$out" "…" \
