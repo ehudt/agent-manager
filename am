@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.16.0"
+AM_VERSION="0.17.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -42,6 +42,7 @@ COMMANDS:
     peek                Show or follow another session's pane output
     attach              Attach to a session by name (exact, prefix, or fuzzy)
     shell               Toggle a session's shell panel (open on first use, then hide/show)
+    id                  Print the name of the am session you are inside
     kill                Kill a session
     config              Show or change saved defaults
     status              Show detailed session info
@@ -61,6 +62,8 @@ OPTIONS FOR 'new':
     -d, --dir       Directory (can also be positional arg)
     -w, --worktree  Enable git worktree isolation (Claude, Codex, Cursor, pi)
                     Optional: -w <name> to set worktree name (default: am-XXXXXX)
+    -W, --workspace Allocate the directory with the configured workspace_cmd
+                    Optional: -W <branch> to allocate on a branch
     --sandbox       Run session in Docker sandbox container
     --no-sandbox    Disable sandbox even if enabled by default
     --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])
@@ -110,10 +113,12 @@ EXAMPLES:
     am new -t codex ~/code/proj     # New codex session
     am new -t cursor ~/code/proj    # New Cursor Agent session
     am new -n "fix auth" .          # Session with task description
+    am new -W review-48351          # Fresh workspace on a branch (needs workspace_cmd)
     printf 'Fix auth bug\n' | am new --detach ~/code/proj
     printf 'Run the test suite\n' | am send am-abc123
     am peek am-abc123
     am peek --pane shell --follow am-abc123
+    am send "$(am id)" "continue"   # Address the session you are in
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
     am sb ps                        # List sandbox containers
@@ -121,7 +126,7 @@ EXAMPLES:
     am sb enter am-abc123           # Re-enter a running sandbox shell
 
 DEPENDENCIES:
-    tmux >= 3.0, fzf >= 0.40, jq, git
+    tmux >= 3.2, fzf >= 0.40, jq, git
 
 CONFIGURATION:
     Sessions stored in: ~/.agent-manager/
@@ -345,6 +350,8 @@ cmd_new() {
     local attach_session=true
     local print_session=false
     local initial_prompt=""
+    local workspace_enabled=false
+    local workspace_branch=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -369,6 +376,15 @@ cmd_new() {
                     shift
                 else
                     worktree_name="__auto__"  # sentinel: generate from session hash
+                fi
+                ;;
+            -W|--workspace)
+                workspace_enabled=true
+                shift
+                # Optional branch — skipped when the next arg is a flag or an existing directory
+                if [[ $# -gt 0 && "$1" != -* && ! -d "$1" ]]; then
+                    workspace_branch="$1"
+                    shift
                 fi
                 ;;
             --yolo|--dangerously-skip-permissions)
@@ -429,6 +445,8 @@ cmd_new() {
                 echo "  -n, --name      Task description"
                 echo "  -w, --worktree  Enable git worktree isolation"
                 echo "                  Optional: -w <name> for custom worktree name"
+                echo "  -W, --workspace Allocate the directory with the configured workspace_cmd"
+                echo "                  Optional: -W <branch> to allocate on a branch"
                 echo "  --sandbox       Run session in Docker sandbox container"
                 echo "  --no-sandbox    Disable sandbox even if enabled by default"
                 echo "  --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])"
@@ -441,6 +459,7 @@ cmd_new() {
                 echo "Examples:"
                 echo "  am new                          # Interactive directory-first launcher"
                 echo "  am new ~/project                # Specific directory"
+                echo "  am new -W review-48351          # Fresh workspace on a branch (workspace_cmd)"
                 echo "  printf 'Fix bug\n' | am new --detach ~/project"
                 echo "  am new ~/project -- --resume    # With agent args"
                 return 0
@@ -457,8 +476,13 @@ cmd_new() {
         esac
     done
 
+    if $workspace_enabled && $dir_given; then
+        log_error "-W/--workspace allocates the directory itself; drop the directory argument"
+        return 1
+    fi
+
     # Directory-first launcher for fully interactive new-session creation
-    if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && -z "$worktree_name" && ${#agent_args[@]} -eq 0 ]]; then
+    if [[ -t 0 && "$dir_given" == false && "$workspace_enabled" == false && -z "$agent_type" && -z "$task" && -z "$worktree_name" && ${#agent_args[@]} -eq 0 ]]; then
         _ensure_form
         local form_values flags
         if ! form_values=$(am_new_session_form "$directory" "$(am_default_agent)" "$task" "$worktree_name"); then
@@ -469,8 +493,21 @@ cmd_new() {
         IFS=$'\x1f' read -r directory agent_type task worktree_name flags <<< "$form_values"
         # shellcheck disable=SC2206
         agent_args=($flags)
+        # The form's Workspace fields arrive as --workspace[=branch]; they are
+        # for us, not the agent.
+        local _flag _kept=()
+        for _flag in "${agent_args[@]}"; do
+            case "$_flag" in
+                --workspace) workspace_enabled=true ;;
+                --workspace=*) workspace_enabled=true; workspace_branch="${_flag#--workspace=}" ;;
+                *) _kept+=("$_flag") ;;
+            esac
+        done
+        agent_args=("${_kept[@]}")
     else
-        if [[ "$dir_given" == false && -t 0 ]]; then
+        if $workspace_enabled; then
+            : # directory comes from the workspace command below
+        elif [[ "$dir_given" == false && -t 0 ]]; then
             local picked
             picked=$(fzf_pick_directory)
             if [[ -n "$picked" ]]; then
@@ -509,6 +546,10 @@ cmd_new() {
         fi
     fi
 
+    if $workspace_enabled; then
+        directory=$(agent_workspace_allocate "$workspace_branch") || return 1
+    fi
+
     initial_prompt=$(read_prompt_input)
 
     # Launch agent (prompt passed via _AM_LAUNCH_PROMPT to avoid tty buffer overflow
@@ -529,6 +570,40 @@ cmd_new() {
             tmux_attach "$session_name"
         fi
     fi
+}
+
+# Name of the am session the caller is running inside: the AM_SESSION_NAME
+# every am pane starts with (also set inside sandbox containers), else the
+# attached session when running on the am tmux server. Fails when neither.
+# Usage: current_session
+current_session() {
+    local name="${AM_SESSION_NAME:-}"
+    if [[ -z "$name" ]] && am_tmux_is_current_server; then
+        name=$(am_tmux display-message -p '#{session_name}' 2>/dev/null || true)
+    fi
+    [[ "$name" == "${AM_SESSION_PREFIX}"* ]] || return 1
+    echo "$name"
+}
+
+# Command: id — print the name of the am session we are running inside
+cmd_id() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        cat <<'EOF'
+Usage: am id
+
+Print the name of the am session this command runs inside (agent pane or
+shell panel), e.g. `am send "$(am id)" ...` from a script or `am id | pbcopy`.
+Every am pane also carries it as $AM_SESSION_NAME, and the status bar shows
+it at the bottom right. Exits 1 outside an am session.
+EOF
+        return 0
+    fi
+    local name
+    if ! name=$(current_session); then
+        log_error "Not inside an am session"
+        return 1
+    fi
+    echo "$name"
 }
 
 # Resolve a session name: try exact match, then with prefix
@@ -625,15 +700,10 @@ EOF
             log_error "Session not found: $name"
             return 1
         fi
-    else
-        if am_tmux_is_current_server; then
-            resolved=$(am_tmux display-message -p '#{session_name}' 2>/dev/null || true)
-        fi
-        if [[ "$resolved" != "${AM_SESSION_PREFIX}"* ]]; then
-            log_error "Session name required (not inside an am session)"
-            echo "Usage: am shell [session-name]" >&2
-            return 1
-        fi
+    elif ! resolved=$(current_session); then
+        log_error "Session name required (not inside an am session)"
+        echo "Usage: am shell [session-name]" >&2
+        return 1
     fi
 
     agent_shell_pane_toggle "$resolved"
@@ -977,6 +1047,9 @@ cmd_config() {
                 sb_network_restrict|sb_allowed_hosts|sandbox.shares)
                     am_config_get "$key"
                     ;;
+                workspace_cmd)
+                    am_workspace_cmd
+                    ;;
             esac
             ;;
         set)
@@ -995,11 +1068,14 @@ cmd_config() {
             if [[ "$key" == "default_agent" ]]; then
                 value=$(agent_normalize_type "${value,,}")
             fi
-            if ! am_config_value_is_valid "$key" "${value,,}"; then
+            # A shell command is case-sensitive ($AM_BRANCH); everything else is
+            # normalized to lowercase.
+            [[ "$key" == "workspace_cmd" ]] || value="${value,,}"
+            if ! am_config_value_is_valid "$key" "$value"; then
                 log_error "Invalid value for $raw_key: $value"
                 return 1
             fi
-            am_config_set "$key" "${value,,}" "$key_type"
+            am_config_set "$key" "$value" "$key_type"
             am_config_print
             ;;
         unset|rm)
@@ -1031,6 +1107,9 @@ Keys:
   logs            Default pane log streaming (true/false)
   shell           New sessions open with the shell panel visible (true/false)
   sandbox-shares  Sticky sandbox bind mounts (<host>[:container][:ro|rw], comma-separated)
+  workspace_cmd   Shell command behind `am new -W`: runs with $AM_BRANCH set (may be
+                  empty) and prints the allocated directory, e.g.
+                  am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
 
 Precedence:
   CLI flag > environment variable > saved config > built-in default
@@ -1048,9 +1127,9 @@ cmd_info() {
     _ensure_state
     local name="${1:-}"
 
-    if [[ -z "$name" ]]; then
-        log_error "Session name required"
-        echo "Usage: am info <session-name>"
+    if [[ -z "$name" ]] && ! name=$(current_session); then
+        log_error "Session name required (not inside an am session)"
+        echo "Usage: am info [session-name]"
         return 1
     fi
 
@@ -1443,7 +1522,7 @@ EOF
 
     # --- Step 1: Check dependencies ---
     echo -e "${BOLD}Checking dependencies...${RESET}" >&2
-    _install_check_cmd tmux 3.0  || (( warnings += 1 ))
+    _install_check_cmd tmux 3.2  || (( warnings += 1 ))
     _install_check_cmd fzf 0.40  || (( warnings += 1 ))
     _install_check_cmd jq        || (( warnings += 1 ))
     _install_check_cmd git       || (( warnings += 1 ))
@@ -1619,6 +1698,9 @@ main() {
             ;;
         shell)
             cmd_shell "$@"
+            ;;
+        id|current|whoami)
+            cmd_id "$@"
             ;;
         kill|rm|k)
             cmd_kill "$@"

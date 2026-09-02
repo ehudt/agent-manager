@@ -100,13 +100,14 @@ set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$am_cmd"'
 # precomputes per-session @am_status_left / @am_sidebar / @am_attention
 # options, and tmux just reads those — switching sessions is instant because
 # no #() job needs to finish first. A hidden invocation in status-right
-# triggers periodic refresh at status-interval.
+# triggers periodic refresh at status-interval. The right side also names the
+# current session (its am id) so it can be read off without a command.
 set -g status-interval 5
 set -g status-style 'bg=colour234,fg=colour250'
 set -g status-left-length 500
 set -g status-left '#{@am_status_left}'
 set -g status-right-length 120
-set -g status-right '#($status_bar_cmd #{session_name})#{@am_attention} #[fg=colour245]%H:%M '
+set -g status-right '#($status_bar_cmd #{session_name})#{@am_attention} #[fg=colour245]#{session_name} %H:%M '
 
 # Refresh options after the active session changes. run-shell -b detaches
 # the child so tmux doesn't block on it — switch-client returns immediately
@@ -198,20 +199,33 @@ tmux_session_exists() {
     am_tmux has-session -t "$name" 2>/dev/null
 }
 
-# Create a new tmux session (detached)
-# Usage: tmux_create_session <name> <directory>
+# Create a new tmux session (detached). Extra VAR=VALUE args seed the initial
+# pane's environment (tmux -e, 3.2+) and the session environment, so the first
+# shell and every later split in the session inherit them — no typed `export`
+# lines, nothing in shell history.
+# Usage: tmux_create_session <name> <directory> [VAR=VALUE...]
 tmux_create_session() {
     local name="$1"
     local directory="$2"
+    shift 2
 
     if tmux_session_exists "$name"; then
         log_error "Session '$name' already exists"
         return 1
     fi
 
+    local -a env_flags=()
+    local kv
+    for kv in "$@"; do
+        env_flags+=(-e "$kv")
+    done
+
     # Create with explicit dimensions to work around tmux sizing bugs in detached sessions
     # https://github.com/tmux/tmux/issues/3060
-    am_tmux new-session -d -s "$name" -c "$directory" -x 200 -y 60
+    am_tmux new-session -d -s "$name" -c "$directory" -x 200 -y 60 "${env_flags[@]}" || return 1
+    for kv in "$@"; do
+        am_tmux set-environment -t "$name" "${kv%%=*}" "${kv#*=}"
+    done
 }
 
 # Kill a tmux session

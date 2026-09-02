@@ -138,6 +138,19 @@ am_shell_pane_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
+# Shell command that allocates an isolated workspace for `am new -W`. It runs
+# via bash -c with AM_BRANCH exported (empty when no branch was requested) and
+# prints the directory on stdout. Empty (the default) disables -W and hides
+# the form's Workspace fields.
+# Example: am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
+am_workspace_cmd() {
+    if [[ -n "${AM_WORKSPACE_CMD:-}" ]]; then
+        echo "$AM_WORKSPACE_CMD"
+        return
+    fi
+    am_config_get "workspace_cmd"
+}
+
 am_auto_restore_enabled() {
     if [[ -n "${AM_AUTO_RESTORE:-}" ]]; then
         am_bool_is_true "${AM_AUTO_RESTORE,,}"
@@ -208,6 +221,7 @@ am_config_key_alias() {
         auto-restore|auto_restore|restore-on-startup) echo "auto_restore" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         shell|shell-pane|shell_pane) echo "shell_pane" ;;
+        workspace|workspace-cmd|workspace_cmd) echo "workspace_cmd" ;;
         sb-network-restrict|sb_network_restrict) echo "sb_network_restrict" ;;
         sb-allowed-hosts|sb_allowed_hosts) echo "sb_allowed_hosts" ;;
         sandbox-shares|sandbox_shares|sandbox.shares) echo "sandbox.shares" ;;
@@ -219,7 +233,7 @@ am_config_key_type() {
     case "$1" in
         default_agent) echo "string" ;;
         default_yolo|default_sandbox|auto_restore|stream_logs|shell_pane|sb_network_restrict) echo "boolean" ;;
-        sb_allowed_hosts|sandbox.shares) echo "string" ;;
+        sb_allowed_hosts|sandbox.shares|workspace_cmd) echo "string" ;;
         *) return 1 ;;
     esac
 }
@@ -234,7 +248,7 @@ am_config_value_is_valid() {
         default_yolo|default_sandbox|auto_restore|stream_logs|shell_pane|sb_network_restrict)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
-        sb_allowed_hosts|sandbox.shares)
+        sb_allowed_hosts|sandbox.shares|workspace_cmd)
             return 0
             ;;
         *)
@@ -278,9 +292,10 @@ am_config_print() {
     else
         sb_network_restrict_value=false
     fi
-    local sb_allowed_hosts_value sandbox_shares_value
+    local sb_allowed_hosts_value sandbox_shares_value workspace_cmd_value
     sb_allowed_hosts_value=$(am_config_get "sb_allowed_hosts")
     sandbox_shares_value=$(am_config_get "sandbox.shares")
+    workspace_cmd_value=$(am_workspace_cmd)
 
     cat <<EOF
 default_agent=$default_agent_value
@@ -292,6 +307,7 @@ shell_pane=$shell_pane_value
 sb_network_restrict=$sb_network_restrict_value
 sb_allowed_hosts=$sb_allowed_hosts_value
 sandbox.shares=$sandbox_shares_value
+workspace_cmd=$workspace_cmd_value
 config_file=$AM_CONFIG
 EOF
 }

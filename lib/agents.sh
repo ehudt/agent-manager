@@ -304,8 +304,12 @@ agent_launch() {
         fi
     fi
 
-    # Create tmux session (with explicit dimensions for sizing workaround)
-    if ! tmux_create_session "$session_name" "$session_directory"; then
+    # Create tmux session (with explicit dimensions for sizing workaround).
+    # The pane env (AM_SESSION_NAME etc.) is seeded here via tmux -e; see
+    # agent_pane_env for why it is never typed into the shell.
+    local -a pane_env=()
+    mapfile -t pane_env < <(agent_pane_env "$session_name" "$agent_type")
+    if ! tmux_create_session "$session_name" "$session_directory" "${pane_env[@]}"; then
         log_error "Failed to create tmux session"
         return 1
     fi
@@ -331,22 +335,11 @@ agent_launch() {
     _pane_title=$(truncate "$_pane_title" 60)
     am_tmux select-pane -t "$session_name:.{top}" -T "$_pane_title"
 
-    # Export AM_SESSION_NAME so the state-detection hook can identify which am
-    # session fired it without relying on cwd (which is ambiguous when two am
-    # sessions share a directory).
-    local identity_dir
-    identity_dir=$(_recovery_identity_dir)
-    mkdir -p "$identity_dir"
-    tmux_send_keys "$session_name:.{top}" " export AM_SESSION_NAME='$session_name'" Enter
-    tmux_send_keys "$session_name:.{top}" " export AM_AGENT_TYPE='$agent_type'" Enter
-    tmux_send_keys "$session_name:.{top}" " export AM_IDENTITY_DIR='$identity_dir'" Enter
-
-    # Set up log streaming if enabled
+    # Set up log streaming if enabled (AM_LOG_DIR is already in the pane env)
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
         mkdir -p "$log_dir"
         tmux_enable_pipe_pane "$session_name" ".{top}" "$log_dir/agent.log"
-        tmux_send_keys "$session_name:.{top}" " export AM_LOG_DIR='$log_dir'" Enter
     fi
 
     # Build the full agent command with shell-safe argument quoting.
@@ -472,6 +465,53 @@ agent_launch() {
     echo "$session_name"
 }
 
+# Environment every am pane starts with (agent pane and shell panel alike),
+# one VAR=VALUE per line. Seeded at pane creation through tmux -e rather than
+# typed `export` lines: nothing lands in the shell's history (even a
+# space-prefixed export lingers as zsh's most recent entry until the next
+# command), the vars exist before the first prompt, and the state hooks can
+# identify the session by AM_SESSION_NAME instead of the ambiguous cwd.
+# Usage: agent_pane_env <session_name> <agent_type>
+agent_pane_env() {
+    local session_name="$1" agent_type="$2"
+    local identity_dir
+    identity_dir=$(_recovery_identity_dir)
+    mkdir -p "$identity_dir"
+    printf 'AM_SESSION_NAME=%s\n' "$session_name"
+    printf 'AM_AGENT_TYPE=%s\n' "$agent_type"
+    printf 'AM_IDENTITY_DIR=%s\n' "$identity_dir"
+    if am_stream_logs_enabled; then
+        printf 'AM_LOG_DIR=%s\n' "/tmp/am-logs/${session_name}"
+    fi
+}
+
+# Allocate an isolated working directory for `am new -W` through the user's
+# configured workspace command (`am config set workspace_cmd '...'`). The
+# command runs via bash -c with AM_BRANCH exported (empty when no branch was
+# requested) and must print the directory on stdout; its stderr passes
+# through so progress output (fetching, cloning) reaches the user.
+# Usage: agent_workspace_allocate [branch]
+agent_workspace_allocate() {
+    local branch="${1:-}"
+    local cmd
+    cmd=$(am_workspace_cmd)
+    if [[ -z "$cmd" ]]; then
+        log_error "No workspace command configured for -W"
+        echo "Set one with, e.g.: am config set workspace_cmd 'wp allocate \${AM_BRANCH:+--branch \"\$AM_BRANCH\"}'" >&2
+        return 1
+    fi
+    local dir
+    if ! dir=$(AM_BRANCH="$branch" "${BASH:-bash}" -c "$cmd"); then
+        log_error "Workspace command failed: $cmd"
+        return 1
+    fi
+    if [[ -z "$dir" || ! -d "$dir" ]]; then
+        log_error "Workspace command did not print an existing directory: ${dir:-<empty>}"
+        return 1
+    fi
+    echo "$dir"
+}
+
 # Create the shell panel for an existing session: split below the agent,
 # wire env exports + log streaming, enter the sandbox container when the
 # session is sandboxed, and cd into the worktree once it exists. Reads
@@ -506,23 +546,24 @@ agent_shell_pane_add() {
     # Split without size, then resize (workaround for detached session sizing
     # issues). -P returns the new pane's %id — unambiguous for the follow-up
     # wiring even if the user rearranges panes.
+    # Seed the pane env with tmux -e (explicit, so sessions created before
+    # the session environment was populated get it too).
+    local -a pane_env=() env_flags=()
+    local kv
+    mapfile -t pane_env < <(agent_pane_env "$session_name" "$agent_type")
+    for kv in "${pane_env[@]}"; do
+        env_flags+=(-e "$kv")
+    done
     local shell_pane
-    shell_pane=$(am_tmux split-window -t "$main_id" -v -c "$split_dir" -P -F '#{pane_id}') || return 1
+    shell_pane=$(am_tmux split-window -t "$main_id" -v -c "$split_dir" "${env_flags[@]}" -P -F '#{pane_id}') || return 1
     am_tmux resize-pane -t "$shell_pane" -y 15
     # Two panes again: restore the pane-border sidebar divider.
     am_tmux set-option -w -u -t "$main_id" pane-border-status
-
-    local identity_dir
-    identity_dir=$(_recovery_identity_dir)
-    tmux_send_keys "$shell_pane" " export AM_SESSION_NAME='$session_name'" Enter
-    tmux_send_keys "$shell_pane" " export AM_AGENT_TYPE='$agent_type'" Enter
-    tmux_send_keys "$shell_pane" " export AM_IDENTITY_DIR='$identity_dir'" Enter
 
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
         mkdir -p "$log_dir"
         tmux_pipe_pane "$shell_pane" "$log_dir/shell.log"
-        tmux_send_keys "$shell_pane" " export AM_LOG_DIR='$log_dir'" Enter
     fi
 
     if am_bool_is_true "$sandbox_mode"; then

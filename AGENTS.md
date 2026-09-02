@@ -35,6 +35,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - Sourced libs derive their own dir as `_<MODULE>_LIB_DIR` from `AM_LIB_DIR` (exported by the `am` entry point); standalone scripts like `lib/status-bar` set their own `SCRIPT_DIR`
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
 - The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
+- Pane environment (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR`) is seeded at pane creation via tmux `-e` (`agent_pane_env` → `tmux_create_session` env args / `split-window -e`) plus the session environment. Never `send-keys` an `export` into a pane: even a space-prefixed one lingers as zsh's most recent history entry, and the vars must exist before the agent command runs. Requires tmux ≥ 3.2 (`display-popup` already did)
+- `am new -W [branch]` never takes a directory: `agent_workspace_allocate` runs the user's `workspace_cmd` (bash -c, `AM_BRANCH` exported, may be empty) and uses its stdout. The form emits `--workspace[=branch]` in its flags field and `cmd_new` strips it before the flags reach `agent_launch`
 - Sandbox containers always run as the `ubuntu` user (UID/GID aligned to host). Use `SB_CONTAINER_HOME` for container-side path expansion, not `$HOME`
 - Agents in sandbox can `sudo apt-get install` without a password. Full sudo requires `SB_UNSAFE_ROOT=1`
 
@@ -78,7 +80,9 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 
 ```
 am → fzf_main() → am-browse (Go TUI) → stdout protocol → tmux_attach()
-am new ~/project → agent_launch() → tmux_create_session() → registry_add() → tmux_send_keys()
+am new ~/project → agent_launch() → tmux_create_session(name, dir, VAR=VAL...) → registry_add() → tmux_send_keys()
+am new -W branch → agent_workspace_allocate(branch) → $workspace_cmd (AM_BRANCH=branch) → agent_launch(dir, ...)
+am id → current_session() → $AM_SESSION_NAME, else attached session on the am tmux server
 am list-internal → am-list-internal (Go binary) → stdout
 Ctrl-N in browser → am_new_session_form() → _form_run()
 am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_exec_cmd (agent pane) → agent runs in container; opening the shell panel later runs sandbox_enter_cmd in it
@@ -361,6 +365,11 @@ am restore
 - `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude and pi sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
 - `agent_resume_args(agent_type, session_id)` - Build agent-specific resume args (claude → --resume, pi → --session)
 
+**Pane environment / workspaces:**
+- `agent_pane_env(session_name, agent_type)` - Print the `VAR=VALUE` lines every am pane starts with (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR` when streaming); consumed by `tmux_create_session` and the shell-panel `split-window -e`
+- `agent_workspace_allocate([branch])` - Run the configured workspace_cmd (config key) with AM_BRANCH exported and return the directory it prints; errors with setup guidance when unset or when the output is not an existing directory
+- `current_session()` (in the am entry point) - Name of the am session the caller runs inside; backs the id command (aliases current, whoami) and the no-arg defaults of the shell and info commands
+
 **Shell panel (collapsible; sessions launch agent-only by default):**
 - `agent_shell_pane_add(session_name)` - Create the shell panel below the agent: split (worktree-aware cwd), wire `AM_SESSION_NAME`/`AM_AGENT_TYPE`/`AM_IDENTITY_DIR`/`AM_LOG_DIR` exports + shell.log pipe-pane, run `sandbox_enter_cmd` for sandboxed sessions, cd into a CLI-managed worktree once it exists. Registry-driven, so it serves both `--shell` at launch and on-demand opening
 - `agent_shell_pane_toggle(session_name)` - absent → add, open → hide, hidden → show; backs `am shell` and prefix+\` (via bin/toggle-shell)
@@ -414,7 +423,7 @@ am restore
 - `pi_first_user_message(dir, [session_id], [strict])` - Extract first user message from pi session JSONL
 
 **tmux:**
-- `tmux_create_session(name, dir)` - New detached session
+- `tmux_create_session(name, dir, [VAR=VALUE...])` - New detached session; env args are passed as new-session -e and stored in the session environment so later splits inherit them
 - `tmux_get_activity(name)` - Last activity timestamp
 - `tmux_get_created(name)` - Session creation timestamp
 - `tmux_enable_pipe_pane(session, pane, file)` - Stream pane output to log file
@@ -470,6 +479,7 @@ am restore
 - `am_default_agent()` - Get default agent type
 - `am_stream_logs_enabled()` - Check if log streaming is enabled
 - `am_shell_pane_enabled()` - Whether new sessions open with the shell panel visible (shell_pane key, default false)
+- `am_workspace_cmd()` - Shell snippet behind -W on new (workspace_cmd key, env override AM_WORKSPACE_CMD; empty disables -W and hides the form's Workspace fields). Stored case-preserving — the config set path skips its lowercase normalization for this key
 - `am_config_key_alias()` / `am_config_key_type()` / `am_config_value_is_valid()` - Normalize and validate config keys and values
 
 ## Session Naming
@@ -491,7 +501,7 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Change title source | `lib/registry.sh` → `auto_title_scan()` |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Change sandbox config | `lib/sandbox.sh`, `sandbox/Dockerfile` |
-| Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch |
+| Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch (Workspace/Branch are conditional on `am_workspace_cmd`, so field indices only shift when it is configured) |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |
 | Add state detection signal | `lib/state.sh` → extend `_state_resolve()` ordering |

@@ -68,6 +68,24 @@ test_config() {
     unset AM_SHELL_PANE
     am_config_set "shell_pane" "false" "boolean"
 
+    # Workspace command (am new -W)
+    unset AM_WORKSPACE_CMD
+    assert_eq "" "$(am_workspace_cmd)" "config: workspace_cmd defaults empty"
+    assert_eq "workspace_cmd" "$(am_config_key_alias workspace)" "config: workspace alias maps to workspace_cmd"
+    assert_eq "string" "$(am_config_key_type workspace_cmd)" "config: workspace_cmd is a string"
+    assert_eq "true" "$(am_config_value_is_valid workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' && echo true || echo false)" \
+        "config: workspace_cmd accepts a shell snippet"
+    am_config_set "workspace_cmd" 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' "string"
+    assert_eq 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' "$(am_workspace_cmd)" \
+        "config: saved workspace_cmd keeps its case and quoting"
+    assert_contains "$(am_config_print)" 'workspace_cmd=wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' \
+        "config: print shows workspace_cmd"
+    export AM_WORKSPACE_CMD="echo /tmp"
+    assert_eq "echo /tmp" "$(am_workspace_cmd)" "config: env overrides saved workspace_cmd"
+    unset AM_WORKSPACE_CMD
+    am_config_unset "workspace_cmd"
+    assert_eq "" "$(am_workspace_cmd)" "config: unset workspace_cmd is empty again"
+
     am_config_unset "default_agent"
     unset AM_DEFAULT_AGENT AM_DEFAULT_YOLO AM_STREAM_LOGS
     assert_eq "claude" "$(am_default_agent)" "config: unset falls back to built-in default"

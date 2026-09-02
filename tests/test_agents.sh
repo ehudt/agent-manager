@@ -578,6 +578,19 @@ test_shell_panel() {
     wait_for_text "panel-marker-set" \
         am_tmux capture-pane -t "$session_name:.{bottom}" -p >/dev/null
 
+    # Pane env is seeded by tmux -e: the shell knows its session and log dir
+    # without any `export` line having been typed (nothing in shell history).
+    tmux_send_keys "$session_name:.{bottom}" 'echo "env-marker:$AM_SESSION_NAME:${AM_LOG_DIR##*/}:$AM_AGENT_TYPE"' Enter
+    local shell_text
+    shell_text=$(wait_for_text "env-marker:$session_name:$session_name:claude" \
+        am_tmux capture-pane -t "$session_name:.{bottom}" -p -S -)
+    assert_contains "$shell_text" "env-marker:$session_name:$session_name:claude" \
+        "shell panel: AM_SESSION_NAME/AM_LOG_DIR/AM_AGENT_TYPE present in shell env"
+    assert_not_contains "$shell_text" "export AM_" \
+        "shell panel: no export lines typed into the shell"
+    assert_not_contains "$(am_tmux capture-pane -t "$session_name:.{top}" -p -S - 2>/dev/null)" "export AM_" \
+        "agent pane: no export lines typed before the agent command"
+
     # Streamed shell.log picks up pane output while the panel is open
     local shell_log="/tmp/am-logs/${session_name}/shell.log"
     wait_for_text "panel-marker-set" cat "$shell_log" >/dev/null

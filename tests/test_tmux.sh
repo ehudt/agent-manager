@@ -18,8 +18,22 @@ test_tmux() {
 
     # Test create and kill (only if not in CI/restricted env)
     local test_session="am-test-$$"
-    if tmux_create_session "$test_session" "/tmp"; then
+    if tmux_create_session "$test_session" "/tmp" "AM_TEST_VAR=hello-$$"; then
         assert_eq "true" "$(tmux_session_exists "$test_session" && echo true || echo false)" "tmux_create_session: creates session"
+
+        # VAR=VALUE args seed the session environment (for later splits) and
+        # the first pane's shell, with no typed export in the pane.
+        assert_eq "AM_TEST_VAR=hello-$$" "$(am_tmux show-environment -t "$test_session" AM_TEST_VAR 2>/dev/null)" \
+            "tmux_create_session: env arg lands in session environment"
+        local env_marker="/tmp/am-test-env-$$"
+        rm -f "$env_marker"
+        am_tmux send-keys -t "$test_session" "printf '%s' \"\$AM_TEST_VAR\" > '$env_marker'" Enter
+        wait_for_text "hello-$$" cat "$env_marker" >/dev/null
+        assert_eq "hello-$$" "$(cat "$env_marker" 2>/dev/null)" \
+            "tmux_create_session: initial shell inherits env arg"
+        assert_not_contains "$(am_tmux capture-pane -t "$test_session" -p -S - 2>/dev/null)" "export AM_TEST_VAR" \
+            "tmux_create_session: env is seeded, not typed"
+        rm -f "$env_marker"
 
         # Cleanup
         tmux_kill_session "$test_session"

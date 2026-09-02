@@ -15,6 +15,7 @@ test_cli() {
     new_help=$("$PROJECT_DIR/am" new --help)
     assert_contains "$new_help" "-t, --type" "am new --help: shows flags"
     assert_contains "$new_help" "cursor" "am new --help: lists Cursor agent"
+    assert_contains "$new_help" "-W, --workspace" "am new --help: shows workspace flag"
     assert_not_contains "$new_help" "--yolo" "am new --help: hides yolo flag"
     assert_not_contains "$new_help" "--no-yolo" "am new --help: hides no-yolo flag"
     assert_not_contains "$new_help" "--no-worktree" "am new --help: hides no-worktree flag"
@@ -384,8 +385,79 @@ test_cli_yolo_sandbox_integration() {
     $SUMMARY_MODE || echo ""
 }
 
+test_cli_workspace_and_id() {
+    $SUMMARY_MODE || echo "=== Testing am new -W and am id ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    local test_dir
+    test_dir=$(mktemp -d)
+    local am_env=(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_SESSION_NAME= TMUX=)
+
+    # --- am id: outside any session ---
+    local rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" id >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am id: exits 1 outside an am session"
+
+    # --- am id: inside (AM_SESSION_NAME seeded into every pane) ---
+    assert_eq "test-am-abc123" "$(env "${am_env[@]}" AM_SESSION_NAME=test-am-abc123 "$PROJECT_DIR/am" id 2>/dev/null)" \
+        "am id: prints AM_SESSION_NAME"
+    assert_eq "test-am-abc123" "$(env "${am_env[@]}" AM_SESSION_NAME=test-am-abc123 "$PROJECT_DIR/am" whoami 2>/dev/null)" \
+        "am whoami: alias of am id"
+    rc=0
+    env "${am_env[@]}" AM_SESSION_NAME=other-prefix-1 "$PROJECT_DIR/am" id >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "am id: rejects a name outside the am prefix"
+
+    # --- am new -W without workspace_cmd: fails with guidance ---
+    rc=0
+    local err
+    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD= "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new -W: fails when workspace_cmd is unset"
+    assert_contains "$err" "workspace_cmd" "am new -W: error names the config key"
+
+    # --- am new -W plus a directory: rejected ---
+    rc=0
+    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo $test_dir" "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new -W <dir>: rejected"
+    assert_contains "$err" "drop the directory" "am new -W <dir>: explains the conflict"
+
+    # --- am new -W <branch>: the command sees AM_BRANCH and supplies the directory ---
+    local ws_cmd="mkdir -p '$test_dir/ws-'\"\${AM_BRANCH:-trunk}\" && echo '$test_dir/ws-'\"\${AM_BRANCH:-trunk}\""
+    local session_name
+    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W feature-x --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "am new -W <branch>: session created"
+    assert_eq "$test_dir/ws-feature-x" "$(registry_get_field "$session_name" directory)" \
+        "am new -W <branch>: session runs in the allocated directory"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- am new -W with no branch: AM_BRANCH is empty ---
+    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "am new -W: session created without a branch"
+    assert_eq "$test_dir/ws-trunk" "$(registry_get_field "$session_name" directory)" \
+        "am new -W: empty AM_BRANCH reaches the command"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- a command that prints no directory fails cleanly ---
+    rc=0
+    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo /nonexistent/$$" "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new -W: bad command output fails"
+    assert_contains "$err" "did not print an existing directory" "am new -W: reports the bad output"
+
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_cli_tests() {
     _run_test test_cli
+    _run_test test_cli_workspace_and_id
     _run_test test_cli_extended
     _run_test test_cli_yolo_sandbox_integration
 }

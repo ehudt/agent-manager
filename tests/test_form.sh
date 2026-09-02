@@ -631,8 +631,71 @@ test_form_config_defaults() {
     $SUMMARY_MODE || echo ""
 }
 
+test_form_workspace() {
+    $SUMMARY_MODE || echo "=== Testing form workspace fields ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/form.sh"
+    set -u
+
+    # Without a workspace_cmd the fields are absent and the order is unchanged
+    unset AM_WORKSPACE_CMD
+    setup_isolated_am_dir
+    am_config_init
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    assert_eq "agent" "${FORM_FIELDS[1]}" "form workspace: fields hidden when workspace_cmd unset"
+    assert_eq "" "${FORM_TYPES[workspace_enabled]:-}" "form workspace: no workspace field when unset"
+
+    export AM_WORKSPACE_CMD="echo /tmp"
+    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    assert_eq "workspace_enabled" "${FORM_FIELDS[1]}" "form workspace: Workspace follows Directory"
+    assert_eq "workspace_branch" "${FORM_FIELDS[2]}" "form workspace: Branch follows Workspace"
+    assert_eq "false" "${FORM_VALUES[workspace_enabled]}" "form workspace: starts off"
+    assert_eq "true" "${FORM_DISABLED[workspace_branch]}" "form workspace: branch disabled while off"
+    assert_eq "" "${FORM_DISABLED[directory]:-}" "form workspace: directory enabled while off"
+
+    # Toggle on: branch editable, directory out of play
+    FORM_CURSOR=1
+    _form_handle_space
+    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: space toggles on"
+    assert_eq "" "${FORM_DISABLED[workspace_branch]}" "form workspace: branch enabled when on"
+    assert_eq "true" "${FORM_DISABLED[directory]}" "form workspace: directory disabled when on"
+
+    # Output carries --workspace=<branch> and skips directory validation
+    FORM_VALUES[workspace_branch]="review-48351"
+    FORM_VALUES[directory]="/definitely/not/a/dir"
+    local out flags
+    out=$(_form_output 2>/dev/null)
+    IFS=$'\x1f' read -r _ _ _ _ flags <<< "$out"
+    assert_contains "$flags" "--workspace=review-48351" "form workspace: output flags carry the branch"
+
+    FORM_VALUES[workspace_branch]=""
+    out=$(_form_output 2>/dev/null)
+    IFS=$'\x1f' read -r _ _ _ _ flags <<< "$out"
+    assert_contains "$flags" "--workspace" "form workspace: output flags carry bare --workspace without branch"
+    assert_not_contains "$flags" "--workspace=" "form workspace: no empty branch suffix"
+
+    # Toggle off: directory validated again
+    _form_handle_space
+    assert_eq "" "${FORM_DISABLED[directory]:-}" "form workspace: directory re-enabled when off"
+    local rc=0
+    _form_output >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "form workspace: off → missing directory rejected again"
+
+    unset AM_WORKSPACE_CMD
+    teardown_isolated_am_dir
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_form_tests() {
     _run_test test_form_core
+    _run_test test_form_workspace
     _run_test test_form_loop
     _run_test test_form_modes
     _run_test test_form_config_defaults

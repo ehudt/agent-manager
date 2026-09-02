@@ -52,7 +52,7 @@ That's it. You're in a tmux session with Claude running full-screen. Press ``Pre
 | Dependency | Minimum | Install |
 |-----------|---------|---------|
 | **bash** | 4.0+ | Ships with most Linux distros. macOS: `brew install bash` |
-| **tmux** | 3.0+ | `brew install tmux` / `apt install tmux` / `pacman -S tmux` |
+| **tmux** | 3.2+ | `brew install tmux` / `apt install tmux` / `pacman -S tmux` |
 | **fzf** | 0.40+ | `brew install fzf` / `apt install fzf` / `pacman -S fzf` |
 | **jq** | 1.6+ | `brew install jq` / `apt install jq` / `pacman -S jq` |
 | **git** | any | Required for worktree isolation and branch display |
@@ -122,7 +122,23 @@ am new -t cursor ~/code/project      # Use Cursor Agent
 am new -n "fix auth bug" .           # Session with a task description
 am new --yolo ~/code/myproject       # Permissive mode (agent-specific flags)
 am new -w ~/code/myproject           # Isolate changes in a git worktree
+am new -W review-48351               # Fresh workspace on a branch via workspace_cmd (below)
 ```
+
+`-W`/`--workspace` hands directory selection to a command you configure once,
+for tools that manage a pool of checkouts (a clone-pool manager, `git worktree`
+wrapper, `jj workspace`, ...). The command runs with `AM_BRANCH` set to the
+optional branch (empty when none was given) and prints the directory to use:
+
+```bash
+am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
+am new -W                            # workspace on the default branch
+am new -W review-48351 -n "review"   # workspace on a branch, with a task
+printf 'Review PR 48351\n' | am new --detach --print-session -W review-48351
+```
+
+Once configured, the interactive form also offers **Workspace** / **Branch**
+fields right after Directory (toggling Workspace on takes Directory out of play).
 
 Running `am new` with no arguments opens an interactive form where you pick a directory, agent type, and mode:
 
@@ -196,6 +212,12 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 The status bar shows all sessions as numbered slots with the current session
 highlighted. State icons distinguish active work (`▸`), background work (`⧗`),
 a turn blocked on the user (`⚠`), and a session ready for another prompt (`●`).
+The current session's id (`am-xxxxxx`) sits at the bottom right next to the
+clock. From inside either pane, `am id` prints it (`am id | pbcopy`,
+`am send "$(am id)" ...`), and `$AM_SESSION_NAME` carries it as well; the
+panes get `AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, and
+`AM_LOG_DIR` from tmux at creation, so nothing is typed into your shell and
+your history stays clean.
 
 ### Peeking and monitoring
 
@@ -484,6 +506,7 @@ am config                          # Show current defaults
 am config set agent codex          # Default to Codex
 am config set yolo true            # Default to permissive mode
 am config set logs true            # Enable pane log streaming
+am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'  # Backs `am new -W`
 am config get agent                # Read a single value
 ```
 

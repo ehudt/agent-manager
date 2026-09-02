@@ -48,7 +48,7 @@ _FORM_DIR_SUGGESTIONS_LOADED=false
 declare -ga _FORM_DIR_FILTERED=()
 
 # Initialize form state
-# Usage: _form_init <directory> <agent> <task> <mode> <yolo> <sandbox> <worktree_enabled> <worktree_name> <docker_available>
+# Usage: _form_init <directory> <agent> <task> <mode> <yolo> <sandbox> <worktree_enabled> <worktree_name> <docker_available> [workspace_enabled] [workspace_branch]
 _form_init() {
     local directory="$1"
     local agent="$2"
@@ -59,6 +59,8 @@ _form_init() {
     local worktree_enabled="$7"
     local worktree_name="$8"
     local docker_available="${9:-true}"
+    local workspace_enabled="${10:-false}"
+    local workspace_branch="${11:-}"
 
     FORM_FIELDS=()
     FORM_VALUES=()
@@ -76,6 +78,18 @@ _form_init() {
     _FORM_DIR_SCROLL_OFFSET=0
 
     _form_add_field "directory"         "Directory"      "directory"  "$directory"
+    # Workspace allocation (am new -W) replaces the directory; only offered
+    # when a workspace_cmd is configured, so the field order is unchanged for
+    # everyone else.
+    if [[ -n "$(am_workspace_cmd)" ]]; then
+        _form_add_field "workspace_enabled" "Workspace" "checkbox" "$workspace_enabled"
+        _form_add_field "workspace_branch"  "Branch"    "text"     "$workspace_branch"
+        if [[ "$workspace_enabled" == "true" ]]; then
+            FORM_DISABLED[directory]="true"
+        else
+            FORM_DISABLED[workspace_branch]="true"
+        fi
+    fi
     _form_add_field "agent"             "Agent"          "select"     "$agent"
     _form_add_field "task"              "Task"           "text"       "$task"
     _form_add_field "mode"              "Mode"           "select"     "$mode"
@@ -141,6 +155,8 @@ _form_render_field() {
                 display="${value}${_FORM_INVERSE} ${_FORM_RESET}"
             elif [[ -z "$value" && "$name" == "worktree_name" ]]; then
                 display="${_FORM_DIM}(auto)${_FORM_RESET}"
+            elif [[ -z "$value" && "$name" == "workspace_branch" ]]; then
+                display="${_FORM_DIM}(default)${_FORM_RESET}"
             else
                 display="$value"
             fi
@@ -271,6 +287,16 @@ _form_handle_space() {
                     FORM_DISABLED[worktree_name]=""
                 else
                     FORM_DISABLED[worktree_name]="true"
+                fi
+            fi
+            # Workspace ON: the workspace command picks the directory
+            if [[ "$name" == "workspace_enabled" ]]; then
+                if [[ "${FORM_VALUES[$name]}" == "true" ]]; then
+                    FORM_DISABLED[workspace_branch]=""
+                    FORM_DISABLED[directory]="true"
+                else
+                    FORM_DISABLED[workspace_branch]="true"
+                    FORM_DISABLED[directory]=""
                 fi
             fi
             ;;
@@ -683,7 +709,8 @@ _form_draw() {
         rendered_lines=$((rendered_lines + 1))
 
         # Suggestions belong to the fast launcher; options use the selected path.
-        if [[ "$name" == "directory" && "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+        # A disabled directory (Workspace on) shows no suggestions.
+        if [[ "$name" == "directory" && "$_FORM_OPTIONS_OPEN" == "false" && "${FORM_DISABLED[directory]:-}" != "true" ]]; then
             local dir_focused="false"
             [[ "$focused" == "true" ]] && dir_focused="true"
             _form_filter_dir_suggestions "${FORM_VALUES[directory]}" "$_FORM_DIR_FILTER_MAX"
@@ -818,6 +845,7 @@ _form_cleanup() {
 
 # Format form values as tab-free \x1f-separated output:
 # directory<US>agent<US>task<US>worktree_name<US>flags  (US = \x1f unit separator)
+# flags may carry --workspace[=branch], consumed by cmd_new rather than the agent.
 _form_output() {
     local directory="${FORM_VALUES[directory]}"
     local agent="${FORM_VALUES[agent]}"
@@ -827,10 +855,14 @@ _form_output() {
     local sandbox="${FORM_VALUES[sandbox]}"
     local worktree_enabled="${FORM_VALUES[worktree_enabled]:-false}"
     local worktree_name="${FORM_VALUES[worktree_name]:-}"
+    local workspace_enabled="${FORM_VALUES[workspace_enabled]:-false}"
+    local workspace_branch="${FORM_VALUES[workspace_branch]:-}"
 
     directory="${directory/#\~/$HOME}"
 
-    if [[ -z "$directory" || ! -d "$directory" ]]; then
+    # With Workspace on, the workspace command supplies the directory (cmd_new
+    # allocates it after the form returns), so the field is not validated.
+    if [[ "$workspace_enabled" != "true" && ( -z "$directory" || ! -d "$directory" ) ]]; then
         log_error "Directory does not exist: ${directory:-<empty>}"
         return 1
     fi
@@ -845,6 +877,13 @@ _form_output() {
     [[ "$mode" == "continue" ]] && flags+=" --continue"
     [[ "$yolo" == "true" ]] && flags+=" --yolo"
     [[ "$sandbox" == "true" ]] && flags+=" --sandbox"
+    if [[ "$workspace_enabled" == "true" ]]; then
+        if [[ -n "$workspace_branch" ]]; then
+            flags+=" --workspace=$workspace_branch"
+        else
+            flags+=" --workspace"
+        fi
+    fi
 
     local worktree=""
     if [[ "$worktree_enabled" == "true" ]] && agent_supports_worktree "$agent"; then

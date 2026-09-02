@@ -46,11 +46,19 @@ am kill "$session"               # terminate when no longer needed
 
 Never launch a wekapp-work session in `~/code` or the daily-driver checkout
 (`~/code/green-wekapp`). Allocate an isolated pool copy and launch directly
-into it — `wp allocate` prints a ready, fetched checkout path to stdout:
+into it. `am new -W [branch]` does the allocation through the configured
+`workspace_cmd` (check with `am config get workspace_cmd`):
 
 ```bash
-session=$(printf 'Task...\n' | am new --detach --print-session $(wp allocate))
-# optionally: $(wp allocate --branch <name>)
+session=$(printf 'Task...\n' | am new --detach --print-session -W)
+session=$(printf 'Task...\n' | am new --detach --print-session -W <branch>)
+```
+
+If `workspace_cmd` is not configured on this machine, call `wp` directly —
+`wp allocate` prints a ready, fetched checkout path to stdout:
+
+```bash
+session=$(printf 'Task...\n' | am new --detach --print-session $(wp allocate --branch <name>))
 ```
 
 This lands the agent in a real wekapp checkout (CLAUDE.md, teka, venvs all in
