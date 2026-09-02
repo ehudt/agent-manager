@@ -210,12 +210,69 @@ test_cursor_first_user_message() {
     $SUMMARY_MODE || echo ""
 }
 
+
+# git_head_branch: fork-free .git/HEAD reader used by the workdir/branch refresh
+test_git_head_branch() {
+    $SUMMARY_MODE || echo "=== Testing git_head_branch ==="
+    source "$LIB_DIR/utils.sh"
+
+    local root repo
+    root=$(mktemp -d)
+    repo="$root/repo"
+    mkdir -p "$repo/.git" "$repo/sub/deep"
+
+    echo "ref: refs/heads/feature/x" > "$repo/.git/HEAD"
+    assert_eq "feature/x" "$(git_head_branch "$repo")" \
+        "git_head_branch: branch name from .git/HEAD"
+    assert_eq "feature/x" "$(git_head_branch "$repo/sub/deep")" \
+        "git_head_branch: walks up from a subdirectory"
+
+    echo "0123456789abcdef0123456789abcdef01234567" > "$repo/.git/HEAD"
+    assert_eq "01234567" "$(git_head_branch "$repo")" \
+        "git_head_branch: detached HEAD gives a short sha"
+
+    # Worktree: .git is a pointer file to the main repo's worktree gitdir.
+    local wt="$root/wt"
+    mkdir -p "$wt" "$repo/.git/worktrees/wt"
+    echo "gitdir: $repo/.git/worktrees/wt" > "$wt/.git"
+    echo "ref: refs/heads/wt-branch" > "$repo/.git/worktrees/wt/HEAD"
+    assert_eq "wt-branch" "$(git_head_branch "$wt")" \
+        "git_head_branch: follows a worktree gitdir pointer"
+
+    # Submodule: relative pointer.
+    local sm="$repo/sub/mod"
+    mkdir -p "$sm" "$repo/.git/modules/mod"
+    echo "gitdir: ../../.git/modules/mod" > "$sm/.git"
+    echo "ref: refs/heads/sm-branch" > "$repo/.git/modules/mod/HEAD"
+    assert_eq "sm-branch" "$(git_head_branch "$sm")" \
+        "git_head_branch: resolves a relative gitdir pointer"
+
+    mkdir -p "$root/plain"
+    assert_eq "" "$(git_head_branch "$root/plain")" \
+        "git_head_branch: empty outside a repository"
+    assert_eq "" "$(git_head_branch "$root/missing")" \
+        "git_head_branch: empty for a missing directory"
+    assert_eq "" "$(git_head_branch "")" \
+        "git_head_branch: empty for an empty argument"
+
+    # Agrees with git on a real checkout (this repo).
+    if command -v git >/dev/null 2>&1; then
+        local want
+        want=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)
+        [[ -n "$want" ]] && assert_eq "$want" "$(git_head_branch "$PROJECT_DIR")" \
+            "git_head_branch: agrees with git branch --show-current"
+    fi
+
+    rm -rf "$root"
+}
+
 run_utils_tests() {
     _run_test test_utils
     _run_test test_utils_extended
     _run_test test_claude_first_user_message
     _run_test test_pi_first_user_message
     _run_test test_cursor_first_user_message
+    _run_test test_git_head_branch
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

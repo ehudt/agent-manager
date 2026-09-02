@@ -23,17 +23,20 @@ fi
 
 # Read directory and task from registry in one jq call (avoids sourcing registry.sh)
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
-directory="" task=""
+directory="" task="" workdir=""
 if [[ -f "$AM_REGISTRY" ]]; then
     local_fields=$(jq -r --arg name "$session_name" \
-        '.sessions[$name] | [.directory // "", .task // ""] | join("|")' \
+        '.sessions[$name] | [.directory // "", .task // "", .workdir // ""] | join("|")' \
         "$AM_REGISTRY" 2>/dev/null || true)
-    IFS='|' read -r directory task <<< "$local_fields"
+    IFS='|' read -r directory task workdir <<< "$local_fields"
 fi
 
 echo -e "\033[1mSession:\033[0m $session_name"
 if [[ -n "$directory" ]]; then
     echo -e "\033[1mDirectory:\033[0m $directory"
+fi
+if [[ -n "$workdir" ]]; then
+    echo -e "\033[1mWorking in:\033[0m $workdir"
 fi
 if [[ -n "$task" ]]; then
     echo ""

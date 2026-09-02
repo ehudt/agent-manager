@@ -753,6 +753,73 @@ test_pi_durable_identity_guard() {
     rm -rf "$tmp_dir"
 }
 
+
+# The hook records the payload cwd — Claude's tracked Bash-tool cwd — in a .cwd
+# sidecar so the title scan can relabel a session that moved to another checkout.
+test_state_hook_cwd_sidecar() {
+    $SUMMARY_MODE || echo "=== Testing state-hook .cwd sidecar ==="
+
+    local hook_script="$PROJECT_DIR/lib/hooks/state-hook.sh"
+    local tmp_dir registry state_dir am_dir home away
+    tmp_dir=$(mktemp -d)
+    registry="$tmp_dir/sessions.json"
+    state_dir="$tmp_dir/state"
+    am_dir="$tmp_dir/am"
+    mkdir -p "$state_dir" "$am_dir" "$tmp_dir/home" "$tmp_dir/away"
+    home=$(cd "$tmp_dir/home" && pwd -P)
+    away=$(cd "$tmp_dir/away" && pwd -P)
+    jq -n --arg dir "$home" \
+        '{sessions: {"am-cwd1": {name: "am-cwd1", directory: $dir, branch: "main", agent_type: "claude", task: ""}}}' \
+        > "$registry"
+
+    run_hook() {
+        AM_DIR="$am_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="am-cwd1" "$hook_script" <<< "$1"
+    }
+
+    # A tool hook from another checkout writes the sidecar and drops the
+    # title-scan throttle so the tab relabels on the next status-bar tick.
+    touch "$am_dir/.title_scan_last"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$away\"}"
+    assert_eq "$away" "$(cat "$state_dir/am-cwd1.cwd" 2>/dev/null)" \
+        "hook: .cwd sidecar records the tool cwd"
+    assert_cmd_fails "hook: cwd change invalidates the title-scan throttle" \
+        test -f "$am_dir/.title_scan_last"
+
+    # Same cwd again: no rewrite, throttle marker left alone.
+    touch "$am_dir/.title_scan_last"
+    touch -t 200001010000 "$state_dir/am-cwd1.cwd"
+    local before after
+    before=$(stat -f %m "$state_dir/am-cwd1.cwd" 2>/dev/null || stat -c %Y "$state_dir/am-cwd1.cwd")
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$away\"}"
+    after=$(stat -f %m "$state_dir/am-cwd1.cwd" 2>/dev/null || stat -c %Y "$state_dir/am-cwd1.cwd")
+    assert_eq "$before" "$after" "hook: unchanged cwd does not rewrite the sidecar"
+    assert_cmd_succeeds "hook: unchanged cwd leaves the throttle marker alone" \
+        test -f "$am_dir/.title_scan_last"
+
+    # Stop while back home: the sidecar follows.
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$home\"}"
+    assert_eq "$home" "$(cat "$state_dir/am-cwd1.cwd")" "hook: sidecar follows the cwd back home"
+
+    # A cwd that is not an existing directory is ignored.
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$tmp_dir/nope\"}"
+    assert_eq "$home" "$(cat "$state_dir/am-cwd1.cwd")" \
+        "hook: missing cwd does not overwrite the sidecar"
+
+    # Sessions resolved by cwd matching (no AM_SESSION_NAME) record nothing:
+    # their cwd equals the registry directory by construction.
+    rm -f "$state_dir/am-cwd1.cwd"
+    AM_DIR="$am_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$home\"}"
+    assert_eq "ready" "$(cat "$state_dir/am-cwd1" 2>/dev/null)" \
+        "hook: cwd-matched session still gets its state"
+    assert_cmd_fails "hook: cwd-matched session writes no sidecar" \
+        test -f "$state_dir/am-cwd1.cwd"
+
+    rm -rf "$tmp_dir"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_from_hook_reads_file
@@ -760,6 +827,7 @@ run_state_hooks_tests() {
     _run_test test_state_from_hook_stale_file
     _run_test test_state_from_hook_invalid_state
     _run_test test_pi_durable_identity_guard
+    _run_test test_state_hook_cwd_sidecar
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

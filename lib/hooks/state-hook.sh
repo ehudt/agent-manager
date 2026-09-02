@@ -393,6 +393,31 @@ if [[ -z "$session_name" ]]; then
     exit 0
 fi
 
+# Live working directory sidecar. Claude Code stamps hook payloads (and every
+# transcript entry) with the Bash tool's *tracked* cwd — the agent process cwd
+# and tmux's pane_current_path never move, so this is the only cheap,
+# non-scraped signal that the agent has cd'd into another checkout. Written on
+# every event, rewritten only on change; the title scan turns it into the
+# registry's `workdir` plus a refreshed `branch` (lib/registry.sh
+# auto_title_scan / Go RefreshTitles). Sessions matched by cwd have
+# cwd == directory by construction, so there is nothing to record.
+if [[ "$session_resolution" != "cwd" ]]; then
+    hook_cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // empty' 2>/dev/null || true)
+    if [[ "$hook_cwd" == /* && "$hook_cwd" != *$'\n'* && -d "$hook_cwd" ]]; then
+        cwd_file="$AM_STATE_DIR/$session_name.cwd"
+        prev_cwd=""
+        if [[ -f "$cwd_file" ]]; then
+            IFS= read -r prev_cwd < "$cwd_file" || true
+        fi
+        if [[ "$hook_cwd" != "$prev_cwd" ]]; then
+            mkdir -p "$AM_STATE_DIR"
+            printf '%s' "$hook_cwd" > "$cwd_file"
+            # Let the next status-bar tick relabel within ~5s instead of 60s.
+            rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # Race protection: a late PostToolUse can arrive after Stop has already
 # written ready (hooks run concurrently, slow tool hook finishes last).
 # ready is terminal — the agent is idle and the user is in the loop —

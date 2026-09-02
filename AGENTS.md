@@ -37,6 +37,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
 - Pane environment (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR`) is seeded at pane creation via tmux `-e` (`agent_pane_env` → `tmux_create_session` env args / `split-window -e`) plus the session environment. Never `send-keys` an `export` into a pane: even a space-prefixed one lingers as zsh's most recent history entry, and the vars must exist before the agent command runs. Requires tmux ≥ 3.2 (`display-popup` already did)
 - `am new -W [branch]` never takes a directory: `agent_workspace_allocate` runs the user's `workspace_cmd` (bash -c, `AM_BRANCH` exported, may be empty) and uses its stdout. The form emits `--workspace[=branch]` in its flags field and `cmd_new` strips it before the flags reach `agent_launch`
+- Registry `directory` is the *launch* cwd and must never be rewritten: it keys the Claude/Cursor/pi transcript store (`~/.claude/projects/<encoded-dir>/`), the title fallback, session-id detection, and `am restore`. Where the agent works *now* lives in the separate `workdir` field (empty = same as `directory`), fed by the state hook's `/tmp/am-state/<session>.cwd` sidecar (Claude stamps hook payloads with the Bash tool's tracked cwd — the process cwd and tmux `pane_current_path` never move) or by `am cd`. Labels and the branch refresh read `workdir` first; state detection and restore read `directory`
 
 ## Key Files
 
@@ -54,7 +55,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
 | `lib/fzf.sh` | Browser launcher (`fzf_main`), directory picker, restore picker, `am list` helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
-| `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch label, title, age). Adaptive layout, one fit shared by every tab (`_fit_strip`): rungs are full `dir/branch · title` → branch-or-dir `· title` (water-filled, ≥12 chars/field) → title only (label for untitled sessions) → no ages; fields truncate with a 1-col `…` and default branches (main/master) are hidden. Tab age is time-in-state (state-file mtime) for waiting_* and running sessions, tmux activity otherwise. Also writes `@am_sidebar` (label-only pane-border variant). `AM_STATUS_WIDTH` overrides the client-width probe for tests and ad-hoc inspection. |
+| `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch label, title, age). Adaptive layout, one fit shared by every tab (`_fit_strip`): rungs are full `dir/branch · title` → branch-or-dir `· title` (water-filled, ≥12 chars/field) → title only (label for untitled sessions) → no ages; fields truncate with a 1-col `…` and default branches (main/master) are hidden. Tab age is time-in-state (state-file mtime) for waiting_* and running sessions, tmux activity otherwise. The dir half of the label is the registry `workdir` (where the agent moved) when set, else `directory`. Also writes `@am_sidebar` (label-only pane-border variant). `AM_STATUS_WIDTH` overrides the client-width probe for tests and ad-hoc inspection. |
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
@@ -77,6 +78,8 @@ am → fzf_main() → am-browse (Go TUI) → stdout protocol → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session(name, dir, VAR=VAL...) → registry_add() → tmux_send_keys()
 am new -W branch → agent_workspace_allocate(branch) → $workspace_cmd (AM_BRANCH=branch) → agent_launch(dir, ...)
 am id → current_session() → $AM_SESSION_NAME, else attached session on the am tmux server
+am cd [dir] → current_session() → agent_set_workdir() → .cwd sidecar + registry workdir/branch → am_refresh_sidebar_cache()
+agent cd's (Bash tool) → Claude hook payload cwd → state-hook.sh writes /tmp/am-state/<session>.cwd → auto_title_scan / RefreshTitles → registry workdir + branch (from .git/HEAD) → tab label
 am list-internal → am-list-internal (Go binary) → stdout
 Ctrl-N in browser → am_new_session_form() → _form_run()
 prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
@@ -147,6 +150,20 @@ writes on state *transitions*, skipping same-state rewrites (repeated
 per-tool `running` rewrites), so the mtime pins the moment the state was
 entered. The status bar renders tab ages from it — "waiting for you since"
 for waiting_* tabs, "running for" on running tabs.
+
+**Working-directory sidecar.** Every hook event also records the payload
+`cwd` in `$AM_STATE_DIR/<session>.cwd` (rewritten only on change; a change
+also drops the title-scan throttle so the tab relabels on the next status-bar
+tick). On Claude Code this is the Bash tool's *tracked* cwd — verified live:
+it flips with `cd` while the process cwd stays put — so an agent that moves
+into another checkout is relabelled without pane scraping. Sessions resolved
+by cwd matching record nothing (their cwd equals `directory` by
+construction). The scan (`auto_title_scan` / `RefreshTitles`) turns the
+sidecar into the registry `workdir` and re-reads the branch from the
+effective directory's `.git/HEAD` (fork-free `git_head_branch` /
+`GitHeadBranch`), so a checkout in place also updates the label. Agents
+without hooks, and shell tools that hand out a checkout (`wp allocate`), call
+`am cd <dir>` instead.
 
 | Hook Event | Matcher | am State |
 |---|---|---|
@@ -338,6 +355,21 @@ For agent orchestration, prefer this sequence:
 - Every session exports `$AM_LOG_DIR` into both panes, pointing to `/tmp/am-logs/<session>/`.
 - `am send` and `am peek` are transport primitives. They do not confirm task completion or parse agent state.
 
+### Relabel a session that moved
+
+The tab label (`dir/branch`) follows where the agent works, not where it was
+launched. Claude Code sessions need nothing: the state hooks carry the Bash
+tool's tracked cwd, and the branch is re-read from `.git/HEAD` on the 60s
+title scan. For agents without hooks, or to fix a label by hand:
+
+```bash
+am cd ~/code/pink-wekapp     # from inside the session (agent pane or shell panel)
+am cd                        # default: the caller's cwd
+```
+
+`wp allocate` / `wp checkout` call it themselves when run inside an am
+session. The launch directory is kept for restore.
+
 ### Restore a closed session
 
 Use `am restore` to browse recently closed Claude sessions and resume one:
@@ -358,12 +390,13 @@ am restore
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
-- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude and pi sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
+- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude and pi sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Before the title logic (so untitled sessions are covered too) it refreshes each session's workdir field (from the .cwd sidecar) and branch field (from the effective directory's .git/HEAD) via `_title_scan_refresh_workdir`; Go mirrors that in `refreshedWorkdir`. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task and branch sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
 - `agent_resume_args(agent_type, session_id)` - Build agent-specific resume args (claude → --resume, pi → --session)
 
 **Pane environment / workspaces:**
 - `agent_pane_env(session_name, agent_type)` - Print the `VAR=VALUE` lines every am pane starts with (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR` when streaming); consumed by `tmux_create_session` and the shell-panel `split-window -e`
-- `agent_workspace_allocate([branch])` - Run the configured workspace_cmd (config key) with AM_BRANCH exported and return the directory it prints; errors with setup guidance when unset or when the output is not an existing directory
+- `agent_workspace_allocate([branch])` - Run the configured workspace_cmd (config key) with AM_BRANCH exported (and AM_SESSION_NAME blanked, so a dispatcher is not relabelled by the worker's `wp allocate`) and return the directory it prints; errors with setup guidance when unset or when the output is not an existing directory
+- `agent_set_workdir(session_name, dir)` - Record where the agent works now: write the .cwd sidecar and apply the registry workdir (empty when equal to the launch directory) + branch refresh immediately, then redraw. Backs the cd command; never touches the directory field
 - `current_session()` (in the am entry point) - Name of the am session the caller runs inside; backs the id command (aliases current, whoami) and the no-arg defaults of the shell and info commands
 
 **Shell panel (collapsible; sessions launch agent-only by default):**
@@ -415,6 +448,7 @@ am restore
 
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
+- `git_head_branch(dir, [out_var])` - Fork-free branch lookup: walk up to the nearest `.git` (dir or worktree/submodule pointer file), read HEAD → branch name, 8-char sha when detached, empty outside a repo. `detect_git_branch` delegates to it; Go twin `GitHeadBranch`
 - `claude_first_user_message(dir)` - Extract first user message from Claude session JSONL
 - `pi_first_user_message(dir, [session_id], [strict])` - Extract first user message from pi session JSONL
 
@@ -469,7 +503,7 @@ am restore
 
 Format: `am-XXXXXX` where XXXXXX = md5(directory + timestamp)[:6]
 
-Display: `dirname/branch [agent] task (Xm ago)`
+Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir` when the agent moved, else `directory`
 
 ## Extension Points
 

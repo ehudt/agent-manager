@@ -136,6 +136,49 @@ dir_basename() {
     basename "$1"
 }
 
+# Fork-free git branch lookup. Walks up from <dir> to the nearest .git — a
+# directory, or the pointer file a worktree/submodule carries — and reads HEAD.
+# Prints the branch name, an 8-char sha for a detached HEAD, or nothing when
+# <dir> is missing or outside a repository. With <out_var> the result is
+# assigned instead of printed, so callers on a hot path skip the subshell.
+# Cheap enough for periodic scans (auto_title_scan) and mirrored in Go
+# (internal/sessions.GitHeadBranch).
+# Usage: git_head_branch <dir> [out_var]
+git_head_branch() {
+    local dir="$1" gitdir="" head="" result=""
+    if [[ -n "${2:-}" ]]; then
+        local -n _ghb_out="$2"
+        _ghb_out=""
+    fi
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    while :; do
+        if [[ -d "$dir/.git" ]]; then
+            gitdir="$dir/.git"
+            break
+        elif [[ -f "$dir/.git" ]]; then
+            IFS= read -r gitdir < "$dir/.git" || true
+            gitdir="${gitdir#gitdir: }"
+            [[ "$gitdir" == /* ]] || gitdir="$dir/$gitdir"
+            break
+        fi
+        [[ "$dir" == "/" ]] && return 0
+        dir="${dir%/*}"
+        [[ -n "$dir" ]] || dir="/"
+    done
+    [[ -f "$gitdir/HEAD" ]] || return 0
+    IFS= read -r head < "$gitdir/HEAD" || true
+    if [[ "$head" == "ref: refs/heads/"* ]]; then
+        result="${head#ref: refs/heads/}"
+    elif [[ "$head" =~ ^[0-9a-f]{40} ]]; then
+        result="${head:0:8}"
+    fi
+    if [[ -n "${2:-}" ]]; then
+        _ghb_out="$result"
+    else
+        printf '%s\n' "$result"
+    fi
+}
+
 # Truncate string with ellipsis
 truncate() {
     local str="$1"

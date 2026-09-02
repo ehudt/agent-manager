@@ -131,18 +131,19 @@ auto_title_scan >/dev/null 2>&1 || true
 # Bulk registry read — one jq invocation for all sessions' fields, indexed by
 # name into associative arrays. Replaces N separate `registry_get_fields`
 # calls (each forking jq) with a single fork.
-declare -A REG_DIR=() REG_BRANCH=() REG_AGENT=() REG_TASK=()
+declare -A REG_DIR=() REG_BRANCH=() REG_AGENT=() REG_TASK=() REG_WORKDIR=()
 if [[ -r "${AM_REGISTRY:-}" ]]; then
-    while IFS=$'\x1f' read -r _reg_name _reg_dir _reg_branch _reg_agent _reg_task; do
+    while IFS=$'\x1f' read -r _reg_name _reg_dir _reg_branch _reg_agent _reg_task _reg_workdir; do
         [[ -n "$_reg_name" ]] || continue
         REG_DIR[$_reg_name]=$_reg_dir
         REG_BRANCH[$_reg_name]=$_reg_branch
         REG_AGENT[$_reg_name]=$_reg_agent
         REG_TASK[$_reg_name]=$_reg_task
+        REG_WORKDIR[$_reg_name]=$_reg_workdir
     done < <(jq -r --arg us $'\x1f' '
         .sessions | to_entries[] |
         [.key, (.value.directory // ""), (.value.branch // ""),
-         (.value.agent_type // ""), (.value.task // "")] | join($us)
+         (.value.agent_type // ""), (.value.task // ""), (.value.workdir // "")] | join($us)
     ' "$AM_REGISTRY" 2>/dev/null || true)
 fi
 
@@ -217,8 +218,12 @@ for i in "${!session_meta[@]}"; do
     #           feature branch (pool copies like `pink-wekapp` are noise next
     #           to `dependency-pr-shepherd`), else the directory.
     # Sessions with no directory fall back to the bare session id.
-    if [[ -n "$dir" ]]; then
-        label_full="${dir##*/}"
+    # The label follows where the agent works *now* (registry `workdir`, set
+    # when it moved to another checkout); state detection below keeps using
+    # the launch directory.
+    label_dir="${REG_WORKDIR[$session]:-$dir}"
+    if [[ -n "$label_dir" ]]; then
+        label_full="${label_dir##*/}"
         label_short="$label_full"
         if [[ -n "$branch" && "$DEFAULT_BRANCHES" != *" $branch "* ]]; then
             label_full+="/$branch"

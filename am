@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.19.0"
+AM_VERSION="0.20.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -43,6 +43,7 @@ COMMANDS:
     attach              Attach to a session by name (exact, prefix, or fuzzy)
     shell               Toggle a session's shell panel (open on first use, then hide/show)
     id                  Print the name of the am session you are inside
+    cd                  Record where the current session works now (label + branch follow)
     kill                Kill a session
     config              Show or change saved defaults
     status              Show detailed session info
@@ -518,6 +519,42 @@ EOF
         return 1
     fi
     echo "$name"
+}
+
+# Command: cd — record where the current session's agent is working now
+cmd_cd() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        cat <<'EOF'
+Usage: am cd [directory]
+
+Record that the am session this command runs inside now works in <directory>
+(default: the caller's cwd). The session's tab label and branch follow it; the
+launch directory is kept as-is because restore and transcript lookup key on
+it. Claude Code sessions track this on their own through the state hooks (a
+`cd` in the agent's shell tool is enough), so `am cd` is for agents without
+hooks, for tools that hand out a checkout (`wp allocate` calls it), or to fix
+a label by hand. Exits 1 outside an am session.
+EOF
+        return 0
+    fi
+    local name
+    if ! name=$(current_session); then
+        log_error "Not inside an am session"
+        return 1
+    fi
+    if ! jq -e --arg n "$name" '.sessions[$n] != null' "$AM_REGISTRY" >/dev/null 2>&1; then
+        log_error "Session not registered: $name"
+        return 1
+    fi
+    local target="${1:-$PWD}" dir
+    if ! dir=$(cd "$target" 2>/dev/null && pwd); then
+        log_error "Not a directory: $target"
+        return 1
+    fi
+    agent_set_workdir "$name" "$dir"
+    local branch
+    branch=$(registry_get_field "$name" branch)
+    log_info "$name now works in $dir${branch:+ ($branch)}"
 }
 
 # Resolve a session name: try exact match, then with prefix
@@ -1543,6 +1580,9 @@ main() {
             ;;
         id|current|whoami)
             cmd_id "$@"
+            ;;
+        cd|workdir)
+            cmd_cd "$@"
             ;;
         kill|rm|k)
             cmd_kill "$@"

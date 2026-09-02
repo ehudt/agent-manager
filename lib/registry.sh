@@ -188,7 +188,9 @@ registry_gc() {
                 registry_remove "$name"
                 rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name" \
                       "${AM_STATE_DIR:-/tmp/am-state}/$name.sid" \
-                      "${AM_STATE_DIR:-/tmp/am-state}/$name.transcript"
+                      "${AM_STATE_DIR:-/tmp/am-state}/$name.transcript" \
+                      "${AM_STATE_DIR:-/tmp/am-state}/$name.cwd" \
+                      "${AM_STATE_DIR:-/tmp/am-state}/$name.bg"
                 ((removed++))
             fi
         done
@@ -208,6 +210,8 @@ registry_gc() {
                 sname=$(basename "$state_file")
                 sname="${sname%.sid}"
                 sname="${sname%.transcript}"
+                sname="${sname%.cwd}"
+                sname="${sname%.bg}"
                 if [[ -z "${live_sessions[$sname]:-}" ]]; then
                     rm -f "$state_file"
                 fi
@@ -278,6 +282,34 @@ _cursor_title_extract() {
 # Agents set the terminal title via escape sequences; tmux exposes it as #{pane_title}.
 # Throttled to once per 60s unless force=1.
 # Logs to $AM_DIR/titler.log (tail -f ~/.agent-manager/titler.log)
+# Refresh one session's workdir + branch registry fields from the .cwd sidecar
+# and the effective directory's .git/HEAD. Writes only on change. Bash twin of
+# the workdir/branch half of Go's RefreshTitles.
+# Usage: _title_scan_refresh_workdir <name> <directory> <cur_workdir> <cur_branch>
+_title_scan_refresh_workdir() {
+    local name="$1" directory="$2" workdir="$3" cur_branch="$4"
+    local cwd_file="${AM_STATE_DIR:-/tmp/am-state}/$name.cwd"
+    if [[ -f "$cwd_file" ]]; then
+        local sidecar=""
+        IFS= read -r sidecar < "$cwd_file" || true
+        if [[ -d "$sidecar" ]]; then
+            workdir="$sidecar"
+            [[ "$workdir" == "$directory" ]] && workdir=""
+        fi
+    fi
+    if [[ "$workdir" != "$3" ]]; then
+        registry_update "$name" "workdir" "$workdir"
+        _titler_log "  $name: workdir=\"${workdir:-<directory>}\""
+    fi
+    local effective="${workdir:-$directory}" branch=""
+    [[ -n "$effective" && -d "$effective" ]] || return 0
+    git_head_branch "$effective" branch   # out-var: no subshell on the scan path
+    if [[ "$branch" != "$cur_branch" ]]; then
+        registry_update "$name" "branch" "$branch"
+        _titler_log "  $name: branch=\"$branch\""
+    fi
+}
+
 # Usage: auto_title_scan [force]
 auto_title_scan() {
     local force="${1:-0}"
@@ -305,18 +337,29 @@ auto_title_scan() {
     _titler_log "scan start (force=$force)"
 
     # Bulk-read all sessions with their fields in one jq call (avoids N+1 registry reads)
-    local -A reg_task reg_dir reg_agent reg_created
-    local _rname _rtask _rdir _ragent _rcreated
-    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated; do
+    local -A reg_task reg_dir reg_agent reg_created reg_branch reg_workdir
+    local _rname _rtask _rdir _ragent _rcreated _rbranch _rworkdir
+    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated _rbranch _rworkdir; do
         reg_task[$_rname]=$_rtask
         reg_dir[$_rname]=$_rdir
         reg_agent[$_rname]=$_ragent
         reg_created[$_rname]=$_rcreated
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+        reg_branch[$_rname]=$_rbranch
+        reg_workdir[$_rname]=$_rworkdir
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // "", .value.branch // "", .value.workdir // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
     local name title scanned=0 updated=0
     for name in "${!reg_task[@]}"; do
         scanned=$((scanned + 1))
+
+        # Live working directory + branch. `directory` stays the launch cwd
+        # (it keys the agent's transcript store and restore); `workdir` is
+        # where the agent is actually working, from the hook's .cwd sidecar
+        # (Claude) or `am cd`, stored only when it differs. The branch is
+        # re-read from whichever of the two is in effect, so a checkout in
+        # place or a move to another copy both relabel the tab.
+        _title_scan_refresh_workdir "$name" "${reg_dir[$name]}" \
+            "${reg_workdir[$name]}" "${reg_branch[$name]}"
 
         # Read the agent pane title (set by the agent via terminal escape sequences)
         title=$(tmux_pane_title "${name}:.{top}" 2>/dev/null) || title=""
@@ -402,14 +445,15 @@ sessions_log_scan() {
     echo "$now" > "$marker"
 
     # Bulk-read registry fields (one jq call)
-    local -A reg_task reg_dir reg_agent reg_created
-    local _rname _rtask _rdir _ragent _rcreated
-    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated; do
+    local -A reg_task reg_dir reg_agent reg_created reg_branch
+    local _rname _rtask _rdir _ragent _rcreated _rbranch
+    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated _rbranch; do
         reg_task[$_rname]=$_rtask
         reg_dir[$_rname]=$_rdir
         reg_agent[$_rname]=$_ragent
         reg_created[$_rname]=$_rcreated
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+        reg_branch[$_rname]=$_rbranch
+    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // "", .value.branch // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
 
     # Build lookup of sessions_log entries (bulk parse — one jq call)
     local -A slog_sid slog_snap slog_transcript
@@ -486,12 +530,15 @@ sessions_log_scan() {
     done
     _titler_log "  snapshots captured: $snap_count"
 
-    # Also sync task into the sessions log
+    # Also sync task and branch into the sessions log, so the restore picker
+    # shows the branch the session ended on rather than the one it started on.
     for name in "${!reg_agent[@]}"; do
         case "${reg_agent[$name]}" in claude|codex|pi|cursor) ;; *) continue ;; esac
         [[ -n "${slog_sid[$name]+x}" ]] || continue
         local current_task="${reg_task[$name]}"
         [[ -n "$current_task" ]] && sessions_log_update "$name" "task" "$current_task"
+        local current_branch="${reg_branch[$name]:-}"
+        [[ -n "$current_branch" ]] && sessions_log_update "$name" "branch" "$current_branch"
     done
 }
 

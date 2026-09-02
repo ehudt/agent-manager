@@ -26,6 +26,11 @@ type Session struct {
 	Name      string `json:"name"`
 	Directory string `json:"directory"`
 	Branch    string `json:"branch"`
+	// Workdir is where the agent works now when it has moved away from
+	// Directory (state hook .cwd sidecar / `am cd`); empty means "same as
+	// Directory". Directory itself stays the launch cwd: it keys the
+	// transcript store and restore, so it is never rewritten.
+	Workdir   string `json:"workdir,omitempty"`
 	AgentType string `json:"agent_type"`
 	Task      string `json:"task"`
 	CreatedAt string `json:"created_at"`
@@ -225,9 +230,14 @@ func FormatDisplayBase(s TmuxSession, meta Session) string {
 	var display strings.Builder
 	display.WriteString(s.Name)
 
-	if meta.Directory != "" {
+	// Label from where the agent works now, falling back to the launch dir.
+	dir := meta.Workdir
+	if dir == "" {
+		dir = meta.Directory
+	}
+	if dir != "" {
 		display.WriteByte(' ')
-		display.WriteString(filepath.Base(meta.Directory))
+		display.WriteString(filepath.Base(dir))
 	}
 	if meta.Branch != "" {
 		display.WriteByte('/')

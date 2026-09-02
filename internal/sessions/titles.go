@@ -17,11 +17,22 @@ const titleMaxLen = 60
 
 var leadingNonAlnum = regexp.MustCompile(`^[^[:alnum:]]+`)
 
-// RefreshTitles updates the registry task field for each live tmux session.
-// Reads the agent pane title; for Claude sessions, falls back to the first
-// user message in the Claude JSONL when the pane title is empty/invalid.
-// Throttled to once per 60s via $AM_DIR/.title_scan_last (shared with the
-// bash auto_title_scan to avoid concurrent writes).
+// metaUpdate is one session's pending registry refresh; only fields whose set
+// flag is on are applied.
+type metaUpdate struct {
+	task, workdir, branch          string
+	setTask, setWorkdir, setBranch bool
+}
+
+func (u metaUpdate) empty() bool { return !u.setTask && !u.setWorkdir && !u.setBranch }
+
+// RefreshTitles refreshes the per-session registry metadata that drifts while
+// a session runs: the task (pane title, else the transcript's first user
+// message), the live working directory (`workdir`, from the state hook's .cwd
+// sidecar or `am cd`, stored only when it differs from the launch directory)
+// and the branch (re-read from the effective directory's .git/HEAD, so a
+// checkout in place or a move to another copy both relabel the tab).
+// Throttled to 60s via .title_scan_last, shared with bash auto_title_scan.
 func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 	if len(sessions) == 0 {
 		return
@@ -47,59 +58,23 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 	home := homeDir()
 	stateDir := EnvOr("AM_STATE_DIR", "/tmp/am-state")
 
-	// Phase 1 (unlocked): compute new tasks from pane titles / JSONLs against
-	// a registry snapshot. Slow (tmux exec + file reads per session), so it
-	// must not run under the registry lock.
-	updates := make(map[string]string)
+	// Phase 1 (unlocked): compute updates against a registry snapshot. Slow
+	// (tmux exec + file reads per session), so it must not run under the
+	// registry lock.
+	updates := make(map[string]metaUpdate)
 	for _, s := range sessions {
 		meta, ok := registry.Sessions[s.Name]
 		if !ok {
 			continue
 		}
-
-		title := readPaneTitle(socket, s.Name+":.{top}")
-		title = leadingNonAlnum.ReplaceAllString(title, "")
-		if meta.AgentType == "pi" {
-			title = piTitleExtract(title)
-		} else if meta.AgentType == "cursor" {
-			title = cursorTitleExtract(title)
+		var u metaUpdate
+		u.workdir, u.setWorkdir, u.branch, u.setBranch = refreshedWorkdir(stateDir, s.Name, meta)
+		if title, ok := refreshedTitle(socket, home, stateDir, s, meta); ok {
+			u.task, u.setTask = title, true
 		}
-		if !titleValid(title) {
-			if (meta.AgentType == "claude" || meta.AgentType == "pi" || meta.AgentType == "cursor") && meta.Directory != "" {
-				var fallback string
-				if meta.AgentType == "pi" {
-					sid := resolvePiSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
-					fallback = piFirstUserMessage(meta.Directory, sid, true)
-				} else if meta.AgentType == "cursor" {
-					transcript := readCursorTranscriptSidecar(stateDir, s.Name)
-					sid := resolveCursorSessionID(home, stateDir, s.Name, meta.Directory, transcript)
-					fallback = cursorFirstUserMessage(meta.Directory, sid, transcript, true)
-				} else {
-					// Resolve THIS session's Claude id so two sessions sharing
-					// one directory don't both inherit the newest JSONL's first
-					// message as their title.
-					sid := resolveClaudeSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
-					// strict: when the id can't be pinned, don't guess from a
-					// directory with multiple JSONLs (would inherit a sibling's task).
-					fallback = claudeFirstUserMessage(meta.Directory, sid, true)
-				}
-				if len(fallback) > titleMaxLen {
-					fallback = fallback[:titleMaxLen]
-				}
-				if titleValid(fallback) {
-					title = fallback
-				} else {
-					continue
-				}
-			} else {
-				continue
-			}
+		if !u.empty() {
+			updates[s.Name] = u
 		}
-
-		if title == meta.Task {
-			continue
-		}
-		updates[s.Name] = title
 	}
 
 	if len(updates) == 0 {
@@ -107,26 +82,119 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 	}
 
 	// Phase 2 (locked): re-read the registry under the write lock shared with
-	// bash (lib/registry.sh:_registry_lock) and apply only the task fields —
-	// writing back the phase-1 snapshot would clobber concurrent writers.
+	// bash (lib/registry.sh:_registry_lock) and apply only the refreshed
+	// fields — writing back the phase-1 snapshot would clobber concurrent
+	// writers.
 	lock := lockRegistry(amDir)
 	defer unlockRegistry(lock)
 
 	fresh := ReadRegistry(regPath)
 	var updated bool
-	for name, task := range updates {
+	for name, u := range updates {
 		meta, ok := fresh.Sessions[name]
-		if !ok || meta.Task == task {
+		if !ok {
 			continue
 		}
-		meta.Task = task
+		if u.setTask && meta.Task != u.task {
+			meta.Task = u.task
+			updated = true
+		}
+		if u.setWorkdir && meta.Workdir != u.workdir {
+			meta.Workdir = u.workdir
+			updated = true
+		}
+		if u.setBranch && meta.Branch != u.branch {
+			meta.Branch = u.branch
+			updated = true
+		}
 		fresh.Sessions[name] = meta
-		updated = true
 	}
 	if !updated {
 		return
 	}
 	writeRegistryAtomic(regPath, fresh)
+}
+
+// refreshedWorkdir mirrors lib/registry.sh:_title_scan_refresh_workdir. The
+// .cwd sidecar (written by the state hook from Claude's tracked tool cwd, or by
+// `am cd`) becomes workdir when it names an existing directory other than the
+// launch directory. The branch is re-read from whichever directory is in
+// effect; a missing directory leaves the branch alone.
+func refreshedWorkdir(stateDir, name string, meta Session) (workdir string, setWorkdir bool, branch string, setBranch bool) {
+	workdir = meta.Workdir
+	if data, err := os.ReadFile(filepath.Join(stateDir, name+".cwd")); err == nil {
+		sidecar := strings.SplitN(string(data), "\n", 2)[0]
+		if fi, err := os.Stat(sidecar); err == nil && fi.IsDir() {
+			workdir = sidecar
+			if workdir == meta.Directory {
+				workdir = ""
+			}
+		}
+	}
+	setWorkdir = workdir != meta.Workdir
+
+	effective := workdir
+	if effective == "" {
+		effective = meta.Directory
+	}
+	if effective == "" {
+		return
+	}
+	if fi, err := os.Stat(effective); err != nil || !fi.IsDir() {
+		return
+	}
+	branch = GitHeadBranch(effective)
+	setBranch = branch != meta.Branch
+	return
+}
+
+// refreshedTitle returns the session's current title when it is valid and
+// differs from the registry task: the agent's pane title, else (Claude / pi /
+// Cursor) the first user message of this session's transcript.
+func refreshedTitle(socket, home, stateDir string, s TmuxSession, meta Session) (string, bool) {
+	title := readPaneTitle(socket, s.Name+":.{top}")
+	title = leadingNonAlnum.ReplaceAllString(title, "")
+	if meta.AgentType == "pi" {
+		title = piTitleExtract(title)
+	} else if meta.AgentType == "cursor" {
+		title = cursorTitleExtract(title)
+	}
+	if !titleValid(title) {
+		if (meta.AgentType == "claude" || meta.AgentType == "pi" || meta.AgentType == "cursor") && meta.Directory != "" {
+			var fallback string
+			if meta.AgentType == "pi" {
+				sid := resolvePiSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
+				fallback = piFirstUserMessage(meta.Directory, sid, true)
+			} else if meta.AgentType == "cursor" {
+				transcript := readCursorTranscriptSidecar(stateDir, s.Name)
+				sid := resolveCursorSessionID(home, stateDir, s.Name, meta.Directory, transcript)
+				fallback = cursorFirstUserMessage(meta.Directory, sid, transcript, true)
+			} else {
+				// Resolve THIS session's Claude id so two sessions sharing
+				// one directory don't both inherit the newest JSONL's first
+				// message as their title.
+				sid := resolveClaudeSessionID(home, stateDir, s.Name, meta.Directory, meta.CreatedAt)
+				// strict: when the id can't be pinned, don't guess from a
+				// directory with multiple JSONLs (would inherit a sibling's task).
+				fallback = claudeFirstUserMessage(meta.Directory, sid, true)
+			}
+			if len(fallback) > titleMaxLen {
+				fallback = fallback[:titleMaxLen]
+			}
+			if titleValid(fallback) {
+				title = fallback
+			} else {
+				return "", false
+			}
+		} else {
+			return "", false
+		}
+	}
+
+	if title == meta.Task {
+		return "", false
+	}
+	return title, true
 }
 
 func readScanMarker(path string) (time.Time, bool) {

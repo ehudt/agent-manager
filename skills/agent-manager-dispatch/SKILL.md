@@ -65,6 +65,12 @@ This lands the agent in a real wekapp checkout (CLAUDE.md, teka, venvs all in
 place) with zero bootstrap turns and no branch-switch collisions. See the
 `wp` skill for pool management (status/clear/find).
 
+If a running agent moves anyway — `wp allocate` / `wp checkout` mid-session,
+or a `cd` into another checkout — its am tab keeps up: `wp` calls `am cd` for
+the calling session, Claude sessions are tracked through the state hooks, and
+the branch is re-read from `.git/HEAD` on the next title scan. Agents without
+hooks run `am cd <dir>` after moving.
+
 ## Choosing Cursor Agent
 
 Launch Cursor explicitly with:
@@ -106,6 +112,7 @@ Run the tests, reproduce, fix, and commit. Use superpowers:systematic-debugging.
 | `am list --json` | All sessions as JSON (includes `state`) |
 | `am peek [--pane shell] [--follow] <session>` | Pane snapshot or stream |
 | `am interrupt <session>` | Send Ctrl-C to agent pane |
+| `am cd [dir]` | From inside a session: record that it now works in `dir` (tab label + branch follow). Claude sessions and `wp allocate`/`checkout` do this on their own |
 | `am info` / `am kill` / `am attach <session>` | Metadata / terminate / hand to user |
 
 ## Session States

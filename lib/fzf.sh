@@ -229,7 +229,8 @@ fzf_main() {
 
 # Shared session row collector for `am list` text and JSON output.
 # Output fields are separated by ASCII unit separator:
-# name, state, directory, branch, agent_type, task, activity, created
+# name, state, directory, branch, agent_type, task, activity, created, workdir
+# (workdir is empty unless the agent moved away from its launch directory)
 # Usage: _fzf_session_rows
 _fzf_session_rows() {
     # Lazy-load state.sh — only list/status JSON and plain CLI listing need state.
@@ -257,15 +258,16 @@ _fzf_session_rows() {
     done <<< "$tmux_data"
 
     # Bulk-read all registry fields in one jq call.
-    local -A reg_dir reg_branch reg_agent reg_task
-    local _rname _rdir _rbranch _ragent _rtask
-    while IFS=$'\x1f' read -r _rname _rdir _rbranch _ragent _rtask; do
+    local -A reg_dir reg_branch reg_agent reg_task reg_workdir
+    local _rname _rdir _rbranch _ragent _rtask _rworkdir
+    while IFS=$'\x1f' read -r _rname _rdir _rbranch _ragent _rtask _rworkdir; do
         [[ -z "$_rname" ]] && continue
         reg_dir[$_rname]=$_rdir
         reg_branch[$_rname]=$_rbranch
         reg_agent[$_rname]=$_ragent
         reg_task[$_rname]=$_rtask
-    done < <(jq -r --arg sep "$sep" '.sessions | to_entries[] | [.key, .value.directory // "", .value.branch // "", .value.agent_type // "", .value.task // ""] | join($sep)' "$AM_REGISTRY" 2>/dev/null || true)
+        reg_workdir[$_rname]=$_rworkdir
+    done < <(jq -r --arg sep "$sep" '.sessions | to_entries[] | [.key, .value.directory // "", .value.branch // "", .value.agent_type // "", .value.task // "", .value.workdir // ""] | join($sep)' "$AM_REGISTRY" 2>/dev/null || true)
 
     # Parallel state detection. _state_resolve in non-bulk mode handles its
     # own per-session tmux/ps lookups; running each session in its own
@@ -285,7 +287,7 @@ _fzf_session_rows() {
     rm -rf "$state_tmpdir"
 
     for session in "${session_names[@]}"; do
-        printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+        printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
             "$session" "$sep" \
             "${session_states[$session]:-}" "$sep" \
             "${reg_dir[$session]:-}" "$sep" \
@@ -293,7 +295,8 @@ _fzf_session_rows() {
             "${reg_agent[$session]:-}" "$sep" \
             "${reg_task[$session]:-}" "$sep" \
             "${tmux_activity[$session]:-0}" "$sep" \
-            "${tmux_created[$session]:-0}"
+            "${tmux_created[$session]:-0}" "$sep" \
+            "${reg_workdir[$session]:-}"
     done
 }
 
@@ -327,9 +330,9 @@ fzf_list_simple() {
     rows=$(_fzf_session_rows)
     [[ -z "$rows" ]] && return
 
-    while IFS=$'\x1f' read -r session _state directory branch agent_type task activity _created; do
+    while IFS=$'\x1f' read -r session _state directory branch agent_type task activity _created workdir; do
         [[ -z "$session" ]] && continue
-        _fzf_format_plain_row "$session" "$directory" "$branch" "$agent_type" "$task" "$activity"
+        _fzf_format_plain_row "$session" "${workdir:-$directory}" "$branch" "$agent_type" "$task" "$activity"
     done <<< "$rows"
 }
 
@@ -347,7 +350,8 @@ fzf_list_json() {
         split("\n") | map(select(length > 0) | split($sep) |
          {name: .[0], state: .[1], directory: .[2], branch: .[3],
           agent_type: .[4], task: .[5],
-          activity: (.[6] | tonumber), created: (.[7] | tonumber)})'
+          activity: (.[6] | tonumber), created: (.[7] | tonumber),
+          workdir: (.[8] // "")})'
 }
 
 # Restore picker: browse closed sessions and resume one

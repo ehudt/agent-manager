@@ -296,3 +296,70 @@ func TestPiFirstUserMessage(t *testing.T) {
 		t.Fatalf("piFirstUserMessage sid-pinned = %q", got)
 	}
 }
+
+// RefreshTitles also refreshes workdir + branch: a checkout in place changes
+// the branch, a .cwd sidecar naming another checkout sets workdir and reads the
+// branch there, and coming home clears workdir. directory is never rewritten.
+func TestRefreshTitlesWorkdirAndBranch(t *testing.T) {
+	amDir := t.TempDir()
+	regPath := filepath.Join(amDir, "sessions.json")
+	stateDir := t.TempDir()
+	launch := filepath.Join(t.TempDir(), "launch")
+	other := filepath.Join(t.TempDir(), "other")
+	writeFile(t, filepath.Join(launch, ".git", "HEAD"), "ref: refs/heads/main\n")
+	writeFile(t, filepath.Join(other, ".git", "HEAD"), "ref: refs/heads/feature\n")
+
+	// Fake tmux prints an empty title; with an empty HOME the JSONL fallback
+	// finds nothing, so only the workdir/branch half acts.
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte("#!/bin/sh\nprintf '\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AM_STATE_DIR", stateDir)
+
+	writeRegistryAtomic(regPath, Registry{Sessions: map[string]Session{
+		"am-wd": {Name: "am-wd", Directory: launch, Branch: "main", AgentType: "claude"},
+	}})
+	refresh := func() Session {
+		os.Remove(filepath.Join(amDir, ".title_scan_last"))
+		RefreshTitles(amDir, "test-socket", []TmuxSession{{Name: "am-wd"}})
+		return ReadRegistry(regPath).Sessions["am-wd"]
+	}
+
+	writeFile(t, filepath.Join(launch, ".git", "HEAD"), "ref: refs/heads/topic\n")
+	got := refresh()
+	if got.Branch != "topic" || got.Workdir != "" {
+		t.Fatalf("checkout in place: branch=%q workdir=%q, want topic/\"\"", got.Branch, got.Workdir)
+	}
+
+	writeFile(t, filepath.Join(stateDir, "am-wd.cwd"), other)
+	got = refresh()
+	if got.Workdir != other || got.Branch != "feature" {
+		t.Fatalf("sidecar elsewhere: workdir=%q branch=%q, want %q/feature", got.Workdir, got.Branch, other)
+	}
+	if got.Directory != launch {
+		t.Fatalf("directory rewritten to %q", got.Directory)
+	}
+
+	writeFile(t, filepath.Join(stateDir, "am-wd.cwd"), launch)
+	got = refresh()
+	if got.Workdir != "" || got.Branch != "topic" {
+		t.Fatalf("back home: workdir=%q branch=%q, want \"\"/topic", got.Workdir, got.Branch)
+	}
+
+	writeFile(t, filepath.Join(stateDir, "am-wd.cwd"), filepath.Join(other, "gone"))
+	got = refresh()
+	if got.Workdir != "" || got.Branch != "topic" {
+		t.Fatalf("missing sidecar dir: workdir=%q branch=%q, want unchanged", got.Workdir, got.Branch)
+	}
+
+	// Sessions with no refresh to apply leave the file untouched.
+	before, _ := os.Stat(regPath)
+	got = refresh()
+	after, _ := os.Stat(regPath)
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Fatalf("no-op refresh rewrote the registry")
+	}
+}

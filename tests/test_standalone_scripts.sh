@@ -161,6 +161,22 @@ test_standalone_status_bar() {
     output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
     assert_eq "0" "$rc" "status-bar: exits 0 with mixed states"
 
+    # The tab label follows the registry workdir (where the agent moved), not
+    # the launch directory.
+    local wd_root
+    wd_root=$(mktemp -d)
+    mkdir -p "$wd_root/wdmove"
+    if [[ -n "$s2" ]]; then
+        registry_update "$s2" "workdir" "$wd_root/wdmove"
+        rc=0
+        output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
+        assert_contains "$output" "wdmove" "status-bar: label follows the session workdir"
+        registry_update "$s2" "workdir" ""
+    else
+        skip_test "status-bar: workdir label (session creation failed)"
+    fi
+    rm -rf "$wd_root"
+
     # Missing hook + agent alive (non-shell pane) → status-bar renders '?' (unknown).
     local test_dir4 s4 old_claude_cmd
     test_dir4=$(mktemp -d)

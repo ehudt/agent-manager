@@ -76,7 +76,7 @@ agent_target_pane() {
 # Usage: detect_git_branch <directory>
 detect_git_branch() {
     local directory="$1"
-    git -C "$directory" branch --show-current 2>/dev/null || echo ""
+    git_head_branch "$directory"
 }
 
 # Generate a unique session name
@@ -308,8 +308,12 @@ agent_workspace_allocate() {
         echo "Set one with, e.g.: am config set workspace_cmd 'wp allocate \${AM_BRANCH:+--branch \"\$AM_BRANCH\"}'" >&2
         return 1
     fi
+    # AM_SESSION_NAME is blanked: when a dispatching agent runs `am new -W`
+    # from inside its own am session, a workspace tool that relabels the
+    # calling session (wp allocate → `am cd`) must not retag the dispatcher
+    # with the worker's directory.
     local dir
-    if ! dir=$(AM_BRANCH="$branch" "${BASH:-bash}" -c "$cmd"); then
+    if ! dir=$(AM_BRANCH="$branch" AM_SESSION_NAME= "${BASH:-bash}" -c "$cmd"); then
         log_error "Workspace command failed: $cmd"
         return 1
     fi
@@ -318,6 +322,27 @@ agent_workspace_allocate() {
         return 1
     fi
     echo "$dir"
+}
+
+# Record where a session's agent is working now. Writes the .cwd sidecar (the
+# file the Claude state hook maintains on its own) and applies the registry
+# `workdir` + `branch` refresh immediately instead of waiting for the next
+# title scan. `directory` is never touched: it keys the transcript store and
+# restore. Backs `am cd`.
+# Usage: agent_set_workdir <session_name> <dir>
+agent_set_workdir() {
+    local session_name="$1" dir="$2"
+    local directory
+    directory=$(registry_get_field "$session_name" directory)
+    local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+    mkdir -p "$state_dir"
+    printf '%s' "$dir" > "$state_dir/$session_name.cwd"
+    local workdir="$dir"
+    [[ "$workdir" == "$directory" ]] && workdir=""
+    registry_update "$session_name" "workdir" "$workdir"
+    registry_update "$session_name" "branch" "$(git_head_branch "$dir")"
+    rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
+    am_refresh_sidebar_cache
 }
 
 # Create the shell panel for an existing session: split below the agent in
@@ -414,10 +439,10 @@ agent_info() {
     local session_name="$1"
 
     local fields
-    fields=$(registry_get_fields "$session_name" directory branch agent_type task)
+    fields=$(registry_get_fields "$session_name" directory branch agent_type task workdir)
 
-    local directory branch agent_type task
-    IFS='|' read -r directory branch agent_type task <<< "$fields"
+    local directory branch agent_type task workdir
+    IFS='|' read -r directory branch agent_type task workdir <<< "$fields"
 
     # Get tmux info
     local activity created_ts
@@ -439,6 +464,7 @@ agent_info() {
     # Output info
     echo "Session: $session_name"
     echo "Directory: ${directory:-unknown}"
+    [[ -n "$workdir" ]] && echo "Working in: $workdir"
     echo "Branch: ${branch:--}"
     echo "Agent: ${agent_type:-unknown}"
     echo "Running: $(format_duration "$running_time")"
@@ -503,6 +529,8 @@ agent_kill() {
     rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.cwd" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.bg" \
           "$(_recovery_identity_dir)/$session_name.sid" \
           "$(_recovery_identity_dir)/$session_name.transcript" \
           "$(_recovery_identity_dir)/$session_name.rebind"

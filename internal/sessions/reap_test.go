@@ -50,6 +50,9 @@ func TestReapOrphansRemovesDeadAndKeepsLive(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(stateDir, n+".sid"), []byte("uuid-"+n), 0o644); err != nil {
 			t.Fatalf("seed sidecar: %v", err)
 		}
+		if err := os.WriteFile(filepath.Join(stateDir, n+".cwd"), []byte("/tmp/"+n), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(stateDir, n+".transcript"), []byte("/tmp/"+n+".jsonl"), 0o644); err != nil {
 			t.Fatalf("seed transcript sidecar: %v", err)
 		}
@@ -85,6 +88,9 @@ func TestReapOrphansRemovesDeadAndKeepsLive(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(stateDir, dead+".transcript")); !os.IsNotExist(err) {
 			t.Errorf("dead sidecar %s.transcript still present: err=%v", dead, err)
+		}
+		if _, err := os.Stat(filepath.Join(stateDir, dead+".cwd")); !os.IsNotExist(err) {
+			t.Errorf("dead sidecar %s.cwd still present: err=%v", dead, err)
 		}
 	}
 }

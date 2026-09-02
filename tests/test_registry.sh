@@ -904,6 +904,80 @@ test_registry_concurrency() {
     $SUMMARY_MODE || echo ""
 }
 
+
+# ============================================
+# Test: auto_title_scan refreshes workdir + branch
+# ============================================
+test_auto_title_scan_workdir() {
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Auto-Title Scan: workdir + branch refresh ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/registry.sh"
+
+    setup_isolated_am_dir
+    # No pane titles and no Claude project dir: isolate the title half so only
+    # the workdir/branch half acts.
+    tmux_pane_title() { echo ""; }
+    tmux_session_pane_target() { echo "$1:.{top}"; }
+    tmux_capture_pane() { echo ""; }
+    local old_home="$HOME"
+    export HOME="$AM_DIR/fake_home"
+    mkdir -p "$HOME" "$AM_STATE_DIR"
+
+    local launch="$AM_DIR/launch" other="$AM_DIR/other"
+    mkdir -p "$launch/.git" "$other/.git"
+    echo "ref: refs/heads/main" > "$launch/.git/HEAD"
+    echo "ref: refs/heads/feature" > "$other/.git/HEAD"
+    registry_add "test-wd-1" "$launch" "main" "claude" ""
+
+    # 1. Checkout in place → branch follows, no workdir.
+    echo "ref: refs/heads/topic" > "$launch/.git/HEAD"
+    auto_title_scan 1
+    assert_eq "topic" "$(registry_get_field test-wd-1 branch)" \
+        "scan: branch follows a checkout in the launch dir"
+    assert_eq "" "$(registry_get_field test-wd-1 workdir)" \
+        "scan: no workdir while the agent stays in its launch dir"
+
+    # 2. .cwd sidecar names another checkout → workdir + its branch; directory untouched.
+    printf '%s' "$other" > "$AM_STATE_DIR/test-wd-1.cwd"
+    auto_title_scan 1
+    assert_eq "$other" "$(registry_get_field test-wd-1 workdir)" \
+        "scan: workdir from the .cwd sidecar"
+    assert_eq "feature" "$(registry_get_field test-wd-1 branch)" \
+        "scan: branch read from the workdir"
+    assert_eq "$launch" "$(registry_get_field test-wd-1 directory)" \
+        "scan: launch directory is never rewritten"
+
+    # 3. Agent comes home → workdir cleared, branch back to the launch dir's.
+    printf '%s' "$launch" > "$AM_STATE_DIR/test-wd-1.cwd"
+    auto_title_scan 1
+    assert_eq "" "$(registry_get_field test-wd-1 workdir)" \
+        "scan: workdir cleared when cwd returns to the launch dir"
+    assert_eq "topic" "$(registry_get_field test-wd-1 branch)" \
+        "scan: branch back to the launch dir's"
+
+    # 4. Sidecar naming a missing directory is ignored.
+    printf '%s' "$AM_DIR/gone" > "$AM_STATE_DIR/test-wd-1.cwd"
+    auto_title_scan 1
+    assert_eq "" "$(registry_get_field test-wd-1 workdir)" \
+        "scan: sidecar to a missing dir is ignored"
+    assert_eq "topic" "$(registry_get_field test-wd-1 branch)" \
+        "scan: branch kept when the sidecar dir is missing"
+
+    # 5. Non-git workdir → branch blank.
+    mkdir -p "$AM_DIR/plain"
+    printf '%s' "$AM_DIR/plain" > "$AM_STATE_DIR/test-wd-1.cwd"
+    auto_title_scan 1
+    assert_eq "$AM_DIR/plain" "$(registry_get_field test-wd-1 workdir)" \
+        "scan: workdir set for a non-git dir"
+    assert_eq "" "$(registry_get_field test-wd-1 branch)" \
+        "scan: branch blank in a non-git workdir"
+
+    export HOME="$old_home"
+    teardown_isolated_am_dir
+}
+
 run_registry_tests() {
     _run_test test_registry
     _run_test test_registry_extended
@@ -914,6 +988,7 @@ run_registry_tests() {
     _run_test test_auto_title_session
     _run_test test_auto_title_scan
     _run_test test_agent_kill_sid_binding
+    _run_test test_auto_title_scan_workdir
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

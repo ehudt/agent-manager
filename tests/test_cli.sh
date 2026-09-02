@@ -119,8 +119,8 @@ test_cli_extended() {
     row_line=$(printf '%s\n' "$row_output" | head -n1)
     assert_not_empty "$row_line" "list row collector: emits a row"
 
-    local row_name row_state row_dir row_branch row_agent row_task row_activity row_created
-    IFS=$'\x1f' read -r row_name row_state row_dir row_branch row_agent row_task row_activity row_created <<< "$row_line"
+    local row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir
+    IFS=$'\x1f' read -r row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir <<< "$row_line"
     assert_eq "$session_name" "$row_name" "list row collector: name field"
     assert_not_empty "$row_state" "list row collector: state field"
     assert_eq "$test_dir" "$row_dir" "list row collector: directory field"
@@ -129,6 +129,7 @@ test_cli_extended() {
     assert_eq "cli test" "$row_task" "list row collector: task field"
     assert_not_empty "$row_activity" "list row collector: activity field"
     assert_not_empty "$row_created" "list row collector: created field"
+    assert_eq "" "$row_workdir" "list row collector: workdir empty until the agent moves"
 
     # --- Test: am list-internal returns session list for the browser ---
     if [[ -x "$PROJECT_DIR/bin/am-list-internal" && -s "$PROJECT_DIR/bin/am-list-internal" ]]; then
@@ -367,10 +368,67 @@ test_cli_workspace_and_id() {
     $SUMMARY_MODE || echo ""
 }
 
+
+# am cd: record where the current session's agent works now
+test_cli_cd() {
+    $SUMMARY_MODE || echo "=== Testing am cd ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+    local state_dir launch other
+    state_dir=$(mktemp -d)
+    launch=$(mktemp -d)
+    other=$(mktemp -d)
+    mkdir -p "$launch/.git" "$other/.git"
+    echo "ref: refs/heads/main" > "$launch/.git/HEAD"
+    echo "ref: refs/heads/pr-42" > "$other/.git/HEAD"
+    local am_env=(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_STATE_DIR="$state_dir" TMUX=)
+
+    local rc=0
+    env "${am_env[@]}" AM_SESSION_NAME= "$PROJECT_DIR/am" cd "$other" >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am cd: exits 1 outside an am session"
+
+    rc=0
+    env "${am_env[@]}" AM_SESSION_NAME=test-am-ghost "$PROJECT_DIR/am" cd "$other" >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am cd: exits 1 for an unregistered session"
+
+    registry_add "test-am-cd1" "$launch" "main" "claude" "cd test"
+
+    rc=0
+    env "${am_env[@]}" AM_SESSION_NAME=test-am-cd1 "$PROJECT_DIR/am" cd "$other" >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "0" "$rc" "am cd: succeeds inside a registered session"
+    assert_eq "$other" "$(registry_get_field test-am-cd1 workdir)" "am cd: sets workdir"
+    assert_eq "pr-42" "$(registry_get_field test-am-cd1 branch)" "am cd: refreshes the branch from the new dir"
+    assert_eq "$launch" "$(registry_get_field test-am-cd1 directory)" "am cd: keeps the launch directory"
+    assert_eq "$other" "$(cat "$state_dir/test-am-cd1.cwd" 2>/dev/null)" "am cd: writes the .cwd sidecar"
+
+    env "${am_env[@]}" AM_SESSION_NAME=test-am-cd1 "$PROJECT_DIR/am" cd "$launch" >/dev/null 2>&1 </dev/null || true
+    assert_eq "" "$(registry_get_field test-am-cd1 workdir)" "am cd: clears workdir back in the launch dir"
+    assert_eq "main" "$(registry_get_field test-am-cd1 branch)" "am cd: branch follows back"
+
+    (cd "$other" && env "${am_env[@]}" AM_SESSION_NAME=test-am-cd1 "$PROJECT_DIR/am" cd >/dev/null 2>&1 </dev/null) || true
+    assert_eq "$other" "$(registry_get_field test-am-cd1 workdir)" "am cd: defaults to the caller's cwd"
+
+    rc=0
+    env "${am_env[@]}" AM_SESSION_NAME=test-am-cd1 "$PROJECT_DIR/am" cd "$other/nope" >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am cd: rejects a missing directory"
+
+    assert_contains "$(env "${am_env[@]}" "$PROJECT_DIR/am" cd --help 2>&1)" "Usage: am cd" "am cd --help: prints usage"
+
+    teardown_integration_env
+    rm -rf "$state_dir" "$launch" "$other"
+}
+
 run_cli_tests() {
     _run_test test_cli
     _run_test test_cli_workspace_and_id
     _run_test test_cli_extended
+    _run_test test_cli_cd
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

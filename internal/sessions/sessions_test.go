@@ -143,7 +143,7 @@ func registryMetadataDocument(name, task string) map[string]any {
 		"sessions": map[string]any{
 			name: map[string]any{
 				"name":       name,
-				"directory":  "/tmp/test",
+				"directory":  "/nonexistent/am-test",
 				"branch":     "dev",
 				"agent_type": "claude",
 				"task":       task,
@@ -396,5 +396,17 @@ func TestEncodedPiSessionDir(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("encodedPiSessionDir(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestFormatDisplayBaseUsesWorkdir(t *testing.T) {
+	s := TmuxSession{Name: "am-wd"}
+	meta := Session{Directory: "/repos/wekapp", Branch: "pr-42", AgentType: "claude", Task: "fix"}
+	if got := FormatDisplayBase(s, meta); got != "am-wd wekapp/pr-42 [claude] fix" {
+		t.Errorf("without workdir: %q", got)
+	}
+	meta.Workdir = "/pool/pink-wekapp"
+	if got := FormatDisplayBase(s, meta); got != "am-wd pink-wekapp/pr-42 [claude] fix" {
+		t.Errorf("with workdir: %q", got)
 	}
 }
