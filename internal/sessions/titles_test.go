@@ -20,6 +20,8 @@ func TestTitleValid(t *testing.T) {
 		{strings.Repeat("a", 61), false},
 		{"with\nnewline", false},
 		{"normal task description", true},
+		{"Claude Code", false}, // pre-summary placeholder, not a title
+		{"Claude Code hooks question", true},
 	}
 	for _, c := range cases {
 		if got := titleValid(c.in); got != c.want {

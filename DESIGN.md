@@ -192,7 +192,7 @@ agent-manager/
 │   ├── fzf.sh              # fzf UI, directory picker with history annotations
 │   ├── preview             # Standalone preview script for fzf panel
 │   ├── dir-preview         # Standalone preview script for directory picker
-│   ├── status-bar          # Standalone script: renders bottom bar as clickable session-tab strip + writes @am_sidebar / @am_attention
+│   ├── status-bar          # Standalone script: renders bottom bar as an adaptive clickable session-tab strip + writes @am_sidebar
 │   ├── strip-ansi          # Standalone script: strips ANSI escape codes
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
 │   ├── state.sh            # Session state detection: JSONL + pane pattern matching

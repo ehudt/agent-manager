@@ -415,6 +415,12 @@ test_auto_title_session() {
     assert_cmd_fails "title_gen: rejects multiline titles" \
         _title_valid $'Multi\nline'
 
+    # --- Test 2b: Title validation - Claude's pre-summary placeholder ---
+    assert_cmd_fails "title_gen: rejects the bare 'Claude Code' placeholder" \
+        _title_valid "Claude Code"
+    assert_cmd_succeeds "title_gen: accepts titles that merely mention Claude Code" \
+        _title_valid "Claude Code hooks question"
+
     # --- Test 3: Integration - registry update on successful title ---
     registry_add "test-title-reg" "/tmp/test" "main" "claude" ""
     registry_update "test-title-reg" "task" "Refactor API layer"

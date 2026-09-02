@@ -246,8 +246,9 @@ test_standalone_status_bar_many_sessions() {
             "long-ish task description number $i for width"
         names+=("$name")
     done
-    # Throttle piggyback scans so the run is deterministic and fast.
-    touch "$AM_DIR/.title_scan_last" "$AM_DIR/.restore_scan_last"
+    # Throttle piggyback scans so the run is deterministic and fast (the
+    # markers hold the epoch of the last scan, so an empty touch won't do).
+    date +%s | tee "$AM_DIR/.title_scan_last" > "$AM_DIR/.restore_scan_last"
 
     rc=0
     "$LIB_DIR/status-bar" 2>/dev/null || rc=$?
@@ -261,7 +262,8 @@ test_standalone_status_bar_many_sessions() {
     assert_eq "" "$missing" "status-bar: writes @am_status_left for all $n sessions"
 
     val=$(am_tmux show-option -t "${names[$((n - 1))]}" -qv @am_status_left 2>/dev/null || true)
-    assert_contains "$val" "${n}|" "status-bar: last session's strip includes its own tab"
+    assert_contains "$val" "range=user|${names[$((n - 1))]}" \
+        "status-bar: last session's strip includes its own tab"
 
     for name in "${names[@]}"; do
         am_tmux kill-session -t "$name" 2>/dev/null || true
@@ -362,11 +364,125 @@ test_strip_ansi() {
     $SUMMARY_MODE || echo ""
 }
 
+test_standalone_status_bar_layout() {
+    $SUMMARY_MODE || echo "=== Testing lib/status-bar (adaptive layout) ==="
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/state.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+    setup_integration_env
+    local old_state_dir="${AM_STATE_DIR:-}"
+    local test_state_dir
+    test_state_dir=$(mktemp -d)
+    export AM_STATE_DIR="$test_state_dir"
+
+    # Three sessions with known dir/branch/title so the fit ladder is
+    # deterministic: a feature branch with a title, a default branch with a
+    # title, and an untitled feature branch. AM_STATUS_WIDTH pins the width
+    # (status-right reserve is ${#name} + 8 = 18 cols here).
+    local test_dir n1 n2 n3 raw out sidebar
+    test_dir=$(mktemp -d)
+    mkdir -p "$test_dir/alpha-repo" "$test_dir/beta-repo" "$test_dir/gamma-repo"
+    n1="${AM_SESSION_PREFIX}layout1"
+    n2="${AM_SESSION_PREFIX}layout2"
+    n3="${AM_SESSION_PREFIX}layout3"
+    tmux_create_session "$n1" "$test_dir/alpha-repo" 2>/dev/null
+    registry_add "$n1" "$test_dir/alpha-repo" "feature-branch-one" "bash" \
+        "Investigate the flaky integration test"
+    tmux_create_session "$n2" "$test_dir/beta-repo" 2>/dev/null
+    registry_add "$n2" "$test_dir/beta-repo" "main" "bash" \
+        "Write release notes for the sprint"
+    tmux_create_session "$n3" "$test_dir/gamma-repo" 2>/dev/null
+    registry_add "$n3" "$test_dir/gamma-repo" "fix/login-timeout" "bash" ""
+    # Throttle piggyback scans so the registered titles stay as written (the
+    # markers hold the epoch of the last scan, so an empty touch won't do —
+    # the scan would replace every task with the shell pane's hostname title).
+    date +%s | tee "$AM_DIR/.title_scan_last" > "$AM_DIR/.restore_scan_last"
+
+    # Rung 1 — wide: everything in full, default branch hidden, no placeholder
+    # for the untitled session.
+    raw=$(AM_STATUS_WIDTH=400 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "alpha-repo/feature-branch-one · Investigate the flaky integration test" \
+        "status-bar layout: wide → full dir/branch · title"
+    assert_contains "$out" "beta-repo · Write release notes for the sprint" \
+        "status-bar layout: wide → default branch hidden"
+    assert_not_contains "$out" "beta-repo/main" \
+        "status-bar layout: wide → no /main suffix"
+    assert_contains "$out" "gamma-repo/fix/login-timeout " \
+        "status-bar layout: wide → untitled session shows its label"
+    assert_not_contains "$out" "∅" \
+        "status-bar layout: wide → no ∅ placeholder"
+    assert_not_contains "$out" "..." \
+        "status-bar layout: wide → nothing truncated"
+    assert_contains "$raw" "#[fg=colour245]" \
+        "status-bar layout: wide → ages rendered (dimmed)"
+    sidebar=$(am_tmux show-option -t "$n1" -qv @am_sidebar 2>/dev/null || true)
+    sidebar=$(printf '%s' "$sidebar" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$sidebar" "alpha-repo/feature-branch-one" \
+        "status-bar layout: sidebar keeps full labels when they fit"
+    assert_not_contains "$sidebar" " · " \
+        "status-bar layout: sidebar never shows titles"
+
+    # Rung 2 — medium: labels collapse to branch-or-dir, both fields kept and
+    # water-filled (short fields stay whole, long ones get the "…").
+    raw=$(AM_STATUS_WIDTH=140 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "feature-branch-one · Investigate the" \
+        "status-bar layout: medium → branch · title"
+    assert_not_contains "$out" "alpha-repo/" \
+        "status-bar layout: medium → directory dropped from feature-branch label"
+    assert_contains "$out" "beta-repo · Write release" \
+        "status-bar layout: medium → default-branch session keeps its directory"
+    assert_contains "$out" "…" \
+        "status-bar layout: medium → long fields truncated with a 1-col ellipsis"
+
+    # Rung 3 — narrow: one field per tab (title, label when untitled), ages kept.
+    raw=$(AM_STATUS_WIDTH=100 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_not_contains "$out" " · " \
+        "status-bar layout: narrow → single field per tab"
+    assert_contains "$out" "Investigate the" \
+        "status-bar layout: narrow → title is the primary field"
+    assert_contains "$out" "fix/login-timeo" \
+        "status-bar layout: narrow → untitled session falls back to its label"
+    assert_contains "$raw" "#[fg=colour245]" \
+        "status-bar layout: narrow → ages still rendered"
+
+    # Rung 4 — tiny: ages dropped to keep the title readable.
+    raw=$(AM_STATUS_WIDTH=60 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_not_contains "$raw" "#[fg=colour245]" \
+        "status-bar layout: tiny → ages dropped"
+    assert_contains "$out" "Inve" \
+        "status-bar layout: tiny → remaining width goes to the title"
+    assert_contains "$out" "…" \
+        "status-bar layout: tiny → title truncated, not dropped"
+
+    local name
+    for name in "$n1" "$n2" "$n3"; do
+        am_tmux kill-session -t "$name" 2>/dev/null || true
+        registry_remove "$name" 2>/dev/null || true
+    done
+    rm -rf "$test_dir" "$test_state_dir"
+    if [[ -n "$old_state_dir" ]]; then
+        export AM_STATE_DIR="$old_state_dir"
+    else
+        unset AM_STATE_DIR
+    fi
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_standalone_scripts_tests() {
     _run_test test_standalone_preview
     _run_test test_standalone_dir_preview
     _run_test test_standalone_status_bar
     _run_test test_standalone_status_bar_many_sessions
+    _run_test test_standalone_status_bar_layout
     _run_test test_strip_ansi
 }
 

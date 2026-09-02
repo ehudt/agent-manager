@@ -227,11 +227,14 @@ registry_gc() {
 
 # --- Title Helpers ---
 
-# Check if a title is valid (<=60 chars, no newlines)
+# Check if a title is valid (<=60 chars, no newlines). The bare "Claude Code"
+# is the placeholder Claude paints until a conversation has a summary, not a
+# title: rejecting it lets the JSONL first-message fallback name the tab.
+# Mirrored in Go (internal/sessions/titles.go:titleValid).
 # Usage: _title_valid <title> && echo yes
 _title_valid() {
     local t="$1"
-    [[ -n "$t" && ${#t} -le 60 && "$t" != *$'\n'* ]]
+    [[ -n "$t" && ${#t} -le 60 && "$t" != *$'\n'* && "$t" != "Claude Code" ]]
 }
 
 # Extract a task candidate from pi's self-maintained terminal title.

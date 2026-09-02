@@ -2,16 +2,18 @@
 # status-bar - tmux status renderer for the agent-manager dedicated server.
 #
 # Renders all am sessions as a clickable tab strip. Whole bottom bar acts as
-# a tab switcher: each tab carries index, state glyph, dir/branch, task, age.
+# a tab switcher: each tab carries index, state glyph, label (dir/branch),
+# title (task), and age — as much of that as fits. The layout is adaptive: a
+# few sessions on a wide terminal show everything in full; as sessions
+# multiply or the terminal narrows, the strip degrades in steps (see
+# _fit_strip) instead of trimming every field to an unreadable stub.
 # Clicking a tab in status-left switches to that session via MouseDown1Status.
 #
 # Outputs:
 # - stdout: clickable tab strip wrapped in #[range=user|<sid>]…#[norange],
 #   consumed by status-left.
-# - @am_sidebar tmux option: compact tab strip (no tasks/ages, no range
+# - @am_sidebar tmux option: compact tab strip (labels only, no range
 #   wrappers) consumed by pane-border-format.
-# - @am_attention tmux option: attention counter for non-current sessions,
-#   consumed by status-right.
 #
 # Called by tmux as: #(/path/to/status-bar #{session_name})
 
@@ -25,9 +27,9 @@ source "$SCRIPT_DIR/state.sh"
 
 # Modes: --print emits clickable strip on stdout (used by tests and ad-hoc
 # inspection). Default mode runs only for side effects: writes per-session
-# @am_status_left, @am_sidebar, and @am_attention options. Keeping stdout
-# empty in default mode lets tmux invoke the script for periodic refresh
-# (via a #() in status-right) without polluting the rendered bar.
+# @am_status_left and @am_sidebar options. Keeping stdout empty in default
+# mode lets tmux invoke the script for periodic refresh (via a #() in
+# status-right) without polluting the rendered bar.
 print_mode=false
 if [[ "${1:-}" == "--print" ]]; then
     print_mode=true
@@ -37,11 +39,17 @@ fi
 current="${1:-}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 
-# Truncation budgets (chars; treats each glyph as 1 col).
-NON_CURRENT_LABEL_MAX=20
-NON_CURRENT_TASK_MAX=18
-CURRENT_LABEL_MAX=28
-CURRENT_TASK_MAX=42
+# Layout thresholds (chars; every glyph counts as 1 col).
+# A two-field tab ("label · title") is only worth showing while each field
+# keeps at least BOTH_FLOOR chars — below that both halves are stubs and one
+# readable field beats two fragments. Ages are dropped once even that single
+# field would fall under AGE_FLOOR chars.
+BOTH_FLOOR=12
+AGE_FLOOR=8
+# Default branches carry no information next to the directory name.
+DEFAULT_BRANCHES=" main master "
+TAB_SEP=" "
+UNLIMITED=9999
 
 # State lookup tables — avoid spawning a subshell per session for the glyph
 # and color helpers. Status-bar runs on the hot path between Enter and attach;
@@ -65,11 +73,11 @@ declare -A COLOR=(
     [dead]='colour196'
 )
 
-# Truncate to `_T` (no $() fork). Caller reads `$_T`.
+# Truncate to `_T` with a single-col ellipsis (no $() fork). Caller reads `$_T`.
 _trunc() {
     local s="$1" max="$2"
     if (( ${#s} > max )); then
-        _T="${s:0:$((max - 3))}..."
+        _T="${s:0:$((max - 1))}…"
     else
         _T="$s"
     fi
@@ -131,17 +139,22 @@ now=$(date +%s)
 # Available width for the tab strip. tmux clips status-left at the terminal
 # width (minus whatever status-right renders), so with 5+ sessions the right-
 # most tabs fall off the edge. Use the narrowest attached client so the strip
-# fits every client; _build_strip measures real geometry and shrinks per-tab
-# budgets only as much as needed (wide terminals keep full labels + tasks).
-# Falls back to a sane default when no client is attached (e.g. precompute
-# during session creation).
+# fits every client; _fit_strip measures real geometry and degrades the
+# layout only as much as needed (wide terminals keep full labels + titles).
+# AM_STATUS_WIDTH overrides the probe (tests, ad-hoc inspection of the layout
+# at a given width). Falls back to a sane default when no client is attached
+# (e.g. precompute during session creation).
 _AVAIL_WIDTH=0
-while IFS= read -r _cw; do
-    [[ "$_cw" =~ ^[0-9]+$ ]] || continue
-    if (( _AVAIL_WIDTH == 0 || _cw < _AVAIL_WIDTH )); then
-        _AVAIL_WIDTH=$_cw
-    fi
-done < <(am_tmux list-clients -F '#{client_width}' 2>/dev/null || true)
+if [[ "${AM_STATUS_WIDTH:-}" =~ ^[0-9]+$ ]]; then
+    _AVAIL_WIDTH=$AM_STATUS_WIDTH
+else
+    while IFS= read -r _cw; do
+        [[ "$_cw" =~ ^[0-9]+$ ]] || continue
+        if (( _AVAIL_WIDTH == 0 || _cw < _AVAIL_WIDTH )); then
+            _AVAIL_WIDTH=$_cw
+        fi
+    done < <(am_tmux list-clients -F '#{client_width}' 2>/dev/null || true)
+fi
 (( _AVAIL_WIDTH == 0 )) && _AVAIL_WIDTH=200
 (( _AVAIL_WIDTH < 40 )) && _AVAIL_WIDTH=40
 
@@ -174,8 +187,7 @@ done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
 # @am_status_left option holds a strip with itself marked as current. tmux
 # then reads the precomputed option on session switch — instant feedback,
 # no async #() job to wait on.
-declare -a S_NAME S_LABEL S_STATE S_GLYPH S_COLOR S_TASK S_AGE
-declare -A STATE_TOTAL=()
+declare -a S_NAME S_LABEL_FULL S_LABEL_SHORT S_STATE S_GLYPH S_COLOR S_TASK S_AGE
 
 for i in "${!session_meta[@]}"; do
     # Bash-only parse of "<created> <activity> <name>" — no awk fork.
@@ -186,12 +198,23 @@ for i in "${!session_meta[@]}"; do
     agent_type="${REG_AGENT[$session]:-}"
     task="${REG_TASK[$session]:-}"
 
-    # Inline _label: basename via parameter expansion, no basename fork.
+    # Labels (basename via parameter expansion, no basename fork):
+    #   full  = "dir/branch", with default branches hidden — `agent-manager`,
+    #           not `agent-manager/main`, since the branch adds nothing there.
+    #   short = the more specific half: the branch when the session is on a
+    #           feature branch (pool copies like `pink-wekapp` are noise next
+    #           to `dependency-pr-shepherd`), else the directory.
+    # Sessions with no directory fall back to the bare session id.
     if [[ -n "$dir" ]]; then
-        label="${dir##*/}"
-        [[ -n "$branch" ]] && label+="/$branch"
+        label_full="${dir##*/}"
+        label_short="$label_full"
+        if [[ -n "$branch" && "$DEFAULT_BRANCHES" != *" $branch "* ]]; then
+            label_full+="/$branch"
+            label_short="$branch"
+        fi
     else
-        label="${session#"${AM_SESSION_PREFIX}"}"
+        label_full="${session#"${AM_SESSION_PREFIX}"}"
+        label_short="$label_full"
     fi
 
     state=$(_state_resolve "$session" "$agent_type" "$dir" \
@@ -221,149 +244,169 @@ for i in "${!session_meta[@]}"; do
     fi
 
     S_NAME[i]=$session
-    S_LABEL[i]=$label
+    S_LABEL_FULL[i]=$label_full
+    S_LABEL_SHORT[i]=$label_short
     S_STATE[i]=$state
     S_GLYPH[i]="${GLYPH[$state]:-○}"
     S_COLOR[i]="${COLOR[$state]:-colour240}"
-    S_TASK[i]=${task:-∅}
+    S_TASK[i]=$task
     S_AGE[i]=$age
-
-    case "$state" in
-        ready|waiting_user|running)
-            STATE_TOTAL[$state]=$(( ${STATE_TOTAL[$state]:-0} + 1 ))
-            ;;
-    esac
 done
 
-# Total VISIBLE width (ANSI-free cols) of the strip from perspective p_idx with
-# the given caps. Mirrors the body layout in _build_strip exactly so the fit
-# search converges on real geometry instead of a guess. Writes to `_STW`.
-_strip_total() {
-    local p_idx="$1" cl="$2" ct="$3" nl="$4" nt="$5" show_task="$6"
-    local i total=0 idx lcap tcap ll tt
-    for i in "${!S_NAME[@]}"; do
-        idx=$((i + 1))
-        if (( i == p_idx )); then lcap=$cl; tcap=$ct; else lcap=$nl; tcap=$nt; fi
-        ll=${#S_LABEL[$i]}; (( ll > lcap )) && ll=$lcap
-        # "${idx}|${glyph} " = idx + 3, then label, then " body " padding = 2
-        total=$(( total + ${#idx} + 3 + ll + 2 ))
-        if [[ "$show_task" == "true" ]]; then
-            tt=${#S_TASK[$i]}; (( tt > tcap )) && tt=$tcap
-            total=$(( total + 3 + tt ))                                # " · " + task
-            [[ -n "${S_AGE[$i]}" ]] && total=$(( total + 3 + ${#S_AGE[$i]} ))  # " (age)"
-        fi
-    done
-    (( ${#S_NAME[@]} > 1 )) && total=$(( total + 2 * (${#S_NAME[@]} - 1) ))   # "  " separators
-    _STW=$total
+# --- Layout fitting ---------------------------------------------------------
+#
+# A "fit" is (labels, tasks, ages, cap):
+#   labels: full | short        which label variant the tabs use
+#   tasks:  both | only | none  both → "label · title"; only → title (label
+#                               for untitled sessions); none → label
+#   ages:   true | false
+#   cap:    max chars per text field before "…" truncation
+# The whole strip shares one fit — the current tab differs only in colour,
+# since the user already knows what they are looking at and the other tabs
+# are where the text has to earn its space — so it is computed once per
+# variant (status-left, sidebar) and reused for every perspective.
+
+# Text fields of tab i under (labels, tasks) → `_F1` (always) and `_F2`
+# (second field; empty when the tab has one). _measure and _render_tab both
+# go through here so the fit search measures exactly what gets drawn.
+_tab_fields() {
+    local i="$1" labels="$2" tasks="$3"
+    if [[ "$labels" == full ]]; then _F1="${S_LABEL_FULL[$i]}"; else _F1="${S_LABEL_SHORT[$i]}"; fi
+    _F2=""
+    case "$tasks" in
+        both) _F2="${S_TASK[$i]}" ;;
+        only) if [[ -n "${S_TASK[$i]}" ]]; then _F1="${S_TASK[$i]}"; fi ;;
+    esac
 }
 
-# Build a strip from perspective P (P_idx is the "current" tab index).
-# Writes to `_STRIP` (no $() fork on caller side).
-_build_strip() {
-    local p_idx="$1" want_clickable="$2" want_compact="$3"
-    local strip="" first=true
-    local i idx state color glyph label task age label_t task_t age_part
-    local body cur_fg entry
-
-    # Fit the strip to the available width by MEASURING real geometry (not a
-    # per-tab estimate): wide terminals keep full labels + tasks (no needless
-    # shrink); narrow ones degrade gracefully — trim tasks, then drop task/age,
-    # then trim labels, never below readable floors. The compact sidebar
-    # (pane border, label-only) is fit to the full pane width the same way.
-    local cur_label=$CURRENT_LABEL_MAX cur_task=$CURRENT_TASK_MAX
-    local non_label=$NON_CURRENT_LABEL_MAX non_task=$NON_CURRENT_TASK_MAX
-    local drop_task=false show_task=true avail
-    if [[ "$want_compact" == "true" ]]; then
-        show_task=false
-        drop_task=true
-        avail=$(( _AVAIL_WIDTH - 2 ))
-    else
-        avail=$(( _AVAIL_WIDTH - 18 ))   # reserve for status-right (attention + clock)
-    fi
-    (( avail < 24 )) && avail=24
-
-    _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" "$show_task"
-
-    if [[ "$show_task" == "true" ]] && (( _STW > avail )); then
-        # Phase 1: trim task budgets (keep current ~2x non, floor non at 6).
-        while (( _STW > avail )) && (( non_task > 6 )); do
-            non_task=$(( non_task - 1 ))
-            cur_task=$(( non_task * 2 )); (( cur_task > CURRENT_TASK_MAX )) && cur_task=$CURRENT_TASK_MAX
-            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" true
-        done
-        # Phase 2: trim labels while keeping tasks (floor 6) — preferred over
-        # dropping tasks, which would jump to a much narrower strip and waste
-        # the space in between.
-        while (( _STW > avail )) && (( non_label > 6 )); do
-            non_label=$(( non_label - 1 ))
-            cur_label=$(( non_label + 6 )); (( cur_label > CURRENT_LABEL_MAX )) && cur_label=$CURRENT_LABEL_MAX
-            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" true
-        done
-        # Phase 3: still over → drop tasks/ages entirely. Reset labels back to
-        # their full caps first; without tasks there's room to widen them again,
-        # and Phase 4 re-trims from the top so we don't strand the strip far
-        # below the available width.
-        if (( _STW > avail )); then
-            show_task=false
-            drop_task=true
-            cur_label=$CURRENT_LABEL_MAX
-            non_label=$NON_CURRENT_LABEL_MAX
-            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" false
-        fi
-    fi
-
-    if [[ "$show_task" == "false" ]] && (( _STW > avail )); then
-        # Phase 4: trim labels (floor 4; keep current a touch larger).
-        while (( _STW > avail )) && (( non_label > 4 )); do
-            non_label=$(( non_label - 1 ))
-            cur_label=$(( non_label + 6 )); (( cur_label > CURRENT_LABEL_MAX )) && cur_label=$CURRENT_LABEL_MAX
-            _strip_total "$p_idx" "$cur_label" "$cur_task" "$non_label" "$non_task" false
-        done
-    fi
-
+# Measure a layout: `_FIXED` = cols that never shrink (pads, idx, glyph,
+# spaces, " · " joins, ages, separators); `_WF_LENS` = natural length of every
+# text field. The strip fits unshrunk iff _FIXED + Σ_WF_LENS ≤ avail.
+_measure() {
+    local labels="$1" tasks="$2" ages="$3"
+    local i idx
+    _FIXED=$(( ${#TAB_SEP} * (${#S_NAME[@]} - 1) ))
+    _WF_LENS=()
     for i in "${!S_NAME[@]}"; do
         idx=$((i + 1))
+        _FIXED=$(( _FIXED + ${#idx} + 4 ))          # " idx glyph text " → pads + glyph + space
+        _tab_fields "$i" "$labels" "$tasks"
+        _WF_LENS+=("${#_F1}")
+        if [[ -n "$_F2" ]]; then
+            _FIXED=$(( _FIXED + 3 ))                 # " · "
+            _WF_LENS+=("${#_F2}")
+        fi
+        if [[ "$ages" == true && -n "${S_AGE[$i]}" ]]; then
+            _FIXED=$(( _FIXED + 1 + ${#S_AGE[$i]} )) # " age"
+        fi
+    done
+}
+
+# Water-fill: the largest per-field cap L such that Σ min(len, L) over
+# _WF_LENS ≤ budget. Short fields keep their full text and hand the leftover
+# to long ones — `obsidian` never pays for `dependency-pr-shepherd`. Binary
+# search (the sum is monotone in L). Writes `_WF` (0 when nothing fits).
+_waterfill() {
+    local budget="$1" lo=0 hi=0 mid sum len
+    for len in "${_WF_LENS[@]}"; do (( len > hi )) && hi=$len; done
+    while (( lo < hi )); do
+        mid=$(( (lo + hi + 1) / 2 ))
+        sum=0
+        for len in "${_WF_LENS[@]}"; do sum=$(( sum + (len < mid ? len : mid) )); done
+        if (( sum <= budget )); then lo=$mid; else hi=$(( mid - 1 )); fi
+    done
+    _WF=$lo
+}
+
+# Pick the richest layout that fits `avail` cols, walking a ladder of rungs
+# `labels:tasks:ages:floor`. A rung is taken outright when it fits unshrunk;
+# otherwise its fields are water-filled and it is taken if the cap reaches
+# the rung's floor (`full` = unshrunk only). The last rung always wins.
+# with_tasks=false is the pane-border sidebar (labels only, no ages).
+# Writes _FIT_LABELS, _FIT_TASKS, _FIT_AGES, _FIT_CAP.
+_fit_strip() {
+    local avail="$1" with_tasks="$2"
+    local -a ladder
+    if [[ "$with_tasks" == true ]]; then
+        ladder=(
+            "full:both:true:full"           # everything, in full
+            "short:both:true:$BOTH_FLOOR"   # branch-or-dir · title
+            "short:only:true:$AGE_FLOOR"    # title (or label) + age
+            "short:only:false:1"            # title (or label) only
+        )
+    else
+        ladder=(
+            "full:none:false:full"
+            "short:none:false:1"
+        )
+    fi
+    local rung labels tasks ages floor sum len
+    for rung in "${ladder[@]}"; do
+        IFS=: read -r labels tasks ages floor <<< "$rung"
+        _measure "$labels" "$tasks" "$ages"
+        sum=0
+        for len in "${_WF_LENS[@]}"; do sum=$(( sum + len )); done
+        if (( _FIXED + sum <= avail )); then
+            _WF=$UNLIMITED
+            break
+        fi
+        [[ "$floor" == full ]] && continue
+        _waterfill $(( avail - _FIXED ))
+        (( _WF >= floor )) && break
+    done
+    (( _WF < 1 )) && _WF=1
+    _FIT_LABELS=$labels
+    _FIT_TASKS=$tasks
+    _FIT_AGES=$ages
+    _FIT_CAP=$_WF
+}
+
+# Load a saved fit (4 values in _FIT_* order) into the _FIT_* globals.
+_use_fit() {
+    _FIT_LABELS=$1; _FIT_TASKS=$2; _FIT_AGES=$3; _FIT_CAP=$4
+}
+
+# Body of tab i under the loaded fit — "idx glyph text" without pads or
+# colours — to `_BODY`; its age (or empty) to `_AGE_PART`, kept separate so
+# the caller can dim it.
+_render_tab() {
+    local i="$1" idx=$(( i + 1 )) text
+    _tab_fields "$i" "$_FIT_LABELS" "$_FIT_TASKS"
+    _trunc "$_F1" "$_FIT_CAP"; text="$_T"
+    if [[ -n "$_F2" ]]; then
+        _trunc "$_F2" "$_FIT_CAP"; text+=" · $_T"
+    fi
+    _BODY="${idx}${S_GLYPH[$i]} ${text}"
+    _AGE_PART=""
+    if [[ "$_FIT_AGES" == true && -n "${S_AGE[$i]}" ]]; then
+        _AGE_PART="${S_AGE[$i]}"
+    fi
+}
+
+# Build the strip with tab P highlighted as current, under the loaded fit.
+# Writes `_STRIP` (no $() fork on caller side).
+_build_strip() {
+    local p_idx="$1" want_clickable="$2"
+    local strip="" i state color cur_fg entry age_fmt
+    for i in "${!S_NAME[@]}"; do
         state="${S_STATE[$i]}"
         color="${S_COLOR[$i]}"
-        glyph="${S_GLYPH[$i]}"
-        label="${S_LABEL[$i]}"
-        task="${S_TASK[$i]}"
-        age="${S_AGE[$i]}"
-
+        _render_tab "$i"
         if (( i == p_idx )); then
-            _trunc "$label" "$cur_label"; label_t="$_T"
-            _trunc "$task" "$cur_task"; task_t="$_T"
+            cur_fg='colour16'
+            case "$state" in
+                idle|dead|starting) cur_fg='colour231' ;;
+            esac
+            age_fmt=""
+            [[ -n "$_AGE_PART" ]] && age_fmt=" #[nobold]${_AGE_PART}#[bold]"
+            entry="#[fg=${cur_fg},bg=${color},bold] ${_BODY}${age_fmt} #[default]"
         else
-            _trunc "$label" "$non_label"; label_t="$_T"
-            _trunc "$task" "$non_task"; task_t="$_T"
+            age_fmt=""
+            [[ -n "$_AGE_PART" ]] && age_fmt=" #[fg=colour245]${_AGE_PART}"
+            entry="#[fg=${color},bg=colour234] ${_BODY}${age_fmt} #[default]"
         fi
-
-        age_part=""
-        [[ -n "$age" ]] && age_part=" (${age})"
-
-        if [[ "$drop_task" == "true" ]]; then
-            body="${idx}|${glyph} ${label_t}"
-        else
-            body="${idx}|${glyph} ${label_t} · ${task_t}${age_part}"
-        fi
-
-        cur_fg='colour16'
-        case "$state" in
-            idle|dead|starting) cur_fg='colour231' ;;
-        esac
-
-        if (( i == p_idx )); then
-            entry="#[fg=${cur_fg},bg=${color},bold] ${body} #[default]"
-        else
-            entry="#[fg=${color},bg=colour234] ${body} #[default]"
-        fi
-
-        if ! $first; then
-            strip+="  "
-        fi
-        first=false
-
-        if [[ "$want_clickable" == "true" ]]; then
+        (( i > 0 )) && strip+="$TAB_SEP"
+        if [[ "$want_clickable" == true ]]; then
             strip+="#[range=user|${S_NAME[$i]}]${entry}#[norange]"
         else
             strip+="$entry"
@@ -372,33 +415,23 @@ _build_strip() {
     _STRIP="$strip"
 }
 
-# Build attention counter from perspective P (exclude P's own state).
-# Writes to `_ATT`.
-_build_attention() {
-    local p_idx="$1"
-    local p_state="${S_STATE[$p_idx]}"
-    local att="" st cnt g c
-    for st in waiting_user ready; do
-        cnt=${STATE_TOTAL[$st]:-0}
-        [[ "$p_state" == "$st" ]] && cnt=$(( cnt - 1 ))
-        (( cnt <= 0 )) && continue
-        g="${GLYPH[$st]}"
-        c="${COLOR[$st]}"
-        [[ -n "$att" ]] && att+=" "
-        att+="#[fg=${c},bold]${cnt}${g}#[default]"
-    done
-    _ATT="$att"
-}
+# Fit once per variant; every perspective shares the layout. status-right
+# renders " <session id> HH:MM " (see lib/tmux.sh), so reserve exactly that.
+_reserve=$(( ${#S_NAME[0]} + 8 ))
+_fit_strip $(( _AVAIL_WIDTH - _reserve )) true
+LEFT_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CAP")
+_fit_strip $(( _AVAIL_WIDTH - 2 )) false
+SIDE_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CAP")
 
 # Write per-session options. Each session sees itself as current — switch is
 # instant because tmux reads the precomputed option. set-option calls are
 # chained into as few tmux invocations as possible (tmux's `;` command
-# separator) so we pay a couple of fork+execs instead of 3N — but a single
+# separator) so we pay a couple of fork+execs instead of 2N — but a single
 # client→server tmux command is capped at ~16KB (imsg limit: "command too
 # long"), and the payload grows ~quadratically with session count (N sessions
 # × N tabs per strip). One giant batch silently failed past ~9 sessions,
 # leaving every session's options stale or unset. Flush in chunks that stay
-# safely under the cap; a session's 3 options may straddle a chunk boundary
+# safely under the cap; a session's 2 options may straddle a chunk boundary
 # (no atomicity requirement between them).
 _BATCH_BUDGET=12288
 batch_args=()
@@ -428,13 +461,11 @@ _batch_add() {
 
 for p_idx in "${!S_NAME[@]}"; do
     p_session="${S_NAME[$p_idx]}"
-    _build_strip "$p_idx" true false;  status_left="$_STRIP"
-    _build_strip "$p_idx" false true;  sidebar="$_STRIP"
-    _build_attention "$p_idx";         attention="$_ATT"
+    _use_fit "${LEFT_FIT[@]}"; _build_strip "$p_idx" true;  status_left="$_STRIP"
+    _use_fit "${SIDE_FIT[@]}"; _build_strip "$p_idx" false; sidebar="$_STRIP"
 
     _batch_add "$p_session" @am_status_left "$status_left"
     _batch_add "$p_session" @am_sidebar "$sidebar"
-    _batch_add "$p_session" @am_attention "$attention"
 done
 _batch_flush
 
@@ -449,13 +480,14 @@ if $print_mode; then
             break
         fi
     done
+    _use_fit "${LEFT_FIT[@]}"
     if (( target_idx >= 0 )); then
-        _build_strip "$target_idx" true false
+        _build_strip "$target_idx" true
         printf '%s\n' "$_STRIP"
     elif [[ -z "$current" ]]; then
         # No specific session requested — print first session's view so callers
         # still see meaningful output.
-        _build_strip 0 true false
+        _build_strip 0 true
         printf '%s\n' "$_STRIP"
     fi
 fi

@@ -150,8 +150,11 @@ func readPaneTitle(socket, target string) string {
 	return strings.TrimRight(string(out), "\n")
 }
 
+// titleValid mirrors lib/registry.sh:_title_valid. The bare "Claude Code" is
+// the placeholder Claude paints until a conversation has a summary, not a
+// title; rejecting it lets the JSONL first-message fallback name the tab.
 func titleValid(t string) bool {
-	if t == "" || len(t) > titleMaxLen {
+	if t == "" || t == "Claude Code" || len(t) > titleMaxLen {
 		return false
 	}
 	return !strings.ContainsRune(t, '\n')

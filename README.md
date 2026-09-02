@@ -208,9 +208,12 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix ↑/↓` | Switch between agent and shell panes (panel open) |
 | `:am` | Open am browser as a tmux command |
 
-The status bar shows all sessions as numbered slots with the current session
+The status bar shows all sessions as numbered tabs with the current session
 highlighted. State icons distinguish active work (`▸`), background work (`⧗`),
 a turn blocked on the user (`⚠`), and a session ready for another prompt (`●`).
+Each tab shows as much as fits: `dir/branch · title age` when there is room,
+then the branch (or directory, on a default branch) with a shortened title,
+then the title alone as sessions multiply or the terminal narrows.
 The current session's id (`am-xxxxxx`) sits at the bottom right next to the
 clock. From inside either pane, `am id` prints it (`am id | pbcopy`,
 `am send "$(am id)" ...`), and `$AM_SESSION_NAME` carries it as well; the

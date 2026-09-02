@@ -97,17 +97,18 @@ bind-key -T prefix '\`' run-shell "$toggle_cmd #{session_name}"
 set -s command-alias[100] am='display-popup -E -w 90% -h 80% "$am_cmd"'
 
 # Status bar: whole bottom bar acts as a tab switcher. The status-bar script
-# precomputes per-session @am_status_left / @am_sidebar / @am_attention
-# options, and tmux just reads those — switching sessions is instant because
-# no #() job needs to finish first. A hidden invocation in status-right
-# triggers periodic refresh at status-interval. The right side also names the
-# current session (its am id) so it can be read off without a command.
+# precomputes per-session @am_status_left / @am_sidebar options, and tmux
+# just reads those — switching sessions is instant because no #() job needs
+# to finish first. A hidden invocation in status-right triggers periodic
+# refresh at status-interval. The right side names the current session (its
+# am id) and the clock; status-bar reserves exactly " <id> HH:MM " for it, so
+# keep the two in step.
 set -g status-interval 5
 set -g status-style 'bg=colour234,fg=colour250'
 set -g status-left-length 500
 set -g status-left '#{@am_status_left}'
 set -g status-right-length 120
-set -g status-right '#($status_bar_cmd #{session_name})#{@am_attention} #[fg=colour245]#{session_name} %H:%M '
+set -g status-right '#($status_bar_cmd #{session_name}) #[fg=colour245]#{session_name} %H:%M '
 
 # Refresh options after the active session changes. run-shell -b detaches
 # the child so tmux doesn't block on it — switch-client returns immediately
@@ -327,7 +328,7 @@ am_session_order() {
         || true
 }
 
-# Regenerate per-session status-bar options (@am_sidebar, @am_attention) for
+# Regenerate per-session status-bar options (@am_status_left, @am_sidebar) for
 # every am session and force a client-wide redraw. Call after creating or
 # killing a session so the status bar and pane border update immediately
 # instead of waiting for the 5s status-interval refresh.

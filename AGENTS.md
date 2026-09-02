@@ -54,7 +54,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
 | `lib/fzf.sh` | Browser launcher (`fzf_main`), directory picker, restore picker, `am list` helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
-| `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch, task, age). Tab age is time-in-state (state-file mtime) for waiting_* and running sessions, tmux activity otherwise. Also writes `@am_sidebar` (compact pane-border variant) and `@am_attention` (status-right counter). |
+| `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch label, title, age). Adaptive layout, one fit shared by every tab (`_fit_strip`): rungs are full `dir/branch · title` → branch-or-dir `· title` (water-filled, ≥12 chars/field) → title only (label for untitled sessions) → no ages; fields truncate with a 1-col `…` and default branches (main/master) are hidden. Tab age is time-in-state (state-file mtime) for waiting_* and running sessions, tmux activity otherwise. Also writes `@am_sidebar` (label-only pane-border variant). `AM_STATUS_WIDTH` overrides the client-width probe for tests and ad-hoc inspection. |
 | `lib/strip-ansi` | Standalone script: strips ANSI escape codes from pane output |
 | `lib/dir-preview` | Standalone preview script for directory picker fzf panel |
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
