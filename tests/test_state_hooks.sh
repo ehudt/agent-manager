@@ -338,6 +338,37 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "ready" "$state" "Stop + completed-only background_tasks: writes ready"
 
+    # --- Monitors are watchers, not work: they never keep background ---
+    # The Artifact tool arms a live-updates subscription on publish (and
+    # re-arms it on resume); Claude lists it in background_tasks as
+    # {type:"monitor", status:"running"} for the life of the session, with
+    # no completion that would ever re-fire Stop. Observed live: two finished
+    # sessions pinned at background for an hour by one artifact watch each.
+    monitor_task='{"id":"st7gmduau","type":"monitor","status":"running","description":"live updates for artifact https://claude.ai/code/artifact/e0b2165b-1449-4cf1-8873-a373b3281ecc (auto-armed on publish)"}'
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[$monitor_task]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "ready" "$state" "Stop + running monitor only: writes ready"
+
+    printf 'background' > "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[$monitor_task]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "ready" "$state" "Stop + running monitor only: clears background"
+
+    rm -f "$state_dir/am-abc123"
+    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[$monitor_task,{\"id\":\"a1\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"still working\"}]}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "background" "$state" "Stop + monitor + running subagent: writes background"
+
+    # A field-less idle_prompt may downgrade when the last Stop's snapshot
+    # holds nothing but monitors.
+    printf 'background' > "$state_dir/am-abc123"
+    printf '[%s]' "$monitor_task" > "$state_dir/am-abc123.bg"
+    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "ready" "$state" "idle_prompt without field + sidecar of only monitors: downgrades"
+    rm -f "$state_dir/am-abc123.bg"
+
     # --- Stop clears a previous background once work finishes ---
     # Stop re-fires when background work completes (the completion re-invokes
     # Claude for a wrap-up turn) with a pruned background_tasks.

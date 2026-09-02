@@ -89,6 +89,10 @@ flowchart TD
   this Claude, and a field-less `idle_prompt` may downgrade once a prior
   Stop snapshot's leftovers are all unowned. Unmatched tasks are still
   counted (payload stays authoritative when we cannot verify).
+- **Monitors are watchers, not work.** `type=monitor` entries (the Artifact
+  tool's live-updates watch, Monitor waits) sit at `status=running` for the
+  life of the session and never complete, so nothing would re-fire Stop to
+  clear them. The hook never counts them.
 - **Session identity resolves precisely, never loosely.** The hook
   identifies its session as `AM_SESSION_NAME` → `TMUX_PANE` → cwd match,
   and if `AM_SESSION_NAME` is set but missing from the registry it *exits*

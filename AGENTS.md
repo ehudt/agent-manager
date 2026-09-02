@@ -185,7 +185,11 @@ hook writes `background` when any *owned* entry has `status ==
 is not owned by this Claude (PPID=1 after `--fork-session` or a parent
 Claude exit) is ignored — otherwise leftover wait-loops keep every later
 Stop at `background` while the pane already shows recap / "new
-task?". `Stop` re-fires when owned background work completes (the
+task?". `monitor` entries (the Artifact tool's live-updates watch, armed on
+publish and re-armed on resume; Monitor waits) are passive wake triggers
+with no completion of their own and are never counted — one artifact watch
+otherwise pins `background` for the life of the session (observed live).
+`Stop` re-fires when owned background work completes (the
 completion re-invokes Claude for a wrap-up turn). The last Stop's array is
 snapshotted to `$AM_STATE_DIR/<session>.bg` so a field-less `idle_prompt`
 can re-check leftovers after wrap-up. No pane scraping.

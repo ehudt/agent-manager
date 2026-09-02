@@ -43,6 +43,13 @@
 # Stop's array is snapshotted to $AM_STATE_DIR/<session>.bg so a field-less
 # idle_prompt can re-check leftovers.
 #
+# Monitors: type=monitor entries are passive wake triggers, not work — the
+# Artifact tool's live-updates watch (armed on publish, re-armed on resume)
+# and Monitor waits. They stay status=running for the life of the session
+# and never complete, so nothing would ever re-fire Stop to clear them
+# (observed live: two finished sessions pinned at background for an hour by
+# one artifact watch each). They are never counted.
+#
 # Environment overrides (for testing):
 #   AM_REGISTRY          — path to sessions.json (default: ~/.agent-manager/sessions.json)
 #   AM_STATE_DIR         — directory for state files (default: /tmp/am-state/)
@@ -135,6 +142,10 @@ fi
 # shell task is ignored when we can see its OS process and that process is
 # not owned by this Claude. Unmatched tasks are still counted — the payload
 # stays authoritative when we cannot verify.
+#
+# Monitors (type=monitor: artifact live-update watches, Monitor waits) are
+# never counted: they are wake triggers with no completion of their own, so
+# counting them pins background with no self-heal at all.
 
 # One `ps` snapshot per count. No associative arrays — this script is
 # invoked as `bash` by Claude and must survive macOS /bin/bash 3.2.
@@ -227,6 +238,10 @@ _bg_owned_running_count() {
         id=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].id // empty' 2>/dev/null || true)
         command=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].command // empty' 2>/dev/null || true)
         case "$type" in
+            monitor)
+                # Passive watcher (artifact live updates, Monitor wait): never work.
+                continue
+                ;;
             shell|local_bash|"")
                 if [[ "$type" == "shell" || "$type" == "local_bash" || -n "$command" ]]; then
                     if _bg_shell_task_is_leftover "$id" "$command"; then
