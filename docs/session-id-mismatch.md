@@ -25,7 +25,7 @@ title/snapshot shown in the restore picker belongs to a sibling session.
 
 1. **No sidecar yet → mtime guess.** The sidecar only exists after a
    lifecycle hook fires. A session that is launched and closed quickly, or
-   where hooks never fire (hooks not installed, sandbox edge cases, pi
+   where hooks never fire (hooks not installed, pi
    before the extension loads), falls back to the newest-mtime JSONL guess
    in `_sessions_log_detect_id` — which in a shared directory grabs
    whichever conversation wrote most recently.

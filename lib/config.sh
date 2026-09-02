@@ -6,23 +6,34 @@
 
 AM_CONFIG="${AM_CONFIG:-$AM_DIR/config.json}"
 
+# Keys written by releases before 0.18 (yolo and Docker sandbox defaults).
+# They are no longer read; am_config_init drops them so `am config` and the
+# file agree.
+_AM_CONFIG_OBSOLETE_KEYS='["default_yolo","default_sandbox","sb_network_restrict","sb_allowed_hosts","sandbox.shares"]'
+
 am_config_init() {
     mkdir -p "$(dirname "$AM_CONFIG")"
     if [[ ! -f "$AM_CONFIG" ]]; then
         cat > "$AM_CONFIG" <<'EOF'
 {
   "default_agent": "claude",
-  "default_yolo": false,
-  "default_sandbox": false,
   "auto_restore": true,
   "stream_logs": true,
-  "shell_pane": false,
-  "sb_network_restrict": true,
-  "sb_allowed_hosts": "",
-  "sandbox.shares": ""
+  "shell_pane": false
 }
 EOF
+        return 0
     fi
+    _am_config_prune_obsolete
+}
+
+_am_config_prune_obsolete() {
+    jq -e --argjson keys "$_AM_CONFIG_OBSOLETE_KEYS" \
+        'any(keys[]; IN($keys[]))' "$AM_CONFIG" >/dev/null 2>&1 || return 0
+    local tmp
+    tmp=$(mktemp)
+    jq --argjson keys "$_AM_CONFIG_OBSOLETE_KEYS" 'with_entries(select(.key as $k | $keys | index($k) | not))' \
+        "$AM_CONFIG" > "$tmp" && mv "$tmp" "$AM_CONFIG"
 }
 
 am_config_get() {
@@ -83,36 +94,6 @@ am_default_agent() {
     esac
 }
 
-am_default_yolo_enabled() {
-    if [[ -n "${AM_DEFAULT_YOLO:-}" ]]; then
-        am_bool_is_true "${AM_DEFAULT_YOLO,,}"
-        return $?
-    fi
-
-    local configured
-    configured=$(am_config_get "default_yolo")
-    am_bool_is_true "${configured,,}"
-}
-
-am_default_sandbox_enabled() {
-    if [[ -n "${AM_DEFAULT_SANDBOX:-}" ]]; then
-        am_bool_is_true "${AM_DEFAULT_SANDBOX,,}"
-        return $?
-    fi
-
-    local configured
-    configured=$(am_config_get "default_sandbox")
-    am_bool_is_true "${configured,,}"
-}
-
-am_docker_available() {
-    if [[ -n "${AM_DOCKER_AVAILABLE:-}" ]]; then
-        [[ "$AM_DOCKER_AVAILABLE" == "true" ]]
-        return $?
-    fi
-    command -v docker &>/dev/null
-}
-
 am_stream_logs_enabled() {
     if [[ -n "${AM_STREAM_LOGS:-}" ]]; then
         am_bool_is_true "${AM_STREAM_LOGS,,}"
@@ -164,76 +145,21 @@ am_auto_restore_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
-am_sb_network_restrict_enabled() {
-    if [[ -n "${AM_SB_NETWORK_RESTRICT:-}" ]]; then
-        am_bool_is_true "${AM_SB_NETWORK_RESTRICT,,}"
-        return $?
-    fi
-
-    local configured
-    configured=$(am_config_get "sb_network_restrict")
-    if [[ -z "$configured" ]]; then
-        return 0  # default true
-    fi
-    am_bool_is_true "${configured,,}"
-}
-
-am_args_contain_yolo_flag() {
-    local arg
-    for arg in "$@"; do
-        case "$arg" in
-            --yolo|--dangerously-skip-permissions)
-                return 0
-                ;;
-        esac
-    done
-    return 1
-}
-
-am_maybe_apply_default_yolo() {
-    if ! am_default_yolo_enabled; then
-        return 1
-    fi
-    if am_args_contain_yolo_flag "$@"; then
-        return 1
-    fi
-    return 0
-}
-
-am_maybe_apply_default_sandbox() {
-    if ! am_default_sandbox_enabled; then
-        return 1
-    fi
-    local arg
-    for arg in "$@"; do
-        case "$arg" in
-            --sandbox) return 1 ;;
-        esac
-    done
-    return 0
-}
-
 am_config_key_alias() {
     case "$1" in
         agent|default-agent|default_agent) echo "default_agent" ;;
-        yolo|default-yolo|default_yolo) echo "default_yolo" ;;
-        sandbox|default-sandbox|default_sandbox) echo "default_sandbox" ;;
         auto-restore|auto_restore|restore-on-startup) echo "auto_restore" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         shell|shell-pane|shell_pane) echo "shell_pane" ;;
         workspace|workspace-cmd|workspace_cmd) echo "workspace_cmd" ;;
-        sb-network-restrict|sb_network_restrict) echo "sb_network_restrict" ;;
-        sb-allowed-hosts|sb_allowed_hosts) echo "sb_allowed_hosts" ;;
-        sandbox-shares|sandbox_shares|sandbox.shares) echo "sandbox.shares" ;;
         *) return 1 ;;
     esac
 }
 
 am_config_key_type() {
     case "$1" in
-        default_agent) echo "string" ;;
-        default_yolo|default_sandbox|auto_restore|stream_logs|shell_pane|sb_network_restrict) echo "boolean" ;;
-        sb_allowed_hosts|sandbox.shares|workspace_cmd) echo "string" ;;
+        default_agent|workspace_cmd) echo "string" ;;
+        auto_restore|stream_logs|shell_pane) echo "boolean" ;;
         *) return 1 ;;
     esac
 }
@@ -245,10 +171,10 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        default_yolo|default_sandbox|auto_restore|stream_logs|shell_pane|sb_network_restrict)
+        auto_restore|stream_logs|shell_pane)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
-        sb_allowed_hosts|sandbox.shares|workspace_cmd)
+        workspace_cmd)
             return 0
             ;;
         *)
@@ -258,24 +184,13 @@ am_config_value_is_valid() {
 }
 
 am_config_print() {
-    local default_agent_value default_yolo_value default_sandbox_value auto_restore_value stream_logs_value
+    local default_agent_value auto_restore_value stream_logs_value shell_pane_value
     default_agent_value=$(am_default_agent)
-    if am_default_yolo_enabled; then
-        default_yolo_value=true
-    else
-        default_yolo_value=false
-    fi
-    if am_default_sandbox_enabled; then
-        default_sandbox_value=true
-    else
-        default_sandbox_value=false
-    fi
     if am_stream_logs_enabled; then
         stream_logs_value=true
     else
         stream_logs_value=false
     fi
-    local shell_pane_value
     if am_shell_pane_enabled; then
         shell_pane_value=true
     else
@@ -286,27 +201,14 @@ am_config_print() {
     else
         auto_restore_value=false
     fi
-    local sb_network_restrict_value
-    if am_sb_network_restrict_enabled; then
-        sb_network_restrict_value=true
-    else
-        sb_network_restrict_value=false
-    fi
-    local sb_allowed_hosts_value sandbox_shares_value workspace_cmd_value
-    sb_allowed_hosts_value=$(am_config_get "sb_allowed_hosts")
-    sandbox_shares_value=$(am_config_get "sandbox.shares")
+    local workspace_cmd_value
     workspace_cmd_value=$(am_workspace_cmd)
 
     cat <<EOF
 default_agent=$default_agent_value
-default_yolo=$default_yolo_value
-default_sandbox=$default_sandbox_value
 auto_restore=$auto_restore_value
 stream_logs=$stream_logs_value
 shell_pane=$shell_pane_value
-sb_network_restrict=$sb_network_restrict_value
-sb_allowed_hosts=$sb_allowed_hosts_value
-sandbox.shares=$sandbox_shares_value
 workspace_cmd=$workspace_cmd_value
 config_file=$AM_CONFIG
 EOF

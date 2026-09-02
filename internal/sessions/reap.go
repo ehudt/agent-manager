@@ -13,9 +13,8 @@ const reapThrottle = 60 * time.Second
 // ReapOrphans removes registry entries whose tmux session is no longer alive
 // and deletes their hook state file and identity sidecars. Throttled once per
 // 60s via $amDir/.gc_last (shared with the rows half of bash registry_gc so
-// they coordinate). Sandbox containers and the sessions log are not touched
-// here — the bash-only extras half of registry_gc handles those on its own
-// marker (.gc_extras_last).
+// they coordinate). The sessions log is not touched here — the bash-only
+// extras half of registry_gc handles it on its own marker (.gc_extras_last).
 //
 // Returns the number of registry rows removed.
 func ReapOrphans(amDir, stateDir string, live []TmuxSession) int {

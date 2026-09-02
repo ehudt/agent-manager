@@ -1,12 +1,12 @@
 # Project Profile: agent-manager
 
-Bash CLI tool for managing AI coding agent sessions via tmux, fzf, and Docker sandboxes
+Bash CLI tool for managing AI coding agent sessions via tmux and fzf
 
 > Last updated: 2026-03-30T15:10:00.000Z | Version: 1
 
 ## Goals
 
-- **testing** [high]: Automated testing workflows for bash CLI with tmux/fzf/Docker dependencies (planned)
+- **testing** [high]: Automated testing workflows for bash CLI with tmux/fzf dependencies (planned)
 - **development** [high]: Feature development orchestration for multi-step features across agent sessions (planned)
 - **quality** [medium]: Code review and refactoring workflows with quality convergence gates (planned)
 - **testing** [high]: Automated UI/visual testing for terminal-based interfaces (tmux panes, fzf, tput forms) (planned)
@@ -16,20 +16,17 @@ Bash CLI tool for managing AI coding agent sessions via tmux, fzf, and Docker sa
 ### Languages
 
 - Bash v4.0+ (Primary language for CLI and all modules)
-- Python v3.11+ (Integration tests (pytest))
+- Go v1.19+ (Compiled session browser and list helpers)
 
 ### Frameworks
 
 - tmux v>=3.0 [Session persistence and multiplexing]
 - fzf v>=0.40 [Interactive selection UI]
-- pytest [Python test framework]
 
 ### Infrastructure
 
-- Docker [Sandbox container runtime]
-- tinyproxy [HTTP proxy for sandbox network filtering]
 - jq [JSON processing]
-- git [Version control with worktree support]
+- git [Version control and branch detection]
 
 ## Architecture
 
@@ -47,7 +44,6 @@ Bash CLI tool for managing AI coding agent sessions via tmux, fzf, and Docker sa
 | form | `lib/form.sh` | tput-based new session form |
 | state | `lib/state.sh` | Session state detection |
 | config | `lib/config.sh` | User configuration |
-| sandbox | `lib/sandbox.sh` | Docker sandbox lifecycle |
 | utils | `lib/utils.sh` | Shared utilities |
 
 **Entry points:** `am`
@@ -76,7 +72,7 @@ Parallel bash test execution with tmux isolation
 **Triggers:** manual, CI
 
 1. test_all.sh parallel workers
-2. pytest integration/security/docker
+2. go test ./...
 3. perf_test.sh standalone
 
 ### ci-pipeline
@@ -104,19 +100,15 @@ GitHub Actions on push/PR
 
 ## Pain Points
 
-- **high** [architecture]: Sandbox subsystem required continuous rework (66 commits, 21%)
-  - Remediation: Better test coverage for sandbox lifecycle
 - **medium** [quality]: 21.5% of commits are fixes, insufficient pre-commit quality gates
   - Remediation: Automated testing before commit
-- **high** [testing]: Manual testing loops for sandbox and form changes are slow and error-prone
+- **high** [testing]: Manual testing loops for form changes are slow and error-prone
   - Remediation: Automated integration and regression testing
 - **high** [testing]: UI/visual testing (timing, visual changes) is manual, slow, unreliable, hard to reproduce
   - Remediation: Terminal capture testing, tmux pane content assertion framework
 
 ## Bottlenecks
 
-- Sandbox has highest churn with multiple architecture redesigns at lib/sandbox.sh, sandbox/Dockerfile (Continuous)
-  Impact: Major time sink
 - Tests leaked into real tmux sessions and user config at tests/ (Periodic)
   Impact: Developer environment pollution
 
@@ -134,13 +126,12 @@ GitHub Actions on push/PR
 - **branchStrategy:** Trunk-based, PRs for AI only
 - **mergeStrategy:** Direct push, merge for PRs
 
-**Testing:** tests/test_*.sh sourced by test_all.sh, pytest markers for integration/security/docker
+**Testing:** tests/test_*.sh sourced by test_all.sh; Go tests under internal/ and cmd/
 
 ### Additional Rules
 
 - Use sed -E for portability
 - SCRIPT_DIR overwritten when sourcing lib/agents.sh
-- Sandbox containers run as ubuntu user
 
 ## CLAUDE.md Instructions
 

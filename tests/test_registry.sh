@@ -13,15 +13,17 @@ test_registry() {
     assert_cmd_succeeds "am_init creates registry file" test -f "$AM_REGISTRY"
 
     # Test add
-    registry_add "test-session" "/tmp/test" "main" "claude" "test task" "true" "false"
+    registry_add "test-session" "/tmp/test" "main" "claude" "test task"
     assert_eq "true" "$(registry_exists test-session && echo true || echo false)" "registry_add: session exists"
+    assert_eq "name directory branch agent_type created_at task" \
+        "$(jq -r '.sessions["test-session"] | keys_unsorted | join(" ")' "$AM_REGISTRY")" \
+        "registry_add: writes only the core fields"
 
     # Test get_field
     assert_eq "/tmp/test" "$(registry_get_field test-session directory)" "registry_get_field: directory"
     assert_eq "main" "$(registry_get_field test-session branch)" "registry_get_field: branch"
     assert_eq "claude" "$(registry_get_field test-session agent_type)" "registry_get_field: agent_type"
-    assert_eq "true" "$(registry_get_field test-session yolo_mode)" "registry_get_field: yolo mode"
-    assert_eq "false" "$(registry_get_field test-session sandbox_mode)" "registry_get_field: sandbox mode"
+    assert_eq "test task" "$(registry_get_field test-session task)" "registry_get_field: task"
 
     # Test update
     registry_update "test-session" "branch" "feature"
@@ -205,7 +207,7 @@ test_registry_get_fields() {
 
     # Seed test data
     registry_add "test-sess" "/home/user/project" "main" "claude" "fix auth bug"
-    registry_update "test-sess" "worktree_path" "/home/user/project/.claude/worktrees/wt1"
+    registry_update "test-sess" "note" "extra metadata"
 
     # Test: 4-field extraction (directory/branch/agent_type/task)
     local fields
@@ -217,12 +219,12 @@ test_registry_get_fields() {
     assert_eq "claude" "$agent_type" "registry_get_fields: agent_type"
     assert_eq "fix auth bug" "$task" "registry_get_fields: task"
 
-    # Test: 5-field extraction (agent_info with worktree_path)
-    fields=$(registry_get_fields "test-sess" directory branch agent_type task worktree_path)
-    local worktree_path
-    IFS='|' read -r directory branch agent_type task worktree_path <<< "$fields"
-    assert_eq "/home/user/project/.claude/worktrees/wt1" "$worktree_path" \
-        "registry_get_fields: worktree_path (5th field)"
+    # Test: 5-field extraction including a field added via registry_update
+    fields=$(registry_get_fields "test-sess" directory branch agent_type task note)
+    local note
+    IFS='|' read -r directory branch agent_type task note <<< "$fields"
+    assert_eq "extra metadata" "$note" \
+        "registry_get_fields: updated field (5th field)"
 
     # Test: missing fields return empty
     registry_add "minimal-sess" "/tmp/dir" "" "codex" ""

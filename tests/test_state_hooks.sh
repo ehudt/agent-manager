@@ -690,14 +690,14 @@ test_pi_durable_identity_guard() {
         AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-pi-guard" \
         AM_AGENT_TYPE="cursor" EXPECT_PI_REGISTERED=false TEST_PI_SESSION_ID=nested-pi \
         node "$PROJECT_DIR/tests/pi_identity_probe.mjs" || rc=$?
-    assert_eq "0" "$rc" "pi identity: sandbox environment rejects wrong agent family"
+    assert_eq "0" "$rc" "pi identity: without a registry, wrong agent family is rejected"
 
-    EXPECT_PI_REGISTERED=true TEST_PI_SESSION_ID=pi-sandbox \
+    EXPECT_PI_REGISTERED=true TEST_PI_SESSION_ID=pi-noreg \
         AM_DIR="$tmp_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
         AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-pi-guard" AM_AGENT_TYPE="pi" \
         node "$PROJECT_DIR/tests/pi_identity_probe.mjs"
-    assert_eq "pi-sandbox" "$(cat "$identity_dir/am-pi-guard.sid")" \
-        "pi identity: sandbox pi session persists durable identity without registry"
+    assert_eq "pi-noreg" "$(cat "$identity_dir/am-pi-guard.sid")" \
+        "pi identity: pi session persists durable identity without registry"
 
     jq -n '{sessions: {"am-pi-guard": {name: "am-pi-guard", agent_type: "pi"}}}' > "$registry"
     rm -f "$identity_dir/am-pi-guard.sid"

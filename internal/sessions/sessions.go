@@ -23,22 +23,17 @@ type Registry struct {
 
 // Session holds per-session metadata from the registry.
 type Session struct {
-	Name             string `json:"name"`
-	Directory        string `json:"directory"`
-	Branch           string `json:"branch"`
-	AgentType        string `json:"agent_type"`
-	Task             string `json:"task"`
-	CreatedAt        string `json:"created_at"`
-	YoloMode         string `json:"yolo_mode"`
-	SandboxMode      string `json:"sandbox_mode"`
-	ContainerName    string `json:"container_name"`
-	WorktreePath     string `json:"worktree_path"`
-	WorktreeHostPath string `json:"worktree_host_path"`
-	WorktreeName     string `json:"worktree_name"`
-	LogicalID        string `json:"logical_id"`
-	OrderKey         string `json:"order_key"`
+	Name      string `json:"name"`
+	Directory string `json:"directory"`
+	Branch    string `json:"branch"`
+	AgentType string `json:"agent_type"`
+	Task      string `json:"task"`
+	CreatedAt string `json:"created_at"`
+	LogicalID string `json:"logical_id"`
+	OrderKey  string `json:"order_key"`
 
-	// ExtraFields keeps registry metadata added by Bash or a newer Go binary
+	// ExtraFields keeps registry metadata added by Bash, a newer Go binary,
+	// or an older release (e.g. the pre-0.18 yolo/sandbox/worktree fields)
 	// intact across read-modify-write cycles.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }

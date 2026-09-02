@@ -18,8 +18,7 @@ test_recovery_store() {
     assert_eq "1" "$(jq -r '.schema_version' "$AM_DESIRED_SESSIONS")" \
         "recovery store: schema version"
 
-    recovery_desired_upsert "am-test01" "/tmp/project" "cursor" "fix auth" \
-        "true" "false" "feature-a" "/tmp/project-wt" "/tmp/project-wt" '["/tmp/share:/share:ro"]'
+    recovery_desired_upsert "am-test01" "/tmp/project" "cursor" "fix auth"
 
     assert_eq "open" "$(jq -r '.sessions["am-test01"].desired_state' "$AM_DESIRED_SESSIONS")" \
         "recovery store: launch records open intent"
@@ -27,17 +26,15 @@ test_recovery_store() {
         "recovery store: records harness"
     assert_eq "boot-a" "$(jq -r '.sessions["am-test01"].launch_boot_id' "$AM_DESIRED_SESSIONS")" \
         "recovery store: records boot"
-    assert_eq "feature-a" "$(jq -r '.sessions["am-test01"].worktree_name' "$AM_DESIRED_SESSIONS")" \
-        "recovery store: records worktree"
-    assert_eq "/tmp/share:/share:ro" \
-        "$(jq -r '.sessions["am-test01"].sandbox_shares[0]' "$AM_DESIRED_SESSIONS")" \
-        "recovery store: records sandbox shares"
+    assert_eq "/tmp/project" "$(jq -r '.sessions["am-test01"].effective_directory' "$AM_DESIRED_SESSIONS")" \
+        "recovery store: effective directory is the session directory"
+    assert_eq "fix auth" "$(jq -r '.sessions["am-test01"].task' "$AM_DESIRED_SESSIONS")" \
+        "recovery store: records task"
 
     local original_order
     original_order=$(jq -r '.sessions["am-test01"].order_key' "$AM_DESIRED_SESSIONS")
     recovery_desired_identity "am-test01" "conversation-1" "/tmp/transcript.jsonl" "hook"
-    recovery_desired_upsert "am-test01" "/tmp/project" "cursor" "updated task" \
-        "true" "false" "feature-a" "/tmp/project-wt" "/tmp/project-wt" '[]'
+    recovery_desired_upsert "am-test01" "/tmp/project" "cursor" "updated task"
 
     assert_eq "$original_order" "$(jq -r '.sessions["am-test01"].order_key' "$AM_DESIRED_SESSIONS")" \
         "recovery store: upsert preserves durable order"
@@ -65,29 +62,23 @@ test_recovery_candidates() {
     export AM_MACHINE_ID="machine-a"
     export AM_BOOT_ID="boot-old"
 
-    recovery_desired_upsert "am-missing" "/tmp" "claude" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-missing" "/tmp" "claude" ""
     recovery_desired_identity "am-missing" "sid-missing" "" "hook"
-    recovery_desired_upsert "am-live" "/tmp" "cursor" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-live" "/tmp" "cursor" ""
     recovery_desired_identity "am-live" "sid-live" "" "hook"
-    recovery_desired_upsert "am-durable" "/tmp" "pi" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-durable" "/tmp" "pi" ""
     mkdir -p "$AM_DIR/identities"
     printf '%s' "sid-durable" > "$AM_DIR/identities/am-durable.sid"
     export AM_MACHINE_ID="machine-b"
-    recovery_desired_upsert "am-other-machine" "/tmp" "claude" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-other-machine" "/tmp" "claude" ""
     recovery_desired_identity "am-other-machine" "sid-other" "" "hook"
     export AM_MACHINE_ID="machine-a"
-    export SB_HOME_DIR="$AM_DIR/sandbox-home"
-    mkdir -p "$SB_HOME_DIR/.cursor/transcripts"
-    : > "$SB_HOME_DIR/.cursor/transcripts/sid-sandbox.jsonl"
-    recovery_desired_upsert "am-sandbox-id" "/tmp" "cursor" "" \
-        "false" "true" "" "/tmp" "/tmp" '[]'
-    printf '%s' "sid-sandbox" > "$AM_DIR/identities/am-sandbox-id.sid"
-    printf '%s' "/home/ubuntu/.cursor/transcripts/sid-sandbox.jsonl" \
-        > "$AM_DIR/identities/am-sandbox-id.transcript"
+    local durable_transcript="$AM_DIR/transcripts/sid-transcript.jsonl"
+    mkdir -p "$(dirname "$durable_transcript")"
+    : > "$durable_transcript"
+    recovery_desired_upsert "am-transcript-id" "/tmp" "cursor" ""
+    printf '%s' "sid-transcript" > "$AM_DIR/identities/am-transcript-id.sid"
+    printf '%s' "$durable_transcript" > "$AM_DIR/identities/am-transcript-id.transcript"
 
     export AM_BOOT_ID="boot-new"
     tmux_list_am_sessions() { printf '%s\n' "am-live"; }
@@ -102,11 +93,10 @@ test_recovery_candidates() {
         "recovery candidates: durable sidecar is synchronized before recovery"
     assert_not_contains "$candidates" '"logical_id":"am-other-machine"' \
         "recovery candidates: records from another machine are excluded"
-    assert_contains "$candidates" "$SB_HOME_DIR/.cursor/transcripts/sid-sandbox.jsonl" \
-        "recovery candidates: sandbox transcript path maps to persistent host home"
+    assert_contains "$candidates" "$durable_transcript" \
+        "recovery candidates: durable transcript sidecar is synchronized before recovery"
 
-    recovery_desired_upsert "am-same-boot" "/tmp" "pi" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-same-boot" "/tmp" "pi" ""
     recovery_desired_identity "am-same-boot" "sid-same" "" "hook"
     candidates=$(recovery_desired_candidates)
     assert_not_contains "$candidates" '"logical_id":"am-same-boot"' \
@@ -123,7 +113,7 @@ test_recovery_candidates() {
         "recovery candidates: explicitly closed session excluded"
 
     unset -f tmux_list_am_sessions
-    unset AM_DESIRED_SESSIONS AM_BOOT_ID AM_MACHINE_ID SB_HOME_DIR
+    unset AM_DESIRED_SESSIONS AM_BOOT_ID AM_MACHINE_ID
     teardown_isolated_am_dir
     $SUMMARY_MODE || echo ""
 }
@@ -140,8 +130,8 @@ test_recovery_migration() {
     export AM_MACHINE_ID="machine-a"
     export AM_BOOT_ID="boot-a"
 
-    registry_add "am-live-legacy" "/tmp" "main" "cursor" "legacy task" "true" "false"
-    registry_add "am-stale-legacy" "/tmp" "main" "claude" "stale task" "false" "false"
+    registry_add "am-live-legacy" "/tmp" "main" "cursor" "legacy task"
+    registry_add "am-stale-legacy" "/tmp" "main" "claude" "stale task"
     mkdir -p "$AM_STATE_DIR"
     printf '%s' "legacy-exact-id" > "$AM_STATE_DIR/am-live-legacy.sid"
     printf '%s' "/tmp/legacy-exact-id.jsonl" > "$AM_STATE_DIR/am-live-legacy.transcript"
@@ -152,9 +142,9 @@ test_recovery_migration() {
     assert_eq "open" \
         "$(jq -r '.sessions["am-live-legacy"].desired_state // ""' "$AM_DESIRED_SESSIONS")" \
         "recovery migration: imports currently live registry row"
-    assert_eq "true" \
-        "$(jq -r '.sessions["am-live-legacy"].yolo_mode // ""' "$AM_DESIRED_SESSIONS")" \
-        "recovery migration: preserves launch policy"
+    assert_eq "legacy task" \
+        "$(jq -r '.sessions["am-live-legacy"].task // ""' "$AM_DESIRED_SESSIONS")" \
+        "recovery migration: preserves task"
     assert_eq "legacy-exact-id" \
         "$(jq -r '.sessions["am-live-legacy"].session_id // ""' "$AM_DESIRED_SESSIONS")" \
         "recovery migration: persists ephemeral exact identity"
@@ -183,7 +173,6 @@ test_recovery_preflight_matrix() {
     agent_get_command() {
         [[ "$1" == "missing-agent" ]] && echo "definitely-not-installed-am-agent" || echo "true"
     }
-    am_docker_available() { return 1; }
 
     assert_preflight_blocked() {
         local record="$1" expected="$2" label="$3" reason rc=0
@@ -197,46 +186,24 @@ test_recovery_preflight_matrix() {
         logical_id: "am-preflight", session_name: "am-preflight",
         agent_type: "claude", project_directory: "/tmp",
         effective_directory: "/tmp", session_id: "sid-exact",
-        identity_source: "hook", sandbox_mode: "false",
-        worktree_name: "", sandbox_shares: []
+        identity_source: "hook"
     }')
 
     record=$(jq -c '.effective_directory="/definitely/missing/am-directory"' <<< "$base")
     assert_preflight_blocked "$record" "directory unavailable" \
         "recovery preflight: missing directory"
 
-    record=$(jq -c '.effective_directory="/definitely/missing/am-worktree" | .worktree_name="feature"' <<< "$base")
-    assert_preflight_blocked "$record" "worktree directory unavailable" \
-        "recovery preflight: missing worktree"
-
-    record=$(jq -c '.effective_directory="/tmp" | .worktree_name="feature"' <<< "$base")
-    assert_preflight_blocked "$record" "valid git worktree" \
-        "recovery preflight: replacement directory is not accepted as worktree"
-
-    local project_a="$AM_DIR/project-a" project_b="$AM_DIR/project-b"
-    git init -q "$project_a"
-    git -C "$project_a" -c user.name=test -c user.email=test@example.com \
-        commit --allow-empty -m init -q
-    git init -q "$project_b"
-    git -C "$project_b" -c user.name=test -c user.email=test@example.com \
-        commit --allow-empty -m init -q
-    record=$(jq -c --arg project "$project_a" --arg other "$project_b" \
-        '.agent_type="codex" | .project_directory=$project | .effective_directory=$other | .worktree_name="feature"' \
-        <<< "$base")
-    assert_preflight_blocked "$record" "does not belong to recorded project" \
-        "recovery preflight: unrelated git repository is not accepted as worktree"
-
     record=$(jq -c '.agent_type="missing-agent"' <<< "$base")
     assert_preflight_blocked "$record" "agent command not found" \
         "recovery preflight: missing harness"
 
-    record=$(jq -c '.agent_type="codex" | .sandbox_mode="true"' <<< "$base")
-    assert_preflight_blocked "$record" "Docker unavailable" \
-        "recovery preflight: unavailable sandbox"
-
-    record=$(jq -c '.agent_type="codex" | .sandbox_shares=["/definitely/missing/am-share:/share:ro"]' <<< "$base")
-    assert_preflight_blocked "$record" "sandbox share unavailable" \
-        "recovery preflight: missing share"
+    # Records written by pre-0.18 releases still carry sandbox/worktree
+    # fields; they are ignored rather than blocking recovery.
+    record=$(jq -c '.agent_type="codex" | .sandbox_mode="true" | .worktree_name="feature" | .sandbox_shares=["/definitely/missing:/share:ro"]' <<< "$base")
+    local legacy_reason legacy_rc=0
+    legacy_reason=$(recovery_preflight_record "$record") || legacy_rc=$?
+    assert_eq "0" "$legacy_rc" "recovery preflight: legacy sandbox/worktree fields are ignored"
+    assert_eq "" "$legacy_reason" "recovery preflight: legacy fields produce no block reason"
 
     assert_preflight_blocked "$base" "conversation history unavailable" \
         "recovery preflight: missing conversation history"
@@ -245,7 +212,7 @@ test_recovery_preflight_matrix() {
     assert_preflight_blocked "$record" "automatic resume unsupported" \
         "recovery preflight: unsupported harness"
 
-    unset -f agent_get_command am_docker_available assert_preflight_blocked
+    unset -f agent_get_command assert_preflight_blocked
     unset AM_SESSION_PREFIX
     teardown_isolated_am_dir
     $SUMMARY_MODE || echo ""
@@ -266,8 +233,7 @@ test_recovery_coordinator() {
 
     local transcript="$AM_DIR/sid-restore.jsonl"
     : > "$transcript"
-    recovery_desired_upsert "am-restore" "/tmp" "cursor" "resume task" \
-        "true" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-restore" "/tmp" "cursor" "resume task"
     recovery_desired_identity "am-restore" "sid-restore" "$transcript" "hook"
 
     export AM_BOOT_ID="boot-new"
@@ -288,15 +254,14 @@ test_recovery_coordinator() {
         "recovery coordinator: preserves physical session name"
     assert_contains "$(cat "$capture")" "--resume sid-restore" \
         "recovery coordinator: uses exact native resume identity"
-    assert_contains "$(cat "$capture")" "--yolo" \
-        "recovery coordinator: preserves yolo policy"
+    assert_eq "args=/tmp cursor resume task --resume sid-restore" "$(sed -n 2p "$capture")" \
+        "recovery coordinator: launch args are directory, agent, task, resume args"
     assert_eq "live" "$(jq -r '.sessions["am-restore"].recovery_state' "$AM_DESIRED_SESSIONS")" \
         "recovery coordinator: successful restore becomes live"
     assert_eq "boot-new" "$(jq -r '.sessions["am-restore"].launch_boot_id' "$AM_DESIRED_SESSIONS")" \
         "recovery coordinator: successful restore records current boot"
 
-    recovery_desired_upsert "am-blocked" "/tmp" "claude" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-blocked" "/tmp" "claude" ""
     local blocked
     blocked=$(jq -c '.sessions["am-blocked"]' "$AM_DESIRED_SESSIONS")
     assert_cmd_fails "recovery coordinator: missing exact identity is blocked" \
@@ -305,8 +270,7 @@ test_recovery_coordinator() {
         "exact conversation identity" \
         "recovery coordinator: blocked reason is actionable"
 
-    recovery_desired_upsert "am-exited" "/tmp" "cursor" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-exited" "/tmp" "cursor" ""
     recovery_desired_identity "am-exited" "sid-exited" "$transcript" "hook"
     recovery_agent_started() { return 1; }
     recovery_cleanup_failed_runtime() { printf '%s' "$1" > "$AM_DIR/cleaned-runtime"; }
@@ -319,8 +283,7 @@ test_recovery_coordinator() {
         "exited before agent started" \
         "recovery coordinator: exited agent remains actionable"
 
-    recovery_desired_upsert "am-cancelled" "/tmp" "cursor" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-cancelled" "/tmp" "cursor" ""
     recovery_desired_identity "am-cancelled" "sid-cancelled" "$transcript" "hook"
     recovery_agent_started() {
         recovery_desired_remove "am-cancelled"
@@ -357,16 +320,14 @@ test_recovery_native_adapters() {
     agent_get_command() { echo "true"; }
     _sessions_log_jsonl_exists() { return 0; }
     agent_launch() {
-        printf '%s|%s|shares=%s\n' "$_AM_SESSION_NAME_OVERRIDE" "$*" \
-            "${AM_SANDBOX_SHARES[*]:-}" >> "$capture"
+        printf '%s|%s\n' "$_AM_SESSION_NAME_OVERRIDE" "$*" >> "$capture"
         echo "$_AM_SESSION_NAME_OVERRIDE"
     }
     recovery_agent_started() { return 0; }
 
     local agent
     for agent in claude cursor pi codex; do
-        recovery_desired_upsert "am-$agent" "/tmp" "$agent" "$agent task" \
-            "false" "false" "" "/tmp" "/tmp" '[]'
+        recovery_desired_upsert "am-$agent" "/tmp" "$agent" "$agent task"
         recovery_desired_identity "am-$agent" "sid-$agent" "" "hook"
     done
 
@@ -377,40 +338,18 @@ test_recovery_native_adapters() {
         recovery_restore_one "$record"
     done
 
-    am_docker_available() { return 0; }
-    docker() { return 0; }
-    local sandbox_project="$AM_DIR/sandbox-project"
-    local sandbox_worktree="$AM_DIR/sandbox-worktree"
-    git -C "$AM_DIR" init -q sandbox-project
-    git -C "$sandbox_project" -c user.name=test -c user.email=test@example.com \
-        commit --allow-empty -m init -q
-    git -C "$sandbox_project" worktree add -q -b sandbox-wt "$sandbox_worktree"
-    recovery_desired_upsert "am-sandbox" "$sandbox_project" "codex" "" \
-        "false" "true" "sandbox-wt" "$sandbox_worktree" "$sandbox_worktree" \
-        '["/tmp:/share:ro"]'
-    recovery_desired_identity "am-sandbox" "sid-sandbox" "" "hook"
-    record=$(jq -c '.sessions["am-sandbox"]' "$AM_DESIRED_SESSIONS")
-    recovery_restore_one "$record"
-
     local launches
     launches=$(cat "$capture")
-    assert_contains "$launches" "am-claude|/tmp claude claude task  --resume sid-claude" \
+    assert_contains "$launches" "am-claude|/tmp claude claude task --resume sid-claude" \
         "recovery adapter: Claude uses --resume"
-    assert_contains "$launches" "am-cursor|/tmp cursor cursor task  --resume sid-cursor" \
+    assert_contains "$launches" "am-cursor|/tmp cursor cursor task --resume sid-cursor" \
         "recovery adapter: Cursor uses --resume"
-    assert_contains "$launches" "am-pi|/tmp pi pi task  --session sid-pi" \
+    assert_contains "$launches" "am-pi|/tmp pi pi task --session sid-pi" \
         "recovery adapter: pi uses --session"
-    assert_contains "$launches" "am-codex|/tmp codex codex task  resume sid-codex" \
+    assert_contains "$launches" "am-codex|/tmp codex codex task resume sid-codex" \
         "recovery adapter: Codex uses resume subcommand"
-    assert_contains "$launches" "am-sandbox|$sandbox_worktree codex   resume sid-sandbox --sandbox" \
-        "recovery adapter: sandbox policy is replayed"
-    assert_contains "$launches" "shares=/tmp:/share:ro" \
-        "recovery adapter: sandbox shares are replayed"
-    assert_contains "$launches" "$sandbox_project:$sandbox_project:rw" \
-        "recovery adapter: sandbox worktree remounts original git metadata"
 
-    unset -f agent_get_command _sessions_log_jsonl_exists agent_launch recovery_agent_started \
-        am_docker_available docker
+    unset -f agent_get_command _sessions_log_jsonl_exists agent_launch recovery_agent_started
     unset _AM_RECOVERY_MODE _AM_SESSION_NAME_OVERRIDE _AM_DEFER_SIDEBAR_REFRESH
     unset AM_DESIRED_SESSIONS AM_BOOT_ID AM_MACHINE_ID
     teardown_isolated_am_dir
@@ -434,7 +373,7 @@ test_recovery_reboot_integration() {
     test_dir=$(mktemp -d)
     transcript="$test_dir/sid-reboot.jsonl"
     : > "$transcript"
-    session_name=$(set +u; agent_launch "$test_dir" "cursor" "reboot task" "" 2>/dev/null)
+    session_name=$(set +u; agent_launch "$test_dir" "cursor" "reboot task" 2>/dev/null)
     recovery_desired_identity "$session_name" "sid-reboot" "$transcript" "hook"
 
     # Simulate reboot/tmux-server loss: runtime disappears without agent_kill,
@@ -458,29 +397,12 @@ test_recovery_reboot_integration() {
         "$(jq -r --arg id "$session_name" '.sessions[$id].launch_boot_id' "$AM_DIR/desired_sessions.json")" \
         "reboot recovery: records restored boot"
 
+    assert_eq "$(cd "$test_dir" && pwd -P)" \
+        "$(cd "$(am_tmux display-message -p -t "$session_name" '#{pane_current_path}')" && pwd -P)" \
+        "reboot recovery: session resumes in its recorded directory"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
-    # Manager-created worktrees recover in their existing effective directory.
-    local git_dir worktree_session worktree_path restored_path
-    git_dir=$(mktemp -d)
-    git -C "$git_dir" init -q
-    git -C "$git_dir" -c user.name=test -c user.email=test@example.com \
-        commit --allow-empty -m init -q
-    worktree_session=$(set +u; agent_launch "$git_dir" "codex" "" "recover-wt" 2>/dev/null)
-    worktree_path=$(jq -r --arg id "$worktree_session" \
-        '.sessions[$id].effective_directory' "$AM_DIR/desired_sessions.json")
-    worktree_path=$(cd "$worktree_path" && pwd -P)
-    recovery_desired_identity "$worktree_session" "codex-worktree-id" "" "hook"
-    am_tmux kill-session -t "$worktree_session"
-    export AM_BOOT_ID="boot-third"
-    recovery_run
-    restored_path=$(am_tmux display-message -p -t "$worktree_session" '#{pane_current_path}')
-    assert_eq "$worktree_path" "$restored_path" \
-        "reboot recovery: worktree session resumes in preserved effective directory"
-    [[ -n "$worktree_session" ]] && agent_kill "$worktree_session" 2>/dev/null
-
     rm -rf "$test_dir"
-    rm -rf "$git_dir"
     unset AM_BOOT_ID AM_MACHINE_ID
     teardown_integration_env
     $SUMMARY_MODE || echo ""
@@ -499,8 +421,7 @@ test_recovery_progressive_start() {
     export AM_DESIRED_SESSIONS="$AM_DIR/desired_sessions.json"
     export AM_MACHINE_ID="machine-a"
     export AM_BOOT_ID="boot-old"
-    recovery_desired_upsert "am-progress" "/tmp" "codex" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-progress" "/tmp" "codex" ""
     recovery_desired_identity "am-progress" "codex-progress" "" "hook"
 
     export AM_BOOT_ID="boot-new"
@@ -574,8 +495,7 @@ test_recovery_worker_locking() {
         _recovery_worker_lock
     _recovery_worker_unlock
 
-    recovery_desired_upsert "am-stale-claim" "/tmp" "codex" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-stale-claim" "/tmp" "codex" ""
     recovery_desired_identity "am-stale-claim" "sid-stale" "" "hook"
     recovery_desired_set_status "am-stale-claim" "restoring" "" "boot-new"
     mkdir -p "$AM_DIR/.recovery-worker.lock"
@@ -635,11 +555,9 @@ test_recovery_batch_partial_success() {
     export AM_MACHINE_ID="machine-a"
     export AM_BOOT_ID="boot-old"
 
-    recovery_desired_upsert "am-good" "/tmp" "cursor" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-good" "/tmp" "cursor" ""
     recovery_desired_identity "am-good" "sid-good" "/tmp/sid-good.jsonl" "hook"
-    recovery_desired_upsert "am-bad" "/tmp" "cursor" "" \
-        "false" "false" "" "/tmp" "/tmp" '[]'
+    recovery_desired_upsert "am-bad" "/tmp" "cursor" ""
 
     export AM_BOOT_ID="boot-new"
     tmux_list_am_sessions() { :; }

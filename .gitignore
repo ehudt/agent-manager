@@ -19,8 +19,6 @@ __pycache__/
 bin/am-list-internal
 bin/am-browse
 
-# Sandbox secrets
-sandbox/.env
 .evolver/
 
 # --- babysitter managed ---

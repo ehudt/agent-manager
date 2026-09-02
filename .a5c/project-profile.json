@@ -1,10 +1,10 @@
 {
   "projectName": "agent-manager",
-  "description": "Bash CLI tool for managing AI coding agent sessions via tmux, fzf, and Docker sandboxes",
+  "description": "Bash CLI tool for managing AI coding agent sessions via tmux and fzf",
   "goals": [
     {
       "id": "goal-testing-1",
-      "description": "Automated testing workflows for bash CLI with tmux/fzf/Docker dependencies",
+      "description": "Automated testing workflows for bash CLI with tmux/fzf dependencies",
       "category": "testing",
       "priority": "high",
       "status": "planned"
@@ -39,9 +39,9 @@
         "role": "Primary language for CLI and all modules"
       },
       {
-        "name": "Python",
-        "version": "3.11+",
-        "role": "Integration tests (pytest)"
+        "name": "Go",
+        "version": "1.19+",
+        "role": "Compiled session browser and list helpers"
       }
     ],
     "frameworks": [
@@ -54,10 +54,6 @@
         "name": "fzf",
         "version": ">=0.40",
         "category": "Interactive selection UI"
-      },
-      {
-        "name": "pytest",
-        "category": "Python test framework"
       }
     ],
     "databases": [],
@@ -65,20 +61,12 @@
     "packageManagers": [],
     "infrastructure": [
       {
-        "name": "Docker",
-        "category": "Sandbox container runtime"
-      },
-      {
-        "name": "tinyproxy",
-        "category": "HTTP proxy for sandbox network filtering"
-      },
-      {
         "name": "jq",
         "category": "JSON processing"
       },
       {
         "name": "git",
-        "category": "Version control with worktree support"
+        "category": "Version control and branch detection"
       }
     ]
   },
@@ -119,11 +107,6 @@
         "name": "config",
         "path": "lib/config.sh",
         "description": "User configuration"
-      },
-      {
-        "name": "sandbox",
-        "path": "lib/sandbox.sh",
-        "description": "Docker sandbox lifecycle"
       },
       {
         "name": "utils",
@@ -183,7 +166,7 @@
       "description": "Parallel bash test execution with tmux isolation",
       "steps": [
         "test_all.sh parallel workers",
-        "pytest integration/security/docker",
+        "go test ./...",
         "perf_test.sh standalone"
       ],
       "triggers": [
@@ -223,22 +206,13 @@
       "output": "stderr for logging, stdout for returns",
       "portability": "sed -E not -r"
     },
-    "testingConventions": "tests/test_*.sh sourced by test_all.sh, pytest markers for integration/security/docker",
+    "testingConventions": "tests/test_*.sh sourced by test_all.sh; Go tests under internal/ and cmd/",
     "additionalRules": [
       "Use sed -E for portability",
-      "SCRIPT_DIR overwritten when sourcing lib/agents.sh",
-      "Sandbox containers run as ubuntu user"
+      "SCRIPT_DIR overwritten when sourcing lib/agents.sh"
     ]
   },
   "painPoints": [
-    {
-      "id": "pp-sandbox-instability",
-      "description": "Sandbox subsystem required continuous rework (66 commits, 21%)",
-      "severity": "high",
-      "category": "architecture",
-      "discoveredVia": "git-analysis",
-      "suggestedRemediation": "Better test coverage for sandbox lifecycle"
-    },
     {
       "id": "pp-fix-ratio",
       "description": "21.5% of commits are fixes, insufficient pre-commit quality gates",
@@ -249,7 +223,7 @@
     },
     {
       "id": "pp-manual-testing",
-      "description": "Manual testing loops for sandbox and form changes are slow and error-prone",
+      "description": "Manual testing loops for form changes are slow and error-prone",
       "severity": "high",
       "category": "testing",
       "discoveredVia": "user-interview",
@@ -265,13 +239,6 @@
     }
   ],
   "bottlenecks": [
-    {
-      "id": "bn-sandbox-churn",
-      "description": "Sandbox has highest churn with multiple architecture redesigns",
-      "impact": "Major time sink",
-      "location": "lib/sandbox.sh, sandbox/Dockerfile",
-      "frequency": "Continuous"
-    },
     {
       "id": "bn-test-isolation",
       "description": "Tests leaked into real tmux sessions and user config",

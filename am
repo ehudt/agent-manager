@@ -11,7 +11,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.17.0"
+AM_VERSION="0.18.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -49,7 +49,6 @@ COMMANDS:
     wait                Block until a session reaches a target state
     interrupt           Send Ctrl-C to an agent pane
     restore             Browse and resume a closed agent session
-    sandbox, sb         Manage sandbox containers and home directory
     install             First-time setup (deps, config, skills, PATH)
     help                Show this help message
 
@@ -60,13 +59,8 @@ OPTIONS FOR 'new':
     -t, --type      Agent type: claude, codex, cursor, pi (saved default applies)
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
-    -w, --worktree  Enable git worktree isolation (Claude, Codex, Cursor, pi)
-                    Optional: -w <name> to set worktree name (default: am-XXXXXX)
     -W, --workspace Allocate the directory with the configured workspace_cmd
                     Optional: -W <branch> to allocate on a branch
-    --sandbox       Run session in Docker sandbox container
-    --no-sandbox    Disable sandbox even if enabled by default
-    --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])
     --shell         Open the shell panel at launch (default: agent-only)
     --no-shell      Start agent-only even if shell_pane is enabled by default
     --detach        Create the session without attaching
@@ -121,9 +115,6 @@ EXAMPLES:
     am send "$(am id)" "continue"   # Address the session you are in
     am attach am-abc123             # Attach to session by name
     am kill am-abc123               # Kill specific session
-    am sb ps                        # List sandbox containers
-    am sb build --no-cache          # Rebuild sandbox image
-    am sb enter am-abc123           # Re-enter a running sandbox shell
 
 DEPENDENCIES:
     tmux >= 3.2, fzf >= 0.40, jq, git
@@ -172,9 +163,8 @@ fi
 source "$AM_LIB_DIR/agents.sh"
 source "$AM_LIB_DIR/fzf.sh"
 
-# Lazy-loaders: state.sh, sandbox.sh, form.sh are deferred for faster startup
+# Lazy-loaders: state.sh and form.sh are deferred for faster startup
 _ensure_state() { [[ "$(type -t agent_get_state)" == "function" ]] || source "$AM_LIB_DIR/state.sh"; }
-_ensure_sandbox() { [[ "$(type -t sandbox_start)" == "function" ]] || source "$AM_LIB_DIR/sandbox.sh"; }
 _ensure_form() { [[ "$(type -t _form_run)" == "function" ]] || source "$AM_LIB_DIR/form.sh"; }
 
 # Command: list (plain text or JSON)
@@ -214,13 +204,13 @@ cmd_browse() {
         IFS=$'\x1f' read -r _tag directory session_id restore_agent <<< "$result"
         cmd_restore_internal "$directory" "$session_id" "${restore_agent:-claude}"
     elif [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
-        # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task<US>worktree_name
-        local directory agent_type flags task worktree_name
-        IFS=$'\x1f' read -r _tag directory agent_type flags task worktree_name <<< "$result"
+        # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task
+        local directory agent_type flags task
+        IFS=$'\x1f' read -r _tag directory agent_type flags task <<< "$result"
 
         # Create new session from form values
         # shellcheck disable=SC2086
-        cmd_new_internal "$directory" "$agent_type" "$task" "$worktree_name" $flags
+        cmd_new_internal "$directory" "$agent_type" "$task" $flags
     elif [[ "$result" == $'__RETRY_RECOVERY__\x1f'* ]]; then
         local recovery_id="${result#*$'\x1f'}"
         recovery_desired_retry "$recovery_id"
@@ -253,17 +243,16 @@ cmd_recover_open() {
 }
 
 # Internal: create session from form data (called from fzf_main)
-# Usage: cmd_new_internal <directory> [agent_type] [task] [worktree_name] [flags...]
+# Usage: cmd_new_internal <directory> [agent_type] [task] [flags...]
 cmd_new_internal() {
     local directory="$1"
     local agent_type="${2:-$(am_default_agent)}"
     local task="${3:-}"
-    local worktree_name="${4:-}"
-    shift 4 2>/dev/null || shift $#
+    shift 3 2>/dev/null || shift $#
     local agent_args=("$@")
 
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
+    session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         tmux_attach "$session_name"
@@ -288,7 +277,7 @@ cmd_restore_internal() {
     done < <(agent_resume_args "$agent_type" "$session_id")
 
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "" "" "${resume_args[@]}")
+    session_name=$(agent_launch "$directory" "$agent_type" "" "${resume_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         # Pre-seed the resumed conversation id so the entry never needs the
@@ -340,13 +329,7 @@ cmd_new() {
     local dir_given=false
     local agent_type=""
     local task=""
-    local worktree_name=""
     local agent_args=()
-    local sandbox_share_specs=()
-    local yolo_override=""
-    local sandbox_override=""
-    # shellcheck disable=SC2034
-    local worktree_override=""
     local attach_session=true
     local print_session=false
     local initial_prompt=""
@@ -368,16 +351,6 @@ cmd_new() {
                 dir_given=true
                 shift 2
                 ;;
-            -w|--worktree)
-                shift
-                # Next arg is optional name — if it starts with - or is a directory, use default
-                if [[ $# -gt 0 && "$1" != -* && ! -d "$1" ]]; then
-                    worktree_name="$1"
-                    shift
-                else
-                    worktree_name="__auto__"  # sentinel: generate from session hash
-                fi
-                ;;
             -W|--workspace)
                 workspace_enabled=true
                 shift
@@ -387,39 +360,12 @@ cmd_new() {
                     shift
                 fi
                 ;;
-            --yolo|--dangerously-skip-permissions)
-                agent_args+=("--yolo")
-                yolo_override="true"
-                shift
-                ;;
-            --no-yolo)
-                yolo_override="false"
-                shift
-                ;;
-            --sandbox)
-                agent_args+=("--sandbox")
-                sandbox_override="true"
-                shift
-                ;;
-            --share)
-                sandbox_share_specs+=("$2")
-                shift 2
-                ;;
-            --no-sandbox)
-                sandbox_override="false"
-                shift
-                ;;
             --shell)
                 agent_args+=("--shell")
                 shift
                 ;;
             --no-shell)
                 agent_args+=("--no-shell")
-                shift
-                ;;
-            --no-worktree)
-                # shellcheck disable=SC2034
-                worktree_override="false"
                 shift
                 ;;
             --detach|--no-attach)
@@ -443,13 +389,8 @@ cmd_new() {
                 echo "Options:"
                 echo "  -t, --type      Agent type (claude, codex, cursor, pi)"
                 echo "  -n, --name      Task description"
-                echo "  -w, --worktree  Enable git worktree isolation"
-                echo "                  Optional: -w <name> for custom worktree name"
                 echo "  -W, --workspace Allocate the directory with the configured workspace_cmd"
                 echo "                  Optional: -W <branch> to allocate on a branch"
-                echo "  --sandbox       Run session in Docker sandbox container"
-                echo "  --no-sandbox    Disable sandbox even if enabled by default"
-                echo "  --share SPEC    Extra sandbox bind mount (<host>[:container][:ro|rw])"
                 echo "  --shell         Open the shell panel at launch (default: agent-only)"
                 echo "  --no-shell      Start agent-only even if shell_pane is enabled by default"
                 echo "  --detach        Create the session without attaching"
@@ -482,15 +423,15 @@ cmd_new() {
     fi
 
     # Directory-first launcher for fully interactive new-session creation
-    if [[ -t 0 && "$dir_given" == false && "$workspace_enabled" == false && -z "$agent_type" && -z "$task" && -z "$worktree_name" && ${#agent_args[@]} -eq 0 ]]; then
+    if [[ -t 0 && "$dir_given" == false && "$workspace_enabled" == false && -z "$agent_type" && -z "$task" && ${#agent_args[@]} -eq 0 ]]; then
         _ensure_form
         local form_values flags
-        if ! form_values=$(am_new_session_form "$directory" "$(am_default_agent)" "$task" "$worktree_name"); then
+        if ! form_values=$(am_new_session_form "$directory" "$(am_default_agent)" "$task"); then
             log_info "Cancelled"
             return 0
         fi
 
-        IFS=$'\x1f' read -r directory agent_type task worktree_name flags <<< "$form_values"
+        IFS=$'\x1f' read -r directory agent_type task flags <<< "$form_values"
         # shellcheck disable=SC2206
         agent_args=($flags)
         # The form's Workspace fields arrive as --workspace[=branch]; they are
@@ -521,29 +462,6 @@ cmd_new() {
         fi
 
         agent_type="${agent_type:-$(am_default_agent)}"
-
-        if [[ "$yolo_override" != "false" ]] && am_maybe_apply_default_yolo "${agent_args[@]}"; then
-            agent_args+=("--yolo")
-        fi
-
-        if [[ "$sandbox_override" != "false" ]] && am_maybe_apply_default_sandbox "${agent_args[@]}"; then
-            agent_args+=("--sandbox")
-        fi
-
-        # --yolo implies sandbox + worktree unless explicitly opted out
-        if [[ "$yolo_override" == "true" ]]; then
-            if [[ "$sandbox_override" != "false" ]] && am_docker_available; then
-                # Add --sandbox if not already present
-                local _has_sb=false
-                for _a in "${agent_args[@]}"; do [[ "$_a" == "--sandbox" ]] && _has_sb=true; done
-                if ! $_has_sb; then
-                    agent_args+=("--sandbox")
-                fi
-            fi
-            if [[ "$worktree_override" != "false" && -z "$worktree_name" ]]; then
-                worktree_name="__auto__"
-            fi
-        fi
     fi
 
     if $workspace_enabled; then
@@ -555,12 +473,8 @@ cmd_new() {
     # Launch agent (prompt passed via _AM_LAUNCH_PROMPT to avoid tty buffer overflow
     # when piping long prompts through tmux send-keys)
     _AM_LAUNCH_PROMPT="$initial_prompt"
-    # shellcheck disable=SC2034 # read by lib/agents.sh
-    AM_SANDBOX_SHARES=("${sandbox_share_specs[@]}")
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "$task" "$worktree_name" "${agent_args[@]}")
-    # shellcheck disable=SC2034
-    AM_SANDBOX_SHARES=()
+    session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
 
     if [[ -n "$session_name" ]]; then
         if $print_session || ! $attach_session; then
@@ -573,8 +487,8 @@ cmd_new() {
 }
 
 # Name of the am session the caller is running inside: the AM_SESSION_NAME
-# every am pane starts with (also set inside sandbox containers), else the
-# attached session when running on the am tmux server. Fails when neither.
+# every am pane starts with, else the attached session when running on the am
+# tmux server. Fails when neither.
 # Usage: current_session
 current_session() {
     local name="${AM_SESSION_NAME:-}"
@@ -1020,7 +934,7 @@ cmd_config() {
         get)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config get <agent|yolo|logs>"
+                log_error "Usage: am config get <agent|logs|shell|workspace_cmd>"
                 return 1
             fi
             local key
@@ -1032,20 +946,11 @@ cmd_config() {
                 default_agent)
                     am_default_agent
                     ;;
-                default_yolo)
-                    am_default_yolo_enabled && echo true || echo false
-                    ;;
-                default_sandbox)
-                    am_default_sandbox_enabled && echo true || echo false
-                    ;;
                 stream_logs)
                     am_stream_logs_enabled && echo true || echo false
                     ;;
                 shell_pane)
                     am_shell_pane_enabled && echo true || echo false
-                    ;;
-                sb_network_restrict|sb_allowed_hosts|sandbox.shares)
-                    am_config_get "$key"
                     ;;
                 workspace_cmd)
                     am_workspace_cmd
@@ -1056,7 +961,7 @@ cmd_config() {
             local raw_key="${1:-}"
             local value="${2:-}"
             if [[ -z "$raw_key" || -z "$value" ]]; then
-                log_error "Usage: am config set <agent|yolo|logs> <value>"
+                log_error "Usage: am config set <agent|logs|shell|workspace_cmd> <value>"
                 return 1
             fi
             local key key_type
@@ -1081,7 +986,7 @@ cmd_config() {
         unset|rm)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config unset <agent|yolo|logs>"
+                log_error "Usage: am config unset <agent|logs|shell|workspace_cmd>"
                 return 1
             fi
             local key
@@ -1101,12 +1006,10 @@ Usage:
   am config unset <key>     Remove a saved value
 
 Keys:
-  agent    Default agent type
-  yolo     Default yolo mode (true/false)
-  sandbox  Default sandbox mode (true/false)
+  agent           Default agent type
   logs            Default pane log streaming (true/false)
   shell           New sessions open with the shell panel visible (true/false)
-  sandbox-shares  Sticky sandbox bind mounts (<host>[:container][:ro|rw], comma-separated)
+  auto-restore    Recreate open sessions after a reboot (true/false)
   workspace_cmd   Shell command behind `am new -W`: runs with $AM_BRANCH set (may be
                   empty) and prints the allocated directory, e.g.
                   am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
@@ -1358,67 +1261,6 @@ cmd_interrupt() {
     pane_target=$(tmux_session_pane_target "$resolved" "agent")
     tmux_send_keys "$pane_target" "C-c"
     log_info "Sent interrupt to $resolved"
-}
-
-# Command: sandbox
-cmd_sandbox() {
-    _ensure_sandbox
-    local action="${1:-}"
-    shift || true
-
-    case "$action" in
-        ps)
-            sb_ps
-            ;;
-        prune)
-            sb_prune
-            ;;
-        build)
-            local no_cache=0
-            [[ "${1:-}" == "--no-cache" ]] && no_cache=1
-            sb_build "$no_cache"
-            ;;
-        reset)
-            local confirm=0
-            [[ "${1:-}" == "--confirm" ]] && confirm=1
-            sb_reset "$confirm"
-            ;;
-        status)
-            local session="${1:-}"
-            [[ -z "$session" ]] && { log_error "Usage: am sb status <session>"; return 1; }
-            sandbox_status "$session"
-            ;;
-        enter)
-            local session="${1:-}"
-            [[ -z "$session" ]] && { log_error "Usage: am sb enter <session>"; return 1; }
-            sandbox_enter "$session"
-            ;;
-        ""|help|--help|-h)
-            cat <<'EOF'
-Usage: am sb <subcommand>
-
-Subcommands:
-  ps
-  prune
-  build [--no-cache]
-  reset --confirm
-  enter <session>
-  status <session>
-EOF
-            ;;
-        map|unmap|maps|sync|edit|shell)
-            log_error "Removed subcommand: $action (sandbox now uses a bind-mounted home directory)"
-            return 1
-            ;;
-        list|ls|rebuild|identity)
-            log_error "Legacy sandbox subcommand removed: $action"
-            return 1
-            ;;
-        *)
-            log_error "Unknown sandbox subcommand: $action"
-            return 1
-            ;;
-    esac
 }
 
 # Helper: compare version strings (true if actual >= required)
@@ -1725,9 +1567,6 @@ main() {
             ;;
         recover-open)
             cmd_recover_open "$@"
-            ;;
-        sandbox|sb)
-            cmd_sandbox "$@"
             ;;
         *)
             # If it looks like a path, treat as "new <path>"

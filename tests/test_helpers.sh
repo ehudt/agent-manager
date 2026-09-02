@@ -373,9 +373,6 @@ EOF
     AGENT_COMMANDS[codex]="$TEST_STUB_DIR/stub_agent"
     # shellcheck disable=SC2034,SC2154
     AGENT_COMMANDS[cursor]="$TEST_STUB_DIR/stub_agent"
-    # Test-only agent type without worktree support (exercises unsupported-agent paths)
-    # shellcheck disable=SC2034,SC2154
-    AGENT_COMMANDS[stubagent]="$TEST_STUB_DIR/stub_agent"
 }
 
 # Tear down integration test environment

@@ -16,9 +16,21 @@ test_cli() {
     assert_contains "$new_help" "-t, --type" "am new --help: shows flags"
     assert_contains "$new_help" "cursor" "am new --help: lists Cursor agent"
     assert_contains "$new_help" "-W, --workspace" "am new --help: shows workspace flag"
-    assert_not_contains "$new_help" "--yolo" "am new --help: hides yolo flag"
-    assert_not_contains "$new_help" "--no-yolo" "am new --help: hides no-yolo flag"
-    assert_not_contains "$new_help" "--no-worktree" "am new --help: hides no-worktree flag"
+    assert_not_contains "$new_help" "--yolo" "am new --help: no yolo flag"
+    assert_not_contains "$new_help" "--sandbox" "am new --help: no sandbox flag"
+    assert_not_contains "$new_help" "--worktree" "am new --help: no worktree flag"
+    assert_not_contains "$help_output" "sandbox" "am help: no sandbox command"
+
+    # Removed manager flags are rejected rather than silently forwarded
+    local rc=0
+    "$PROJECT_DIR/am" new --sandbox /tmp </dev/null >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "am new --sandbox: unknown option"
+    rc=0
+    "$PROJECT_DIR/am" new -w /tmp </dev/null >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "am new -w: unknown option"
+    rc=0
+    "$PROJECT_DIR/am" sb ps </dev/null >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "am sb: unknown command"
 
     local send_help
     send_help=$("$PROJECT_DIR/am" send --help)
@@ -75,7 +87,7 @@ test_cli_extended() {
     # Create a session for testing against (--shell: the peek tests below
     # exercise the shell pane, which is opt-in since 0.16)
     local session_name
-    session_name=$(set +u; agent_launch "$test_dir" "claude" "cli test" "" --shell 2>/dev/null)
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "cli test" --shell 2>/dev/null)
 
     if [[ -z "$session_name" ]]; then
         skip_test "cli extended tests (agent_launch failed)"
@@ -133,6 +145,8 @@ test_cli_extended() {
     info_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" info "$session_name" 2>/dev/null)
     assert_contains "$info_output" "Directory:" "am info: shows directory"
     assert_contains "$info_output" "Agent:" "am info: shows agent type"
+    assert_not_contains "$info_output" "Yolo:" "am info: no yolo line"
+    assert_not_contains "$info_output" "Sandbox:" "am info: no sandbox line"
 
     # --- Test: am peek snapshots agent and shell panes ---
     local peek_output
@@ -235,11 +249,13 @@ test_cli_extended() {
     config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DEFAULT_AGENT="claude" "$PROJECT_DIR/am" config get agent 2>/dev/null)
     assert_eq "claude" "$config_get" "am config get agent: env override wins"
 
-    # --- Test: am config sandbox ---
-    config_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set sandbox true 2>/dev/null)
-    assert_contains "$config_output" "default_sandbox=true" "am config set sandbox: persists default"
-    config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get sandbox 2>/dev/null)
-    assert_eq "true" "$config_get" "am config get sandbox: returns saved default"
+    # --- Test: removed config keys are rejected ---
+    local config_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set sandbox true >/dev/null 2>&1 || config_rc=$?
+    assert_eq "1" "$config_rc" "am config set sandbox: unknown key"
+    config_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get yolo >/dev/null 2>&1 || config_rc=$?
+    assert_eq "1" "$config_rc" "am config get yolo: unknown key"
 
     # --- Test: am send injects prompt text into running session ---
     session_name=$(set +u; agent_launch "$test_dir" "claude" "send test" 2>/dev/null)
@@ -255,7 +271,7 @@ test_cli_extended() {
 
     # --- Test: am new --detach can pass initial prompt from stdin (piped to agent) ---
     local detached_session
-    detached_session=$(printf 'initial prompt from stdin\n' | AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" new --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
+    detached_session=$(printf 'initial prompt from stdin\n' | AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" new --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>/dev/null)
     assert_not_empty "$detached_session" "am new --detach: returns session name"
     assert_eq "true" "$(tmux_session_exists "$detached_session" && echo true || echo false)" \
         "am new --detach: session created"
@@ -267,118 +283,6 @@ test_cli_extended() {
     [[ -n "$detached_session" ]] && agent_kill "$detached_session" 2>/dev/null
 
     # Cleanup
-    rm -rf "$test_dir"
-    teardown_integration_env
-
-    $SUMMARY_MODE || echo ""
-}
-
-test_cli_yolo_sandbox_integration() {
-    $SUMMARY_MODE || echo "=== Testing CLI yolo/sandbox integration ==="
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/config.sh"
-    source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/registry.sh"
-    set +u; source "$LIB_DIR/agents.sh"; set -u
-
-    setup_integration_env
-
-    local test_dir
-    test_dir=$(mktemp -d)
-
-    local docker_available=false
-    am_docker_available && docker_available=true
-
-    # --- Test: am new --yolo implies sandbox ---
-    local session_name
-    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" new --yolo --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "cli yolo: session created"
-    assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
-        "cli yolo: yolo_mode is true"
-    if $docker_available; then
-        assert_not_empty "$(registry_get_field "$session_name" container_name)" \
-            "cli yolo: implies sandbox (container created)"
-    else
-        assert_eq "" "$(registry_get_field "$session_name" container_name)" \
-            "cli yolo: skips implied sandbox when docker unavailable"
-    fi
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # --- Test: am new --yolo --no-sandbox opts out of implied sandbox ---
-    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" new --yolo --no-sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "cli yolo-no-sandbox: session created"
-    assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
-        "cli yolo-no-sandbox: yolo_mode is true"
-    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
-        "cli yolo-no-sandbox: sandbox opted out"
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # --- Test: am new --sandbox without docker fails ---
-    local sandbox_rc=0
-    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DOCKER_AVAILABLE="false" \
-        "$PROJECT_DIR/am" new --sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" \
-        </dev/null >/dev/null 2>/dev/null || sandbox_rc=$?
-    assert_eq "false" "$(test $sandbox_rc -eq 0 && echo true || echo false)" \
-        "cli sandbox-no-docker: fails when docker unavailable"
-
-    # --- Test: manager flags before -- survive agent extra args ---
-    local sandbox_extra_rc=0 sandbox_extra_output
-    sandbox_extra_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DOCKER_AVAILABLE="false" \
-        "$PROJECT_DIR/am" new --sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" -- --stub-extra \
-        </dev/null 2>/dev/null) || sandbox_extra_rc=$?
-    [[ -n "$sandbox_extra_output" ]] && agent_kill "$sandbox_extra_output" 2>/dev/null
-    assert_eq "false" "$(test $sandbox_extra_rc -eq 0 && echo true || echo false)" \
-        "cli sandbox-extra-args-no-docker: preserves sandbox before --"
-
-    # --- Test: am new --yolo --sandbox enables both independently ---
-    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" new --yolo --sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null) || true
-    if [[ -n "$session_name" ]]; then
-        assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
-            "cli yolo+sandbox: yolo_mode is true"
-        assert_eq "true" "$(registry_get_field "$session_name" sandbox_mode)" \
-            "cli yolo+sandbox: sandbox_mode is true"
-        agent_kill "$session_name" 2>/dev/null
-    else
-        # If docker unavailable, sandbox creation fails — that's expected
-        skip_test "cli yolo+sandbox: skipped (docker unavailable)"
-    fi
-
-    # --- Test: config default_sandbox applies ---
-    am_config_set "default_sandbox" "false" "boolean"
-    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" new --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "cli sandbox-default-off: session created"
-    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
-        "cli sandbox-default-off: no container when default_sandbox=false"
-    assert_eq "false" "$(registry_get_field "$session_name" sandbox_mode)" \
-        "cli sandbox-default-off: sandbox_mode is false"
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # --- Test: --no-sandbox overrides config default ---
-    am_config_set "default_sandbox" "true" "boolean"
-    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" new --no-sandbox --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "cli no-sandbox-override: session created"
-    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
-        "cli no-sandbox-override: no container with --no-sandbox"
-    assert_eq "false" "$(registry_get_field "$session_name" sandbox_mode)" \
-        "cli no-sandbox-override: sandbox_mode is false"
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # --- Test: --no-yolo overrides config default ---
-    am_config_set "default_sandbox" "false" "boolean"
-    am_config_set "default_yolo" "true" "boolean"
-    session_name=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" new --no-yolo --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "cli no-yolo-override: session created"
-    assert_eq "false" "$(registry_get_field "$session_name" yolo_mode)" \
-        "cli no-yolo-override: yolo_mode is false with --no-yolo"
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
     rm -rf "$test_dir"
     teardown_integration_env
 
@@ -417,27 +321,35 @@ test_cli_workspace_and_id() {
     # --- am new -W without workspace_cmd: fails with guidance ---
     rc=0
     local err
-    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD= "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD= "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
     assert_eq "1" "$rc" "am new -W: fails when workspace_cmd is unset"
     assert_contains "$err" "workspace_cmd" "am new -W: error names the config key"
 
     # --- am new -W plus a directory: rejected ---
     rc=0
-    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo $test_dir" "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>&1 </dev/null) || rc=$?
+    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo $test_dir" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>&1 </dev/null) || rc=$?
     assert_eq "1" "$rc" "am new -W <dir>: rejected"
     assert_contains "$err" "drop the directory" "am new -W <dir>: explains the conflict"
 
     # --- am new -W <branch>: the command sees AM_BRANCH and supplies the directory ---
     local ws_cmd="mkdir -p '$test_dir/ws-'\"\${AM_BRANCH:-trunk}\" && echo '$test_dir/ws-'\"\${AM_BRANCH:-trunk}\""
     local session_name
-    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W feature-x --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W feature-x --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
     assert_not_empty "$session_name" "am new -W <branch>: session created"
     assert_eq "$test_dir/ws-feature-x" "$(registry_get_field "$session_name" directory)" \
         "am new -W <branch>: session runs in the allocated directory"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
+    # --- args after -- reach the agent untouched ---
+    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" -- --stub-extra </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "am new -- extra: session created"
+    local extra_pane
+    extra_pane=$(wait_for_text "stub-extra" am_tmux capture-pane -pt "$session_name:.{top}" -S -)
+    assert_contains "$extra_pane" "stub-extra" "am new -- extra: agent receives the extra arg"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
     # --- am new -W with no branch: AM_BRANCH is empty ---
-    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
     assert_not_empty "$session_name" "am new -W: session created without a branch"
     assert_eq "$test_dir/ws-trunk" "$(registry_get_field "$session_name" directory)" \
         "am new -W: empty AM_BRANCH reaches the command"
@@ -445,7 +357,7 @@ test_cli_workspace_and_id() {
 
     # --- a command that prints no directory fails cleanly ---
     rc=0
-    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo /nonexistent/$$" "$PROJECT_DIR/am" new -W --detach --print-session --no-sandbox -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo /nonexistent/$$" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
     assert_eq "1" "$rc" "am new -W: bad command output fails"
     assert_contains "$err" "did not print an existing directory" "am new -W: reports the bad output"
 
@@ -459,7 +371,6 @@ run_cli_tests() {
     _run_test test_cli
     _run_test test_cli_workspace_and_id
     _run_test test_cli_extended
-    _run_test test_cli_yolo_sandbox_integration
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

@@ -77,15 +77,10 @@ recovery_desired_init() {
 }
 
 # Record a successfully launched logical session as desired-open.
-# Usage: recovery_desired_upsert <name> <project_dir> <agent> <task> <yolo>
-#        <sandbox> <worktree_name> <effective_dir> <worktree_host_path> <shares_json>
+# Usage: recovery_desired_upsert <name> <directory> <agent> <task>
 recovery_desired_upsert() {
     local name="$1" directory="$2" agent="$3" task="$4"
-    local yolo="$5" sandbox="$6" worktree_name="$7"
-    local effective_dir="$8" worktree_host_path="$9" shares_json="${10:-[]}"
     recovery_desired_init || return 1
-
-    jq -e 'type == "array"' >/dev/null 2>&1 <<< "$shares_json" || shares_json='[]'
 
     local store tmp created boot machine
     store=$(_recovery_store_path)
@@ -99,15 +94,9 @@ recovery_desired_upsert() {
           --arg dir "$directory" \
           --arg agent "$agent" \
           --arg task "$task" \
-          --arg yolo "$yolo" \
-          --arg sandbox "$sandbox" \
-          --arg wt_name "$worktree_name" \
-          --arg effective_dir "$effective_dir" \
-          --arg wt_host "$worktree_host_path" \
           --arg created "$created" \
           --arg boot "$boot" \
-          --arg machine "$machine" \
-          --argjson shares "$shares_json" '
+          --arg machine "$machine" '
         (.sessions[$id] // null) as $old |
         (.next_order // 1) as $next |
         .schema_version = 1 |
@@ -117,13 +106,8 @@ recovery_desired_upsert() {
             desired_state: "open",
             agent_type: $agent,
             project_directory: $dir,
-            effective_directory: $effective_dir,
+            effective_directory: $dir,
             task: $task,
-            yolo_mode: $yolo,
-            sandbox_mode: $sandbox,
-            worktree_name: $wt_name,
-            worktree_host_path: $wt_host,
-            sandbox_shares: $shares,
             created_at: ($old.created_at // $created),
             order_key: ($old.order_key // $next),
             session_id: ($old.session_id // ""),
@@ -300,9 +284,6 @@ recovery_sync_identities() {
         transcript=""
         if [[ -f "$identity_dir/$name.transcript" ]]; then
             IFS= read -r transcript < "$identity_dir/$name.transcript" 2>/dev/null || true
-            if [[ "$transcript" == /home/ubuntu/* && ! -f "$transcript" ]]; then
-                transcript="${SB_HOME_DIR:-$HOME/.agent-manager/sandbox-home}/${transcript#/home/ubuntu/}"
-            fi
         fi
         if [[ "${current_sid[$name]:-}" == "$sid" \
             && "${current_transcript[$name]:-}" == "$transcript" ]]; then
@@ -315,8 +296,7 @@ recovery_sync_identities() {
 recovery_migrate_live_registry() {
     recovery_desired_init || return 1
 
-    local name fields directory agent task yolo sandbox worktree_path worktree_host
-    local effective worktree_name sid transcript identity_dir state_dir
+    local name fields directory agent task sid transcript identity_dir state_dir
     identity_dir=$(_recovery_identity_dir)
     state_dir="${AM_STATE_DIR:-/tmp/am-state}"
     mkdir -p "$identity_dir"
@@ -331,16 +311,10 @@ recovery_migrate_live_registry() {
         if [[ -n "${desired_names[$name]:-}" ]]; then
             continue
         fi
-        fields=$(registry_get_fields "$name" directory agent_type task yolo_mode \
-            sandbox_mode worktree_path worktree_host_path)
-        IFS='|' read -r directory agent task yolo sandbox worktree_path worktree_host <<< "$fields"
+        fields=$(registry_get_fields "$name" directory agent_type task)
+        IFS='|' read -r directory agent task <<< "$fields"
         [[ -n "$directory" && -n "$agent" ]] || continue
-        effective="${worktree_host:-${worktree_path:-$directory}}"
-        worktree_name=""
-        [[ -n "$worktree_path" ]] && worktree_name="${worktree_path##*/}"
-        recovery_desired_upsert "$name" "$directory" "$agent" "$task" \
-            "${yolo:-false}" "${sandbox:-false}" "$worktree_name" \
-            "$effective" "$worktree_host" '[]'
+        recovery_desired_upsert "$name" "$directory" "$agent" "$task"
 
         # Upgrade already-running sessions before their ephemeral sidecars
         # disappear at reboot.
@@ -362,7 +336,7 @@ recovery_migrate_live_registry() {
 
 recovery_preflight_record() {
     local record="$1"
-    local id agent sid identity_source directory effective transcript sandbox worktree_name
+    local id agent sid identity_source directory effective transcript
     id=$(jq -r '.logical_id // empty' <<< "$record")
     agent=$(jq -r '.agent_type // empty' <<< "$record")
     sid=$(jq -r '.session_id // empty' <<< "$record")
@@ -370,8 +344,6 @@ recovery_preflight_record() {
     directory=$(jq -r '.project_directory // empty' <<< "$record")
     effective=$(jq -r '.effective_directory // .project_directory // empty' <<< "$record")
     transcript=$(jq -r '.transcript_path // empty' <<< "$record")
-    sandbox=$(jq -r '.sandbox_mode // "false"' <<< "$record")
-    worktree_name=$(jq -r '.worktree_name // empty' <<< "$record")
 
     if [[ -z "$id" || -z "$agent" \
         || ! "$id" =~ ^${AM_SESSION_PREFIX}[A-Za-z0-9._-]+$ ]]; then
@@ -383,39 +355,8 @@ recovery_preflight_record() {
         return 1
     fi
     if [[ -z "$effective" || ! -d "$effective" ]]; then
-        if [[ -n "$worktree_name" ]]; then
-            echo "worktree directory unavailable: ${effective:-<empty>}"
-        else
-            echo "directory unavailable: ${effective:-$directory}"
-        fi
+        echo "directory unavailable: ${effective:-$directory}"
         return 1
-    fi
-    if [[ -n "$worktree_name" ]]; then
-        local worktree_root project_common worktree_common
-        worktree_root=$(git -C "$effective" rev-parse --show-toplevel 2>/dev/null || true)
-        if [[ -z "$worktree_root" ]]; then
-            echo "worktree is no longer a valid git worktree: $effective"
-            return 1
-        fi
-        local effective_real root_real
-        effective_real=$(cd "$effective" 2>/dev/null && pwd -P || true)
-        root_real=$(cd "$worktree_root" 2>/dev/null && pwd -P || true)
-        if [[ -z "$effective_real" || "$effective_real" != "$root_real" ]]; then
-            echo "worktree path no longer matches its git root: $effective"
-            return 1
-        fi
-        project_common=$(git -C "$directory" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-        worktree_common=$(git -C "$effective" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-        if [[ -z "$project_common" || -z "$worktree_common" ]]; then
-            echo "worktree cannot resolve recorded project metadata: $directory"
-            return 1
-        fi
-        project_common=$(cd "$project_common" 2>/dev/null && pwd -P || true)
-        worktree_common=$(cd "$worktree_common" 2>/dev/null && pwd -P || true)
-        if [[ -z "$project_common" || "$project_common" != "$worktree_common" ]]; then
-            echo "worktree does not belong to recorded project: $effective"
-            return 1
-        fi
     fi
 
     local agent_cmd
@@ -425,32 +366,13 @@ recovery_preflight_record() {
         return 1
     fi
 
-    if [[ "$sandbox" == "true" ]]; then
-        if ! am_docker_available || ! docker info >/dev/null 2>&1; then
-            echo "Docker unavailable for sandbox session"
-            return 1
-        fi
-    fi
-
-    local share_spec share_host
-    while IFS= read -r share_spec; do
-        [[ -n "$share_spec" ]] || continue
-        share_host="${share_spec%%:*}"
-        if [[ ! -e "$share_host" ]]; then
-            echo "sandbox share unavailable: $share_host"
-            return 1
-        fi
-    done < <(jq -r '.sandbox_shares[]? // empty' <<< "$record")
-
     case "$agent" in
         codex)
             # Codex validates its exact hook-reported id when `codex resume`
             # starts; its rollout files are not stored under one stable path.
             ;;
         claude|cursor|pi)
-            local check_home="$HOME"
-            [[ "$sandbox" == "true" ]] && check_home="${SB_HOME_DIR:-$HOME/.agent-manager/sandbox-home}"
-            if ! HOME="$check_home" _sessions_log_jsonl_exists \
+            if ! _sessions_log_jsonl_exists \
                 "$effective" "$sid" "$agent" "$transcript"; then
                 echo "conversation history unavailable for $sid"
                 return 1
@@ -497,12 +419,7 @@ recovery_agent_started() {
 }
 
 recovery_cleanup_failed_runtime() {
-    local session_name="$1" container_name
-    container_name=$(registry_get_field "$session_name" container_name 2>/dev/null || true)
-    if [[ -n "$container_name" ]]; then
-        [[ "$(type -t sandbox_remove)" == "function" ]] || source "$_RECOVERY_LIB_DIR/sandbox.sh"
-        sandbox_remove "$session_name" >/dev/null 2>&1 || true
-    fi
+    local session_name="$1"
     tmux_kill_session "$session_name" >/dev/null 2>&1 || true
     registry_remove "$session_name" >/dev/null 2>&1 || true
 }
@@ -523,30 +440,16 @@ recovery_restore_one() {
 
     recovery_desired_set_status "$id" "restoring" "" "$boot"
 
-    local agent task project effective sid yolo sandbox
+    local agent task effective sid
     agent=$(jq -r '.agent_type' <<< "$record")
     task=$(jq -r '.task // empty' <<< "$record")
-    project=$(jq -r '.project_directory' <<< "$record")
     effective=$(jq -r '.effective_directory // .project_directory' <<< "$record")
     sid=$(jq -r '.session_id' <<< "$record")
-    yolo=$(jq -r '.yolo_mode // "false"' <<< "$record")
-    sandbox=$(jq -r '.sandbox_mode // "false"' <<< "$record")
 
     local -a restore_args=()
     while IFS= read -r _arg; do
         [[ -n "$_arg" ]] && restore_args+=("$_arg")
     done < <(agent_resume_args "$agent" "$sid")
-    [[ "$yolo" == "true" ]] && restore_args+=("--yolo")
-    [[ "$sandbox" == "true" ]] && restore_args+=("--sandbox")
-
-    AM_SANDBOX_SHARES=()
-    while IFS= read -r _share; do
-        [[ -n "$_share" ]] && AM_SANDBOX_SHARES+=("$_share")
-    done < <(jq -r '.sandbox_shares[]? // empty' <<< "$record")
-    if [[ "$sandbox" == "true" && "$effective" != "$project" ]]; then
-        AM_SANDBOX_SHARES+=("$project:$project:rw")
-    fi
-    AM_SANDBOX_SHARES_EXACT=1
 
     _AM_SESSION_NAME_OVERRIDE="$id"
     _AM_RECOVERY_MODE=1
@@ -554,7 +457,7 @@ recovery_restore_one() {
     recovery_desired_is_open "$id" || return 1
     recovery_allow_identity_rebind "$id"
     local restored
-    if restored=$(agent_launch "$effective" "$agent" "$task" "" "${restore_args[@]}") \
+    if restored=$(agent_launch "$effective" "$agent" "$task" "${restore_args[@]}") \
         && [[ -n "$restored" ]]; then
         if ! recovery_desired_is_open "$id"; then
             agent_kill "$restored" >/dev/null 2>&1 || true

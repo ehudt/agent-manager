@@ -4,7 +4,7 @@
  * Pi twin of lib/hooks/state-hook.sh (Claude/Codex): maps pi lifecycle
  * events to am session states and writes them to $AM_STATE_DIR/<session>.
  * Installed by `am install` as a symlink at ~/.pi/agent/extensions/am-state.ts
- * (auto-discovered by pi) and copied into the sandbox home by sandbox_start.
+ * (auto-discovered by pi).
  *
  * Event mapping:
  *   session_start  -> ready           (fresh session idle at its first
@@ -24,7 +24,7 @@
  *
  * No-op unless AM_SESSION_NAME is set (exported into the pane by
  * agent_launch). When the registry file exists, the session must be in it;
- * when it is absent (sandbox container — the host registry is not mounted),
+ * when it is absent (a pane whose AM_DIR is not visible to pi),
  * AM_SESSION_NAME alone is trusted.
  */
 import { execFile } from "node:child_process";

@@ -348,14 +348,6 @@ func readCursorTranscriptSidecar(stateDir, sessionName string) string {
 		return ""
 	}
 	path := strings.TrimSpace(string(b))
-	containerPrefix := "/home/ubuntu/"
-	if strings.HasPrefix(path, containerPrefix) {
-		hostHome := EnvOr("SB_HOME_DIR", filepath.Join(homeDir(), ".agent-manager", "sandbox-home"))
-		candidate := filepath.Join(hostHome, strings.TrimPrefix(path, containerPrefix))
-		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
-			path = candidate
-		}
-	}
 	if filepath.IsAbs(path) {
 		return path
 	}

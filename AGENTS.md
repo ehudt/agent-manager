@@ -17,7 +17,7 @@ SemVer (`MAJOR.MINOR.PATCH`). Single source of truth: `AM_VERSION` in `am` (help
 When to bump (pre-1.0, so `MAJOR` stays `0`):
 
 - **PATCH** (`0.2.0` → `0.2.1`) — bug fixes, doc/test/skill tweaks, internal refactors with no user-facing behavior change.
-- **MINOR** (`0.2.0` → `0.3.0`) — new user-facing capability: a new `am` command/flag, a new pane/UI mode, sandbox/restore/skill features, or a behavior change a user would notice.
+- **MINOR** (`0.2.0` → `0.3.0`) — new user-facing capability: a new `am` command/flag, a new pane/UI mode, restore/skill features, or a behavior change a user would notice.
 - **MAJOR** — reserved; bump to `1.0.0` only on the first stability commitment.
 
 How to bump: edit `AM_VERSION` in `am` in the same commit as the change that earns it; mention the bump in the commit body. Accumulate several small changes under one bump rather than bumping per-commit — bump when cutting a coherent batch.
@@ -37,8 +37,6 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
 - Pane environment (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR`) is seeded at pane creation via tmux `-e` (`agent_pane_env` → `tmux_create_session` env args / `split-window -e`) plus the session environment. Never `send-keys` an `export` into a pane: even a space-prefixed one lingers as zsh's most recent history entry, and the vars must exist before the agent command runs. Requires tmux ≥ 3.2 (`display-popup` already did)
 - `am new -W [branch]` never takes a directory: `agent_workspace_allocate` runs the user's `workspace_cmd` (bash -c, `AM_BRANCH` exported, may be empty) and uses its stdout. The form emits `--workspace[=branch]` in its flags field and `cmd_new` strips it before the flags reach `agent_launch`
-- Sandbox containers always run as the `ubuntu` user (UID/GID aligned to host). Use `SB_CONTAINER_HOME` for container-side path expansion, not `$HOME`
-- Agents in sandbox can `sudo apt-get install` without a password. Full sudo requires `SB_UNSAFE_ROOT=1`
 
 ## Key Files
 
@@ -65,16 +63,12 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `tests/live_lab/run.sh`, `run_cursor.sh`, `run_pi.sh` | Empirical state labs for real agent sessions |
 | `skills/agent-manager-dispatch/SKILL.md` | Claude/Cursor skill: teaches agents to use am for multi-session dispatch/orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
-| `lib/sandbox.sh` | Docker sandbox lifecycle and fleet ops |
-| `sandbox/Dockerfile` | Docker image definition for sandbox containers |
-| `sandbox/entrypoint.sh` | Container init: UID/GID alignment, skeleton seeding, sudoers |
-| `bin/sandbox-shell` | Reconnecting shell loop for sandbox containers (used by the shell panel) |
 | `bin/toggle-shell` | tmux helper (prefix+\`): toggle the collapsible shell panel — create on first use via `am shell`, then hide/show by parking the pane in the hidden `_amshell` window |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/switch-cycle` | tmux helper: cycle next/prev in canonical sidebar order |
 | `bin/switch-index` | tmux helper: jump to Nth slot in canonical sidebar order |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
-| `docs/` | Architecture docs, backlog, perf notes, sandbox hardening notes |
+| `docs/` | Architecture docs, backlog, perf notes |
 
 ## Data Flow
 
@@ -85,10 +79,8 @@ am new -W branch → agent_workspace_allocate(branch) → $workspace_cmd (AM_BRA
 am id → current_session() → $AM_SESSION_NAME, else attached session on the am tmux server
 am list-internal → am-list-internal (Go binary) → stdout
 Ctrl-N in browser → am_new_session_form() → _form_run()
-am new --sandbox ~/project → agent_launch() → sandbox_start() → sandbox_exec_cmd (agent pane) → agent runs in container; opening the shell panel later runs sandbox_enter_cmd in it
 prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
-am new --sandbox ~/project → agent_launch() → sandbox_start() → bind-mounts ~/.agent-manager/sandbox-home as /home/ubuntu
-agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → sandbox_remove() → tmux_kill_session() → registry_remove()
+agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → tmux_kill_session() → registry_remove()
 am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session, codex → resume)
 bare `am` → recovery_start_for_browser() → migrate live intent → prior-boot candidates queued → am-browse shows restoring rows while recovery_run() recreates sessions detached
 ```
@@ -358,7 +350,7 @@ am restore
 ## Key Functions
 
 **Session lifecycle:**
-- `agent_launch(dir, type, task, worktree_name, agent_args...)` - Creates session, registers, starts agent
+- `agent_launch(dir, type, task, agent_args...)` - Creates session, registers, starts agent. `--shell`/`--no-shell` are consumed here; every other arg reaches the agent verbatim
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
@@ -371,7 +363,7 @@ am restore
 - `current_session()` (in the am entry point) - Name of the am session the caller runs inside; backs the id command (aliases current, whoami) and the no-arg defaults of the shell and info commands
 
 **Shell panel (collapsible; sessions launch agent-only by default):**
-- `agent_shell_pane_add(session_name)` - Create the shell panel below the agent: split (worktree-aware cwd), wire `AM_SESSION_NAME`/`AM_AGENT_TYPE`/`AM_IDENTITY_DIR`/`AM_LOG_DIR` exports + shell.log pipe-pane, run `sandbox_enter_cmd` for sandboxed sessions, cd into a CLI-managed worktree once it exists. Registry-driven, so it serves both `--shell` at launch and on-demand opening
+- `agent_shell_pane_add(session_name)` - Create the shell panel below the agent: split in the session directory, wire `AM_SESSION_NAME`/`AM_AGENT_TYPE`/`AM_IDENTITY_DIR`/`AM_LOG_DIR` exports + shell.log pipe-pane. Registry-driven, so it serves both `--shell` at launch and on-demand opening
 - `agent_shell_pane_toggle(session_name)` - absent → add, open → hide, hidden → show; backs `am shell` and prefix+\` (via bin/toggle-shell)
 - `tmux_shell_pane_state(session)` - Print absent/open/hidden from live tmux (no persisted layout state)
 - `tmux_shell_pane_hide(session)` / `tmux_shell_pane_show(session)` - Park the panel in the hidden _amshell window / rejoin it below the agent (tmux break-pane/join-pane; the pane keeps running, so cwd, history, jobs, and pipe-pane streaming survive). Hide/show also toggle the window's pane-border-status so a lone agent pane wastes no row
@@ -389,7 +381,7 @@ am restore
 
 **Registry (JSON metadata):**
 - `registry_add/get_field/get_fields/update/remove` - CRUD for sessions.json. All writes are read-jq-rename cycles serialized under an exclusive lock on `$AM_REGISTRY.lock` (`_registry_lock`/`_registry_unlock`: the flock CLI on Linux, a perl flock syscall on an inherited fd on macOS — no flock CLI there; **not reentrant**, don't nest). The Go twin (`internal/sessions/lock.go:lockRegistry`) takes the same lock via `syscall.Flock`, so bash and Go writers can't lost-update each other; `RefreshTitles` computes titles unlocked, then re-reads and applies under the lock
-- `registry_gc()` - Remove entries for dead tmux sessions. Two independently throttled halves: registry rows + hook state files (incl. `.sid` sidecars) on `$AM_DIR/.gc_last`, mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; bash-only extras (`sandbox_gc_orphans`, `sessions_log_gc`, orphan state-file sweep) on `$AM_DIR/.gc_extras_last` so Go stamping `.gc_last` can't starve them.
+- `registry_gc()` - Remove entries for dead tmux sessions. Two independently throttled halves: registry rows + hook state files (incl. `.sid` sidecars) on `$AM_DIR/.gc_last`, mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; bash-only extras (`sessions_log_gc`, orphan state-file sweep) on `$AM_DIR/.gc_extras_last` so Go stamping `.gc_last` can't starve them.
 
 **Sessions log (for restore):**
 - `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
@@ -436,28 +428,15 @@ am restore
 - `am_session_order()` - Canonical sidebar order: tmux session creation time ascending (oldest first, newest appended). Stable — only changes on create/kill
 - `am_refresh_sidebar_cache()` - Regenerate each session's `@am_sidebar` tmux option and force a client-wide redraw. Called from `agent_launch` / `agent_kill` so pane-border updates are instant instead of waiting for the 5s `status-interval`
 
-**Sandbox:**
-- `sandbox_start(session_name, dir)` - Create and start per-session Docker container
-- `sandbox_enter_cmd(session_name, dir)` - Build reconnecting shell-entry command for a running sandbox
-- `sandbox_exec_cmd(session_name, dir, cmd)` - Build docker exec command that runs a command directly inside the container via `zsh -lc`
-- `sandbox_enter(session_name)` - Enter running sandbox container interactively
-- `sandbox_remove(session_name)` - Force-remove container
-- `sandbox_status(session_name)` - Show container state and event log
-- `sandbox_gc_orphans()` - Remove containers whose tmux session no longer exists
-- `sb_build([no_cache])` - Build Docker image from sandbox directory
-- `sb_ps()` / `sb_prune()` / `sb_reset()` - Manage sandbox containers and the shared home directory
-- `sb_prune()` - Force-remove all sandbox containers (running + stopped) and their proxies
-
-
 **Form (lib/form.sh):**
 - `am_new_session_form(...)` - Entry point: parses prefill values, then runs the tput form
-- `_form_init(directory, agent, task, mode, yolo, sandbox, worktree_enabled, worktree_name, docker_available)` - Initialize form state, fields, submit row
+- `_form_init(directory, agent, task, [workspace_enabled], [workspace_branch])` - Initialize form state and fields: Directory, Agent, Task, plus Workspace/Branch when a workspace_cmd is configured
 - `_form_run()` - Main loop: draw → read key → dispatch (navigate/edit) → repeat. Returns tab-delimited output on stdout
 - `_form_process_key(key, [extra_seq])` - Route to `_form_process_key_navigate` or `_form_process_key_edit` based on `_FORM_MODE`
 - `_form_draw()` - Buffer all fields + directory suggestions into `_FORM_BUF`, single write to `/dev/tty`
 - `_form_filter_dir_suggestions(query, max)` - Filter cached zoxide/frecent list into `_FORM_DIR_FILTERED` array (no subshell)
 - `_form_size_to_terminal()` - Grow `_FORM_DIR_SUGGESTION_LINES` (default 7) to fill the terminal height; called once by `_form_run`
-- `_form_output()` - Format form values as `directory\tagent\ttask\tworktree\tflags` (same contract as fzf form)
+- `_form_output()` - Format form values as `directory<US>agent<US>task<US>flags` (US = \x1f); flags carries only `--workspace[=branch]`
 
 **Session browser (Go TUI — `cmd/am-browse`):**
 - Compiled bubbletea binary; primary UI for the interactive session browser
@@ -500,7 +479,6 @@ Display: `dirname/branch [agent] task (Xm ago)`
 | Change preview content | `lib/preview` (session), `lib/dir-preview` (directory picker) |
 | Change title source | `lib/registry.sh` → `auto_title_scan()` |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
-| Change sandbox config | `lib/sandbox.sh`, `sandbox/Dockerfile` |
 | Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch (Workspace/Branch are conditional on `am_workspace_cmd`, so field indices only shift when it is configured) |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults |

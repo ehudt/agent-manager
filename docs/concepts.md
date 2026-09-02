@@ -33,10 +33,9 @@ exception because Cursor exposes no background-work lifecycle event.
 | Session | One agent in one tmux session named `am-<6-hex>`: an **agent pane** running full-screen, plus a collapsible **shell panel** (15 lines, below) opened on demand via prefix+` / `am shell` or `--shell` at launch; hiding parks the pane in a hidden `_amshell` window rather than killing it. All panes export `AM_SESSION_NAME`. | Foundational | `lib/agents.sh:agent_launch`, `agent_shell_pane_add` | verified |
 | Dedicated tmux server | All am sessions live on socket `agent-manager` (the `am_tmux` wrapper), isolated from the user's own tmux config and sessions. | Foundational | `lib/utils.sh` (`AM_TMUX_SOCKET`), `lib/tmux.sh:am_tmux` | verified (the *why* — config isolation — is inferred from `lib/tmux.sh` comments) |
 | State | Eight values: `starting · running · background · waiting_user · ready · idle · unknown · dead`. The product's core datum. | Foundational | `lib/state.sh` | verified |
-| Registry | Live-session metadata (dir, branch, agent type, task, flags) in one JSON file. Removed on kill. | Structural | `lib/registry.sh:registry_add` | verified |
+| Registry | Live-session metadata (dir, branch, agent type, task) in one JSON file. Removed on kill. | Structural | `lib/registry.sh:registry_add` | verified |
 | Sessions log | Append-only JSONL afterlife of resumable harness sessions — the substrate for manual native resume through `am restore`. | Structural | `lib/registry.sh:sessions_log_*` | verified |
 | Desired sessions | Durable future intent: sessions remain open across reboot until an explicit `am kill`. Reconciled progressively against physical tmux sessions when the interactive browser opens. | Structural | `lib/recovery.sh` | verified |
-| Sandbox | Optional per-session Docker container (agent runs inside; the shell panel attaches when opened) with an egress-filtering proxy sidecar. | Structural | `lib/sandbox.sh` | verified |
 | Go mirror | Hot-path logic (session list, browser TUI, title refresh, orphan reaping) re-implemented in Go for latency; bash remains the semantic reference. | Structural | `internal/sessions/` | verified |
 | A2A primitives | `am new --detach` / `send` / `peek` / `wait`: transport for agent-to-agent orchestration. Deliberately *not* semantic — they move bytes and report state, never interpret task completion. | Structural | `am` help text, AGENTS.md | verified |
 
@@ -138,12 +137,12 @@ flowchart LR
     subgraph launch["am new ~/proj  (agent_launch)"]
       L1["create tmux session<br/>on am socket"] --> L2["registry_add +<br/>sessions_log_append"]
       L2 --> L3["export AM_SESSION_NAME ·<br/>pipe-pane logs<br/>(agent pane only;<br/>shell panel is on-demand)"]
-      L3 --> L4["send agent command<br/>(± sandbox exec,<br/>± worktree, ± piped prompt)"]
+      L3 --> L4["send agent command<br/>(± piped prompt)"]
       L4 --> L5["am_refresh_sidebar_cache"]
     end
     subgraph kill["am kill  (agent_kill)"]
       K1["final snapshot +<br/>bind session_id<br/>(sidecar → logged → guess)"] --> K2["stamp closed_at"]
-      K2 --> K3["remove sandbox ·<br/>kill tmux ·<br/>registry_remove ·<br/>rm state files"]
+      K2 --> K3["kill tmux ·<br/>registry_remove ·<br/>rm state files"]
     end
     subgraph restore["am restore"]
       R1["sessions_log_restorable:<br/>not alive ∧ JSONL exists"] --> R2["agent_launch(dir,<br/>claude --resume sid)"]
@@ -156,10 +155,8 @@ flowchart LR
     launch --> reboot
 ```
 
-Failure behavior worth knowing (verified): if the sandbox is requested but
-Docker is missing, launch **rolls back** (kills tmux, removes registry
-entry). At kill time, a session-id *guess* may never overwrite a binding
-established while hooks were alive — the sidecar wins, then the
+Failure behavior worth knowing (verified): at kill time, a session-id
+*guess* may never overwrite a binding established while hooks were alive — the sidecar wins, then the
 already-logged sid, then a guarded newest-mtime guess that refuses when two
 sessions share a directory.
 
@@ -181,18 +178,6 @@ keep the mirror honest:
 Schema changes to the registry or sessions log must move the Go structs
 (`internal/sessions/sessions.go`) in the same commit.
 
-## Containment: a session with walls
-
-`am new --sandbox` gives the session a per-session Docker container: the
-agent pane runs *inside* it, the shell panel (when opened) attaches via a
-reconnecting loop, and a shared home (`~/.agent-manager/sandbox-home`) bind-mounts as
-`/home/ubuntu`. Egress is filtered: each container gets its own network
-plus a **tinyproxy sidecar** with a domain filter list
-(`lib/sandbox.sh:_sandbox_start_proxy`). The container runs as `ubuntu`
-(UID-aligned to the host) with passwordless `apt-get` only — full sudo
-needs `SB_UNSAFE_ROOT=1`. Container lifecycle is slaved to session
-lifecycle (created in launch, removed in kill, orphans GC'd).
-
 ## Change hotspots: if you touch X, Y moves
 
 | You change… | …what else moves |
@@ -200,7 +185,7 @@ lifecycle (created in launch, removed in kill, orphans GC'd).
 | State semantics (`_state_resolve`, hook mapping) | Status-bar glyphs and tab ages, `am wait` contracts consumed by orchestrating agents, the AGENTS.md decision table, live-lab expectations. Re-run `tests/live_lab/run.sh`. |
 | Hook write behavior | Tab-age timestamps (mtime contract), race guards, list-cache invalidation latency. |
 | Registry / sessions-log schema | Both the bash readers *and* the Go structs in `internal/sessions/sessions.go` — same commit. |
-| Launch/kill sequence | Restore correctness (sid binding, snapshots), sandbox lifecycle, sidebar refresh latency. |
+| Launch/kill sequence | Restore correctness (sid binding, snapshots), sidebar refresh latency. |
 | Claude Code upgrade lands | Glyph behavior, hook payload shape (`background_tasks` is ≥2.1), title semantics. The live lab exists precisely for this. |
 
 ## Honesty ledger: soft spots and open questions

@@ -265,29 +265,6 @@ func TestCursorFirstUserMessage(t *testing.T) {
 	}
 }
 
-func TestReadCursorTranscriptSidecarTranslatesSandboxHome(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	stateDir := t.TempDir()
-	hostTranscript := filepath.Join(tmp, ".agent-manager", "sandbox-home", ".cursor", "projects", "x.jsonl")
-	if err := os.MkdirAll(filepath.Dir(hostTranscript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(hostTranscript, []byte("{}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(stateDir, "am-cursor.transcript"),
-		[]byte("/home/ubuntu/.cursor/projects/x.jsonl"),
-		0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if got := readCursorTranscriptSidecar(stateDir, "am-cursor"); got != hostTranscript {
-		t.Fatalf("translated transcript = %q, want %q", got, hostTranscript)
-	}
-}
-
 func TestPiFirstUserMessage(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

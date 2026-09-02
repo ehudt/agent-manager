@@ -123,14 +123,7 @@ func TestRegistryRoundTripPreservesKnownAndFutureMetadata(t *testing.T) {
 
 	reg := ReadRegistry(path)
 	session := reg.Sessions["am-abc"]
-	if session.YoloMode != "true" ||
-		session.SandboxMode != "true" ||
-		session.ContainerName != "am-abc" ||
-		session.WorktreePath != "/container/worktree" ||
-		session.WorktreeHostPath != "/host/worktree" ||
-		session.WorktreeName != "feature-recovery" ||
-		session.LogicalID != "logical-abc" ||
-		session.OrderKey != "000001" {
+	if session.LogicalID != "logical-abc" || session.OrderKey != "000001" {
 		t.Fatalf("known recovery metadata was not decoded: %#v", session)
 	}
 
@@ -149,12 +142,13 @@ func registryMetadataDocument(name, task string) map[string]any {
 		},
 		"sessions": map[string]any{
 			name: map[string]any{
-				"name":               name,
-				"directory":          "/tmp/test",
-				"branch":             "dev",
-				"agent_type":         "claude",
-				"task":               task,
-				"created_at":         "2026-08-28T07:00:00Z",
+				"name":       name,
+				"directory":  "/tmp/test",
+				"branch":     "dev",
+				"agent_type": "claude",
+				"task":       task,
+				"created_at": "2026-08-28T07:00:00Z",
+				// Fields written by releases before 0.18 must survive a rewrite.
 				"yolo_mode":          "true",
 				"sandbox_mode":       "true",
 				"container_name":     name,

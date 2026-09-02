@@ -13,20 +13,19 @@ type DesiredStore struct {
 }
 
 type DesiredSession struct {
-	LogicalID          string   `json:"logical_id"`
-	SessionName        string   `json:"session_name"`
-	DesiredState       string   `json:"desired_state"`
-	AgentType          string   `json:"agent_type"`
-	ProjectDirectory   string   `json:"project_directory"`
-	EffectiveDirectory string   `json:"effective_directory"`
-	Task               string   `json:"task"`
-	CreatedAt          string   `json:"created_at"`
-	OrderKey           int64    `json:"order_key"`
-	SessionID          string   `json:"session_id"`
-	MachineID          string   `json:"machine_id"`
-	RecoveryState      string   `json:"recovery_state"`
-	RecoveryError      string   `json:"recovery_error"`
-	SandboxShares      []string `json:"sandbox_shares"`
+	LogicalID          string `json:"logical_id"`
+	SessionName        string `json:"session_name"`
+	DesiredState       string `json:"desired_state"`
+	AgentType          string `json:"agent_type"`
+	ProjectDirectory   string `json:"project_directory"`
+	EffectiveDirectory string `json:"effective_directory"`
+	Task               string `json:"task"`
+	CreatedAt          string `json:"created_at"`
+	OrderKey           int64  `json:"order_key"`
+	SessionID          string `json:"session_id"`
+	MachineID          string `json:"machine_id"`
+	RecoveryState      string `json:"recovery_state"`
+	RecoveryError      string `json:"recovery_error"`
 }
 
 func ReadDesiredStore(path string) DesiredStore {

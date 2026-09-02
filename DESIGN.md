@@ -51,11 +51,7 @@ Stores metadata that tmux doesn't track natively:
       "branch": "feature/auth",
       "agent_type": "claude",
       "created_at": "2024-01-15T10:30:00Z",
-      "task": "implement user auth flow",
-      "worktree_path": "/home/user/code/myapp/.claude/worktrees/am-abc123",
-      "yolo_mode": "false",
-      "sandbox_mode": "false",
-      "container_name": ""
+      "task": "implement user auth flow"
     }
   }
 }
@@ -122,10 +118,6 @@ fzf preview will show:
 └──────────────────────────────────────────────────────┘
 ```
 
-### 5. Sandbox home directory
-
-Each sandbox bind-mounts `~/.agent-manager/sandbox-home/` as `/home/ubuntu` inside the container. All writes to `$HOME` inside the container persist automatically on the host — no mapping or syncing required. The entrypoint seeds skeleton files (e.g. `.vimrc`) on first run if the home directory is empty.
-
 ## CLI Interface
 
 ### Commands
@@ -141,10 +133,7 @@ am new                  # Interactive: pick directory, starts claude
 am new /path/to/project # Start claude in specific directory
 am new -t codex         # Start codex instead of claude
 am new --name "my-task" # Custom display name
-am new --yolo           # Enable yolo mode (agent permissive flags)
-am new --sandbox        # Run in Docker sandbox container
-am new --share ~/.ssh:~/.ssh:ro  # Extra live bind mount for a sandbox session
-am new -w               # Git worktree isolation
+am new -W [branch]      # Allocate the directory via the configured workspace_cmd
 am new --detach         # Create without attaching
 am new --print-session  # Print session name to stdout
 
@@ -175,12 +164,6 @@ am info <session>       # Show detailed session info
 am config               # Show current config
 am config set <key> <value>  # Set config value
 am config get <key>          # Get config value
-
-# Sandbox management
-am sb ps                                   # List sandbox containers
-am sb prune                                # Remove stopped containers
-am sb build                                # Build sandbox Docker image
-am sb reset --confirm                      # Clear sandbox home directory
 ```
 
 ### fzf Keybindings
@@ -212,22 +195,14 @@ agent-manager/
 │   ├── status-bar          # Standalone script: renders bottom bar as clickable session-tab strip + writes @am_sidebar / @am_attention
 │   ├── strip-ansi          # Standalone script: strips ANSI escape codes
 │   ├── registry.sh         # Session registry, persistent history (JSONL), auto-titling
-│   ├── sandbox.sh          # Docker sandbox lifecycle and fleet ops
 │   ├── state.sh            # Session state detection: JSONL + pane pattern matching
 │   ├── tmux.sh             # tmux wrapper functions
 │   └── utils.sh            # Common utilities
 ├── bin/
 │   ├── kill-and-switch     # tmux helper: kill session + switch to next
-│   ├── sandbox-shell       # Reconnecting shell loop for sandbox containers
 │   ├── switch-cycle        # tmux helper: cycle next/prev in sidebar order
 │   ├── switch-index        # tmux helper: jump to Nth sidebar slot
 │   └── switch-last         # tmux helper: switch to most recent am-* session
-├── sandbox/
-│   ├── config_context/     # Build context directory for sandbox configuration
-│   ├── Dockerfile          # Docker image for sandbox containers
-│   ├── entrypoint.sh       # Container init: user alignment, Tailscale, SSH
-│   ├── tinyproxy.conf      # Tinyproxy network proxy configuration
-│   └── tinyproxy-filter.txt # Tinyproxy URL filter list
 ├── skills/
 │   └── agent-manager-dispatch/
 │       └── SKILL.md        # Claude Code skill for multi-session dispatch/orchestration
@@ -241,7 +216,6 @@ agent-manager/
 ├── docs/
 │   ├── backlog.md          # Feature backlog and ideas
 │   ├── perf-techniques.md  # Performance optimization techniques
-│   ├── sandbox-hardening.md # Sandbox security hardening notes
 │   └── test-speed-plan.md  # Test suite performance plan
 ├── tests/
 │   ├── perf_test.sh        # Standalone latency benchmark for am list-internal
@@ -306,20 +280,6 @@ Key implementation details:
 - Agents set the terminal title via escape sequences; tmux exposes it as `#{pane_title}`
 - Rejects titles over 60 chars or multiline (`_title_valid`)
 - Logs to `~/.agent-manager/titler.log` for debugging
-
-### Worktree Isolation
-
-The `-w` flag creates a git worktree for Claude sessions:
-
-```bash
-am new -w ~/project              # worktree at .claude/worktrees/am-XXXXXX
-am new -w my-feature ~/project   # worktree at .claude/worktrees/my-feature
-```
-
-- Only applies to Claude agent type in git repositories
-- The shell panel `cd`s into the worktree when it is opened
-- Worktree path stored in registry as `worktree_path`
-- Claude is launched with `-w <name>` flag
 
 ## Dependencies
 

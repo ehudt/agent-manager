@@ -99,8 +99,7 @@ Run the tests, reproduce, fix, and commit. Use superpowers:systematic-debugging.
 | Command | Purpose |
 |---------|---------|
 | `am new --detach --print-session <dir>` | Launch, print session ID (prompt via stdin) |
-| `am new ... --sandbox` | Launch in Docker sandbox |
-| `am new ... --yolo` | Skip permissions — implies sandbox + worktree (opt out: `--no-sandbox` / `--no-worktree`) |
+| `am new ... -- <agent flags>` | Everything after `--` reaches the agent verbatim (e.g. `--dangerously-skip-permissions`) |
 | `am send [--wait] <session> "prompt"` | Inject prompt (`--wait` = only when agent is ready) |
 | `am wait [--state s1,s2] [--timeout N] <session>` | Block until a target state; prints state reached. Default timeout 600s; exit 3 = timed out |
 | `am status --json <session>` | State for one session |

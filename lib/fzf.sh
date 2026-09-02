@@ -201,13 +201,13 @@ fzf_main() {
         __NEW__)
             # Delegate to bash form (still needs tput/fzf)
             [[ "$(type -t am_new_session_form)" != "function" ]] && source "$_FZF_LIB_DIR/form.sh"
-            local form_values directory agent_type task worktree_name flags
+            local form_values directory agent_type task flags
             if ! form_values=$(am_new_session_form); then
                 fzf_main
                 return $?
             fi
-            IFS=$'\x1f' read -r directory agent_type task worktree_name flags <<< "$form_values"
-            printf "__NEW_SESSION__\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n" "$directory" "$agent_type" "$flags" "$task" "$worktree_name"
+            IFS=$'\x1f' read -r directory agent_type task flags <<< "$form_values"
+            printf "__NEW_SESSION__\x1f%s\x1f%s\x1f%s\x1f%s\n" "$directory" "$agent_type" "$flags" "$task"
             ;;
         __RESTORE__)
             local restore_result

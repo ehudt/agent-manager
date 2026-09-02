@@ -2,7 +2,7 @@
 # clean-history.sh - remove agent-manager test noise from zsh history
 #
 # Removes entries matching stub_agent, shell-peek-ready, am-prompt-test,
-# bare "bash" commands, and docker exec sandbox commands from test runs.
+# and bare "bash" commands from test runs.
 #
 # Usage: ./scripts/clean-history.sh [--dry-run]
 

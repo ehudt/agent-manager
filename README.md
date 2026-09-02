@@ -55,7 +55,7 @@ That's it. You're in a tmux session with Claude running full-screen. Press ``Pre
 | **tmux** | 3.2+ | `brew install tmux` / `apt install tmux` / `pacman -S tmux` |
 | **fzf** | 0.40+ | `brew install fzf` / `apt install fzf` / `pacman -S fzf` |
 | **jq** | 1.6+ | `brew install jq` / `apt install jq` / `pacman -S jq` |
-| **git** | any | Required for worktree isolation and branch display |
+| **git** | any | Required for branch display |
 | **[zoxide](https://github.com/ajeetdsouza/zoxide)** | any | Frecent directory ranking in the session creation form |
 
 **One-liner install for all dependencies:**
@@ -120,8 +120,7 @@ am new ~/code/myproject              # New Claude session in a directory
 am new -t codex ~/code/project       # Use Codex instead
 am new -t cursor ~/code/project      # Use Cursor Agent
 am new -n "fix auth bug" .           # Session with a task description
-am new --yolo ~/code/myproject       # Permissive mode (agent-specific flags)
-am new -w ~/code/myproject           # Isolate changes in a git worktree
+am new ~/code/proj -- --resume       # Anything after -- goes to the agent verbatim
 am new -W review-48351               # Fresh workspace on a branch via workspace_cmd (below)
 ```
 
@@ -140,9 +139,9 @@ printf 'Review PR 48351\n' | am new --detach --print-session -W review-48351
 Once configured, the interactive form also offers **Workspace** / **Branch**
 fields right after Directory (toggling Workspace on takes Directory out of play).
 
-Running `am new` with no arguments opens an interactive form where you pick a directory, agent type, and mode:
+Running `am new` with no arguments opens an interactive form where you pick a directory, agent type, and task:
 
-<!-- TODO: Screenshot — the one-page new session form showing directory picker with zoxide suggestions, agent type selector, and mode options. -->
+<!-- TODO: Screenshot — the one-page new session form showing directory picker with zoxide suggestions, agent type selector, and task field. -->
 
 ### Interactive session browser
 
@@ -263,10 +262,9 @@ recreates missing open sessions in the background and shows them as
 `restoring`. The browser remains usable while recovery progresses and never
 auto-attaches a session.
 
-Recovery requires an exact hook-reported conversation identity and the same
-runtime policy as the original session. A missing directory, worktree, sandbox
-share, harness command, conversation file, or Docker daemon leaves that row
-visible as `blocked` instead of silently starting a different environment.
+Recovery requires an exact hook-reported conversation identity. A missing
+directory, harness command, or conversation file leaves that row visible as
+`blocked` instead of silently starting a different session.
 Press Enter to retry a blocked row after fixing its prerequisite, or Ctrl-X to
 forget it. Explicit commands and automation (`am list`, `am new`, `am wait`,
 and similar) never start recovery.
@@ -351,161 +349,24 @@ the canonical names.
 
 <!-- TODO: Video (30-40s) — terminal recording showing an orchestrator agent launching two parallel workers with `am new --detach`, waiting for them with `am wait`, peeking at results with `am peek --lines 10`, and then killing the sessions. Show the session IDs being captured and reused. -->
 
-## Sandbox Mode (Experimental)
-
-> **Experimental feature — not a security boundary.** The sandbox reduces the blast radius of permissive (`--yolo`) agent runs by placing them inside a Docker container. It is **not** designed to contain a determined adversary. The project directory is still bind-mounted read-write, and Docker itself requires root-equivalent access on the host. Treat the sandbox as a safety net for accidental damage, not as isolation from malicious code. The sandbox API and defaults may change in future releases.
-
-### Container model
-
-Each sandbox now gets only two default mounts:
-
-| Mount | Mode | Purpose |
-|------|------|---------|
-| `~/.agent-manager/sandbox-home/` → `/home/ubuntu` | rw | Persistent sandbox home directory |
-| Project directory → same absolute path | rw | Working tree for the session |
-
-Everything else is opt-in.
-
-### Persistent home directory
-
-All sandbox containers share a single host directory bind-mounted as `/home/ubuntu`:
-
-```
-~/.agent-manager/sandbox-home/
-```
-
-Every file written to `$HOME` inside a container persists automatically on the
-host -- no mapping or syncing required. Claude/Cursor credentials, Cursor
-transcripts and worktrees, SSH keys, git config, and other home-dir state
-survive container restarts.
-
-To pre-populate the sandbox home, simply copy files into `~/.agent-manager/sandbox-home/` on the host:
-
-```bash
-cp -r ~/.ssh ~/.agent-manager/sandbox-home/.ssh
-cp ~/.gitconfig ~/.agent-manager/sandbox-home/.gitconfig
-```
-
-### Sandbox image contents
-
-The sandbox image is intentionally simple and currently includes:
-
-- a single in-image user, `dev`, with `zsh` as the login shell
-- Node.js plus Codex, Claude Code, pi, and the official Cursor Agent CLI
-- Rust installed for `dev` via `rustup`, including `rustfmt`
-- `uv`, one managed Python, and `ipython`
-- Playwright's Chromium runtime for UI tests
-
-The image does not include SSH or Tailscale support.
-
-### One-off live bind mounts with `--share`
-
-Use `--share` for extra bind mounts alongside the persistent home directory:
-
-```bash
-am new --sandbox --share ~/.ssh:~/.ssh:ro ~/project
-am new --sandbox --share ~/.env:~/.env:rw ~/project
-```
-
-Share syntax is:
-
-```text
-<host-path>[:container-path][:ro|rw]
-```
-
-- Omitted container path defaults to the host path.
-- Omitted mode defaults to `ro`.
-- Multiple `--share` flags are allowed.
-- `--share` only applies when sandbox mode is active.
-
-You can also configure sticky shares:
-
-```bash
-am config set sandbox-shares "~/.zshrc:ro,~/.vimrc:ro"
-```
-
-Those shares are merged with any per-command `--share` flags.
-
-### Sandbox management commands
-
-```bash
-am sb ps
-am sb prune
-am sb build --no-cache
-am sb reset --confirm
-```
-
-`am sandbox` and `am sb` are equivalent prefixes.
-
-### Resource limits
-
-| Resource | Default | Environment variable |
-|----------|---------|---------------------|
-| Memory | 4 GB | `SB_MEMORY_LIMIT` |
-| CPUs | 2.0 | `SB_CPUS_LIMIT` |
-| PIDs | 512 | `SB_PIDS_LIMIT` |
-
-### Security hardening
-
-By default, the container runs with:
-
-- **`--cap-drop=ALL`** — all Linux capabilities dropped, then only `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` are added back (required by the entrypoint for user alignment)
-- **`--security-opt no-new-privileges:true`** — prevents privilege escalation inside the container
-- **No passwordless sudo** — `sudo` is blocked unless you explicitly set `SB_UNSAFE_ROOT=1`
-
-At runtime, the entrypoint still:
-
-- restores default `.zshrc` and `.vimrc` only when they are missing
-- seeds skeleton files into `/home/ubuntu` from `/etc/skel`
-
-Optional hardening flags (set in `~/.agent-manager/sandbox.env`):
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `SB_UNSAFE_ROOT` | `0` | `1` = enable passwordless sudo (for `apt install`, etc.) |
-
-### Worktree isolation
-
-Run agents in a git worktree to isolate changes from your main working tree:
-
-```bash
-am new -w ~/project                    # Auto-named worktree
-am new -w my-feature ~/project         # Named worktree
-```
-
-Cursor uses its native `-w [name]` worktree support under
-`~/.cursor/worktrees/<repo>/<name>`. In Docker mode the container path and its
-corresponding persistent host path are both recorded.
-
-### Cursor authentication and sandboxing
+## Cursor authentication
 
 Authenticate the host CLI with `agent login`, or export `CURSOR_API_KEY`.
-Sandbox containers forward `CURSOR_API_KEY`/`CURSOR_AUTH_TOKEN`; interactive
-login state written under `/home/ubuntu/.cursor` persists in
-`~/.agent-manager/sandbox-home/.cursor`.
 
-`am new --sandbox -t cursor` means agent-manager's outer Docker sandbox.
-Cursor's nested sandbox is disabled there unless explicitly overridden. To use
-Cursor's native sandbox outside Docker, pass it after `--`:
-
-```bash
-am new -t cursor . -- --sandbox=enabled
-```
-
-### Auto-titling
+## Auto-titling
 
 Agent-maintained terminal titles are used when they represent a task. Claude,
 Cursor, and pi can also fall back to the exact session transcript's first user
 message; transient Cursor titles such as `Cursor Agent` and `Shell Command` are
 ignored.
 
-### Configuration
+## Configuration
 
 ```bash
 am config                          # Show current defaults
 am config set agent codex          # Default to Codex
-am config set yolo true            # Default to permissive mode
 am config set logs true            # Enable pane log streaming
+am config set shell true           # Open the shell panel at launch
 am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'  # Backs `am new -W`
 am config get agent                # Read a single value
 ```
@@ -514,14 +375,15 @@ Precedence: CLI flag > environment variable > saved config > built-in default.
 
 ## Agent Types
 
-| Agent | Command | `--yolo` maps to |
-|-------|---------|-------------------|
-| `claude` | `claude` | `--dangerously-skip-permissions` |
-| `codex` | `codex` | `--yolo` |
-| `cursor` (`cursor-agent` alias) | `agent` | `--yolo` |
-| `pi` | `pi` | — |
+| Agent | Command |
+|-------|---------|
+| `claude` | `claude` |
+| `codex` | `codex` |
+| `cursor` (`cursor-agent` alias) | `agent` |
+| `pi` | `pi` |
 
 Unknown agent types are passed through as the command name, so `am new -t aider .` will try to run `aider`.
+Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permissions`.
 
 ## Commands Reference
 
@@ -539,7 +401,6 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 | `am kill <session>` | Kill a session |
 | `am status [--json]` | Show detailed session info |
 | `am config` | Show or change saved defaults |
-| `am sandbox <cmd>` / `am sb <cmd>` | Manage sandbox containers and home directory |
 | `am install` | First-time setup for dependencies, config, skills, and PATH |
 | `am help` | Show help |
 | `am version` | Show version |
@@ -548,7 +409,7 @@ Unknown agent types are passed through as the command name, so `am new -t aider 
 
 ```
 ~/.agent-manager/
-├── config.json         # Saved defaults (agent, yolo, log streaming)
+├── config.json         # Saved defaults (agent, log streaming, shell panel, workspace_cmd)
 ├── sessions.json       # Live session metadata registry
 ├── sessions_log.jsonl  # Session restore log (Claude session IDs + metadata)
 ├── snapshots/          # Pane text snapshots for closed session preview

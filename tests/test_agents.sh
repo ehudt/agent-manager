@@ -27,11 +27,6 @@ test_agents() {
     assert_eq "cursor" "$(agent_normalize_type cursor-agent)" \
         "agent_normalize_type: cursor-agent alias"
 
-    # Test yolo flag mapping
-    assert_eq "--dangerously-skip-permissions" "$(agent_get_yolo_flag claude)" "agent_get_yolo_flag: claude"
-    assert_eq "--yolo" "$(agent_get_yolo_flag codex)" "agent_get_yolo_flag: codex"
-    assert_eq "--yolo" "$(agent_get_yolo_flag cursor)" "agent_get_yolo_flag: cursor"
-
     # Test _agent_prompt_as_arg
     assert_eq "true" "$(_agent_prompt_as_arg codex && echo true || echo false)" \
         "_agent_prompt_as_arg: codex uses CLI arg"
@@ -46,12 +41,6 @@ test_agents() {
         "agent_type_supported: pi"
     assert_eq "true" "$(_agent_prompt_as_arg pi && echo true || echo false)" \
         "_agent_prompt_as_arg: pi takes prompt as arg"
-    assert_eq "" "$(agent_get_yolo_flag pi)" "agent_get_yolo_flag: pi has no yolo flag"
-    assert_eq "true" "$(agent_supports_worktree pi && echo true || echo false)" \
-        "agent_supports_worktree: pi"
-    assert_eq "false" "$(agent_cli_manages_worktree pi && echo true || echo false)" \
-        "agent_cli_manages_worktree: pi is am-managed"
-    assert_eq "/tmp/x/.pi/worktrees" "$(agent_worktree_root /tmp/x pi)" "agent_worktree_root: pi"
 
     # --- agent_resume_args ---
     assert_eq "--resume|abc123" "$(agent_resume_args claude abc123 | paste -sd'|' -)" \
@@ -62,14 +51,6 @@ test_agents() {
         "agent_resume_args: pi"
     assert_eq "resume|abc123" "$(agent_resume_args codex abc123 | paste -sd'|' -)" \
         "agent_resume_args: codex"
-
-    # --- Cursor worktrees are managed by the CLI under ~/.cursor ---
-    assert_eq "true" "$(agent_supports_worktree cursor && echo true || echo false)" \
-        "agent_supports_worktree: cursor"
-    assert_eq "true" "$(agent_cli_manages_worktree cursor && echo true || echo false)" \
-        "agent_cli_manages_worktree: cursor"
-    assert_eq "$HOME/.cursor/worktrees/x" "$(agent_worktree_root /tmp/x cursor)" \
-        "agent_worktree_root: cursor"
 
     $SUMMARY_MODE || echo ""
 }
@@ -193,183 +174,6 @@ test_integration_lifecycle() {
     $SUMMARY_MODE || echo ""
 }
 
-test_worktree() {
-    $SUMMARY_MODE || echo "=== Testing Worktree Feature ==="
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/registry.sh"
-    set +u; source "$LIB_DIR/agents.sh"; set -u
-    export AM_SCRIPT_DIR="$PROJECT_DIR"
-    source "$LIB_DIR/sandbox.sh"
-
-    setup_integration_env
-
-    # Create a temp git repo for worktree tests
-    local git_dir
-    git_dir=$(mktemp -d)
-    git -C "$git_dir" init -q
-    git -C "$git_dir" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
-
-    # Also create a non-git temp dir
-    local nongit_dir
-    nongit_dir=$(mktemp -d)
-
-    # --- Test: agent_launch with worktree_name sets registry worktree_path ---
-    local session_name
-    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "my-wt" 2>/dev/null)
-    assert_not_empty "$session_name" "worktree launch: returns session name"
-
-    local wt_path
-    wt_path=$(registry_get_field "$session_name" worktree_path)
-    assert_eq "$git_dir/.claude/worktrees/my-wt" "$wt_path" \
-        "worktree launch: registry has correct worktree_path"
-    assert_eq "my-wt" \
-        "$(jq -r --arg id "$session_name" '.sessions[$id].worktree_name' "$AM_DIR/desired_sessions.json")" \
-        "worktree launch: recovery recipe preserves worktree name"
-    assert_eq "$wt_path" \
-        "$(jq -r --arg id "$session_name" '.sessions[$id].effective_directory' "$AM_DIR/desired_sessions.json")" \
-        "worktree launch: recovery recipe preserves effective directory"
-
-    # Verify the agent info shows the worktree
-    local info_output
-    info_output=$(agent_info "$session_name")
-    assert_contains "$info_output" "Worktree:" "worktree launch: info shows Worktree line"
-
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # --- Test: agent_launch WITHOUT worktree has no worktree_path ---
-    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "" 2>/dev/null)
-    assert_not_empty "$session_name" "no-worktree launch: returns session name"
-
-    wt_path=$(registry_get_field "$session_name" worktree_path)
-    assert_eq "" "$wt_path" "no-worktree launch: registry has no worktree_path"
-
-    # Verify info does NOT show worktree line
-    info_output=$(agent_info "$session_name")
-    assert_not_contains "$info_output" "Worktree:" "no-worktree launch: info omits Worktree line"
-
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # --- Test: __auto__ sentinel resolves to am-<hash> ---
-    session_name=$(set +u; agent_launch "$git_dir" "claude" "" "__auto__" 2>/dev/null)
-    assert_not_empty "$session_name" "auto-worktree launch: returns session name"
-
-    wt_path=$(registry_get_field "$session_name" worktree_path)
-    assert_contains "$wt_path" ".claude/worktrees/am-" \
-        "auto-worktree: worktree_path contains am- prefix"
-
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # --- Test: codex uses a manager-created git worktree ---
-    session_name=$(set +u; agent_launch "$git_dir" "codex" "" "my-wt" 2>/dev/null)
-    if [[ -n "$session_name" ]]; then
-        wt_path=$(registry_get_field "$session_name" worktree_path)
-        assert_eq "$git_dir/.codex/worktrees/my-wt" "$wt_path" \
-            "codex worktree: registry has correct worktree_path"
-        assert_cmd_succeeds "codex worktree: directory exists" test -d "$wt_path"
-        assert_cmd_succeeds "codex worktree: is a git worktree" git -C "$wt_path" rev-parse --git-dir
-        agent_kill "$session_name" 2>/dev/null
-    else
-        skip_test "codex worktree: agent_launch failed"
-    fi
-
-    # --- Test: sandboxed codex worktree keeps repo mount and worktree cwd ---
-    if command -v docker &>/dev/null && docker info >/dev/null 2>&1; then
-        session_name=$(set +u; agent_launch "$git_dir" "codex" "" "my-sb-wt" "--sandbox" 2>/dev/null)
-        if [[ -n "$session_name" ]]; then
-            wt_path=$(registry_get_field "$session_name" worktree_path)
-            local attach_cmd
-            attach_cmd=$(sandbox_enter_cmd "$session_name" "$wt_path")
-            assert_contains "$attach_cmd" "$wt_path" \
-                "codex sandbox worktree: attach command includes worktree path"
-            local container_name
-            container_name=$(registry_get_field "$session_name" container_name)
-            assert_eq "$session_name" "$container_name" \
-                "codex sandbox worktree: container registered"
-            agent_kill "$session_name" 2>/dev/null
-        else
-            skip_test "codex sandbox worktree: agent_launch failed"
-        fi
-    else
-        skip_test "codex sandbox worktree: docker unavailable"
-    fi
-
-    # --- Test: unsupported agent type ignores worktree ---
-    # Capture stderr to verify warning is emitted (output intentionally unused)
-    set +u; agent_launch "$git_dir" "stubagent" "" "my-wt" 2>/dev/null 1>/dev/null || true; set -u
-    session_name=$(set +u; agent_launch "$git_dir" "stubagent" "" "my-wt" 2>/dev/null)
-    if [[ -n "$session_name" ]]; then
-        wt_path=$(registry_get_field "$session_name" worktree_path)
-        assert_eq "" "$wt_path" "unsupported worktree: worktree_path not set"
-        agent_kill "$session_name" 2>/dev/null
-    else
-        skip_test "unsupported worktree: agent_launch failed"
-    fi
-
-    # --- Test: non-git directory ignores worktree ---
-    session_name=$(set +u; agent_launch "$nongit_dir" "claude" "" "my-wt" 2>/dev/null)
-    if [[ -n "$session_name" ]]; then
-        wt_path=$(registry_get_field "$session_name" worktree_path)
-        assert_eq "" "$wt_path" "non-git worktree: worktree_path not set"
-        agent_kill "$session_name" 2>/dev/null
-    else
-        skip_test "non-git worktree: agent_launch failed"
-    fi
-
-    # Cleanup
-    rm -rf "$git_dir" "$nongit_dir"
-    teardown_integration_env
-
-    $SUMMARY_MODE || echo ""
-}
-
-test_sandbox_yolo_independence() {
-    $SUMMARY_MODE || echo "=== Testing sandbox/yolo independence ==="
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/config.sh"
-    source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/registry.sh"
-    set +u; source "$LIB_DIR/agents.sh"; set -u
-
-    setup_integration_env
-
-    local test_dir
-    test_dir=$(mktemp -d)
-
-    # Test: yolo without sandbox — no container_name in registry
-    local session_name
-    session_name=$(set +u; agent_launch "$test_dir" "claude" "yolo-only" "" --yolo 2>/dev/null)
-    assert_not_empty "$session_name" "yolo-only: session created"
-    assert_eq "true" "$(registry_get_field "$session_name" yolo_mode)" \
-        "yolo-only: yolo_mode is true"
-    assert_eq "" "$(registry_get_field "$session_name" container_name)" \
-        "yolo-only: no container_name"
-    assert_eq "true" \
-        "$(jq -r --arg id "$session_name" '.sessions[$id].yolo_mode' "$AM_DIR/desired_sessions.json")" \
-        "yolo-only: recovery recipe preserves yolo policy"
-    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
-
-    # Test: sandbox without docker fails with descriptive error
-    # Override am_docker_available to simulate missing docker
-    am_docker_available() { return 1; }
-    local sandbox_rc=0
-    local sandbox_err
-    sandbox_err=$(set +u; agent_launch "$test_dir" "claude" "sandbox-no-docker" "" --sandbox 2>&1 >/dev/null) || sandbox_rc=$?
-    assert_eq "false" "$(test $sandbox_rc -eq 0 && echo true || echo false)" \
-        "sandbox-no-docker: fails when docker unavailable"
-    assert_contains "$sandbox_err" "docker" \
-        "sandbox-no-docker: error mentions docker"
-    # Restore original function
-    am_docker_available() { command -v docker &>/dev/null; }
-
-    rm -rf "$test_dir"
-    teardown_integration_env
-
-    $SUMMARY_MODE || echo ""
-}
-
 test_resolve_session() {
     $SUMMARY_MODE || echo "=== Testing resolve_session ==="
 
@@ -436,7 +240,7 @@ test_prompt_injection() {
     # --- Test: claude gets piped prompt via cat ---
     _AM_LAUNCH_PROMPT="hello from pipe"
     local session_name
-    session_name=$(set +u; agent_launch "$test_dir" "claude" "" "" 2>/dev/null)
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "" 2>/dev/null)
     assert_not_empty "$session_name" "claude piped prompt: session created"
 
     if [[ -n "$session_name" ]]; then
@@ -450,7 +254,7 @@ test_prompt_injection() {
 
     # --- Test: codex gets prompt as CLI argument ---
     _AM_LAUNCH_PROMPT="hello from arg"
-    session_name=$(set +u; agent_launch "$test_dir" "codex" "" "" 2>/dev/null)
+    session_name=$(set +u; agent_launch "$test_dir" "codex" "" 2>/dev/null)
     assert_not_empty "$session_name" "codex CLI arg prompt: session created"
 
     if [[ -n "$session_name" ]]; then
@@ -465,7 +269,7 @@ test_prompt_injection() {
 
     # --- Test: Cursor gets prompt as a positional CLI argument ---
     _AM_LAUNCH_PROMPT="hello cursor"
-    session_name=$(set +u; agent_launch "$test_dir" "cursor-agent" "" "" 2>/dev/null)
+    session_name=$(set +u; agent_launch "$test_dir" "cursor-agent" "" 2>/dev/null)
     assert_not_empty "$session_name" "cursor CLI arg prompt: session created"
 
     if [[ -n "$session_name" ]]; then
@@ -487,8 +291,8 @@ test_prompt_injection() {
     $SUMMARY_MODE || echo ""
 }
 
-test_send_prompt_sandbox_delay() {
-    $SUMMARY_MODE || echo "=== Testing agent_send_prompt sandbox delay ==="
+test_send_prompt_delay() {
+    $SUMMARY_MODE || echo "=== Testing agent_send_prompt paste/Enter pause ==="
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/tmux.sh"
@@ -505,7 +309,7 @@ test_send_prompt_sandbox_delay() {
     session_name=$(set +u; agent_launch "$test_dir" "claude" "delay test" 2>/dev/null)
 
     if [[ -z "$session_name" ]]; then
-        skip_test "send_prompt sandbox delay (agent_launch failed)"
+        skip_test "send_prompt delay (agent_launch failed)"
         teardown_integration_env
         rm -rf "$test_dir"
         echo ""
@@ -516,29 +320,13 @@ test_send_prompt_sandbox_delay() {
     local _sleep_called=false _sleep_arg=""
     sleep() { _sleep_called=true; _sleep_arg="$1"; }
 
-    # --- Test: non-sandbox session gets short delay ---
+    # --- Test: a short pause separates the paste from Enter ---
     _sleep_called=false
-    agent_send_prompt "$session_name" "hello no sandbox" 2>/dev/null
+    agent_send_prompt "$session_name" "hello" 2>/dev/null
     assert_eq "true" "$_sleep_called" \
-        "send_prompt: delay for non-sandboxed session"
+        "send_prompt: pauses between paste and Enter"
     assert_eq "0.1" "$_sleep_arg" \
-        "send_prompt: delay is 0.1s for non-sandboxed session"
-
-    # --- Test: sandbox session (container_name set) gets longer delay ---
-    registry_update "$session_name" "container_name" "$session_name"
-    _sleep_called=false
-    agent_send_prompt "$session_name" "hello sandbox" 2>/dev/null
-    assert_eq "true" "$_sleep_called" \
-        "send_prompt: delay added for sandboxed session"
-    assert_eq "0.3" "$_sleep_arg" \
-        "send_prompt: delay is 0.3s for sandboxed session"
-
-    # --- Test: clearing container_name reverts to short delay ---
-    registry_update "$session_name" "container_name" ""
-    _sleep_called=false
-    agent_send_prompt "$session_name" "hello again" 2>/dev/null
-    assert_eq "0.1" "$_sleep_arg" \
-        "send_prompt: delay reverts to 0.1s after container_name cleared"
+        "send_prompt: pause is 0.1s"
 
     # Restore real sleep and clean up
     unset -f sleep
@@ -564,7 +352,7 @@ test_shell_panel() {
 
     # --- Test: --shell opens the panel at launch ---
     local session_name
-    session_name=$(set +u; agent_launch "$test_dir" "claude" "shell test" "" --shell 2>/dev/null)
+    session_name=$(set +u; agent_launch "$test_dir" "claude" "shell test" --shell 2>/dev/null)
     assert_not_empty "$session_name" "shell panel: --shell launch returns session name"
 
     local pane_count
@@ -647,11 +435,9 @@ run_agents_tests() {
     _run_test test_agents_extended
     _run_test test_integration_lifecycle
     _run_test test_shell_panel
-    _run_test test_worktree
-    _run_test test_sandbox_yolo_independence
     _run_test test_resolve_session
     _run_test test_prompt_injection
-    _run_test test_send_prompt_sandbox_delay
+    _run_test test_send_prompt_delay
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

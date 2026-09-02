@@ -5,7 +5,7 @@
 _FORM_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ -z "$AM_DIR" ]] && source "$_FORM_LIB_DIR/utils.sh"
 [[ "$(type -t am_default_agent)" != "function" ]] && source "$_FORM_LIB_DIR/config.sh"
-[[ "$(type -t agent_supports_worktree)" != "function" ]] && source "$_FORM_LIB_DIR/agents.sh"
+[[ "$(type -t agent_type_supported)" != "function" ]] && source "$_FORM_LIB_DIR/agents.sh"
 
 # Pre-cache tput sequences to avoid forking per frame
 _FORM_CUP_PREFIX=$'\033['   # used as "${_FORM_CUP_PREFIX}${row};0H"
@@ -48,19 +48,13 @@ _FORM_DIR_SUGGESTIONS_LOADED=false
 declare -ga _FORM_DIR_FILTERED=()
 
 # Initialize form state
-# Usage: _form_init <directory> <agent> <task> <mode> <yolo> <sandbox> <worktree_enabled> <worktree_name> <docker_available> [workspace_enabled] [workspace_branch]
+# Usage: _form_init <directory> <agent> <task> [workspace_enabled] [workspace_branch]
 _form_init() {
     local directory="$1"
     local agent="$2"
     local task="$3"
-    local mode="$4"
-    local yolo="$5"
-    local sandbox="$6"
-    local worktree_enabled="$7"
-    local worktree_name="$8"
-    local docker_available="${9:-true}"
-    local workspace_enabled="${10:-false}"
-    local workspace_branch="${11:-}"
+    local workspace_enabled="${4:-false}"
+    local workspace_branch="${5:-}"
 
     FORM_FIELDS=()
     FORM_VALUES=()
@@ -92,30 +86,8 @@ _form_init() {
     fi
     _form_add_field "agent"             "Agent"          "select"     "$agent"
     _form_add_field "task"              "Task"           "text"       "$task"
-    _form_add_field "mode"              "Mode"           "select"     "$mode"
-    _form_add_field "yolo"              "Yolo"           "checkbox"   "$yolo"
-    _form_add_field "sandbox"           "Sandbox"        "checkbox"   "$sandbox"
 
     FORM_OPTIONS[agent]=$(printf '%s\n' "${!AGENT_COMMANDS[@]}" | sort | tr '\n' ',')
-    FORM_OPTIONS[mode]="new,resume,continue"
-
-    if [[ "$docker_available" != "true" ]]; then
-        FORM_DISABLED[sandbox]="true"
-    fi
-
-    if agent_supports_worktree "$agent" || [[ "$worktree_enabled" == "true" ]]; then
-        _form_add_field "worktree_enabled" "Worktree" "checkbox" "$worktree_enabled"
-        if agent_supports_worktree "$agent"; then
-            _form_add_field "worktree_name" "Worktree Name" "text" "$worktree_name"
-            if [[ "$worktree_enabled" != "true" ]]; then
-                FORM_DISABLED[worktree_name]="true"
-            fi
-        fi
-        if ! agent_supports_worktree "$agent"; then
-            FORM_DISABLED[worktree_enabled]="true"
-        fi
-    fi
-
 }
 
 _form_add_field() {
@@ -153,8 +125,6 @@ _form_render_field() {
                 display="${_FORM_DIM}--${_FORM_RESET}"
             elif [[ "$focused" == "true" && "$_FORM_MODE" == "edit" ]]; then
                 display="${value}${_FORM_INVERSE} ${_FORM_RESET}"
-            elif [[ -z "$value" && "$name" == "worktree_name" ]]; then
-                display="${_FORM_DIM}(auto)${_FORM_RESET}"
             elif [[ -z "$value" && "$name" == "workspace_branch" ]]; then
                 display="${_FORM_DIM}(default)${_FORM_RESET}"
             else
@@ -270,24 +240,6 @@ _form_handle_space() {
                 FORM_VALUES[$name]="false"
             else
                 FORM_VALUES[$name]="true"
-            fi
-            # Yolo ON implies sandbox + worktree
-            if [[ "$name" == "yolo" && "${FORM_VALUES[$name]}" == "true" ]]; then
-                if [[ "${FORM_DISABLED[sandbox]:-}" != "true" ]]; then
-                    FORM_VALUES[sandbox]="true"
-                fi
-                if [[ -n "${FORM_TYPES[worktree_enabled]:-}" && "${FORM_DISABLED[worktree_enabled]:-}" != "true" ]]; then
-                    FORM_VALUES[worktree_enabled]="true"
-                    FORM_DISABLED[worktree_name]=""
-                fi
-            fi
-            # Update worktree_name disabled state when worktree_enabled toggles
-            if [[ "$name" == "worktree_enabled" ]]; then
-                if [[ "${FORM_VALUES[$name]}" == "true" ]]; then
-                    FORM_DISABLED[worktree_name]=""
-                else
-                    FORM_DISABLED[worktree_name]="true"
-                fi
             fi
             # Workspace ON: the workspace command picks the directory
             if [[ "$name" == "workspace_enabled" ]]; then
@@ -844,17 +796,13 @@ _form_cleanup() {
 }
 
 # Format form values as tab-free \x1f-separated output:
-# directory<US>agent<US>task<US>worktree_name<US>flags  (US = \x1f unit separator)
-# flags may carry --workspace[=branch], consumed by cmd_new rather than the agent.
+# directory<US>agent<US>task<US>flags  (US = \x1f unit separator)
+# flags carries --workspace[=branch] when Workspace is on; cmd_new consumes it
+# rather than passing it to the agent.
 _form_output() {
     local directory="${FORM_VALUES[directory]}"
     local agent="${FORM_VALUES[agent]}"
     local task="${FORM_VALUES[task]}"
-    local mode="${FORM_VALUES[mode]}"
-    local yolo="${FORM_VALUES[yolo]}"
-    local sandbox="${FORM_VALUES[sandbox]}"
-    local worktree_enabled="${FORM_VALUES[worktree_enabled]:-false}"
-    local worktree_name="${FORM_VALUES[worktree_name]:-}"
     local workspace_enabled="${FORM_VALUES[workspace_enabled]:-false}"
     local workspace_branch="${FORM_VALUES[workspace_branch]:-}"
 
@@ -873,10 +821,6 @@ _form_output() {
     fi
 
     local flags=""
-    [[ "$mode" == "resume" ]] && flags+=" --resume"
-    [[ "$mode" == "continue" ]] && flags+=" --continue"
-    [[ "$yolo" == "true" ]] && flags+=" --yolo"
-    [[ "$sandbox" == "true" ]] && flags+=" --sandbox"
     if [[ "$workspace_enabled" == "true" ]]; then
         if [[ -n "$workspace_branch" ]]; then
             flags+=" --workspace=$workspace_branch"
@@ -885,67 +829,18 @@ _form_output() {
         fi
     fi
 
-    local worktree=""
-    if [[ "$worktree_enabled" == "true" ]] && agent_supports_worktree "$agent"; then
-        if [[ -n "$worktree_name" ]]; then
-            worktree="$worktree_name"
-        else
-            worktree="__auto__"
-        fi
-    fi
-
-    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$directory" "$agent" "$task" "$worktree" "$flags"
+    printf '%s\x1f%s\x1f%s\x1f%s\n' "$directory" "$agent" "$task" "$flags"
 }
 
 # Entry point: parse prefill values, then run the tput form.
-# Output: directory<US>agent<US>task<US>worktree_name<US>flags  (US = \x1f)
+# Output: directory<US>agent<US>task<US>flags  (US = \x1f)
 am_new_session_form() {
     local prefill_directory="${1:-}"
     local prefill_agent="${2:-$(am_default_agent)}"
     local prefill_task="${3:-}"
-    local prefill_worktree="${4:-}"
-    local prefill_mode_flags="${5:-}"
 
     local directory="${prefill_directory/#\~/$HOME}"
-    local agent="$prefill_agent"
-    local task="$prefill_task"
-    local mode="new"
-    local yolo="false"
-    local sandbox="false"
-    local worktree_enabled="false"
-    local worktree_name=""
-    local yolo_from_flag="false"
-    local docker_available="true"
-    am_docker_available || docker_available="false"
 
-    # Parse prefill flags
-    [[ "$prefill_mode_flags" == *"--resume"* ]] && mode="resume"
-    [[ "$prefill_mode_flags" == *"--continue"* ]] && mode="continue"
-    if [[ "$prefill_mode_flags" == *"--yolo"* ]]; then
-        yolo="true"
-        yolo_from_flag="true"
-    elif am_default_yolo_enabled; then
-        yolo="true"
-    fi
-    if [[ "$prefill_mode_flags" == *"--sandbox"* ]]; then
-        sandbox="true"
-    elif am_default_sandbox_enabled && [[ "$docker_available" == "true" ]]; then
-        sandbox="true"
-    fi
-
-    # --yolo flag implies sandbox + worktree (config default doesn't override other defaults)
-    if [[ "$yolo_from_flag" == "true" ]]; then
-        [[ "$docker_available" == "true" ]] && sandbox="true"
-        worktree_enabled="true"
-    fi
-
-    case "$prefill_worktree" in
-        ""|false) worktree_enabled="false"; worktree_name="" ;;
-        true|__auto__) worktree_enabled="true"; worktree_name="" ;;
-        *) worktree_enabled="true"; worktree_name="$prefill_worktree" ;;
-    esac
-
-    _form_init "$directory" "$agent" "$task" "$mode" "$yolo" "$sandbox" \
-        "$worktree_enabled" "$worktree_name" "$docker_available"
+    _form_init "$directory" "$prefill_agent" "$prefill_task"
     _form_run
 }

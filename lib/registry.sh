@@ -42,15 +42,13 @@ _registry_unlock() {
 }
 
 # Add a session to the registry
-# Usage: registry_add <name> <directory> <branch> <agent_type> [task_description] [yolo_mode] [sandbox_mode]
+# Usage: registry_add <name> <directory> <branch> <agent_type> [task_description]
 registry_add() {
     local name="$1"
     local directory="$2"
     local branch="$3"
     local agent_type="$4"
     local task="${5:-}"
-    local yolo_mode="${6:-false}"
-    local sandbox_mode="${7:-false}"
 
     local created_at
     created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -65,17 +63,13 @@ registry_add() {
        --arg agent "$agent_type" \
        --arg created "$created_at" \
        --arg task "$task" \
-       --arg yolo "$yolo_mode" \
-       --arg sandbox "$sandbox_mode" \
        '.sessions[$name] = {
            "name": $name,
            "directory": $dir,
            "branch": $branch,
            "agent_type": $agent,
            "created_at": $created,
-           "task": $task,
-           "yolo_mode": $yolo,
-           "sandbox_mode": $sandbox
+           "task": $task
        }' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
     local rc=$?
     _registry_unlock
@@ -150,8 +144,8 @@ registry_remove() {
 # Two independently throttled halves (60s each, unless force=1):
 #   - Registry rows + hook state files: marker .gc_last, shared with the Go
 #     twin (internal/sessions ReapOrphans) which does the same work.
-#   - Bash-only extras (sandbox containers, sessions log GC, orphan state-file
-#     sweep): marker .gc_extras_last. The Go twin never does this work, so it
+#   - Bash-only extras (sessions log GC, orphan state-file sweep): marker
+#     .gc_extras_last. The Go twin never does this work, so it
 #     must not be skipped just because Go stamped .gc_last first.
 registry_gc() {
     local force="${1:-0}"
@@ -183,20 +177,14 @@ registry_gc() {
     if (( run_rows )); then
         echo "$now" > "$AM_DIR/.gc_last"
 
-        # Bulk-read container_name for all registry entries (one jq call)
-        local -A reg_containers
-        local _rname _rcontainer
-        while IFS='|' read -r _rname _rcontainer; do
-            reg_containers[$_rname]=$_rcontainer
-        done < <(jq -r '.sessions | to_entries[] | [.key, .value.container_name // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
+        # Bulk-read registry names (one jq call)
+        local -a reg_names=()
+        mapfile -t reg_names < <(jq -r '.sessions | keys[]' "$AM_REGISTRY" 2>/dev/null || true)
 
         local name
-        for name in "${!reg_containers[@]}"; do
+        for name in "${reg_names[@]}"; do
+            [[ -n "$name" ]] || continue
             if [[ -z "${live_sessions[$name]:-}" ]]; then
-                # Clean up sandbox container if one exists
-                if [[ -n "${reg_containers[$name]}" ]]; then
-                    sandbox_remove "$name"
-                fi
                 registry_remove "$name"
                 rm -f "${AM_STATE_DIR:-/tmp/am-state}/$name" \
                       "${AM_STATE_DIR:-/tmp/am-state}/$name.sid" \
@@ -209,12 +197,6 @@ registry_gc() {
     # --- Bash-only extras (no Go twin) ---
     if (( run_extras )); then
         echo "$now" > "$AM_DIR/.gc_extras_last"
-
-        if [[ "$(type -t sandbox_gc_orphans)" == "function" ]]; then
-            local orphaned_containers
-            orphaned_containers=$(sandbox_gc_orphans)
-            removed=$((removed + orphaned_containers))
-        fi
 
         # Clean up orphan hook state files and sidecars (session gone but file remains).
         # Strip known sidecar suffixes before checking liveness.
@@ -670,10 +652,6 @@ _sessions_log_sidecar_transcript() {
 
     local transcript=""
     IFS= read -r transcript < "$path_file" 2>/dev/null || true
-    if [[ "$transcript" == /home/ubuntu/* && ! -f "$transcript" ]]; then
-        local host_home="${SB_HOME_DIR:-$HOME/.agent-manager/sandbox-home}"
-        transcript="$host_home/${transcript#/home/ubuntu/}"
-    fi
     [[ "$transcript" == /* && -f "$transcript" ]] && echo "$transcript"
 }
 

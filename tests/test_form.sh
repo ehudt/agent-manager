@@ -12,12 +12,23 @@ test_form_core() {
     source "$LIB_DIR/agents.sh"
     source "$LIB_DIR/form.sh"
     set -u
+    # The user's real config may define workspace_cmd, which adds fields and
+    # shifts every index below; run against a fresh, empty config.
+    unset AM_WORKSPACE_CMD
+    setup_isolated_am_dir
+    am_config_init
 
-    _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp/project" "claude" ""
     assert_contains "${FORM_OPTIONS[agent]}" "cursor," \
         "form input: cursor is available as an agent"
     assert_not_contains "${FORM_OPTIONS[agent]}" "cursor-agent" \
         "form input: cursor alias is not duplicated"
+
+    # The form is just Directory / Agent / Task (plus Workspace fields when
+    # a workspace_cmd is configured — see test_form_workspace)
+    assert_eq "directory agent task" "${FORM_FIELDS[*]}" "form input: fields are directory, agent, task"
+    assert_eq "" "${FORM_TYPES[mode]:-}${FORM_TYPES[yolo]:-}${FORM_TYPES[sandbox]:-}${FORM_TYPES[worktree_enabled]:-}" \
+        "form input: no mode/yolo/sandbox/worktree fields"
 
     # Select cycling
     FORM_CURSOR=1  # agent field
@@ -25,32 +36,9 @@ test_form_core() {
     local agent_after="${FORM_VALUES[agent]}"
     assert_eq "false" "$( [[ "$agent_after" == "claude" ]] && echo true || echo false )" \
         "form input: space cycles select field"
-
-    # Checkbox toggle
-    FORM_CURSOR=4  # yolo field
-    assert_eq "false" "${FORM_VALUES[yolo]}" "form input: yolo starts false"
+    FORM_VALUES[agent]="pi"
     _form_handle_space
-    assert_eq "true" "${FORM_VALUES[yolo]}" "form input: space toggles yolo on"
-    _form_handle_space
-    assert_eq "false" "${FORM_VALUES[yolo]}" "form input: space toggles yolo off"
-
-    # Disabled checkbox doesn't toggle
-    # shellcheck disable=SC2154  # sandbox comes from sourced _form_init
-    FORM_DISABLED[sandbox]="true"
-    FORM_CURSOR=5  # sandbox
-    FORM_VALUES[sandbox]="false"
-    _form_handle_space
-    assert_eq "false" "${FORM_VALUES[sandbox]}" "form input: disabled checkbox ignores space"
-
-    # Mode cycling
-    FORM_CURSOR=3  # mode field
-    assert_eq "new" "${FORM_VALUES[mode]}" "form input: mode starts at new"
-    _form_handle_space
-    assert_eq "resume" "${FORM_VALUES[mode]}" "form input: mode cycles to resume"
-    _form_handle_space
-    assert_eq "continue" "${FORM_VALUES[mode]}" "form input: mode cycles to continue"
-    _form_handle_space
-    assert_eq "new" "${FORM_VALUES[mode]}" "form input: mode wraps to new"
+    assert_eq "claude" "${FORM_VALUES[agent]}" "form input: select wraps to first option"
 
     # Navigation
     FORM_CURSOR=0
@@ -64,7 +52,7 @@ test_form_core() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing form text editing ==="
 
-    _form_init "/tmp/project" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp/project" "claude" ""
 
     FORM_CURSOR=2  # task
     _form_handle_char "H"
@@ -100,6 +88,7 @@ test_form_core() {
         unset -f _list_directories
     fi
 
+    teardown_isolated_am_dir
     $SUMMARY_MODE || echo ""
 }
 
@@ -114,6 +103,11 @@ test_form_loop() {
     source "$LIB_DIR/agents.sh"
     source "$LIB_DIR/form.sh"
     set -u
+    # The user's real config may define workspace_cmd, which adds fields and
+    # shifts every index below; run against a fresh, empty config.
+    unset AM_WORKSPACE_CMD
+    setup_isolated_am_dir
+    am_config_init
 
     # Parse unit-separator-delimited output using cut (tab would collapse empty fields)
     _parse_field() {
@@ -121,7 +115,7 @@ test_form_loop() {
         printf '%s' "$output" | cut -d$'\x1f' -f"$field"
     }
 
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
 
     # The initial screen is a directory launcher
     assert_eq "false" "$_FORM_OPTIONS_OPEN" "launcher: options start closed"
@@ -143,7 +137,7 @@ test_form_loop() {
     local -a launch_agents=("claude" "codex" "cursor" "pi")
     local launch_idx
     for ((launch_idx=0; launch_idx<${#launch_keys[@]}; launch_idx++)); do
-        _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+        _form_init "/tmp" "claude" ""
         FORM_VALUES[directory]=""
         _FORM_DIR_SUGGESTIONS=("/tmp/project1")
         _FORM_DIR_SUGGESTIONS_LOADED=true
@@ -158,7 +152,7 @@ test_form_loop() {
     done
 
     # Tab accepts the directory and progressively reveals advanced options
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     FORM_VALUES[directory]=""
     _FORM_DIR_SUGGESTIONS=("/tmp/project1" "/tmp/project2")
     _FORM_DIR_SUGGESTIONS_LOADED=true
@@ -187,7 +181,7 @@ test_form_loop() {
     assert_eq "edit" "$_FORM_MODE" "options: enter on directory resumes directory editing"
 
     # Ctrl-S remains compatible and now submits directly from directory editing
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     FORM_VALUES[directory]=""
     _FORM_DIR_SUGGESTIONS=("/tmp/project1")
     _FORM_DIR_SUGGESTIONS_LOADED=true
@@ -198,7 +192,7 @@ test_form_loop() {
         "launcher: ctrl-s accepts highlighted directory"
 
     # Regular char on text field — only works in edit mode
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     _FORM_OPTIONS_OPEN=true
     FORM_CURSOR=2  # task
     _FORM_MODE="edit"
@@ -208,7 +202,7 @@ test_form_loop() {
     _FORM_MODE="navigate"
 
     # Escape from the directory launcher returns cancel
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     _form_process_key $'\x1b' ""
     assert_eq "cancel" "$FORM_KEY_RESULT" "launcher: escape returns cancel"
 
@@ -225,66 +219,44 @@ test_form_loop() {
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: arrow up returns continue"
     assert_eq "0" "$FORM_CURSOR" "dispatch: arrow up moves cursor"
 
-    # Space
-    FORM_CURSOR=4  # yolo
+    # Space cycles a select
+    FORM_CURSOR=1  # agent
+    FORM_VALUES[agent]="claude"
     _form_process_key " "
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: space returns continue"
-    assert_eq "true" "${FORM_VALUES[yolo]}" "dispatch: space toggled yolo"
+    assert_eq "codex" "${FORM_VALUES[agent]}" "dispatch: space cycled agent"
 
     # Right arrow cycles select forward
-    FORM_CURSOR=3  # mode
-    FORM_VALUES[mode]="new"
+    FORM_VALUES[agent]="claude"
     _FORM_MODE="navigate"
     _form_process_key $'\x1b' "[C"
     assert_eq "continue" "$FORM_KEY_RESULT" "dispatch: right arrow returns continue"
-    assert_eq "resume" "${FORM_VALUES[mode]}" "dispatch: right arrow cycles select forward"
+    assert_eq "codex" "${FORM_VALUES[agent]}" "dispatch: right arrow cycles select forward"
 
     # Left arrow cycles select backward
     _form_process_key $'\x1b' "[D"
-    assert_eq "new" "${FORM_VALUES[mode]}" "dispatch: left arrow cycles select backward"
-
-    # Right arrow toggles checkbox
-    FORM_CURSOR=4  # yolo
-    FORM_VALUES[yolo]="false"
-    _form_process_key $'\x1b' "[C"
-    assert_eq "true" "${FORM_VALUES[yolo]}" "dispatch: right arrow toggles checkbox"
-    _form_process_key $'\x1b' "[D"
-    assert_eq "false" "${FORM_VALUES[yolo]}" "dispatch: left arrow toggles checkbox"
+    assert_eq "claude" "${FORM_VALUES[agent]}" "dispatch: left arrow cycles select backward"
 
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing form output contract ==="
 
-    _form_init "/tmp" "claude" "fix bugs" "new" "true" "false" "false" "" "true"
+    _form_init "/tmp" "claude" "fix bugs"
 
-    local output directory agent task worktree flags
+    local output directory agent task flags
     output=$(_form_output)
     directory=$(_parse_field "$output" 1)
     agent=$(_parse_field "$output" 2)
     task=$(_parse_field "$output" 3)
-    worktree=$(_parse_field "$output" 4)
-    flags=$(_parse_field "$output" 5)
+    flags=$(_parse_field "$output" 4)
 
     assert_eq "/tmp" "$directory" "form output: directory"
     assert_eq "claude" "$agent" "form output: agent"
     assert_eq "fix bugs" "$task" "form output: task"
-    assert_eq "" "$worktree" "form output: no worktree"
-    assert_contains "$flags" "--yolo" "form output: yolo flag"
+    assert_eq "" "$flags" "form output: no flags without workspace"
+    assert_eq "3" "$(printf '%s' "$output" | tr -cd $'\x1f' | wc -c | tr -d ' ')" \
+        "form output: exactly four fields (directory, agent, task, flags)"
 
-    # With worktree
-    _form_init "/tmp" "claude" "" "resume" "false" "true" "true" "my-branch" "true"
-    output=$(_form_output)
-    worktree=$(_parse_field "$output" 4)
-    flags=$(_parse_field "$output" 5)
-    assert_eq "my-branch" "$worktree" "form output: worktree name"
-    assert_contains "$flags" "--resume" "form output: resume flag"
-    assert_contains "$flags" "--sandbox" "form output: sandbox flag"
-
-    # Auto worktree
-    _form_init "/tmp" "claude" "" "new" "false" "false" "true" "" "true"
-    output=$(_form_output)
-    worktree=$(_parse_field "$output" 4)
-    assert_eq "__auto__" "$worktree" "form output: auto worktree"
-
+    teardown_isolated_am_dir
     $SUMMARY_MODE || echo ""
 }
 
@@ -299,8 +271,13 @@ test_form_modes() {
     source "$LIB_DIR/agents.sh"
     source "$LIB_DIR/form.sh"
     set -u
+    # The user's real config may define workspace_cmd, which adds fields and
+    # shifts every index below; run against a fresh, empty config.
+    unset AM_WORKSPACE_CMD
+    setup_isolated_am_dir
+    am_config_init
 
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
 
     # Mode starts as edit (on directory field)
     assert_eq "edit" "$_FORM_MODE" "mode: starts as edit"
@@ -320,7 +297,7 @@ test_form_modes() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing navigate mode key dispatch ==="
 
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     _FORM_OPTIONS_OPEN=true
     _FORM_MODE="navigate"
 
@@ -333,27 +310,13 @@ test_form_modes() {
     # Reset
     _FORM_MODE="navigate"
 
-    # In navigate mode, Enter on checkbox submits
-    FORM_CURSOR=4  # yolo
-    FORM_VALUES[yolo]="false"
-    _form_process_key $'\n'
-    assert_eq "submit" "$FORM_KEY_RESULT" "nav: enter on checkbox submits"
-    assert_eq "false" "${FORM_VALUES[yolo]}" "nav: enter on checkbox does not toggle"
-
     # In navigate mode, Enter on select submits
     _FORM_MODE="navigate"
-    FORM_CURSOR=3  # mode (select)
-    FORM_VALUES[mode]="new"
+    FORM_CURSOR=1  # agent (select)
+    FORM_VALUES[agent]="claude"
     _form_process_key $'\n'
     assert_eq "submit" "$FORM_KEY_RESULT" "nav: enter on select submits"
-    assert_eq "new" "${FORM_VALUES[mode]}" "nav: enter on select does not cycle"
-
-    # In navigate mode, Space on checkbox toggles
-    _FORM_MODE="navigate"
-    FORM_CURSOR=4  # yolo
-    FORM_VALUES[yolo]="false"
-    _form_process_key " "
-    assert_eq "true" "${FORM_VALUES[yolo]}" "nav: space toggles checkbox"
+    assert_eq "claude" "${FORM_VALUES[agent]}" "nav: enter on select does not cycle"
 
     # In navigate mode, typing is ignored on text fields
     _FORM_MODE="navigate"
@@ -371,7 +334,7 @@ test_form_modes() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing edit mode key dispatch ==="
 
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     _FORM_OPTIONS_OPEN=true
     _FORM_MODE="edit"
     FORM_CURSOR=2  # task (text field)
@@ -403,7 +366,7 @@ test_form_modes() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing directory highlight scrolling ==="
 
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     _FORM_MODE="edit"
     FORM_CURSOR=0  # directory
 
@@ -457,7 +420,7 @@ test_form_modes() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing directory scroll offset ==="
 
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     _FORM_MODE="edit"
     FORM_CURSOR=0  # directory
 
@@ -503,36 +466,19 @@ test_form_modes() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Testing disabled field behavior ==="
 
-    _form_init "/tmp" "claude" "" "new" "false" "false" "true" "" "true"
-
-    # worktree_name is not disabled when worktree_enabled=true
-    assert_eq "" "${FORM_DISABLED[worktree_name]:-}" "disabled: worktree_name enabled when worktree on"
-
-    # Toggling worktree off disables worktree_name
-    FORM_CURSOR=6  # worktree_enabled
-    _form_handle_space  # toggle off
-    assert_eq "true" "${FORM_DISABLED[worktree_name]}" "disabled: worktree_name disabled when worktree off"
-
-    # Toggling worktree back on re-enables worktree_name
-    _form_handle_space  # toggle on
-    assert_eq "" "${FORM_DISABLED[worktree_name]:-}" "disabled: worktree_name re-enabled when worktree on"
-
-    # Navigate mode: enter on disabled text field does not enter edit mode
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
-    FORM_DISABLED[worktree_name]="true"
-    local wt_idx=-1 fi_idx
-    for ((fi_idx=0; fi_idx<${#FORM_FIELDS[@]}; fi_idx++)); do
-        [[ "${FORM_FIELDS[$fi_idx]}" == "worktree_name" ]] && wt_idx=$fi_idx
-    done
-    if [[ $wt_idx -ge 0 ]]; then
-        FORM_CURSOR=$wt_idx
-        _FORM_MODE="navigate"
-        _form_process_key $'\n'
-        assert_eq "navigate" "$_FORM_MODE" "disabled: enter on disabled text stays in navigate"
-    fi
+    # Navigate mode: enter on a disabled text field does not enter edit mode
+    _form_init "/tmp" "claude" ""
+    FORM_DISABLED[task]="true"
+    FORM_CURSOR=2  # task
+    _FORM_MODE="navigate"
+    _form_process_key $'\n'
+    assert_eq "navigate" "$_FORM_MODE" "disabled: enter on disabled text stays in navigate"
+    _form_process_key "x"
+    assert_eq "" "${FORM_VALUES[task]}" "disabled: typing into a disabled text field is ignored"
+    FORM_DISABLED[task]=""
 
     # Cursor block only shows in edit mode (not navigate)
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     FORM_CURSOR=2  # task field
     _FORM_MODE="navigate"
     _FORM_BUF=""
@@ -567,67 +513,7 @@ test_form_modes() {
     assert_eq "false" "$( [[ "$_FORM_BUF" == *$'\033[48;5;236m'* ]] && echo true || echo false )" \
         "highlight: edit mode does not use gray bg"
 
-    $SUMMARY_MODE || echo ""
-}
-
-test_form_config_defaults() {
-    $SUMMARY_MODE || echo "=== Testing form config defaults ==="
-
-    source "$LIB_DIR/utils.sh"
-    set +u
-    source "$LIB_DIR/config.sh"
-    source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/registry.sh"
-    source "$LIB_DIR/agents.sh"
-    source "$LIB_DIR/form.sh"
-    set -u
-
-    _parse_field() {
-        local output="$1" field="$2"
-        printf '%s' "$output" | cut -d$'\x1f' -f"$field"
-    }
-
-    # Mock _form_run to skip interactive loop, just emit output
-    _form_run() { _form_output; }
-
-    # Mock config functions
-    am_docker_available() { return 0; }
-
-    # Test 1: default_yolo=true, default_sandbox=false
-    # sandbox should NOT be checked (config default respected, not overridden by yolo)
-    am_default_yolo_enabled() { return 0; }    # true
-    am_default_sandbox_enabled() { return 1; }  # false
-
-    local output flags
-    output=$(am_new_session_form "/tmp")
-    flags=$(_parse_field "$output" 5)
-    assert_contains "$flags" "--yolo" "config defaults: yolo flag present when default_yolo=true"
-    assert_not_contains "$flags" "--sandbox" "config defaults: sandbox NOT present when default_sandbox=false (even with yolo)"
-
-    # Test 2: explicit --yolo flag SHOULD imply sandbox
-    am_default_yolo_enabled() { return 1; }    # false (not from config)
-    am_default_sandbox_enabled() { return 1; }  # false
-    output=$(am_new_session_form "/tmp" "" "" "" "--yolo")
-    flags=$(_parse_field "$output" 5)
-    assert_contains "$flags" "--yolo" "config defaults: explicit --yolo flag present"
-    assert_contains "$flags" "--sandbox" "config defaults: explicit --yolo implies sandbox"
-
-    # Test 3: both defaults true
-    am_default_yolo_enabled() { return 0; }    # true
-    am_default_sandbox_enabled() { return 0; }  # true
-    output=$(am_new_session_form "/tmp")
-    flags=$(_parse_field "$output" 5)
-    assert_contains "$flags" "--yolo" "config defaults: both defaults - yolo present"
-    assert_contains "$flags" "--sandbox" "config defaults: both defaults - sandbox present"
-
-    # Test 4: default_yolo=false, default_sandbox=true
-    am_default_yolo_enabled() { return 1; }    # false
-    am_default_sandbox_enabled() { return 0; }  # true
-    output=$(am_new_session_form "/tmp")
-    flags=$(_parse_field "$output" 5)
-    assert_not_contains "$flags" "--yolo" "config defaults: yolo not present when default_yolo=false"
-    assert_contains "$flags" "--sandbox" "config defaults: sandbox present when default_sandbox=true"
-
+    teardown_isolated_am_dir
     $SUMMARY_MODE || echo ""
 }
 
@@ -647,12 +533,12 @@ test_form_workspace() {
     unset AM_WORKSPACE_CMD
     setup_isolated_am_dir
     am_config_init
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     assert_eq "agent" "${FORM_FIELDS[1]}" "form workspace: fields hidden when workspace_cmd unset"
     assert_eq "" "${FORM_TYPES[workspace_enabled]:-}" "form workspace: no workspace field when unset"
 
     export AM_WORKSPACE_CMD="echo /tmp"
-    _form_init "/tmp" "claude" "" "new" "false" "false" "false" "" "true"
+    _form_init "/tmp" "claude" ""
     assert_eq "workspace_enabled" "${FORM_FIELDS[1]}" "form workspace: Workspace follows Directory"
     assert_eq "workspace_branch" "${FORM_FIELDS[2]}" "form workspace: Branch follows Workspace"
     assert_eq "false" "${FORM_VALUES[workspace_enabled]}" "form workspace: starts off"
@@ -666,17 +552,34 @@ test_form_workspace() {
     assert_eq "" "${FORM_DISABLED[workspace_branch]}" "form workspace: branch enabled when on"
     assert_eq "true" "${FORM_DISABLED[directory]}" "form workspace: directory disabled when on"
 
+    # Checkbox key dispatch in navigate mode: arrows toggle, Enter submits without toggling
+    _FORM_OPTIONS_OPEN=true
+    _FORM_MODE="navigate"
+    _form_process_key $'\x1b' "[D"
+    assert_eq "false" "${FORM_VALUES[workspace_enabled]}" "form workspace: left arrow toggles checkbox off"
+    _form_process_key $'\x1b' "[C"
+    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: right arrow toggles checkbox on"
+    _form_process_key $'\n'
+    assert_eq "submit" "$FORM_KEY_RESULT" "form workspace: enter on checkbox submits"
+    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: enter does not toggle"
+
+    # A disabled checkbox ignores space
+    FORM_DISABLED[workspace_enabled]="true"
+    _form_handle_space
+    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: disabled checkbox ignores space"
+    FORM_DISABLED[workspace_enabled]=""
+
     # Output carries --workspace=<branch> and skips directory validation
     FORM_VALUES[workspace_branch]="review-48351"
     FORM_VALUES[directory]="/definitely/not/a/dir"
-    local out flags
+    local out flags agent_out task_out
     out=$(_form_output 2>/dev/null)
-    IFS=$'\x1f' read -r _ _ _ _ flags <<< "$out"
+    IFS=$'\x1f' read -r _ _ _ flags <<< "$out"
     assert_contains "$flags" "--workspace=review-48351" "form workspace: output flags carry the branch"
 
     FORM_VALUES[workspace_branch]=""
     out=$(_form_output 2>/dev/null)
-    IFS=$'\x1f' read -r _ _ _ _ flags <<< "$out"
+    IFS=$'\x1f' read -r _ _ _ flags <<< "$out"
     assert_contains "$flags" "--workspace" "form workspace: output flags carry bare --workspace without branch"
     assert_not_contains "$flags" "--workspace=" "form workspace: no empty branch suffix"
 
@@ -686,6 +589,15 @@ test_form_workspace() {
     local rc=0
     _form_output >/dev/null 2>&1 || rc=$?
     assert_eq "1" "$rc" "form workspace: off → missing directory rejected again"
+
+    # Entry point: prefill reaches the fields and the output contract holds
+    _form_run() { _form_output; }
+    out=$(am_new_session_form "/tmp" "codex" "prefilled task")
+    IFS=$'\x1f' read -r _ agent_out task_out flags <<< "$out"
+    assert_eq "codex" "$agent_out" "am_new_session_form: prefilled agent"
+    assert_eq "prefilled task" "$task_out" "am_new_session_form: prefilled task"
+    assert_eq "" "$flags" "am_new_session_form: no flags while workspace is off"
+    unset -f _form_run
 
     unset AM_WORKSPACE_CMD
     teardown_isolated_am_dir
@@ -698,7 +610,6 @@ run_form_tests() {
     _run_test test_form_workspace
     _run_test test_form_loop
     _run_test test_form_modes
-    _run_test test_form_config_defaults
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then
