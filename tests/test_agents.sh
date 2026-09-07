@@ -430,6 +430,64 @@ test_shell_panel() {
     $SUMMARY_MODE || echo ""
 }
 
+test_private_dirs() {
+    $SUMMARY_MODE || echo "=== Testing private log/state directories ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+
+    # Octal permission bits of a path (BSD stat -f, GNU stat -c).
+    file_mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null; }
+
+    local test_dir state_dir
+    test_dir=$(mktemp -d)
+    state_dir="$TEST_AM_DIR/state-private"
+
+    # A state dir an earlier release created 0755 is tightened at launch.
+    mkdir -m 755 "$state_dir"
+    local session_name
+    session_name=$(set +u; export AM_STATE_DIR="$state_dir"; agent_launch "$test_dir" "claude" "perm test" 2>/dev/null)
+    if [[ -z "$session_name" ]]; then
+        skip_test "private dirs (agent_launch failed)"
+        rm -rf "$test_dir"
+        teardown_integration_env
+        echo ""
+        return
+    fi
+
+    local log_dir="/tmp/am-logs/$session_name"
+    wait_for_text "stub-agent-ready" cat "$log_dir/agent.log" >/dev/null
+    assert_eq "700" "$(file_mode /tmp/am-logs)" "private dirs: /tmp/am-logs is 0700"
+    assert_eq "700" "$(file_mode "$log_dir")" "private dirs: session log dir is 0700"
+    assert_eq "600" "$(file_mode "$log_dir/agent.log")" "private dirs: agent.log is 0600"
+    assert_eq "700" "$(file_mode "$state_dir")" "private dirs: 0755 state dir tightened to 0700 at launch"
+
+    # The shell panel's log (created by its own pipe-pane) gets the same mode.
+    agent_shell_pane_add "$session_name" 2>/dev/null
+    local _i
+    for _i in $(seq 1 20); do
+        [[ -f "$log_dir/shell.log" ]] && break
+        sleep 0.2
+    done
+    assert_eq "600" "$(file_mode "$log_dir/shell.log")" "private dirs: shell.log is 0600"
+
+    # am cd creates the state dir private when it is missing.
+    rm -rf "$state_dir"
+    (set +u; export AM_STATE_DIR="$state_dir"; agent_set_workdir "$session_name" "$test_dir" 2>/dev/null)
+    assert_eq "700" "$(file_mode "$state_dir")" "private dirs: agent_set_workdir creates the state dir 0700"
+
+    unset -f file_mode
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+    rm -rf "$test_dir"
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_agents_tests() {
     _run_test test_agents
     _run_test test_agents_extended
@@ -438,6 +496,7 @@ run_agents_tests() {
     _run_test test_resolve_session
     _run_test test_prompt_injection
     _run_test test_send_prompt_delay
+    _run_test test_private_dirs
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

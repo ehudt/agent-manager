@@ -2,6 +2,13 @@
 # preview - Fast standalone preview for fzf
 # Usage: preview <session_name>
 
+# The sourced libs need bash >= 4.4 (namerefs, ${var@Q}); an older bash
+# would fail partway with parse errors. Say so and exit cleanly instead.
+if [[ -z "${BASH_VERSINFO:-}" ]] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+    echo "agent-manager needs bash >= 4.4 (this is ${BASH_VERSION:-unknown})"
+    exit 0
+fi
+
 set -euo pipefail
 
 session_name="${1:-}"

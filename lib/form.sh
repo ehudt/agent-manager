@@ -71,6 +71,18 @@ _form_init() {
     _FORM_DIR_HIGHLIGHT=0
     _FORM_DIR_SCROLL_OFFSET=0
 
+    # Preset picker: only when presets exist, and first so picking one fills
+    # the fields below. Field indices for everyone else stay unchanged.
+    _FORM_PRESET_NAMES=""
+    if [[ "$(type -t am_preset_names)" == "function" ]]; then
+        _FORM_PRESET_NAMES=$(am_preset_names | tr '\n' ',')
+        _FORM_PRESET_NAMES="${_FORM_PRESET_NAMES%,}"
+    fi
+    if [[ -n "$_FORM_PRESET_NAMES" ]]; then
+        _form_add_field "preset" "Preset" "select" "-"
+        FORM_OPTIONS[preset]="-,${_FORM_PRESET_NAMES}"
+    fi
+
     _form_add_field "directory"         "Directory"      "directory"  "$directory"
     # Workspace allocation (am new -W) replaces the directory; only offered
     # when a workspace_cmd is configured, so the field order is unchanged for
@@ -226,6 +238,37 @@ _form_cycle_select() {
     FORM_VALUES[$name]="${options[0]}"
 }
 
+# A select changed value: the Preset field fills the other fields.
+# Usage: _form_after_select_change <field-name>
+_form_after_select_change() {
+    [[ "$1" == "preset" ]] || return 0
+    _form_apply_preset "${FORM_VALUES[preset]}"
+}
+
+# Copy a preset's directory/agent/task/workspace into the form fields. The
+# preset's agent args and shell flag travel to cmd_new via --preset=<name> in
+# the flags output (see _form_output), so they are applied there.
+# Usage: _form_apply_preset <name>
+_form_apply_preset() {
+    local name="$1"
+    [[ -n "$name" && "$name" != "-" ]] && am_preset_get "$name" >/dev/null 2>&1 || return 0
+    local v
+    v=$(am_preset_field "$name" directory); [[ -n "$v" ]] && FORM_VALUES[directory]="$v"
+    v=$(am_preset_field "$name" agent);     [[ -n "$v" ]] && FORM_VALUES[agent]="$v"
+    v=$(am_preset_field "$name" task);      [[ -n "$v" ]] && FORM_VALUES[task]="$v"
+    if [[ -n "${FORM_TYPES[workspace_enabled]:-}" ]]; then
+        v=$(am_preset_field "$name" workspace)
+        if [[ "$v" == "true" ]]; then
+            FORM_VALUES[workspace_enabled]="true"
+            FORM_DISABLED[workspace_branch]=""
+            FORM_DISABLED[directory]="true"
+            v=$(am_preset_field "$name" branch)
+            FORM_VALUES[workspace_branch]="$v"
+        fi
+    fi
+    return 0
+}
+
 # Handle space: toggle checkbox or cycle select
 _form_handle_space() {
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
@@ -254,6 +297,7 @@ _form_handle_space() {
             ;;
         select)
             _form_cycle_select "$name" 1
+            _form_after_select_change "$name"
             ;;
     esac
 }
@@ -452,6 +496,7 @@ _form_process_key_navigate() {
                                     else
                                         _form_cycle_select "$_nav_name" -1
                                     fi
+                                    _form_after_select_change "$_nav_name"
                                     ;;
                                 checkbox) _form_handle_space ;;
                             esac
@@ -827,6 +872,11 @@ _form_output() {
         else
             flags+=" --workspace"
         fi
+    fi
+    # The picked preset's agent args and shell flag are applied by cmd_new.
+    local preset="${FORM_VALUES[preset]:-}"
+    if [[ -n "$preset" && "$preset" != "-" ]]; then
+        flags+=" --preset=$preset"
     fi
 
     printf '%s\x1f%s\x1f%s\x1f%s\n' "$directory" "$agent" "$task" "$flags"

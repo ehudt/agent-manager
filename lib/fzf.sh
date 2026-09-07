@@ -30,7 +30,7 @@ _dir_repo_scan_cached() {
         cat "$cache" 2>/dev/null
         local now mtime
         now=$(date +%s)
-        mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null || echo 0)
+        am_file_mtime "$cache" mtime || mtime=0
         (( now - mtime < ttl )) && return 0
     fi
     # Detached refresh: double-fork and redirect so no descendant holds a
@@ -332,8 +332,15 @@ fzf_list_simple() {
 
     while IFS=$'\x1f' read -r session _state directory branch agent_type task activity _created workdir; do
         [[ -z "$session" ]] && continue
+        _fzf_state_selected "$_state" || continue
         _fzf_format_plain_row "$session" "${workdir:-$directory}" "$branch" "$agent_type" "$task" "$activity"
     done <<< "$rows"
+}
+
+# `am list --state a,b` sets AM_LIST_STATE_FILTER; unset means every state.
+_fzf_state_selected() {
+    [[ -z "${AM_LIST_STATE_FILTER:-}" ]] && return 0
+    [[ ",${AM_LIST_STATE_FILTER}," == *",$1,"* ]]
 }
 
 # JSON output for scripting
@@ -346,12 +353,15 @@ fzf_list_json() {
     rows=$(_fzf_session_rows)
     sep=$'\x1f'
 
-    printf '%s\n' "$rows" | jq -R -s --arg sep "$sep" '
+    printf '%s\n' "$rows" | jq -R -s --arg sep "$sep" --arg states "${AM_LIST_STATE_FILTER:-}" '
         split("\n") | map(select(length > 0) | split($sep) |
          {name: .[0], state: .[1], directory: .[2], branch: .[3],
           agent_type: .[4], task: .[5],
           activity: (.[6] | tonumber), created: (.[7] | tonumber),
-          workdir: (.[8] // "")})'
+          workdir: (.[8] // "")})
+        | if $states == "" then . else
+            ($states | split(",")) as $want | map(select(.state as $s | $want | index($s)))
+          end'
 }
 
 # Restore picker: browse closed sessions and resume one

@@ -42,6 +42,30 @@ test_state_hooks() {
             "$hook_script" <<< "$input"
     }
 
+    # --- The hook never fails Claude's turn: exit 0 on garbage and on an
+    # unreadable registry, under /bin/bash too (macOS 3.2 is what Claude's
+    # `bash <path>` resolves to when Homebrew bash is not first in PATH) ---
+    local hook_rc=0
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+        /bin/bash "$hook_script" <<< "not json at all" || hook_rc=$?
+    assert_eq "0" "$hook_rc" "hook: unparsable payload exits 0"
+    hook_rc=0
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$tmp_dir/nope.json" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-abc123" \
+        /bin/bash "$hook_script" <<< "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}" || hook_rc=$?
+    assert_eq "0" "$hook_rc" "hook: missing registry exits 0"
+    hook_rc=0
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$tmp_dir/unwritable/state" AM_SESSION_NAME="am-abc123" \
+        /bin/bash "$hook_script" <<< "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}" 2>/dev/null || hook_rc=$?
+    assert_eq "0" "$hook_rc" "hook: exits 0 even when a state write fails"
+
+    # --- A state dir the hook has to create is user-only ---
+    local fresh_state="$tmp_dir/fresh-state"
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$fresh_state" AM_SESSION_NAME="am-abc123" \
+        /bin/bash "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+    assert_eq "ready" "$(cat "$fresh_state/am-abc123" 2>/dev/null)" "hook: writes state into a freshly created state dir"
+    assert_eq "700" "$(stat -f %Lp "$fresh_state" 2>/dev/null || stat -c %a "$fresh_state")" \
+        "hook: creates the state dir 0700"
+
     # --- Stop hook writes ready ---
     rm -f "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
@@ -907,6 +931,73 @@ test_state_hook_cwd_sidecar() {
     rm -rf "$tmp_dir"
 }
 
+# Desktop notifications: fired off the critical path on a transition into a
+# configured state; AM_NOTIFY_CMD stands in for osascript/notify-send.
+test_state_hook_notify() {
+    $SUMMARY_MODE || echo "=== Testing state-hook notifications ==="
+
+    local hook_script="$PROJECT_DIR/lib/hooks/state-hook.sh"
+    local tmp_dir registry state_dir am_dir home log
+    tmp_dir=$(mktemp -d)
+    registry="$tmp_dir/sessions.json"
+    state_dir="$tmp_dir/state"
+    am_dir="$tmp_dir/am"
+    log="$tmp_dir/notify.log"
+    mkdir -p "$state_dir" "$am_dir" "$tmp_dir/home"
+    home=$(cd "$tmp_dir/home" && pwd -P)
+    jq -n --arg dir "$home" \
+        '{sessions: {"am-ntf1": {name: "am-ntf1", directory: $dir, branch: "feat/x", agent_type: "claude", task: "Fix the flaky test"}}}' \
+        > "$registry"
+    local notify_cmd='printf "%s|%s|%s|%s\n" "$AM_NOTIFY_SESSION" "$AM_NOTIFY_STATE" "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >> '"$log"
+
+    run_hook() {
+        AM_DIR="$am_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="am-ntf1" AM_NOTIFY_CMD="$notify_cmd" \
+            "$hook_script" <<< "$1"
+    }
+    # The notifier runs in the hook's detached tail; give it a moment.
+    settle() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$log" && "$(wc -l < "$log")" -ge "${1:-1}" ]] && return 0; sleep 0.2; done; return 0; }
+
+    run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"'"$home"'"}'
+    sleep 0.3
+    assert_cmd_fails "notify: running does not notify" test -s "$log"
+
+    run_hook '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"'"$home"'"}'
+    settle 1
+    assert_eq "1" "$(wc -l < "$log" 2>/dev/null | tr -d ' ')" "notify: waiting_user fires once"
+    assert_contains "$(cat "$log")" "am-ntf1|waiting_user|" "notify: env carries session and state"
+    assert_contains "$(cat "$log")" "home/feat/x" "notify: title labels dir/branch"
+    assert_contains "$(cat "$log")" "needs you" "notify: title says the session needs the user"
+    assert_contains "$(cat "$log")" "|Fix the flaky test" "notify: body is the session task"
+
+    # Same state again: no transition, no second notification
+    run_hook '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"'"$home"'"}'
+    sleep 0.4
+    assert_eq "1" "$(wc -l < "$log" | tr -d ' ')" "notify: same-state re-fire does not notify again"
+
+    # Stop → ready is not in the default notify_states
+    run_hook '{"hook_event_name":"Stop","stop_hook_active":false,"cwd":"'"$home"'"}'
+    sleep 0.4
+    assert_eq "1" "$(wc -l < "$log" | tr -d ' ')" "notify: ready is silent by default"
+
+    # notify_states=waiting_user,ready announces finished turns
+    printf '{"notify": true, "notify_states": "waiting_user,ready"}\n' > "$am_dir/config.json"
+    run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"'"$home"'"}'
+    run_hook '{"hook_event_name":"Stop","stop_hook_active":false,"cwd":"'"$home"'"}'
+    settle 2
+    assert_eq "2" "$(wc -l < "$log" | tr -d ' ')" "notify: ready notifies when configured"
+    assert_contains "$(tail -1 "$log")" "|ready|" "notify: ready transition carries its state"
+    assert_contains "$(tail -1 "$log")" "finished" "notify: ready title says finished"
+
+    # notify=false silences everything
+    printf '{"notify": false, "notify_states": "waiting_user,ready"}\n' > "$am_dir/config.json"
+    run_hook '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"'"$home"'"}'
+    sleep 0.4
+    assert_eq "2" "$(wc -l < "$log" | tr -d ' ')" "notify: notify=false is silent"
+
+    rm -rf "$tmp_dir"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_from_hook_reads_file
@@ -915,6 +1006,7 @@ run_state_hooks_tests() {
     _run_test test_state_from_hook_invalid_state
     _run_test test_pi_durable_identity_guard
     _run_test test_state_hook_cwd_sidecar
+    _run_test test_state_hook_notify
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

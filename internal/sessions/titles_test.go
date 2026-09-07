@@ -30,6 +30,23 @@ func TestTitleValid(t *testing.T) {
 	}
 }
 
+func TestNormalizeTitle(t *testing.T) {
+	cases := []struct{ in, dir, want string }{
+		{"Fix flaky test - 🔄 Reconnecting…", "/home/u/proj", "Fix flaky test"},
+		{"Fix flaky test - proj", "/home/u/proj", "Fix flaky test"},
+		{"Fix flaky test - proj - 🔄 Reconnecting", "/home/u/proj", "Fix flaky test"},
+		{"Fix flaky test", "/home/u/proj", "Fix flaky test"},
+		{"Fix flaky test - other", "/home/u/proj", "Fix flaky test - other"},
+		{"Fix flaky test - proj", "", "Fix flaky test - proj"},
+		{"Claude Code", "/home/u/proj", "Claude Code"},
+	}
+	for _, c := range cases {
+		if got := normalizeTitle(c.in, c.dir); got != c.want {
+			t.Errorf("normalizeTitle(%q, %q) = %q, want %q", c.in, c.dir, got, c.want)
+		}
+	}
+}
+
 func TestLeadingNonAlnumStrip(t *testing.T) {
 	cases := map[string]string{
 		"✳ Fix the bug":       "Fix the bug",
@@ -143,6 +160,47 @@ func TestClaudeFirstUserMessageSkipsShort(t *testing.T) {
 	got := claudeFirstUserMessage(directory, "session")
 	if got != "This is the real user task description" {
 		t.Errorf("got %q, want non-short message", got)
+	}
+}
+
+// The length gate counts characters like bash's ${#cleaned}, not bytes: a
+// 6-letter Hebrew message (12 bytes) must be rejected on both paths, an
+// 11-letter one accepted.
+func TestFirstUserMessageLengthGateCountsRunes(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"six hebrew letters (12 bytes)", "שלוםעו", false},
+		{"ten hebrew letters (20 bytes)", "שלוםעולםאב", false},
+		{"eleven hebrew letters", "שלוםעולםאבג", true},
+		{"ten ascii letters", "abcdefghij", false},
+		{"eleven ascii letters", "abcdefghijk", true},
+	}
+	for _, tc := range cases {
+		if got := titleWorthy(tc.text); got != tc.want {
+			t.Errorf("titleWorthy(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	directory := "/some/path/hebrew"
+	projectPath := strings.ReplaceAll(directory, "/", "-")
+	claudeDir := filepath.Join(tmp, ".claude", "projects", projectPath)
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Six Hebrew letters is 12 bytes: a byte count would take it as the
+	// title; bash's character count skips it for the 11-letter message.
+	content := `{"type":"user","message":{"content":"שלוםעו"}}` + "\n" +
+		`{"type":"user","message":{"content":"שלוםעולםאבג"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeFirstUserMessage(directory, "session"); got != "שלוםעולםאבג" {
+		t.Errorf("claudeFirstUserMessage = %q, want the 11-letter message", got)
 	}
 }
 

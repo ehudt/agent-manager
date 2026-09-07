@@ -161,9 +161,16 @@ git_head_branch() {
             [[ "$gitdir" == /* ]] || gitdir="$dir/$gitdir"
             break
         fi
-        [[ "$dir" == "/" ]] && return 0
-        dir="${dir%/*}"
-        [[ -n "$dir" ]] || dir="/"
+        [[ "$dir" == "/" || "$dir" == "." ]] && return 0
+        local parent="${dir%/*}"
+        if [[ "$parent" == "$dir" ]]; then
+            # Bare relative name ("sub"): the parent is the cwd, checked
+            # once and then the walk ends (Go: filepath.Dir("sub") == ".").
+            parent="."
+        elif [[ -z "$parent" ]]; then
+            parent="/"
+        fi
+        dir="$parent"
     done
     [[ -f "$gitdir/HEAD" ]] || return 0
     IFS= read -r head < "$gitdir/HEAD" || true
@@ -194,6 +201,112 @@ truncate() {
 # Get current timestamp as epoch seconds
 epoch_now() {
     date +%s
+}
+
+# --- File mtimes without a per-call flavor probe ---
+#
+# `stat -c %Y file || stat -f %m file` costs two forks on macOS (the GNU form
+# always fails first). The flavor is guessed once per process from $OSTYPE
+# (fork-free) and corrected if the guess turns out wrong (GNU coreutils on
+# PATH on macOS), so every later call is a single fork.
+
+# The flavor lives in _AM_STAT_FLAVOR and is set in the calling shell (not
+# inside the $(...) that runs stat, where it would not persist).
+_am_stat_flavor_init() {
+    [[ -n "${_AM_STAT_FLAVOR:-}" ]] && return 0
+    case "$OSTYPE" in
+        darwin*|*bsd*) _AM_STAT_FLAVOR=bsd ;;
+        *)             _AM_STAT_FLAVOR=gnu ;;
+    esac
+}
+
+_am_stat_flavor_flip() {
+    if [[ "${_AM_STAT_FLAVOR:-}" == bsd ]]; then _AM_STAT_FLAVOR=gnu; else _AM_STAT_FLAVOR=bsd; fi
+}
+
+# Print "<epoch> <path>" lines for the given files with the current flavor,
+# one stat call. Missing files print nothing. Usage: _am_stat_mtimes <file>...
+_am_stat_mtimes() {
+    case "${_AM_STAT_FLAVOR:-}" in
+        bsd) stat -f '%m %N' "$@" 2>/dev/null ;;
+        *)   stat -c '%Y %n' "$@" 2>/dev/null ;;
+    esac
+    return 0
+}
+
+# Mtime of one file as epoch seconds. Prints it, or assigns it to <out_var>
+# when given (callers on a hot path skip the subshell). Empty and rc 1 when
+# the file is missing.
+# Usage: am_file_mtime <file> [out_var]
+am_file_mtime() {
+    _am_stat_flavor_init
+    local __afm_line __afm_m=""
+    __afm_line=$(_am_stat_mtimes "$1")
+    if [[ -z "$__afm_line" && -e "$1" ]]; then
+        # The file exists but stat printed nothing: wrong flavor guess
+        # (e.g. GNU coreutils first on PATH on macOS). Flip and remember.
+        _am_stat_flavor_flip
+        __afm_line=$(_am_stat_mtimes "$1")
+    fi
+    __afm_m="${__afm_line%% *}"
+    [[ "$__afm_m" =~ ^[0-9]+$ ]] || __afm_m=""
+    if [[ -n "${2:-}" ]]; then
+        local -n __afm_out="$2"
+        __afm_out="$__afm_m"
+    else
+        [[ -n "$__afm_m" ]] && printf '%s\n' "$__afm_m"
+    fi
+    [[ -n "$__afm_m" ]]
+}
+
+# Mtimes of many files in one stat call, filled into an associative array
+# keyed by path (missing files get no entry).
+# Usage: am_files_mtime <assoc_out_var> <file>...
+am_files_mtime() {
+    local -n __afms_out="$1"
+    shift
+    (( $# )) || return 0
+    _am_stat_flavor_init
+    local -a __afms_lines=()
+    mapfile -t __afms_lines < <(_am_stat_mtimes "$@")
+    if (( ${#__afms_lines[@]} == 0 )); then
+        local __afms_f
+        for __afms_f in "$@"; do
+            [[ -e "$__afms_f" ]] || continue
+            _am_stat_flavor_flip
+            mapfile -t __afms_lines < <(_am_stat_mtimes "$@")
+            break
+        done
+    fi
+    local __afms_l __afms_m __afms_p
+    for __afms_l in "${__afms_lines[@]}"; do
+        __afms_m="${__afms_l%% *}"
+        __afms_p="${__afms_l#* }"
+        [[ "$__afms_m" =~ ^[0-9]+$ && -n "$__afms_p" && "$__afms_p" != "$__afms_l" ]] || continue
+        __afms_out[$__afms_p]=$__afms_m
+    done
+    return 0
+}
+
+# Keep an append-only log bounded: when <file> exceeds <max_bytes>, keep its
+# last half (whole lines) via temp + rename. Never fails the caller. Meant to
+# run from an already-throttled path (auto_title_scan's unthrottled branch),
+# not per call.
+# Usage: am_log_cap <file> <max_bytes>
+am_log_cap() {
+    local file="$1" max="$2" size tmp
+    [[ -f "$file" ]] || return 0
+    size=$(wc -c < "$file" 2>/dev/null) || return 0
+    size="${size//[[:space:]]/}"
+    [[ "$size" =~ ^[0-9]+$ ]] && (( size > max )) || return 0
+    tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 0
+    # tail -c may start mid-line; sed 1d drops that partial first line.
+    if tail -c "$(( max / 2 ))" "$file" 2>/dev/null | sed -E '1d' > "$tmp" 2>/dev/null; then
+        command mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp"
+    else
+        rm -f "$tmp"
+    fi
+    return 0
 }
 
 # Generate a short hash for session naming

@@ -195,12 +195,17 @@ agent_launch() {
     _pane_title=$(truncate "$_pane_title" 60)
     am_tmux select-pane -t "$session_name:.{top}" -T "$_pane_title"
 
-    # Set up log streaming if enabled (AM_LOG_DIR is already in the pane env)
+    # Set up log streaming if enabled (AM_LOG_DIR is already in the pane env).
+    # Both /tmp trees am owns are user-only: the logs hold full pane
+    # scrollback, the state dir holds hook sidecars (cwd, conversation id,
+    # transcript path). Creating the state dir here also tightens one an
+    # earlier release left 0755 before the first hook writes into it.
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
-        mkdir -p "$log_dir"
+        am_mkdir_private /tmp/am-logs "$log_dir"
         tmux_enable_pipe_pane "$session_name" ".{top}" "$log_dir/agent.log"
     fi
+    am_mkdir_private "${AM_STATE_DIR:-/tmp/am-state}"
 
     # Build the full agent command with shell-safe argument quoting.
     local -a cmd_parts=("$agent_cmd")
@@ -229,7 +234,7 @@ agent_launch() {
             full_cmd+=" $quoted_prompt"
         else
             prompt_file="/tmp/am-prompt-${session_name}"
-            printf '%s\n' "$initial_prompt" > "$prompt_file"
+            (umask 077; printf '%s\n' "$initial_prompt" > "$prompt_file")
             full_cmd="cat ${prompt_file@Q} | $full_cmd; rm -f ${prompt_file@Q}"
         fi
     fi
@@ -335,7 +340,7 @@ agent_set_workdir() {
     local directory
     directory=$(registry_get_field "$session_name" directory)
     local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
-    mkdir -p "$state_dir"
+    am_mkdir_private "$state_dir"
     printf '%s' "$dir" > "$state_dir/$session_name.cwd"
     local workdir="$dir"
     [[ "$workdir" == "$directory" ]] && workdir=""
@@ -387,7 +392,7 @@ agent_shell_pane_add() {
 
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
-        mkdir -p "$log_dir"
+        am_mkdir_private /tmp/am-logs "$log_dir"
         tmux_pipe_pane "$shell_pane" "$log_dir/shell.log"
     fi
 }
@@ -423,11 +428,17 @@ agent_send_prompt() {
     local pane_target
     pane_target=$(agent_target_pane "$session_name")
 
+    # One submission: the whole prompt goes in as a single bracketed paste
+    # (multi-line text included), then exactly one Enter submits it.
     tmux_paste_text "$pane_target" "$prompt"
 
     # TUI agents (Codex) need a brief pause between paste and Enter —
     # without it, Enter arrives before the TUI finishes processing the
     # pasted text and gets interpreted as a newline instead of submit.
+    # Bracketed paste does not remove the need: the TUI still processes the
+    # paste asynchronously after the closing marker, and Enter inside that
+    # window is still read as part of the input rather than as submit. Not
+    # re-verified against Codex since the switch to -p; kept deliberately.
     sleep 0.1
 
     tmux_send_keys "$pane_target" Enter
@@ -533,7 +544,8 @@ agent_kill() {
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.bg" \
           "$(_recovery_identity_dir)/$session_name.sid" \
           "$(_recovery_identity_dir)/$session_name.transcript" \
-          "$(_recovery_identity_dir)/$session_name.rebind"
+          "$(_recovery_identity_dir)/$session_name.rebind" \
+          "$AM_DIR/results/$session_name.txt"
 
     # Rebuild sidebar cache for surviving sessions so the killed entry
     # disappears from every pane-border immediately.

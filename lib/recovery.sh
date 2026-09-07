@@ -82,18 +82,25 @@ recovery_desired_upsert() {
     local name="$1" directory="$2" agent="$3" task="$4"
     recovery_desired_init || return 1
 
-    local store tmp created boot machine
+    local store tmp created boot machine branch=""
     store=$(_recovery_store_path)
     tmp=$(mktemp "$AM_DIR/.desired-sessions.XXXXXX")
     created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     boot=$(recovery_current_boot_id 2>/dev/null || true)
     machine=$(recovery_current_machine_id 2>/dev/null || true)
+    # The branch the launch directory is on. Pooled checkouts (wp copies) get
+    # released and re-allocated to other branches while the directory path
+    # stays valid, so the preflight compares against this before resuming.
+    if [[ "$(type -t git_head_branch)" == "function" ]]; then
+        git_head_branch "$directory" branch
+    fi
 
     _registry_lock
     if jq --arg id "$name" \
           --arg dir "$directory" \
           --arg agent "$agent" \
           --arg task "$task" \
+          --arg branch "$branch" \
           --arg created "$created" \
           --arg boot "$boot" \
           --arg machine "$machine" '
@@ -107,6 +114,7 @@ recovery_desired_upsert() {
             agent_type: $agent,
             project_directory: $dir,
             effective_directory: $dir,
+            branch: $branch,
             task: $task,
             created_at: ($old.created_at // $created),
             order_key: ($old.order_key // $next),
@@ -145,6 +153,34 @@ recovery_desired_identity() {
             .sessions[$id].session_id = $sid |
             .sessions[$id].transcript_path = $transcript |
             .sessions[$id].identity_source = $source
+        else . end
+    ' "$store" > "$tmp"; then
+        command mv "$tmp" "$store"
+        _registry_unlock
+        return 0
+    fi
+    rm -f "$tmp"
+    _registry_unlock
+    return 1
+}
+
+# Record where a desired session works now (effective_directory, from the
+# agent's .cwd sidecar) and which branch its launch directory is on. Both are
+# read-only inputs to recovery: the branch guards the preflight, the effective
+# directory is re-applied as the restored session's workdir label. Callers
+# compare first (recovery_sync_live_sidecars); this always rewrites.
+recovery_desired_set_workspace() {
+    local name="$1" effective="$2" branch="$3"
+    recovery_desired_init || return 1
+
+    local store tmp
+    store=$(_recovery_store_path)
+    tmp=$(mktemp "$AM_DIR/.desired-sessions.XXXXXX")
+    _registry_lock
+    if jq --arg id "$name" --arg effective "$effective" --arg branch "$branch" '
+        if .sessions[$id] then
+            .sessions[$id].effective_directory = $effective |
+            .sessions[$id].branch = $branch
         else . end
     ' "$store" > "$tmp"; then
         command mv "$tmp" "$store"
@@ -258,6 +294,74 @@ recovery_desired_is_open() {
         "$(_recovery_store_path)" >/dev/null 2>&1
 }
 
+# Copy one ephemeral sidecar ($AM_STATE_DIR/<name>.<ext>) into the durable
+# identity dir when its content differs. Missing source → no-op (the durable
+# copy is kept: a session whose hooks stopped writing still worked somewhere).
+_recovery_mirror_sidecar() {
+    local src="$1" dst="$2" cur="" prev=""
+    [[ -f "$src" ]] || return 0
+    IFS= read -r cur < "$src" 2>/dev/null || true
+    [[ -n "$cur" ]] || return 0
+    if [[ -f "$dst" ]]; then
+        IFS= read -r prev < "$dst" 2>/dev/null || true
+        [[ "$cur" == "$prev" ]] && return 0
+    fi
+    printf '%s' "$cur" > "$dst"
+}
+
+# Durably mirror what live sessions' hooks wrote only to /tmp: the .cwd
+# sidecar (where the agent moved) and the .bg background snapshot. The hook
+# writes .sid/.transcript to the identity dir itself; .cwd and .bg it does not,
+# and /tmp/am-state does not survive a reboot, so without this a restored
+# session came back labelled with its launch directory. Also refreshes each
+# live record's launch-directory branch, which the preflight checks against.
+# Runs on every browser open; per session it is a few file compares and a
+# jq write only when something changed.
+recovery_sync_live_sidecars() {
+    recovery_desired_init || return 1
+    local identity_dir state_dir name
+    identity_dir=$(_recovery_identity_dir)
+    state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+    mkdir -p "$identity_dir"
+
+    # One jq read for every open record; the per-session work below is
+    # fork-free unless a value changed.
+    local -A project_dir=() cur_effective=() cur_branch=()
+    local rec_name rec_dir rec_effective rec_branch
+    while IFS=$'\x1f' read -r rec_name rec_dir rec_effective rec_branch; do
+        [[ -n "$rec_name" ]] || continue
+        project_dir[$rec_name]="$rec_dir"
+        cur_effective[$rec_name]="$rec_effective"
+        cur_branch[$rec_name]="$rec_branch"
+    done < <(jq -r --arg us $'\x1f' '
+        .sessions | to_entries[] | select(.value.desired_state == "open") |
+        [.key, (.value.project_directory // ""),
+         (.value.effective_directory // ""), (.value.branch // "")] | join($us)
+    ' "$(_recovery_store_path)" 2>/dev/null)
+    [[ ${#project_dir[@]} -gt 0 ]] || return 0
+
+    local cwd mirrored branch
+    while IFS= read -r name; do
+        [[ -n "$name" && -n "${project_dir[$name]+x}" ]] || continue
+        _recovery_mirror_sidecar "$state_dir/$name.cwd" "$identity_dir/$name.cwd"
+        _recovery_mirror_sidecar "$state_dir/$name.bg" "$identity_dir/$name.bg"
+
+        cwd="${project_dir[$name]}"
+        mirrored=""
+        if [[ -f "$identity_dir/$name.cwd" ]]; then
+            IFS= read -r mirrored < "$identity_dir/$name.cwd" 2>/dev/null || true
+        fi
+        [[ -n "$mirrored" ]] && cwd="$mirrored"
+        branch=""
+        if [[ "$(type -t git_head_branch)" == "function" && -d "${project_dir[$name]}" ]]; then
+            git_head_branch "${project_dir[$name]}" branch
+        fi
+        if [[ "$cwd" != "${cur_effective[$name]}" || "$branch" != "${cur_branch[$name]}" ]]; then
+            recovery_desired_set_workspace "$name" "$cwd" "$branch" || true
+        fi
+    done < <(tmux_list_am_sessions 2>/dev/null || true)
+}
+
 recovery_sync_identities() {
     recovery_desired_init || return 1
     local identity_dir sid_file name sid transcript
@@ -354,9 +458,28 @@ recovery_preflight_record() {
         echo "exact conversation identity is unavailable"
         return 1
     fi
-    if [[ -z "$effective" || ! -d "$effective" ]]; then
-        echo "directory unavailable: ${effective:-$directory}"
+    # The resume runs in the launch directory: it keys the harness transcript
+    # store (~/.claude/projects/<encoded-dir>/ and its pi/Cursor twins), so a
+    # cwd anywhere else would not find the conversation. The effective
+    # directory (where the agent had moved) is only a label, re-applied as
+    # the restored session's workdir after launch.
+    if [[ -z "$directory" || ! -d "$directory" ]]; then
+        echo "directory unavailable: ${directory:-$effective}"
         return 1
+    fi
+    # A directory that still exists may no longer hold the same checkout:
+    # pooled workspaces (wp copies) are released and re-allocated to other
+    # branches under the same path. Resuming there would put the conversation
+    # on the wrong branch, so block instead. A repo with no readable HEAD
+    # (or a directory that stopped being a repo) yields "" and is not judged.
+    local recorded_branch found_branch=""
+    recorded_branch=$(jq -r '.branch // empty' <<< "$record")
+    if [[ -n "$recorded_branch" && "$(type -t git_head_branch)" == "function" ]]; then
+        git_head_branch "$directory" found_branch
+        if [[ -n "$found_branch" && "$found_branch" != "$recorded_branch" ]]; then
+            echo "branch changed: expected $recorded_branch, found $found_branch"
+            return 1
+        fi
     fi
 
     local agent_cmd
@@ -373,7 +496,7 @@ recovery_preflight_record() {
             ;;
         claude|cursor|pi)
             if ! _sessions_log_jsonl_exists \
-                "$effective" "$sid" "$agent" "$transcript"; then
+                "$directory" "$sid" "$agent" "$transcript"; then
                 echo "conversation history unavailable for $sid"
                 return 1
             fi
@@ -390,6 +513,16 @@ recovery_allow_identity_rebind() {
     identity_dir=$(_recovery_identity_dir)
     mkdir -p "$identity_dir"
     : > "$identity_dir/$name.rebind"
+}
+
+# Withdraw the rebind permission when the restore did not produce a running
+# agent. The hook removes the marker itself only after a successful resume
+# writes the new durable identity; a launch that failed leaves nothing to
+# rebind, and a stale marker would let a later, unrelated hook event in that
+# session name overwrite the recorded conversation identity.
+recovery_revoke_identity_rebind() {
+    local name="$1"
+    rm -f "$(_recovery_identity_dir)/$name.rebind" 2>/dev/null || true
 }
 
 recovery_agent_started() {
@@ -422,6 +555,25 @@ recovery_cleanup_failed_runtime() {
     local session_name="$1"
     tmux_kill_session "$session_name" >/dev/null 2>&1 || true
     registry_remove "$session_name" >/dev/null 2>&1 || true
+    recovery_revoke_identity_rebind "$session_name"
+}
+
+# Re-apply where the agent had moved before the reboot. The resume itself
+# runs in the launch directory (see recovery_preflight_record); this seeds
+# the .cwd sidecar and the registry workdir/branch from the durable mirror so
+# the tab label is right before the agent's first hook event. The agent's
+# tracked cwd starts over at the launch directory, so its first hook payload
+# may legitimately move the label back — that is then the truth.
+recovery_apply_workdir() {
+    local session_name="$1" directory="$2" effective="$3"
+    [[ -n "$effective" && "$effective" != "$directory" && -d "$effective" ]] || return 0
+    if [[ "$(type -t agent_set_workdir)" == "function" ]]; then
+        agent_set_workdir "$session_name" "$effective" >/dev/null 2>&1 || true
+        return 0
+    fi
+    local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+    mkdir -p "$state_dir"
+    printf '%s' "$effective" > "$state_dir/$session_name.cwd"
 }
 
 recovery_restore_one() {
@@ -440,10 +592,13 @@ recovery_restore_one() {
 
     recovery_desired_set_status "$id" "restoring" "" "$boot"
 
-    local agent task effective sid
+    local agent task directory effective sid
     agent=$(jq -r '.agent_type' <<< "$record")
     task=$(jq -r '.task // empty' <<< "$record")
-    effective=$(jq -r '.effective_directory // .project_directory' <<< "$record")
+    # Resume in the launch directory — it keys the transcript store. The
+    # effective directory (the agent's last cwd) becomes the workdir label.
+    directory=$(jq -r '.project_directory' <<< "$record")
+    effective=$(jq -r '.effective_directory // empty' <<< "$record")
     sid=$(jq -r '.session_id' <<< "$record")
 
     local -a restore_args=()
@@ -457,8 +612,9 @@ recovery_restore_one() {
     recovery_desired_is_open "$id" || return 1
     recovery_allow_identity_rebind "$id"
     local restored
-    if restored=$(agent_launch "$effective" "$agent" "$task" "${restore_args[@]}") \
+    if restored=$(agent_launch "$directory" "$agent" "$task" "${restore_args[@]}") \
         && [[ -n "$restored" ]]; then
+        recovery_apply_workdir "$restored" "$directory" "$effective"
         if ! recovery_desired_is_open "$id"; then
             agent_kill "$restored" >/dev/null 2>&1 || true
             return 1
@@ -477,6 +633,8 @@ recovery_restore_one() {
         return 0
     fi
 
+    # No agent came up: the hook will never consume the rebind marker.
+    recovery_revoke_identity_rebind "$id"
     recovery_desired_set_status "$id" "failed" "agent launch failed" "$boot"
     return 1
 }
@@ -626,6 +784,11 @@ recovery_start_for_browser() {
         recovery_migrate_live_registry
         : > "$migration_marker"
     fi
+
+    # Every browser open is a chance to make live sessions' /tmp-only
+    # sidecars (.cwd, .bg) and launch-directory branch durable before the
+    # next reboot loses them.
+    recovery_sync_live_sidecars || true
 
     local boot last_boot=""
     boot="${AM_BOOT_ID:-}"

@@ -91,6 +91,43 @@ EOF
     $SUMMARY_MODE || echo ""
 }
 
+# status-bar and preview need bash >= 4.4 (namerefs, ${var@Q} in the libs
+# they source). On an older bash they must print one line and exit 0 rather
+# than render parse errors. macOS ships /bin/bash 3.2, which makes this
+# testable there; elsewhere the check is skipped.
+test_standalone_bash_version_gate() {
+    $SUMMARY_MODE || echo "=== Testing bash version gate (status-bar, preview) ==="
+
+    local old_bash=""
+    local cand
+    for cand in /bin/bash /usr/bin/bash; do
+        [[ -x "$cand" ]] || continue
+        if "$cand" -c '(( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))' 2>/dev/null; then
+            old_bash="$cand"; break
+        fi
+    done
+    if [[ -z "$old_bash" ]]; then
+        skip_test "bash version gate (no bash < 4.4 on this machine)"
+        return
+    fi
+
+    local output rc
+    rc=0
+    output=$("$old_bash" "$LIB_DIR/status-bar" --print "" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "status-bar: exits 0 under bash < 4.4"
+    assert_eq "1" "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" "status-bar: exactly one line under bash < 4.4"
+    assert_contains "$output" "bash >= 4.4" "status-bar: says which bash it needs"
+    assert_not_contains "$output" "syntax error" "status-bar: no parse errors leak under bash < 4.4"
+
+    rc=0
+    output=$("$old_bash" "$LIB_DIR/preview" "some-session" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "preview: exits 0 under bash < 4.4"
+    assert_eq "1" "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" "preview: exactly one line under bash < 4.4"
+    assert_contains "$output" "bash >= 4.4" "preview: says which bash it needs"
+
+    $SUMMARY_MODE || echo ""
+}
+
 test_standalone_dir_preview() {
     $SUMMARY_MODE || echo "=== Testing lib/dir-preview (standalone) ==="
 
@@ -172,6 +209,26 @@ test_standalone_status_bar() {
     rc=0
     output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
     assert_eq "0" "$rc" "status-bar: exits 0 with mixed states"
+
+    # The tick runs registry_gc: the bash-only extras half (sessions-log
+    # pruning) has no other periodic caller. A stale entry whose transcript
+    # never existed must disappear on a tick whose extras marker is due.
+    jq -cn '{session_name:"test-am-gc-stale",session_id:"sid-nope",directory:"/tmp/tmp.nope",branch:"",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"",transcript_path:""}' \
+        >> "$AM_SESSIONS_LOG"
+    : > "$AM_DIR/.sessions-log.leaked"
+    touch -t 202601010000 "$AM_DIR/.sessions-log.leaked"
+    rm -f "$AM_DIR/.gc_extras_last"
+    rc=0
+    output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "status-bar: exits 0 while running gc extras"
+    assert_cmd_succeeds "status-bar: tick stamps .gc_extras_last" test -f "$AM_DIR/.gc_extras_last"
+    assert_eq "" "$(jq -r 'select(.session_name == "test-am-gc-stale") | .session_name' "$AM_SESSIONS_LOG")" \
+        "status-bar: tick prunes a sessions-log entry whose transcript is gone"
+    assert_cmd_fails "status-bar: tick sweeps a leaked .sessions-log temp" test -f "$AM_DIR/.sessions-log.leaked"
+    if [[ -n "$s1" ]]; then
+        assert_eq "true" "$(registry_exists "$s1" && echo true || echo false)" \
+            "status-bar: gc on the tick keeps live rows"
+    fi
 
     # The tab label follows the registry workdir (where the agent moved), not
     # the launch directory.
@@ -512,6 +569,7 @@ test_standalone_status_bar_layout() {
 run_standalone_scripts_tests() {
     _run_test test_standalone_preview
     _run_test test_standalone_dir_preview
+    _run_test test_standalone_bash_version_gate
     _run_test test_standalone_status_bar
     _run_test test_standalone_status_bar_many_sessions
     _run_test test_standalone_status_bar_layout

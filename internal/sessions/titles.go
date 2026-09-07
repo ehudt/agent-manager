@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const titleScanThrottle = 60 * time.Second
@@ -158,8 +159,20 @@ func refreshedTitle(socket, home, stateDir string, s TmuxSession, meta Session) 
 		title = piTitleExtract(title)
 	} else if meta.AgentType == "cursor" {
 		title = cursorTitleExtract(title)
+	} else {
+		dir := meta.Workdir
+		if dir == "" {
+			dir = meta.Directory
+		}
+		title = normalizeTitle(title, dir)
 	}
 	if !titleValid(title) {
+		// Hysteresis (mirrors lib/registry.sh): a title the session already
+		// has is kept until the pane paints a new valid one, so transient
+		// placeholders never swap it for the first-message fallback.
+		if meta.Task != "" {
+			return "", false
+		}
 		if (meta.AgentType == "claude" || meta.AgentType == "pi" || meta.AgentType == "cursor") && meta.Directory != "" {
 			// THIS session's conversation id comes from the sidecar its own
 			// hook wrote; the readers open exactly that transcript. With no
@@ -215,6 +228,20 @@ func readPaneTitle(socket, target string) string {
 		return ""
 	}
 	return strings.TrimRight(string(out), "\n")
+}
+
+// normalizeTitle mirrors lib/registry.sh:_title_normalize — strips the
+// transient decorations Claude Code appends to its terminal title: a trailing
+// " - 🔄 Reconnecting…" segment and a trailing " - <dirname>" that repeats the
+// directory the tab already shows.
+func normalizeTitle(t, dir string) string {
+	if i := strings.Index(t, " - 🔄"); i >= 0 {
+		t = t[:i]
+	}
+	if base := filepath.Base(dir); dir != "" && base != "" && base != "." {
+		t = strings.TrimSuffix(t, " - "+base)
+	}
+	return strings.TrimRight(t, " \t")
 }
 
 // titleValid mirrors lib/registry.sh:_title_valid. The bare "Claude Code" is
@@ -291,7 +318,7 @@ func claudeFirstUserMessage(directory, sessionID string) string {
 		}
 		text := extractContent(rec.Message.Content)
 		text = cleanContent(text)
-		if len(text) > 10 {
+		if titleWorthy(text) {
 			return text
 		}
 	}
@@ -361,7 +388,7 @@ func cursorFirstUserMessage(directory, sessionID, transcriptPath string) string 
 			text = match[1]
 		}
 		text = cleanContent(strings.ReplaceAll(text, "\n", " "))
-		if len(text) > 10 {
+		if titleWorthy(text) {
 			return text
 		}
 	}
@@ -422,6 +449,16 @@ func cleanContent(s string) string {
 	s = tagRe.ReplaceAllString(s, "")
 	s = strings.ReplaceAll(s, "\n", " ")
 	return strings.TrimSpace(s)
+}
+
+// titleWorthy is the first-message length gate shared by the Claude, Cursor,
+// and pi transcript readers. It counts characters, not bytes, to match the
+// bash twins (`${#cleaned} -gt 10` in lib/utils.sh): both scanners share one
+// throttle marker, so a byte count here would let a short non-ASCII message
+// through on the Go path that bash rejects, and the two would keep writing
+// different titles.
+func titleWorthy(text string) bool {
+	return utf8.RuneCountInString(text) > 10
 }
 
 func homeDir() string {
@@ -513,7 +550,7 @@ func piFirstUserMessage(directory, sessionID string) string {
 			continue
 		}
 		text := cleanContent(extractContent(rec.Message.Content))
-		if len(text) > 10 {
+		if titleWorthy(text) {
 			return text
 		}
 	}

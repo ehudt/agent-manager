@@ -1,4 +1,4 @@
-.PHONY: build clean test
+.PHONY: build clean test check
 
 build:
 	go build -o bin/am-list-internal ./cmd/am-list-internal/
@@ -6,6 +6,9 @@ build:
 
 test:
 	go test ./...
+
+check:
+	go vet ./... && go test ./...
 
 clean:
 	rm -f bin/am-list-internal bin/am-browse

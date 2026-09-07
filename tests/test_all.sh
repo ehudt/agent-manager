@@ -140,6 +140,27 @@ replay_output() {
 }
 
 # ============================================
+# Go tests
+#
+# The Go side (am-browse, am-list-internal, internal/sessions) mirrors bash
+# logic — titles, workdir/branch refresh, registry locking, GC. A green bash
+# run must cover it too, so `go test ./...` is one entry in the counts
+# (PASS/FAIL like any other assertion) and a SKIP when go is not installed.
+# ============================================
+
+run_go_tests() {
+    $SUMMARY_MODE || echo "=== Running Go tests (go test ./...) ==="
+    if ! command -v go >/dev/null 2>&1; then
+        skip_test "go test ./...: go is not installed; the Go twins (internal/, cmd/) were not tested"
+        $SUMMARY_MODE || echo ""
+        return 0
+    fi
+    run_external_test "go test ./..." \
+        go test -C "$SCRIPT_DIR/.." ./...
+    $SUMMARY_MODE || echo ""
+}
+
+# ============================================
 # Worker plan — balanced by measured runtime
 #
 # Solo times (ms):
@@ -156,13 +177,14 @@ replay_output() {
 # ============================================
 
 WORKER_PLAN=(
-    "1:run_utils_tests run_config_tests run_form_tests run_fzf_tests run_install_tests run_state_hooks_tests"
+    "1:run_utils_tests run_config_tests run_form_tests run_presets_tests run_fzf_tests run_install_tests run_state_hooks_tests"
     "2:run_registry_tests run_tmux_tests run_recovery_tests"
     "3:run_agents_tests"
     "4:run_state_tests run_state_lab_tests"
     "5:run_cli_tests"
     "6:run_bin_helpers_tests"
     "7:run_standalone_scripts_tests run_perf_session_switch_tests"
+    "8:run_go_tests"
 )
 
 # ============================================

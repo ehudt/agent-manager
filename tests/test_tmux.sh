@@ -233,12 +233,57 @@ test_tmux_pane_border_sidebar_refreshes_without_job_cache() {
     $SUMMARY_MODE || echo ""
 }
 
+test_tmux_paste_bracketed() {
+    $SUMMARY_MODE || echo "=== Testing tmux_paste_text bracketed paste ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+
+    # A pane whose application enabled bracketed paste (as agent TUIs do)
+    # must receive the whole text inside ESC[200~ … ESC[201~, newlines
+    # included: one block for the application, not one submission per line.
+    # cat -v renders ESC as ^[ so the markers are visible in the capture.
+    local s="am-test-paste-$$"
+    if ! am_tmux new-session -d -s "$s" -x 80 -y 10 'printf "\033[?2004h"; exec cat -v'; then
+        skip_test "bracketed paste (unable to create session)"
+        echo ""
+        return
+    fi
+    sleep 0.3
+    tmux_paste_text "$s" $'first line\nsecond line'
+    sleep 0.2
+    tmux_send_keys "$s" Enter
+    local pane
+    pane=$(wait_for_text '^[[201~' am_tmux capture-pane -pt "$s")
+    assert_contains "$pane" '^[[200~first line' \
+        "paste_text: bracketed-paste start marker precedes the text"
+    assert_contains "$pane" 'second line^[[201~' \
+        "paste_text: end marker follows the last line (newline kept inside the paste)"
+    am_tmux kill-session -t "$s" 2>/dev/null
+
+    # Without bracketed paste the text still arrives, unwrapped.
+    s="am-test-paste-plain-$$"
+    if am_tmux new-session -d -s "$s" -x 80 -y 10 'exec cat -v'; then
+        sleep 0.3
+        tmux_paste_text "$s" 'plain text'
+        sleep 0.2
+        tmux_send_keys "$s" Enter
+        pane=$(wait_for_text 'plain text' am_tmux capture-pane -pt "$s")
+        assert_contains "$pane" 'plain text' "paste_text: text reaches a pane without bracketed paste"
+        assert_not_contains "$pane" '200~' "paste_text: no markers when the application did not ask"
+        am_tmux kill-session -t "$s" 2>/dev/null
+    fi
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_tmux_tests() {
     _run_test test_tmux
     _run_test test_tmux_listing
     _run_test test_tmux_binding_snippets
     _run_test test_tmux_config_refreshes_stale_helpers
     _run_test test_tmux_pane_border_sidebar_refreshes_without_job_cache
+    _run_test test_tmux_paste_bracketed
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

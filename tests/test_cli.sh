@@ -32,6 +32,36 @@ test_cli() {
     "$PROJECT_DIR/am" sb ps </dev/null >/dev/null 2>&1 || rc=$?
     assert_eq "1" "$rc" "am sb: unknown command"
 
+    # interrupt: -i/--interactive asks before sending Ctrl-C; the pre-0.22
+    # --confirm spelling stays accepted with the same meaning but is not
+    # advertised. All three must parse as flags, not as unknown options.
+    local interrupt_help
+    interrupt_help=$("$PROJECT_DIR/am" interrupt --help)
+    assert_contains "$interrupt_help" "-i|--interactive" "am interrupt --help: documents -i/--interactive"
+    assert_not_contains "$interrupt_help" "--confirm" "am interrupt --help: --confirm is a hidden alias"
+    local flag interrupt_err
+    for flag in -i --interactive --confirm; do
+        interrupt_err=$("$PROJECT_DIR/am" interrupt "$flag" 2>&1 >/dev/null </dev/null || true)
+        assert_not_contains "$interrupt_err" "Unknown option" "am interrupt $flag: accepted as a flag"
+        assert_contains "$interrupt_err" "Session name required" "am interrupt $flag: still requires a session"
+    done
+
+    # Bash version gate: 4.4 is the floor (namerefs in lib/state.sh, ${var@Q}
+    # in lib/agents.sh). Exercised for real where an older bash exists
+    # (macOS ships 3.2 at /bin/bash); the static check runs everywhere.
+    local old_bash_major
+    old_bash_major=$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 9)
+    if (( old_bash_major < 4 )); then
+        local gate_err gate_rc=0
+        gate_err=$(/bin/bash "$PROJECT_DIR/am" --version 2>&1 >/dev/null) || gate_rc=$?
+        assert_eq "1" "$gate_rc" "am under bash 3.2: refuses to run"
+        assert_contains "$gate_err" "bash >= 4.4" "am under bash 3.2: names the 4.4 floor"
+    else
+        skip_test "bash version gate under bash 3.2 (no bash < 4 at /bin/bash)"
+    fi
+    assert_contains "$(head -12 "$PROJECT_DIR/am")" "BASH_VERSINFO[1] < 4" \
+        "am: version gate checks the minor version"
+
     local send_help
     send_help=$("$PROJECT_DIR/am" send --help)
     assert_contains "$send_help" "Usage: am send" "am send --help: shows usage"
@@ -258,16 +288,60 @@ test_cli_extended() {
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get yolo >/dev/null 2>&1 || config_rc=$?
     assert_eq "1" "$config_rc" "am config get yolo: unknown key"
 
+    # auto-restore is readable like every other key (it used to print nothing)
+    config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get auto-restore 2>/dev/null)
+    assert_eq "true" "$config_get" "am config get auto-restore: prints the default"
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set auto-restore false >/dev/null 2>&1
+    config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get auto_restore 2>/dev/null)
+    assert_eq "false" "$config_get" "am config get auto_restore: reflects the saved value"
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set auto-restore true >/dev/null 2>&1
+    local config_usage
+    config_usage=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get 2>&1 || true)
+    assert_contains "$config_usage" "auto-restore" "am config get usage: lists auto-restore"
+
     # --- Test: am send injects prompt text into running session ---
     session_name=$(set +u; agent_launch "$test_dir" "claude" "send test" 2>/dev/null)
     assert_not_empty "$session_name" "am send setup: session created"
-    local send_rc=0
-    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$session_name" "run tests now" >/dev/null 2>/dev/null || send_rc=$?
+    wait_for_text "stub-agent-ready" am_tmux capture-pane -pt "$session_name:.{top}" >/dev/null
+
+    # The stub agent is a bash script, which the shell-pane check reads as
+    # "agent exited" (idle). The default send refuses that with exit 2 rather
+    # than typing into a shell; --force overrides.
+    local send_rc=0 send_err
+    send_err=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$session_name" "run tests now" 2>&1 >/dev/null) || send_rc=$?
+    assert_eq "2" "$send_rc" "am send: refuses a session with no running agent (exit 2)"
+    assert_contains "$send_err" "no running agent" "am send: explains the refusal"
+    pane_output=$(am_tmux capture-pane -pt "$session_name:.{top}")
+    assert_not_contains "$pane_output" "stub-agent-input:run tests now" "am send: refused prompt never reaches the pane"
+
+    send_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send --force "$session_name" "run tests now" >/dev/null 2>/dev/null || send_rc=$?
     assert_eq "0" "$send_rc" "am send: exits 0"
     local pane_output
     pane_output=$(wait_for_text "stub-agent-input:run tests now" \
         am_tmux capture-pane -pt "$session_name:.{top}")
     assert_contains "$pane_output" "stub-agent-input:run tests now" "am send: prompt reaches agent pane"
+
+    # A multi-line stdin prompt is read whole with its newlines (the stub is
+    # not in bracketed-paste mode, so tmux hands it one line per read).
+    send_rc=0
+    printf 'first line\nsecond line\n' | AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send --force "$session_name" >/dev/null 2>/dev/null || send_rc=$?
+    assert_eq "0" "$send_rc" "am send (stdin): exits 0"
+    pane_output=$(wait_for_text "stub-agent-input:second line" \
+        am_tmux capture-pane -pt "$session_name:.{top}")
+    assert_contains "$pane_output" "stub-agent-input:first line" "am send (stdin): first line reaches the agent"
+    assert_contains "$pane_output" "stub-agent-input:second line" "am send (stdin): second line reaches the agent"
+
+    # C0 control characters are stripped before the paste (ESC would start a
+    # key sequence, ^C would interrupt the agent); tabs survive. If ^C got
+    # through, the stub would die and nothing would be echoed.
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send -f "$session_name" \
+        $'ctl\033[31m\007a\tb\003end' >/dev/null 2>/dev/null || true
+    pane_output=$(wait_for_text "stub-agent-input:ctl" \
+        am_tmux capture-pane -pt "$session_name:.{top}")
+    assert_contains "$pane_output" "stub-agent-input:ctl[31ma" "am send: ESC and BEL stripped from the prompt"
+    assert_eq "true" "$([[ "$pane_output" =~ ctl\[31ma[[:space:]]+bend ]] && echo true || echo false)" \
+        "am send: ^C stripped, tab kept (stub survived and echoed the rest)"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
     # --- Test: am new --detach can pass initial prompt from stdin (piped to agent) ---
@@ -424,11 +498,143 @@ test_cli_cd() {
     rm -rf "$state_dir" "$launch" "$other"
 }
 
+# Dispatch surface added in 0.22: multi-session wait, done/result, state
+# filters on list/kill, presets on new, doctor.
+test_cli_dispatch() {
+    $SUMMARY_MODE || echo "=== Testing am wait/done/result/list --state/kill --state/new -p/doctor ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+    local test_dir state_dir
+    test_dir=$(mktemp -d)
+    state_dir=$(mktemp -d)
+    local am_env=(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_STATE_DIR="$state_dir" TMUX=)
+
+    local s1 s2
+    s1=$(set +u; agent_launch "$test_dir" "claude" "worker one" 2>/dev/null)
+    s2=$(set +u; agent_launch "$test_dir" "claude" "worker two" 2>/dev/null)
+    if [[ -z "$s1" || -z "$s2" ]]; then
+        skip_test "cli dispatch tests (agent_launch failed)"
+        teardown_integration_env
+        rm -rf "$test_dir" "$state_dir"
+        return
+    fi
+    wait_for_text "stub-agent-ready" am_tmux capture-pane -pt "$s1:.{top}" >/dev/null
+    wait_for_text "stub-agent-ready" am_tmux capture-pane -pt "$s2:.{top}" >/dev/null
+    # Stub agents are bash scripts: the shell-pane check resolves them as idle,
+    # which is in the default wait target set.
+
+    # --- am wait: several sessions ---
+    local out rc
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" wait --timeout 20 "$s1" "$s2" 2>/dev/null); rc=$?
+    assert_eq "0" "$rc" "am wait --all: exits 0 when every session arrives"
+    assert_eq "2" "$(printf '%s\n' "$out" | grep -c ' idle$')" "am wait --all: one '<session> <state>' line per session"
+    assert_contains "$out" "$s1 idle" "am wait --all: names the first session"
+    assert_contains "$out" "$s2 idle" "am wait --all: names the second session"
+
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" wait --any --timeout 20 "$s1" "$s2" 2>/dev/null); rc=$?
+    assert_eq "0" "$rc" "am wait --any: exits 0"
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -c .)" "am wait --any: prints exactly one line"
+
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" wait --json --timeout 20 "$s1" "$s2" 2>/dev/null)
+    assert_eq "2" "$(jq 'length' <<< "$out")" "am wait --json: array with one object per session"
+    assert_eq "idle" "$(jq -r '.[0].state' <<< "$out")" "am wait --json: carries the state"
+
+    rc=0
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" wait --state ready --timeout 1 "$s1" "$s2" 2>/dev/null) || rc=$?
+    assert_eq "3" "$rc" "am wait --all: exit 3 when a session times out"
+
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" wait --timeout 20 "$s1" 2>/dev/null)
+    assert_eq "idle" "$out" "am wait: single-session output is just the state"
+
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" wait --timeout 1 "$s1" test-am-nope >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "am wait: unknown session among several is an error"
+
+    # --- am done / am result ---
+    rc=0
+    env "${am_env[@]}" AM_SESSION_NAME= "$PROJECT_DIR/am" done "orphan" >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am done: exits 1 outside a session without --session"
+    env "${am_env[@]}" AM_SESSION_NAME="$s1" "$PROJECT_DIR/am" done "Fixed 3 tests; PR #1 open" >/dev/null 2>&1 </dev/null
+    assert_eq "Fixed 3 tests; PR #1 open" "$(cat "$TEST_AM_DIR/results/$s1.txt" 2>/dev/null)" \
+        "am done: records the summary under results/"
+    assert_eq "Fixed 3 tests; PR #1 open" "$(env "${am_env[@]}" "$PROJECT_DIR/am" result "$s1" 2>/dev/null)" \
+        "am result: prints the recorded summary"
+    printf 'multi\nline\n' | env "${am_env[@]}" "$PROJECT_DIR/am" done --session "$s2" >/dev/null 2>&1
+    assert_eq $'multi\nline' "$(env "${am_env[@]}" "$PROJECT_DIR/am" result --clear "$s2" 2>/dev/null)" \
+        "am done: stdin summary with --session; result --clear prints it"
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" result "$s2" >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "am result: exit 1 once cleared"
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" result --wait --timeout 3 test-am-gone >/dev/null 2>&1 || rc=$?
+    assert_eq "2" "$rc" "am result --wait: exit 2 when the session does not exist"
+    env "${am_env[@]}" AM_SESSION_NAME="$s2" "$PROJECT_DIR/am" done >/dev/null 2>&1 </dev/null
+    assert_eq "done" "$(env "${am_env[@]}" "$PROJECT_DIR/am" result "$s2" 2>/dev/null)" \
+        "am done: no text records 'done'"
+
+    # --- am list --state ---
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" list --state idle 2>/dev/null)
+    assert_contains "$out" "$s1" "am list --state idle: includes an idle session"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" list --state ready,running 2>/dev/null)
+    assert_not_contains "$out" "$s1" "am list --state ready,running: excludes idle sessions"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" list --json --state idle 2>/dev/null)
+    assert_eq "2" "$(jq 'length' <<< "$out")" "am list --json --state: filters the array"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" list --json --state ready 2>/dev/null)
+    assert_eq "0" "$(jq 'length' <<< "$out")" "am list --json --state: empty array when nothing matches"
+
+    # --- am new -p (preset) ---
+    env "${am_env[@]}" "$PROJECT_DIR/am" preset save qa -t claude -n "preset task" -- --flag-from-preset >/dev/null 2>&1
+    assert_contains "$(env "${am_env[@]}" "$PROJECT_DIR/am" preset list 2>/dev/null)" "qa" "am preset: dispatch reaches preset_main"
+    local s3
+    s3=$(env "${am_env[@]}" "$PROJECT_DIR/am" new --detach --print-session -p qa "$test_dir" 2>/dev/null </dev/null)
+    assert_not_empty "$s3" "am new -p: launches"
+    assert_eq "preset task" "$(registry_get_field "$s3" task)" "am new -p: preset fills the task"
+    pane_output=$(wait_for_text "stub-agent-argv" am_tmux capture-pane -pt "$s3:.{top}")
+    assert_contains "$pane_output" "--flag-from-preset" "am new -p: preset agent args reach the agent"
+    local s4
+    s4=$(env "${am_env[@]}" "$PROJECT_DIR/am" new --detach --print-session -p qa -n "explicit wins" "$test_dir" -- --extra 2>/dev/null </dev/null)
+    assert_eq "explicit wins" "$(registry_get_field "$s4" task)" "am new -p: explicit -n overrides the preset"
+    pane_output=$(wait_for_text "stub-agent-argv" am_tmux capture-pane -pt "$s4:.{top}")
+    assert_contains "$pane_output" "--flag-from-preset --extra" "am new -p: preset args first, CLI args appended"
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" new --detach -p nosuch "$test_dir" >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am new -p: unknown preset is an error"
+
+    # --- am doctor ---
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" doctor "$s1" 2>&1); rc=$?
+    assert_eq "0" "$rc" "am doctor <session>: exits 0"
+    assert_contains "$out" "$s1" "am doctor: names the session"
+    assert_contains "$out" "idle" "am doctor: reports the resolved state"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" doctor 2>&1); rc=$?
+    assert_eq "0" "$rc" "am doctor (global): exits 0"
+
+    # --- am kill --state ---
+    rc=0
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" kill --state ready -y 2>&1) || rc=$?
+    assert_eq "0" "$rc" "am kill --state: no match is not an error"
+    assert_eq "true" "$(tmux_session_exists "$s1" && echo true || echo false)" "am kill --state ready: leaves idle sessions alone"
+    env "${am_env[@]}" "$PROJECT_DIR/am" kill --state idle -y >/dev/null 2>&1
+    assert_eq "false" "$(tmux_session_exists "$s1" && echo true || echo false)" "am kill --state idle -y: kills matching sessions"
+    assert_eq "false" "$(tmux_session_exists "$s3" && echo true || echo false)" "am kill --state idle -y: kills every match"
+    assert_cmd_fails "am kill: removes the session's recorded result" test -f "$TEST_AM_DIR/results/$s1.txt"
+
+    teardown_integration_env
+    rm -rf "$test_dir" "$state_dir"
+    $SUMMARY_MODE || echo ""
+}
+
 run_cli_tests() {
     _run_test test_cli
     _run_test test_cli_workspace_and_id
     _run_test test_cli_extended
     _run_test test_cli_cd
+    _run_test test_cli_dispatch
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

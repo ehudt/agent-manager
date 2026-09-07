@@ -19,7 +19,9 @@ am_config_init() {
   "default_agent": "claude",
   "auto_restore": true,
   "stream_logs": true,
-  "shell_pane": false
+  "shell_pane": false,
+  "notify": true,
+  "notify_states": "waiting_user"
 }
 EOF
         return 0
@@ -145,6 +147,26 @@ am_auto_restore_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
+# Desktop notifications (fired by the state hook on transitions into
+# notify_states). Missing key = enabled; AM_NOTIFY env overrides.
+am_notify_enabled() {
+    if [[ -n "${AM_NOTIFY:-}" ]]; then
+        am_bool_is_true "${AM_NOTIFY,,}"
+        return $?
+    fi
+    local configured
+    configured=$(jq -r 'if has("notify") then (.notify | tostring) else "missing" end' \
+        "$AM_CONFIG" 2>/dev/null)
+    [[ "$configured" == "missing" || -z "$configured" ]] && return 0
+    am_bool_is_true "${configured,,}"
+}
+
+am_notify_states() {
+    local configured
+    configured=$(am_config_get "notify_states")
+    printf '%s\n' "${configured:-waiting_user}"
+}
+
 am_config_key_alias() {
     case "$1" in
         agent|default-agent|default_agent) echo "default_agent" ;;
@@ -152,14 +174,17 @@ am_config_key_alias() {
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         shell|shell-pane|shell_pane) echo "shell_pane" ;;
         workspace|workspace-cmd|workspace_cmd) echo "workspace_cmd" ;;
+        notify|notifications) echo "notify" ;;
+        notify-states|notify_states) echo "notify_states" ;;
+        notify-cmd|notify_cmd) echo "notify_cmd" ;;
         *) return 1 ;;
     esac
 }
 
 am_config_key_type() {
     case "$1" in
-        default_agent|workspace_cmd) echo "string" ;;
-        auto_restore|stream_logs|shell_pane) echo "boolean" ;;
+        default_agent|workspace_cmd|notify_states|notify_cmd) echo "string" ;;
+        auto_restore|stream_logs|shell_pane|notify) echo "boolean" ;;
         *) return 1 ;;
     esac
 }
@@ -171,10 +196,20 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        auto_restore|stream_logs|shell_pane)
+        auto_restore|stream_logs|shell_pane|notify)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
-        workspace_cmd)
+        notify_states)
+            local s ok=true
+            for s in ${value//,/ }; do
+                case "$s" in
+                    starting|running|ready|waiting_user|background|idle|unknown|dead) ;;
+                    *) ok=false ;;
+                esac
+            done
+            [[ -n "$value" ]] && $ok
+            ;;
+        workspace_cmd|notify_cmd)
             return 0
             ;;
         *)
@@ -201,8 +236,11 @@ am_config_print() {
     else
         auto_restore_value=false
     fi
-    local workspace_cmd_value
+    local workspace_cmd_value notify_value notify_states_value notify_cmd_value
     workspace_cmd_value=$(am_workspace_cmd)
+    if am_notify_enabled; then notify_value=true; else notify_value=false; fi
+    notify_states_value=$(am_notify_states)
+    notify_cmd_value=$(am_config_get "notify_cmd")
 
     cat <<EOF
 default_agent=$default_agent_value
@@ -210,6 +248,9 @@ auto_restore=$auto_restore_value
 stream_logs=$stream_logs_value
 shell_pane=$shell_pane_value
 workspace_cmd=$workspace_cmd_value
+notify=$notify_value
+notify_states=$notify_states_value
+notify_cmd=$notify_cmd_value
 config_file=$AM_CONFIG
 EOF
 }

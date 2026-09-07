@@ -2,8 +2,10 @@
 # am - Agent Manager
 # A CLI tool for managing multiple AI coding agent sessions
 
-if [[ -z "${BASH_VERSINFO:-}" ]] || (( BASH_VERSINFO[0] < 4 )); then
-    echo "am requires bash >= 4.0 (current: ${BASH_VERSION:-unknown})." >&2
+# 4.4: namerefs (local -n, 4.3) across lib/state.sh and ${var@Q} quoting
+# (4.4) in lib/agents.sh — the latter is a parse-time error on older bash.
+if [[ -z "${BASH_VERSINFO:-}" ]] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+    echo "am requires bash >= 4.4 (current: ${BASH_VERSION:-unknown})." >&2
     echo "Install a newer bash and ensure it is first in PATH so '/usr/bin/env bash' resolves to it." >&2
     exit 1
 fi
@@ -11,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.21.0"
+AM_VERSION="0.22.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -44,10 +46,15 @@ COMMANDS:
     shell               Toggle a session's shell panel (open on first use, then hide/show)
     id                  Print the name of the am session you are inside
     cd                  Record where the current session works now (label + branch follow)
-    kill                Kill a session
+    kill                Kill a session (--all, --state <list>)
     config              Show or change saved defaults
+    preset              Save and list launch presets for 'new -p'
+    info                Show a session's registry metadata
     status              Show detailed session info
-    wait                Block until a session reaches a target state
+    doctor              Print every input behind a session's state (debugging)
+    wait                Block until one or more sessions reach a target state
+    done                (inside a session) Record a result summary for the dispatcher
+    result              Read the summary a session recorded with 'done'
     interrupt           Send Ctrl-C to an agent pane
     restore             Browse and resume a closed agent session
     install             First-time setup (deps, config, skills, PATH)
@@ -55,9 +62,11 @@ COMMANDS:
 
 OPTIONS FOR 'list':
     --json          Output as JSON
+    --state <list>  Only sessions in these states (comma-separated)
 
 OPTIONS FOR 'new':
     -t, --type      Agent type: claude, codex, cursor, pi (saved default applies)
+    -p, --preset    Apply a saved preset; explicit flags win (see 'am preset')
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
     -W, --workspace Allocate the directory with the configured workspace_cmd
@@ -69,36 +78,55 @@ OPTIONS FOR 'new':
     --              Pass remaining args to agent (e.g., -- --resume)
 
 OPTIONS FOR 'send':
-    Read prompt text from argv or stdin and inject it into the running agent pane.
+    Read prompt text from argv or stdin and inject it into the agent pane.
+    Refused while the agent is running/starting/waiting on a dialog (exit 4)
+    or has exited (exit 2) unless one of:
+    --wait          Block until the agent is ready, then send
+    --queue         Return now; a background helper sends when ready
+    --force, -f     Send regardless of state
+    --timeout N     Seconds for --wait/--queue (default: 600)
 
 OPTIONS FOR 'peek':
     --pane <name>   Pane to inspect: agent|shell (default: agent)
     --follow, -f    Stream output continuously
     --lines N       Lines of pane content to include, from the end (default: 50)
+    --history       Read the streamed shell.log scrollback instead of the viewport
+    --grep <re>     With --history: filter lines (grep -E) before --lines
 
 OPTIONS FOR 'wait':
     --state <list>  Comma-separated target states (default: ready,waiting_user,idle,dead)
-    --timeout N     Seconds before giving up (default: 600)
-    --json          Print final state as JSON object on exit
+    --timeout N     Seconds before giving up (default: 600; exit 3 on timeout)
+    --json          Print final state as JSON on exit
+    --any | --all   With several sessions: first to arrive, or every one (default)
 
 OPTIONS FOR 'status':
     --json          Output as JSON (single session or array of all sessions)
+
+OPTIONS FOR 'doctor':
+    --capture       Also write a tarball of the report and raw state files
 
 KEYBINDINGS (interactive browser):
     Enter           Attach active session or restore inactive session
     Ctrl-N          Create new session (directory-first launcher)
     Ctrl-X          Kill selected active session
     Ctrl-R          Refresh session list
+    Ctrl-P          Toggle the preview pane
+    Ctrl-H          Jump to the first inactive (restorable) session
+    type            Filter sessions (also state:<name>, e.g. state:ready)
     ?               Show inline help
 
 KEYBINDINGS (inside tmux session):
+    Prefix + 1-9    Jump to the Nth session tab
     Prefix + a      Switch to last am session
+    Prefix + ←/→    Previous / next session tab
     Prefix + n      Open a popup to create a new session
-    Prefix + s      Open am browser popup
+    Prefix + s      Open am browser popup (Prefix + h does the same)
     Prefix + x      Kill the current am session
     Prefix + d      Detach from session
     Prefix + `      Toggle the shell panel (open on first use, then hide/show)
     Prefix Up/Down  Switch panes (when the shell panel is open)
+    Prefix + [ / ]  Copy mode / paste
+    mouse click     Click a tab in the bottom bar to switch to it
     :am             Open am browser (tmux command)
 
 EXAMPLES:
@@ -111,6 +139,9 @@ EXAMPLES:
     am new -W review-48351          # Fresh workspace on a branch (needs workspace_cmd)
     printf 'Fix auth bug\n' | am new --detach ~/code/proj
     printf 'Run the test suite\n' | am send am-abc123
+    am new -p review pr-48351       # Saved preset (am preset save review -W -- --model opus)
+    am wait --any am-abc123 am-def456   # First worker to pause
+    am doctor am-abc123             # Why does the tab show that state?
     am peek am-abc123
     am peek --pane shell --follow am-abc123
     am send "$(am id)" "continue"   # Address the session you are in
@@ -163,20 +194,37 @@ fi
 # Source remaining libraries for interactive commands
 source "$AM_LIB_DIR/agents.sh"
 source "$AM_LIB_DIR/fzf.sh"
+source "$AM_LIB_DIR/presets.sh"
 
-# Lazy-loaders: state.sh and form.sh are deferred for faster startup
+# Lazy-loaders: state.sh, form.sh and doctor.sh are deferred for faster startup
 _ensure_state() { [[ "$(type -t agent_get_state)" == "function" ]] || source "$AM_LIB_DIR/state.sh"; }
 _ensure_form() { [[ "$(type -t _form_run)" == "function" ]] || source "$AM_LIB_DIR/form.sh"; }
+_ensure_doctor() { _ensure_state; [[ "$(type -t doctor_main)" == "function" ]] || source "$AM_LIB_DIR/doctor.sh"; }
 
 # Command: list (plain text or JSON)
 cmd_list() {
     local json=false
+    local states=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --json|-j)
                 json=true
                 shift
+                ;;
+            --state|-s)
+                states="${2:-}"
+                shift 2
+                ;;
+            --state=*)
+                states="${1#--state=}"
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: am list [--json] [--state <s1,s2,...>]"
+                echo "  --state   Only sessions whose state is in the list"
+                echo "            (starting,running,ready,waiting_user,background,idle,unknown,dead)"
+                return 0
                 ;;
             *)
                 log_error "Unknown option: $1"
@@ -185,6 +233,10 @@ cmd_list() {
         esac
     done
 
+    if [[ -n "$states" ]]; then
+        AM_LIST_STATE_FILTER="$states"
+        export AM_LIST_STATE_FILTER
+    fi
     if $json; then
         fzf_list_json
     else
@@ -194,6 +246,7 @@ cmd_list() {
 
 # Command: browse (interactive fzf session picker — default when no args)
 cmd_browse() {
+    _install_refresh_if_stale
     recovery_start_for_browser
 
     local result
@@ -316,15 +369,58 @@ EOF
     fi
 }
 
+# Prompt text from argv (first, non-empty arg) or stdin. The text is pasted
+# into a terminal, where C0 control characters and DEL act as keystrokes (ESC
+# starts a key sequence, ^C interrupts), so all of them except newline and tab
+# are dropped. LC_ALL=C makes tr byte-oriented, which leaves UTF-8 intact.
 read_prompt_input() {
-    if [[ $# -gt 0 ]]; then
+    if [[ $# -gt 0 && -n "$1" ]]; then
         printf '%s' "$1"
     elif [[ ! -t 0 ]]; then
         cat
-    fi
+    fi | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177'
 }
 
 # Command: new
+# Apply a saved preset to cmd_new's locals (dynamic scope). With fill=true the
+# preset supplies directory/agent/task/workspace where the CLI gave none; the
+# form path passes fill=false because it already copied those fields. Agent
+# args and the shell flag are always merged: preset args first, CLI args after.
+# Usage: _cmd_new_apply_preset <name> <fill:true|false>
+_cmd_new_apply_preset() {
+    local pname="$1" fill="$2" v
+    if ! am_preset_get "$pname" >/dev/null 2>&1; then
+        log_error "No such preset: $pname (see 'am preset list')"
+        return 1
+    fi
+    if [[ "$fill" == true ]]; then
+        v=$(am_preset_field "$pname" agent)
+        [[ -n "$v" && -z "$agent_type" ]] && agent_type="$v"
+        v=$(am_preset_field "$pname" task)
+        [[ -n "$v" && -z "$task" ]] && task="$v"
+        if [[ "$dir_given" == false && "$workspace_enabled" == false ]]; then
+            v=$(am_preset_field "$pname" directory)
+            if [[ -n "$v" ]]; then
+                directory="$v"; dir_given=true
+            elif [[ "$(am_preset_field "$pname" workspace)" == "true" ]]; then
+                workspace_enabled=true
+                workspace_branch=$(am_preset_field "$pname" branch)
+            fi
+        fi
+    fi
+    local -a pargs=()
+    mapfile -t pargs < <(am_preset_field "$pname" args)
+    local has_shell=false a
+    for a in "${agent_args[@]}"; do
+        [[ "$a" == "--shell" || "$a" == "--no-shell" ]] && has_shell=true
+    done
+    if [[ "$(am_preset_field "$pname" shell)" == "true" && "$has_shell" == false ]]; then
+        pargs=("--shell" "${pargs[@]}")
+    fi
+    agent_args=("${pargs[@]}" "${agent_args[@]}")
+    return 0
+}
+
 cmd_new() {
     local directory=""
     local dir_given=false
@@ -336,12 +432,21 @@ cmd_new() {
     local initial_prompt=""
     local workspace_enabled=false
     local workspace_branch=""
+    local preset_name=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -t|--type)
                 agent_type="$2"
                 shift 2
+                ;;
+            -p|--preset)
+                preset_name="${2:-}"
+                shift 2
+                ;;
+            --preset=*)
+                preset_name="${1#--preset=}"
+                shift
                 ;;
             -n|--name|--task)
                 task="$2"
@@ -389,6 +494,7 @@ cmd_new() {
                 echo ""
                 echo "Options:"
                 echo "  -t, --type      Agent type (claude, codex, cursor, pi)"
+                echo "  -p, --preset    Apply a saved preset (am preset list); explicit flags win"
                 echo "  -n, --name      Task description"
                 echo "  -W, --workspace Allocate the directory with the configured workspace_cmd"
                 echo "                  Optional: -W <branch> to allocate on a branch"
@@ -423,6 +529,11 @@ cmd_new() {
         return 1
     fi
 
+    # -p on the command line: the preset fills whatever the flags left unset.
+    if [[ -n "$preset_name" ]]; then
+        _cmd_new_apply_preset "$preset_name" true || return 1
+    fi
+
     # Directory-first launcher for fully interactive new-session creation
     if [[ -t 0 && "$dir_given" == false && "$workspace_enabled" == false && -z "$agent_type" && -z "$task" && ${#agent_args[@]} -eq 0 ]]; then
         _ensure_form
@@ -437,15 +548,21 @@ cmd_new() {
         agent_args=($flags)
         # The form's Workspace fields arrive as --workspace[=branch]; they are
         # for us, not the agent.
-        local _flag _kept=()
+        local _flag _kept=() _form_preset=""
         for _flag in "${agent_args[@]}"; do
             case "$_flag" in
                 --workspace) workspace_enabled=true ;;
                 --workspace=*) workspace_enabled=true; workspace_branch="${_flag#--workspace=}" ;;
+                --preset=*) _form_preset="${_flag#--preset=}" ;;
                 *) _kept+=("$_flag") ;;
             esac
         done
         agent_args=("${_kept[@]}")
+        # The form already copied the preset's fields; merge its agent args
+        # and shell flag here.
+        if [[ -n "$_form_preset" ]]; then
+            _cmd_new_apply_preset "$_form_preset" false || return 1
+        fi
     else
         if $workspace_enabled; then
             : # directory comes from the workspace command below
@@ -663,6 +780,9 @@ EOF
 cmd_send() {
     local do_wait=false
     local timeout_s=600
+    local force=false
+    local queue=false
+    local usage_line="Usage: am send [--wait|--queue|--force] [--timeout N] <session-name> [prompt]"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -670,17 +790,32 @@ cmd_send() {
                 do_wait=true
                 shift
                 ;;
+            --queue)
+                queue=true
+                shift
+                ;;
+            --force|-f)
+                force=true
+                shift
+                ;;
             --timeout)
                 timeout_s="${2:-600}"
                 shift 2
                 ;;
             -h|--help)
-                echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
+                echo "$usage_line"
                 echo "Read prompt text from argv or stdin and inject it into the running agent pane."
                 echo ""
+                echo "By default the prompt is only sent when the agent is ready (or its state is"
+                echo "unknown/background). A session that is running, starting, or waiting on a"
+                echo "dialog is refused (exit 4); an exited agent is refused because the text would"
+                echo "run in its shell (exit 2)."
+                echo ""
                 echo "Options:"
-                echo "  --wait       Wait until the agent reaches ready; abort if it exits"
-                echo "  --timeout N  Seconds to wait with --wait before giving up (default: 600)"
+                echo "  --wait       Block until the agent reaches ready, then send; abort if it exits"
+                echo "  --queue      Return immediately; a background helper sends when ready"
+                echo "  --force, -f  Send regardless of state (can corrupt a running turn)"
+                echo "  --timeout N  Seconds for --wait/--queue before giving up (default: 600)"
                 return 0
                 ;;
             -*)
@@ -698,7 +833,7 @@ cmd_send() {
 
     if [[ -z "$name" ]]; then
         log_error "Session name required"
-        echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
+        echo "$usage_line"
         return 1
     fi
 
@@ -707,7 +842,7 @@ cmd_send() {
 
     if [[ -z "$prompt" ]]; then
         log_error "Prompt required via argv or stdin"
-        echo "Usage: am send [--wait] [--timeout N] <session-name> [prompt]"
+        echo "$usage_line"
         return 1
     fi
 
@@ -715,6 +850,37 @@ cmd_send() {
     if ! resolved=$(resolve_session_fuzzy "$name"); then
         log_error "Session not found: $name"
         return 1
+    fi
+
+    if $queue; then
+        # Hand the prompt to a detached helper that waits for ready. The
+        # prompt travels through a private file so its length and content
+        # never hit an argv limit or a shell.
+        am_mkdir_private "$AM_DIR/queue"
+        local qfile
+        qfile=$(mktemp "$AM_DIR/queue/$resolved.XXXXXX")
+        printf '%s' "$prompt" > "$qfile"
+        ( "$AM_SCRIPT_DIR/am" send --wait --timeout "$timeout_s" "$resolved" < "$qfile"
+          rm -f "$qfile" ) </dev/null >/dev/null 2>&1 &
+        disown
+        log_info "Queued for $resolved; it is sent when the agent is ready (helper pid $!)"
+        return 0
+    fi
+
+    if ! $do_wait && ! $force; then
+        _ensure_state
+        local cur_state
+        cur_state=$(agent_get_state "$resolved")
+        case "$cur_state" in
+            running|starting|waiting_user)
+                log_error "Session $resolved is $cur_state; use --wait or --queue to send when it is ready, or --force"
+                return 4
+                ;;
+            idle|dead)
+                log_error "Session $resolved has no running agent ($cur_state); the text would run in its shell"
+                return 2
+                ;;
+        esac
     fi
 
     if $do_wait; then
@@ -920,12 +1086,47 @@ cmd_peek() {
 # Command: kill
 cmd_kill() {
     if [[ $# -eq 0 ]]; then
-        log_error "Session name required (or --all)"
-        echo "Usage: am kill <session-name> | --all" >&2
+        log_error "Session name required (or --all / --state <list>)"
+        echo "Usage: am kill <session-name> | --all | --state <s1,s2> [-y]" >&2
         return 1
     fi
 
     case "$1" in
+        -h|--help)
+            echo "Usage: am kill <session-name> | --all | --state <s1,s2> [-y]"
+            echo "  --state   Kill every session whose state is in the list (asks first; -y skips)"
+            return 0
+            ;;
+        --state|--state=*)
+            local states yes=false
+            if [[ "$1" == --state=* ]]; then states="${1#--state=}"; shift; else states="${2:-}"; shift 2; fi
+            [[ -n "$states" ]] || { log_error "--state needs a comma-separated state list"; return 1; }
+            while [[ $# -gt 0 ]]; do
+                case "$1" in -y|--yes) yes=true; shift ;; *) log_error "Unknown option: $1"; return 1 ;; esac
+            done
+            _ensure_state
+            local -a victims=()
+            local s st
+            while IFS= read -r s; do
+                [[ -n "$s" ]] || continue
+                st=$(agent_get_state "$s")
+                [[ ",$states," == *",$st,"* ]] && victims+=("$s")
+            done < <(tmux_list_am_sessions)
+            if [[ ${#victims[@]} -eq 0 ]]; then
+                log_info "No sessions in state(s): $states"
+                return 0
+            fi
+            if ! $yes; then
+                echo "Sessions in state(s) $states:" >&2
+                for s in "${victims[@]}"; do echo "  $s" >&2; done
+                echo -n "Kill ${#victims[@]} session(s)? [y/N] "
+                local answer
+                read -r answer
+                [[ "$answer" == "y" || "$answer" == "Y" ]] || { log_info "Aborted"; return 0; }
+            fi
+            for s in "${victims[@]}"; do agent_kill "$s"; done
+            log_success "Killed ${#victims[@]} session(s)"
+            ;;
         --all|-a)
             local session_count
             session_count=$(tmux_count_am_sessions)
@@ -971,7 +1172,7 @@ cmd_config() {
         get)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config get <agent|logs|shell|workspace_cmd>"
+                log_error "Usage: am config get <agent|logs|shell|auto-restore|workspace_cmd|notify|notify_states|notify_cmd>"
                 return 1
             fi
             local key
@@ -989,8 +1190,20 @@ cmd_config() {
                 shell_pane)
                     am_shell_pane_enabled && echo true || echo false
                     ;;
+                auto_restore)
+                    am_auto_restore_enabled && echo true || echo false
+                    ;;
                 workspace_cmd)
                     am_workspace_cmd
+                    ;;
+                notify)
+                    am_notify_enabled && echo true || echo false
+                    ;;
+                notify_states)
+                    am_notify_states
+                    ;;
+                notify_cmd)
+                    am_config_get notify_cmd
                     ;;
             esac
             ;;
@@ -998,7 +1211,7 @@ cmd_config() {
             local raw_key="${1:-}"
             local value="${2:-}"
             if [[ -z "$raw_key" || -z "$value" ]]; then
-                log_error "Usage: am config set <agent|logs|shell|workspace_cmd> <value>"
+                log_error "Usage: am config set <agent|logs|shell|auto-restore|workspace_cmd> <value>"
                 return 1
             fi
             local key key_type
@@ -1012,7 +1225,7 @@ cmd_config() {
             fi
             # A shell command is case-sensitive ($AM_BRANCH); everything else is
             # normalized to lowercase.
-            [[ "$key" == "workspace_cmd" ]] || value="${value,,}"
+            [[ "$key" == "workspace_cmd" || "$key" == "notify_cmd" ]] || value="${value,,}"
             if ! am_config_value_is_valid "$key" "$value"; then
                 log_error "Invalid value for $raw_key: $value"
                 return 1
@@ -1023,7 +1236,7 @@ cmd_config() {
         unset|rm)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config unset <agent|logs|shell|workspace_cmd>"
+                log_error "Usage: am config unset <agent|logs|shell|auto-restore|workspace_cmd>"
                 return 1
             fi
             local key
@@ -1050,6 +1263,12 @@ Keys:
   workspace_cmd   Shell command behind `am new -W`: runs with $AM_BRANCH set (may be
                   empty) and prints the allocated directory, e.g.
                   am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
+  notify          Desktop notification when a session needs you (true/false)
+  notify_states   States that notify, comma-separated (default waiting_user;
+                  add ready to hear about finished turns)
+  notify_cmd      Custom notifier (bash snippet). Env: AM_NOTIFY_SESSION,
+                  AM_NOTIFY_STATE, AM_NOTIFY_TITLE, AM_NOTIFY_BODY. Default:
+                  osascript (macOS) / notify-send (Linux)
 
 Precedence:
   CLI flag > environment variable > saved config > built-in default
@@ -1182,6 +1401,7 @@ cmd_wait() {
     local target_states="ready,waiting_user,idle,dead"
     local timeout_s=600
     local json=false
+    local mode="all"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1197,11 +1417,23 @@ cmd_wait() {
                 json=true
                 shift
                 ;;
+            --any)
+                mode="any"
+                shift
+                ;;
+            --all)
+                mode="all"
+                shift
+                ;;
             -h|--help)
-                echo "Usage: am wait [--state <states>] [--timeout N] [--json] <session-name>"
+                echo "Usage: am wait [--state <states>] [--timeout N] [--json] [--any|--all] <session> [session...]"
                 echo "  states: starting,running,ready,waiting_user,background,idle,unknown,dead"
                 echo "  legacy aliases: waiting_input, waiting_permission, waiting_custom,"
                 echo "                  waiting_background"
+                echo ""
+                echo "One session: prints the state reached. Several sessions: prints"
+                echo "'<session> <state>' per line; --all (default) waits for every session,"
+                echo "--any returns as soon as one reaches a target state. Exit 3 = timed out."
                 return 0
                 ;;
             -*)
@@ -1214,45 +1446,197 @@ cmd_wait() {
         esac
     done
 
-    local name="${1:-}"
-    if [[ -z "$name" ]]; then
+    if [[ $# -eq 0 ]]; then
         log_error "Session name required"
-        echo "Usage: am wait [--state <states>] [--timeout N] <session-name>"
+        echo "Usage: am wait [--state <states>] [--timeout N] [--any|--all] <session> [session...]"
         return 1
     fi
 
-    local resolved
-    if ! resolved=$(resolve_session_fuzzy "$name"); then
-        log_error "Session not found: $name"
-        return 1
+    local -a resolved_list=()
+    local name resolved
+    for name in "$@"; do
+        if ! resolved=$(resolve_session_fuzzy "$name"); then
+            log_error "Session not found: $name"
+            return 1
+        fi
+        resolved_list+=("$resolved")
+    done
+
+    # Single session: unchanged contract (state on stdout, exit code from wait).
+    if [[ ${#resolved_list[@]} -eq 1 ]]; then
+        local reached exit_code=0
+        reached=$(agent_wait_state "${resolved_list[0]}" "$target_states" "$timeout_s") || exit_code=$?
+        if $json; then
+            jq -n --arg session "${resolved_list[0]}" --arg state "$reached" \
+                '{session: $session, state: $state}'
+        else
+            echo "$reached"
+        fi
+        return $exit_code
     fi
 
-    local reached exit_code=0
-    reached=$(agent_wait_state "$resolved" "$target_states" "$timeout_s") || exit_code=$?
+    _wait_many "$mode" "$target_states" "$timeout_s" "$json" "${resolved_list[@]}"
+}
 
-    if $json; then
-        jq -n --arg session "$resolved" --arg state "$reached" \
-            '{session: $session, state: $state}'
+# Wait on several sessions at once. Each session gets its own waiter (the
+# per-session stability logic lives in agent_wait_state); results land in a
+# private directory as '<state>' files named by session. --any stops at the
+# first result and kills the rest; --all collects every one under a shared
+# deadline. Output: '<session> <state>' lines (or a JSON array). Exit 3 when
+# any requested session timed out, 1 when one vanished.
+# Usage: _wait_many <any|all> <states> <timeout> <json:true|false> <session...>
+_wait_many() {
+    local mode="$1" target_states="$2" timeout_s="$3" json="$4"
+    shift 4
+    local -a sessions=("$@")
+    local dir
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/am-wait.XXXXXX")
+    local -a pids=()
+    local s
+    for s in "${sessions[@]}"; do
+        (
+            local st rc=0
+            st=$(agent_wait_state "$s" "$target_states" "$timeout_s" 2>/dev/null) || rc=$?
+            printf '%s\n%s\n' "$st" "$rc" > "$dir/$s.tmp"
+            mv "$dir/$s.tmp" "$dir/$s"
+        ) &
+        pids+=($!)
+    done
+
+    local -a done_order=()
+    local remaining=${#sessions[@]}
+    while (( remaining > 0 )); do
+        wait -n "${pids[@]}" 2>/dev/null || true
+        for s in "${sessions[@]}"; do
+            [[ -f "$dir/$s" ]] || continue
+            local seen=false d
+            for d in "${done_order[@]}"; do [[ "$d" == "$s" ]] && seen=true; done
+            $seen && continue
+            done_order+=("$s")
+            (( remaining-- ))
+        done
+        [[ "$mode" == "any" && ${#done_order[@]} -gt 0 ]] && break
+    done
+    # Stop waiters still running (--any) and reap.
+    local p
+    for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+    wait 2>/dev/null || true
+
+    local exit_code=0 st rc
+    local -a report=()
+    if [[ "$mode" == "any" ]]; then
+        report=("${done_order[0]}")
     else
-        echo "$reached"
+        report=("${sessions[@]}")
     fi
-
+    if $json; then
+        local items=()
+        for s in "${report[@]}"; do
+            { IFS= read -r st; IFS= read -r rc; } < "$dir/$s"
+            items+=("$(jq -n --arg session "$s" --arg state "$st" '{session: $session, state: $state}')")
+            (( rc == 3 )) && exit_code=3
+            (( rc == 1 && exit_code == 0 )) && exit_code=1
+        done
+        printf '%s\n' "${items[@]}" | jq -s .
+    else
+        for s in "${report[@]}"; do
+            { IFS= read -r st; IFS= read -r rc; } < "$dir/$s"
+            printf '%s %s\n' "$s" "$st"
+            (( rc == 3 )) && exit_code=3
+            (( rc == 1 && exit_code == 0 )) && exit_code=1
+        done
+    fi
+    rm -rf "$dir"
     return $exit_code
+}
+
+# Command: done — a worker records its result summary for the dispatcher
+cmd_done() {
+    local session_arg=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --session|-s) session_arg="${2:-}"; shift 2 ;;
+            -h|--help)
+                echo "Usage: am done [--session <name>] [summary text]"
+                echo "Record a result summary for the am session you run inside (text from argv"
+                echo "or stdin). The dispatcher reads it with 'am result <session>'. Also run"
+                echo "'am done' when the outcome is simply \"finished\" so the dispatcher knows."
+                return 0 ;;
+            -*) log_error "Unknown option: $1"; return 1 ;;
+            *) break ;;
+        esac
+    done
+    local name
+    if [[ -n "$session_arg" ]]; then
+        name=$(resolve_session_fuzzy "$session_arg") || { log_error "Session not found: $session_arg"; return 1; }
+    elif ! name=$(current_session); then
+        log_error "Not inside an am session (pass --session <name>)"
+        return 1
+    fi
+    local text
+    text=$(read_prompt_input "$*")
+    [[ -n "$text" ]] || text="done"
+    am_mkdir_private "$AM_DIR/results"
+    printf '%s\n' "$text" > "$AM_DIR/results/$name.txt"
+    log_success "Result recorded for $name (${#text} chars); read with: am result $name"
+}
+
+# Command: result — read a worker's recorded result
+cmd_result() {
+    local clear=false wait_for=false timeout_s=600
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --clear) clear=true; shift ;;
+            --wait) wait_for=true; shift ;;
+            --timeout) timeout_s="${2:-600}"; shift 2 ;;
+            -h|--help)
+                echo "Usage: am result [--wait] [--timeout N] [--clear] <session>"
+                echo "Print the summary the session recorded with 'am done'. Exit 1 when none."
+                echo "  --wait     Block until a result exists (or the session ends)"
+                echo "  --clear    Remove the result after printing"
+                return 0 ;;
+            -*) log_error "Unknown option: $1"; return 1 ;;
+            *) break ;;
+        esac
+    done
+    local name="${1:-}"
+    [[ -n "$name" ]] || { log_error "Session name required"; return 1; }
+    local resolved
+    resolved=$(resolve_session_fuzzy "$name") || resolved="$name"
+    local file="$AM_DIR/results/$resolved.txt"
+    if $wait_for && [[ ! -f "$file" ]]; then
+        local deadline=$(( $(date +%s) + timeout_s ))
+        while [[ ! -f "$file" ]]; do
+            (( $(date +%s) >= deadline )) && { log_error "Timed out waiting for a result from $resolved"; return 3; }
+            tmux_session_exists "$resolved" || { log_error "Session $resolved ended without recording a result"; return 2; }
+            sleep 1
+        done
+    fi
+    [[ -f "$file" ]] || { log_error "No result recorded for $resolved"; return 1; }
+    cat "$file"
+    $clear && rm -f "$file"
+    return 0
 }
 
 # Command: interrupt
 cmd_interrupt() {
     _ensure_state
-    local confirmed=false
+    local interactive=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --confirm)
-                confirmed=true
+            -i|--interactive|--confirm)
+                # --confirm is the pre-0.22 spelling of the same flag (it
+                # always asked); kept as an undocumented alias.
+                interactive=true
                 shift
                 ;;
             -h|--help)
-                echo "Usage: am interrupt [--confirm] <session-name>"
+                echo "Usage: am interrupt [-i|--interactive] <session-name>"
+                echo "Send Ctrl-C to the session's agent pane."
+                echo ""
+                echo "Options:"
+                echo "  -i, --interactive  Ask for confirmation before interrupting (default: no prompt)"
                 return 0
                 ;;
             -*)
@@ -1287,7 +1671,7 @@ cmd_interrupt() {
             ;;
     esac
 
-    if $confirmed; then
+    if $interactive; then
         printf 'Interrupt session %s (state: %s)? [y/N] ' "$resolved" "$state" >&2
         local answer
         read -r answer
@@ -1373,6 +1757,119 @@ _install_go_ready_for_build() {
 }
 
 # Command: install
+# --- Stale-install detection -------------------------------------------------
+# `am install` derives artifacts from the checkout: skill symlinks, the Go
+# binaries, the generated tmux config, and the hook registrations. When the
+# checkout moves on (git pull, local edit) those go stale silently. The
+# fingerprint below hashes the mtimes of every input those artifacts are built
+# from; `am install` records it in $AM_DIR/.install_stamp and the browser
+# compares on start, refreshing the cheap idempotent parts when it differs.
+
+_install_inputs() {
+    local root="$AM_SCRIPT_DIR"
+    printf '%s\n' "$root/am" "$root/lib/tmux.sh" "$root/lib/hooks/state-hook.sh" \
+        "$root/lib/hooks/am-state.ts" "$root/scripts/install.sh" "$root/go.mod" "$root/Makefile"
+    local f
+    for f in "$root"/skills/*/SKILL.md "$root"/cmd/*/*.go "$root"/internal/*/*.go; do
+        [[ -f "$f" ]] && printf '%s\n' "$f"
+    done
+}
+
+# Print the fingerprint: version + a checksum over "path mtime" lines.
+_install_fingerprint() {
+    local -a files=()
+    mapfile -t files < <(_install_inputs)
+    local -A mt=()
+    am_files_mtime mt "${files[@]}"
+    local f acc=""
+    for f in "${files[@]}"; do acc+="$f ${mt[$f]:-0}"$'\n'; done
+    local sum
+    sum=$(printf '%s' "$acc" | cksum | cut -d' ' -f1)
+    printf '%s-%s\n' "$AM_VERSION" "$sum"
+}
+
+_install_stamp_write() {
+    _install_fingerprint > "$AM_DIR/.install_stamp" 2>/dev/null || true
+}
+
+# True when the stamp is missing or differs from the current fingerprint.
+_install_is_stale() {
+    local stamp="" current
+    [[ -f "$AM_DIR/.install_stamp" ]] && IFS= read -r stamp < "$AM_DIR/.install_stamp"
+    current=$(_install_fingerprint)
+    [[ "$stamp" != "$current" ]]
+}
+
+# Quiet, idempotent subset of `am install`: skill symlinks, Go binaries when a
+# source is newer than the binary, tmux config, stamp. Prints one summary line.
+# Usage: _install_refresh [quiet]
+_install_refresh() {
+    local quiet="${1:-}"
+    local -a done_parts=()
+
+    # Skills
+    local skills_root="$AM_SCRIPT_DIR/skills" skills_dir skill_src skill_target
+    shopt -s nullglob
+    for skills_dir in "${AM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}" "${AM_CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"; do
+        mkdir -p "$skills_dir" 2>/dev/null || continue
+        for skill_src in "$skills_root"/*/; do
+            skill_src="${skill_src%/}"
+            [[ -f "$skill_src/SKILL.md" ]] || continue
+            skill_target="$skills_dir/${skill_src##*/}"
+            if [[ -L "$skill_target" ]]; then
+                [[ "$(readlink "$skill_target")" == "$skill_src" ]] && continue
+                ln -sfn "$skill_src" "$skill_target" && done_parts+=("skill ${skill_src##*/}")
+            elif [[ ! -e "$skill_target" ]]; then
+                ln -s "$skill_src" "$skill_target" && done_parts+=("skill ${skill_src##*/}")
+            fi
+        done
+    done
+    shopt -u nullglob
+
+    # Go binaries: rebuild only when a source is newer than a binary (or one is missing)
+    local need_build=false bin
+    for bin in am-list-internal am-browse; do
+        [[ -s "$AM_SCRIPT_DIR/bin/$bin" ]] || need_build=true
+    done
+    if ! $need_build; then
+        local newer
+        newer=$(find "$AM_SCRIPT_DIR/cmd" "$AM_SCRIPT_DIR/internal" "$AM_SCRIPT_DIR/go.mod" \
+            -newer "$AM_SCRIPT_DIR/bin/am-browse" -print -quit 2>/dev/null)
+        [[ -n "$newer" ]] && need_build=true
+    fi
+    if $need_build; then
+        if command -v go >/dev/null 2>&1; then
+            [[ -n "$quiet" ]] || echo "am: rebuilding Go helpers..." >&2
+            if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ \
+                    && go build -o bin/am-browse ./cmd/am-browse/ ) >/dev/null 2>&1; then
+                done_parts+=("go binaries")
+            else
+                log_warn "am: go build failed; run 'make build' to see why"
+            fi
+        else
+            log_warn "am: Go sources changed but go is not installed; binaries may be stale"
+        fi
+    fi
+
+    # tmux config (regenerated by the path helper when content changed)
+    unset _AM_TMUX_CONF_CACHED
+    am_tmux_config_path >/dev/null 2>&1 && done_parts+=("tmux config")
+
+    _install_stamp_write
+    if [[ -z "$quiet" || ${#done_parts[@]} -gt 0 ]]; then
+        local IFS=', '
+        echo "am: install refreshed for $AM_VERSION (${done_parts[*]:-nothing to update})" >&2
+    fi
+}
+
+# Called by the interactive browser: refresh when the checkout changed since
+# the last install. AM_NO_INSTALL_REFRESH=1 disables (tests, CI).
+_install_refresh_if_stale() {
+    [[ -n "${AM_NO_INSTALL_REFRESH:-}" ]] && return 0
+    _install_is_stale || return 0
+    _install_refresh
+}
+
 cmd_install() {
     if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
         cat <<'EOF'
@@ -1380,6 +1877,10 @@ Usage: am install [options]
 
 First-time setup: check dependencies, create config, symlink skills,
 and install am onto PATH.
+
+  --refresh           Only refresh what the checkout derives (skill links, Go
+                      binaries when sources changed, tmux config). The browser
+                      runs this itself when it notices the checkout changed.
 
 Options (forwarded to scripts/install.sh):
   --prefix <dir>      Install directory (default: ~/.local/bin)
@@ -1390,6 +1891,11 @@ Options (forwarded to scripts/install.sh):
   -y, --yes           Non-interactive mode
   -h, --help          Show this help
 EOF
+        return 0
+    fi
+    if [[ "${1:-}" == "--refresh" ]]; then
+        source "$AM_SCRIPT_DIR/lib/tmux.sh"
+        _install_refresh
         return 0
     fi
 
@@ -1517,6 +2023,7 @@ EOF
     am_tmux_config_path >/dev/null
     log_success "  Refreshed dedicated tmux config: $AM_TMUX_CONF"
     steps_done+=("tmux config refreshed")
+    _install_stamp_write
 
     # --- Summary ---
     echo "" >&2
@@ -1598,6 +2105,19 @@ main() {
             ;;
         wait)
             cmd_wait "$@"
+            ;;
+        done)
+            cmd_done "$@"
+            ;;
+        result)
+            cmd_result "$@"
+            ;;
+        doctor)
+            _ensure_doctor
+            doctor_main "$@"
+            ;;
+        preset|presets)
+            preset_main "$@"
             ;;
         interrupt)
             cmd_interrupt "$@"

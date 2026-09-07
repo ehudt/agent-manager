@@ -17,6 +17,13 @@
 #
 # Called by tmux as: #(/path/to/status-bar #{session_name})
 
+# The sourced libs need bash >= 4.4 (namerefs in state.sh, ${var@Q}); an
+# older bash would render parse errors into the bar. One line and exit 0.
+if [[ -z "${BASH_VERSINFO:-}" ]] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+    echo "agent-manager needs bash >= 4.4 (this is ${BASH_VERSION:-unknown})"
+    exit 0
+fi
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -128,6 +135,13 @@ mapfile -t session_meta < <(am_tmux list-sessions -F '#{session_created} #{sessi
 # user runs `am`.
 auto_title_scan >/dev/null 2>&1 || true
 
+# Reap dead registry rows / orphan state files, and prune the sessions log,
+# snapshots, and leaked temp files. Both halves are self-throttled to 60s
+# (.gc_last / .gc_extras_last) and the throttled path is fork-free, so this
+# costs nothing on the ordinary tick. This is the only periodic caller of
+# the bash-only extras half (`am status` was the sole caller before).
+registry_gc >/dev/null 2>&1 || true
+
 # Bulk registry read — one jq invocation for all sessions' fields, indexed by
 # name into associative arrays. Replaces N separate `registry_get_fields`
 # calls (each forking jq) with a single fork.
@@ -202,6 +216,17 @@ done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
 # no async #() job to wait on.
 declare -a S_NAME S_LABEL_FULL S_LABEL_SHORT S_STATE S_GLYPH S_COLOR S_DIM S_TASK S_AGE
 
+# Hook state-file mtimes for every session in one stat call (tab age below).
+# Replaces a per-session `stat -c || stat -f` pair, which on macOS was two
+# forks per active session per tick.
+declare -A STATE_MTIME=()
+_state_files=()
+for _sm in "${session_meta[@]}"; do
+    _state_files+=("$AM_STATE_DIR/${_sm##* }")
+done
+am_files_mtime STATE_MTIME "${_state_files[@]}"
+unset _state_files _sm
+
 for i in "${!session_meta[@]}"; do
     # Bash-only parse of "<created> <activity> <name>" — no awk fork.
     read -r _created activity session <<< "${session_meta[$i]}"
@@ -248,9 +273,7 @@ for i in "${!session_meta[@]}"; do
     _age_ref=""
     if [[ "$state" == "ready" || "$state" == "waiting_user" \
         || "$state" == "background" || "$state" == "running" ]]; then
-        _age_ref=$(stat -c %Y "$AM_STATE_DIR/$session" 2>/dev/null \
-            || stat -f %m "$AM_STATE_DIR/$session" 2>/dev/null || true)
-        [[ "$_age_ref" =~ ^[0-9]+$ ]] || _age_ref=""
+        _age_ref="${STATE_MTIME[$AM_STATE_DIR/$session]:-}"
     fi
     if [[ -z "$_age_ref" && "$activity" =~ ^[0-9]+$ ]]; then
         _age_ref=$activity

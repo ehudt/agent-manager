@@ -2,15 +2,16 @@
 
 ## In Progress
 
+- **Review follow-ups (2026-09-07)** — defects, daily-loop features, and the
+  structural work (single ticker, Go-owned stores, agent adapter table,
+  version canary). Tracked item by item in
+  [plans/2026-09-07-review-followups.md](plans/2026-09-07-review-followups.md).
+
 ## Up Next
 
 ## Ideas
 
-- **Inactive sessions issues (session-id mismatch)** - some inactive sessions from the same directory are mismatched with their session id - one session name restores a different session. Partially fixed (5ca0724, 6640867, f4541ff, sidecar-authoritative sids) but still reproduces sometimes (2026-07). Residual suspects, diagnostic-capture checklist for the next occurrence, and fix directions: see [session-id-mismatch.md](session-id-mismatch.md).
-
-- **Rename skill to agent-manager-dispatch** and update the skill
-
-- **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model. The vision for the web UI is a full AM implementation on the web. with session switching, creating sessions, chatting with the agent and integrated shell. etc etc
+- **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model. The vision for the web UI is a full AM implementation on the web. with session switching, creating sessions, chatting with the agent and integrated shell. etc etc. State detection is the non-portable part (pane title + local process tree); see the architecture notes in the follow-ups plan.
 
 ## Known Issues
 
@@ -19,6 +20,13 @@
   Cursor's narrow Ready-footer refinement. Earlier pane classifiers flapped
   live sessions through `running`/`unknown`/`background`. Remaining edge:
   agents without reliable turn-boundary events still use the 180s running
-  staleness gate. Use `AM_STATE_DEBUG=1` for empirical data and
-  `tests/live_lab/` for ground truth.
+  staleness gate. Use `am doctor <session>` first, `AM_STATE_DEBUG=1` for
+  empirical data and `tests/live_lab/` for ground truth.
 
+## Closed
+
+- **Inactive sessions issues (session-id mismatch)** — closed in v0.21.0
+  (5f7bd47): sessions are bound to their own pane and transcript; every
+  directory-based guess was removed. History in
+  [session-id-mismatch.md](session-id-mismatch.md).
+- **Rename skill to agent-manager-dispatch** — done (`skills/agent-manager-dispatch/`).

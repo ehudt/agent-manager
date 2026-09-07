@@ -199,14 +199,22 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | Key | Action |
 |-----|--------|
 | `Prefix + 1-9` | Jump to sidebar slot N |
+| `Prefix + ←/→` | Previous / next session tab |
 | `Prefix + a` | Switch to last used am session |
 | `Prefix + n` | Open new-session popup |
-| `Prefix + s` | Open am browser popup |
+| `Prefix + s` (or `h`) | Open am browser popup |
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
 | ``Prefix + ` `` | Toggle the shell panel (open on first use, then hide/show) |
 | `Prefix ↑/↓` | Switch between agent and shell panes (panel open) |
+| `Prefix + [` / `]` | Copy mode / paste (tmux defaults) |
+| mouse click | Click a tab in the bottom bar to switch to it |
 | `:am` | Open am browser as a tmux command |
+
+Inside the browser: `Enter` attaches (or restores an inactive session),
+`Ctrl-N` opens the new-session form, `Ctrl-X` kills, `Ctrl-R` refreshes,
+`Ctrl-P` toggles the preview pane, `Ctrl-H` jumps to the first restorable
+session, and typing filters.
 
 The status bar shows all sessions as numbered tabs with the current session
 highlighted. State icons distinguish active work (`▸`), background work (`⧗`),
@@ -230,7 +238,15 @@ am peek am-abc123                        # Snapshot of agent pane
 am peek --pane shell am-abc123           # Snapshot of shell panel (if opened)
 am peek --follow am-abc123               # Stream agent output in real time
 am peek --lines 100 am-abc123            # Include the last 100 lines
+am peek --pane shell --history --grep 'ERROR|FAIL' --lines 50 am-abc123   # Search the streamed shell scrollback
+am doctor am-abc123                      # Every input behind the tab's state, in one report
 ```
+
+When a session needs you (a permission or question dialog) and you are not
+looking at it, am posts a desktop notification (`osascript` on macOS,
+`notify-send` on Linux). `am config set notify false` turns it off,
+`am config set notify_states waiting_user,ready` also announces finished
+turns, and `notify_cmd` swaps in your own notifier.
 
 `--pane shell` works while the panel is open *or* hidden (the parked pane
 keeps running); on a session whose panel was never opened it explains how to
@@ -296,27 +312,42 @@ The tests use pytest. Commit fixes individually with descriptive messages.
 # 2. Wait until the agent finishes its turn
 am wait "$session"
 
-# 3. Check results
-am peek --lines 10 "$session"
+# 3. Check results: the worker's own summary (it ran `am done "..."`), or the pane
+am result "$session" || am peek --lines 10 "$session"
 
-# 4. Send a follow-up
-am send "$session" "Now update the changelog"
+# 4. Send a follow-up (refused while the agent is mid-turn; --wait or --queue defer it)
+am send --wait "$session" "Now update the changelog"
 
 # 5. Clean up or hand off
 am kill "$session"              # or: am attach "$session"
 ```
 
+`am send` checks the session first: a running, starting, or dialog-blocked
+agent is refused (exit 4), and an exited agent is refused because the text
+would land in its shell (exit 2). `--wait` blocks until ready, `--queue`
+returns at once and sends when ready, `--force` skips the check.
+
 ### Parallel workers
 
 ```bash
-s1=$(printf 'Run backend tests\n' | am new --detach --print-session ~/repo)
-s2=$(printf 'Run frontend tests\n' | am new --detach --print-session ~/repo)
+s1=$(printf 'Run backend tests. Finish with: am done "<one-line summary>"\n' | am new --detach --print-session ~/repo)
+s2=$(printf 'Run frontend tests. Finish with: am done "<one-line summary>"\n' | am new --detach --print-session ~/repo)
 
-am wait --state idle,dead "$s1"
-am wait --state idle,dead "$s2"
+am wait --all "$s1" "$s2"          # one '<session> <state>' line each (--any: first to pause)
+am result "$s1"; am result "$s2"   # what each worker recorded with `am done`
+am list --state waiting_user       # who is blocked on a dialog
+am kill --state idle -y            # sweep finished workers
+```
 
-am peek --lines 5 "$s1"
-am peek --lines 5 "$s2"
+### Presets
+
+Save a launch shape once and reuse it from the CLI or the new-session form:
+
+```bash
+am preset save review -W -- --model opus --effort high   # workspace copy + agent flags
+am preset save scratch -t pi ~/code/tools
+am new -p review pr-48351                                 # explicit flags still win
+am preset list
 ```
 
 ### Session states
@@ -371,8 +402,16 @@ am config set agent codex          # Default to Codex
 am config set logs true            # Enable pane log streaming
 am config set shell true           # Open the shell panel at launch
 am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'  # Backs `am new -W`
+am config set notify false         # No desktop notifications
+am config set notify_states waiting_user,ready   # Also announce finished turns
 am config get agent                # Read a single value
 ```
+
+`am install` records a fingerprint of the checkout it installed from. When
+the checkout changes (pull, local edit) the browser refreshes the derived
+pieces on its next start (skill links, Go binaries when sources changed,
+tmux config) and prints one line saying so; `am install --refresh` does the
+same on demand.
 
 Precedence: CLI flag > environment variable > saved config > built-in default.
 
@@ -393,18 +432,22 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 | Command | Description |
 |---------|-------------|
 | `am` | Open interactive browser for active and inactive sessions |
-| `am list [--json]` | List all sessions |
-| `am new [dir]` | Create new agent session |
-| `am send <session> [prompt]` | Send a prompt to a running session |
+| `am list [--json] [--state s1,s2]` | List sessions, optionally only those in given states |
+| `am new [-p preset] [dir]` | Create new agent session |
+| `am preset save\|list\|show\|rm` | Manage launch presets for `am new -p` |
+| `am send [--wait\|--queue\|--force] <session> [prompt]` | Send a prompt once the agent is ready |
 | `am peek <session>` | Snapshot or follow a session's pane output |
-| `am wait <session>` | Block until agent reaches a target state |
+| `am wait [--any\|--all] <session>...` | Block until one or every session reaches a target state |
+| `am done [summary]` | (inside a session) Record a result for the dispatcher |
+| `am result <session>` | Read the summary a session recorded with `am done` |
 | `am interrupt <session>` | Send Ctrl-C to the agent pane |
 | `am attach <session>` | Attach to a session |
 | `am restore` | Browse and resume closed Claude, Codex, Cursor, and pi sessions |
-| `am kill <session>` | Kill a session |
+| `am kill <session> \| --all \| --state s1,s2` | Kill a session, every session, or every session in given states |
 | `am status [--json]` | Show detailed session info |
+| `am doctor [session]` | Print every input behind a session's state (`--capture` for a tarball) |
 | `am config` | Show or change saved defaults |
-| `am install` | First-time setup for dependencies, config, skills, and PATH |
+| `am install [--refresh]` | First-time setup for dependencies, config, skills, and PATH |
 | `am help` | Show help |
 | `am version` | Show version |
 
@@ -412,10 +455,13 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 
 ```
 ~/.agent-manager/
-├── config.json         # Saved defaults (agent, log streaming, shell panel, workspace_cmd)
+├── config.json         # Saved defaults (agent, logs, shell panel, workspace_cmd, notify*) and presets
 ├── sessions.json       # Live session metadata registry
 ├── sessions_log.jsonl  # Session restore log (Claude session IDs + metadata)
 ├── snapshots/          # Pane text snapshots for closed session preview
+├── results/            # Summaries recorded with `am done` (removed on kill)
+├── doctor/             # `am doctor --capture` tarballs
+├── .install_stamp      # Fingerprint of the checkout `am install` last ran from
 └── tmux.conf           # Generated tmux config for am sessions
 ```
 

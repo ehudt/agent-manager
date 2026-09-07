@@ -577,7 +577,53 @@ test_install_pi_extension() {
         || fail "_install_pi_extension: idempotent"
 }
 
+# Stale-install detection: `am install --refresh` links skills, regenerates
+# the tmux config and writes a fingerprint stamp; the browser calls the same
+# path when the stamp no longer matches the checkout.
+test_install_refresh_stamp() {
+    $SUMMARY_MODE || echo "=== Testing am install --refresh / stamp ==="
+
+    local temp_root
+    temp_root=$(mktemp -d)
+    local am_dir="$temp_root/am-dir" claude_skills="$temp_root/claude-skills" cursor_skills="$temp_root/cursor-skills"
+    mkdir -p "$am_dir"
+    local env_common=(AM_DIR="$am_dir" AM_CLAUDE_SKILLS_DIR="$claude_skills" AM_CURSOR_SKILLS_DIR="$cursor_skills" PATH="$temp_root/nogo:$PATH")
+    mkdir -p "$temp_root/nogo"
+
+    local out rc=0
+    out=$(env "${env_common[@]}" "$PROJECT_DIR/am" install --refresh 2>&1) || rc=$?
+    assert_eq "0" "$rc" "install --refresh: exits 0"
+    assert_contains "$out" "install refreshed" "install --refresh: prints a summary line"
+    assert_cmd_succeeds "install --refresh: writes the stamp" test -s "$am_dir/.install_stamp"
+    assert_cmd_succeeds "install --refresh: links the dispatch skill for Claude" \
+        test -L "$claude_skills/agent-manager-dispatch"
+    assert_cmd_succeeds "install --refresh: links the peek skill for Cursor" test -L "$cursor_skills/am-peek"
+    assert_cmd_succeeds "install --refresh: generates the tmux config" test -s "$am_dir/tmux.conf"
+
+    local stamp1 stamp2
+    stamp1=$(cat "$am_dir/.install_stamp")
+    assert_contains "$stamp1" "$("$PROJECT_DIR/am" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" \
+        "install stamp: starts with the version"
+    env "${env_common[@]}" "$PROJECT_DIR/am" install --refresh >/dev/null 2>&1
+    stamp2=$(cat "$am_dir/.install_stamp")
+    assert_eq "$stamp1" "$stamp2" "install stamp: deterministic for an unchanged checkout"
+
+    # A stale stamp is detected and rewritten by the browser-side check
+    eval "$(sed -n '/^_install_inputs()/,/^}/p; /^_install_fingerprint()/,/^}/p; /^_install_is_stale()/,/^}/p' "$PROJECT_DIR/am")"
+    source "$LIB_DIR/utils.sh"
+    local AM_SCRIPT_DIR="$PROJECT_DIR" AM_VERSION
+    AM_VERSION=$(grep -E '^AM_VERSION=' "$PROJECT_DIR/am" | head -1 | cut -d'"' -f2)
+    AM_DIR="$am_dir"
+    assert_eq "false" "$(_install_is_stale && echo true || echo false)" "install stamp: matches right after refresh"
+    printf 'stale\n' > "$am_dir/.install_stamp"
+    assert_eq "true" "$(_install_is_stale && echo true || echo false)" "install stamp: a different stamp is stale"
+    assert_eq "$stamp1" "$(_install_fingerprint)" "install fingerprint: recomputes the same value"
+
+    rm -rf "$temp_root"
+}
+
 run_install_tests() {
+    _run_test test_install_refresh_stamp
     _run_test test_installer_replaces_managed_blocks
     _run_test test_installer_defaults_prompts_to_yes
     _run_test test_install

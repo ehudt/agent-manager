@@ -243,6 +243,20 @@ tmux_kill_session() {
     am_tmux kill-session -t "$name"
 }
 
+# Create am-owned scratch directories under /tmp (pane logs, hook state)
+# readable by the owner only. They hold complete agent/shell scrollback and
+# conversation ids, so they get the same 0700 as ~/.agent-manager. umask 077
+# covers every level `mkdir -p` creates; the chmod tightens a directory an
+# earlier release created 0755 (a no-op once it is 0700).
+# Usage: am_mkdir_private <dir> [dir...]
+am_mkdir_private() {
+    local d
+    for d in "$@"; do
+        [[ -d "$d" ]] || (umask 077; mkdir -p "$d")
+        chmod 700 "$d" 2>/dev/null || true
+    done
+}
+
 # Stream pane output to a log file using tmux pipe-pane
 tmux_enable_pipe_pane() {
     local session="$1"
@@ -253,11 +267,14 @@ tmux_enable_pipe_pane() {
 }
 
 # Same as tmux_enable_pipe_pane but takes a raw pane target (e.g. a %id).
+# The log file is created by the pipe command's own redirect, inside the tmux
+# server's environment, so the umask travels with the command: 0600, matching
+# the directory am_mkdir_private gives it.
 tmux_pipe_pane() {
     local target="$1"
     local log_file="$2"
 
-    am_tmux pipe-pane -t "$target" -o "${AM_LIB_DIR}/strip-ansi >> ${log_file}"
+    am_tmux pipe-pane -t "$target" -o "umask 077; ${AM_LIB_DIR}/strip-ansi >> ${log_file}"
 }
 
 # Remove log directory and legacy sidebar cache for a session
@@ -365,13 +382,18 @@ tmux_send_keys() {
 }
 
 # Paste literal text into a tmux pane without shell escaping issues.
+# -p wraps the text in bracketed-paste markers (ESC[200~ … ESC[201~) when the
+# pane's application has enabled bracketed paste, as every agent TUI does —
+# the same flag the prefix+] binding uses. Without it tmux converts each LF
+# to CR, so a multi-line prompt reaches Claude as one submission per line
+# instead of one block that the caller then submits with a single Enter.
 # Usage: tmux_paste_text <target-pane> <text>
 tmux_paste_text() {
     local target="$1"
     local text="$2"
 
     printf '%s' "$text" | am_tmux load-buffer -
-    am_tmux paste-buffer -d -t "$target"
+    am_tmux paste-buffer -d -p -t "$target"
 }
 
 # Return the title of a pane (set by the application via escape sequences).

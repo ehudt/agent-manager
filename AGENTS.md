@@ -37,6 +37,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
 - Pane environment (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR`) is seeded at pane creation via tmux `-e` (`agent_pane_env` → `tmux_create_session` env args / `split-window -e`) plus the session environment. Never `send-keys` an `export` into a pane: even a space-prefixed one lingers as zsh's most recent history entry, and the vars must exist before the agent command runs. Requires tmux ≥ 3.2 (`display-popup` already did)
 - `am new -W [branch]` never takes a directory: `agent_workspace_allocate` runs the user's `workspace_cmd` (bash -c, `AM_BRANCH` exported, may be empty) and uses its stdout. The form emits `--workspace[=branch]` in its flags field and `cmd_new` strips it before the flags reach `agent_launch`
+- jq's `//` treats `false` as missing: `(.notify // true)` is `true` for `"notify": false`. Read boolean config keys with `if has("k") then .k else default end` (see `_notify_maybe`, `am_auto_restore_enabled`)
+- The test stub agent is a bash script, so the shell-pane check resolves stub sessions as `idle`. Tests that send to a stub pass `am send --force`; the plain form is exercised once to prove the refusal
 - Registry `directory` is the *launch* cwd and must never be rewritten: it keys the Claude/Cursor/pi transcript store (`~/.claude/projects/<encoded-dir>/`), the title fallback, session-id detection, and `am restore`. Where the agent works *now* lives in the separate `workdir` field (empty = same as `directory`), fed by the state hook's `/tmp/am-state/<session>.cwd` sidecar (Claude stamps hook payloads with the Bash tool's tracked cwd — the process cwd and tmux `pane_current_path` never move) or by `am cd`. Labels and the branch refresh read `workdir` first; state detection and restore read `directory`
 
 ## Key Files
@@ -49,7 +51,9 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/recovery.sh` | Durable desired-session store, boot/machine identity, reboot preflight, and progressive recovery worker |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
-| `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit) |
+| `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit); shows a Preset select field first when any preset exists |
+| `lib/presets.sh` | Named launch presets for `am new -p` (stored under `presets` in config.json): `am preset save/list/show/rm` |
+| `lib/doctor.sh` | `am doctor [session] [--capture]`: one report with every state input (registry row, tmux panes/titles, hook sidecars, identity, transcript, process tree, desired record, resolver layer via `AM_STATE_DEBUG_SINK`) |
 | `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
 | `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
@@ -81,6 +85,13 @@ am id → current_session() → $AM_SESSION_NAME, else attached session on the a
 am cd [dir] → current_session() → agent_set_workdir() → .cwd sidecar + registry workdir/branch → am_refresh_sidebar_cache()
 agent cd's (Bash tool) → Claude hook payload cwd → state-hook.sh writes /tmp/am-state/<session>.cwd → auto_title_scan / RefreshTitles → registry workdir + branch (from .git/HEAD) → tab label
 am list-internal → am-list-internal (Go binary) → stdout
+am new -p name → _cmd_new_apply_preset(name, fill=true) → preset fields where flags left gaps, preset args first → agent_launch()
+form Preset field → --preset=name in the flags field → _cmd_new_apply_preset(name, fill=false) (args + shell only)
+am send s "..." → agent_get_state → refuse running/starting/waiting_user (exit 4) or idle/dead (exit 2) unless --wait/--queue/--force
+am wait --all|--any s1 s2 → _wait_many() → one agent_wait_state per session in the background → '<session> <state>' lines
+am done "..." (in a worker) → $AM_DIR/results/<session>.txt → am result <session> (dispatcher); removed by agent_kill
+hook state transition → waiting_user (or notify_states) → _notify_maybe() in the detached tail → notify_cmd | osascript | notify-send, skipped when a client shows the session
+bare `am` → _install_refresh_if_stale() → fingerprint of install inputs vs $AM_DIR/.install_stamp → _install_refresh() (skills, Go build if sources newer, tmux.conf)
 Ctrl-N in browser → am_new_session_form() → _form_run()
 prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → tmux_kill_session() → registry_remove()
@@ -429,14 +440,45 @@ am restore
 - `recovery_migrate_live_registry()` - One-time/idempotent capture of already-live sessions after upgrade
 - `recovery_desired_candidates()` - Return exact-identity, prior-boot sessions missing from tmux
 - `recovery_start_for_browser()` - Queue recovery only for the interactive browser and launch the detached worker
-- `recovery_run()` / `recovery_restore_one()` - Locked, bounded-concurrency coordinator and per-session preflight/native resume
+- `recovery_run()` / `recovery_restore_one()` - Locked, bounded-concurrency coordinator and per-session preflight/native resume. Resume runs in the record's project_directory (the launch cwd that keys the transcript store), never the effective workdir; the record also carries the branch, and preflight refuses a reused checkout whose branch changed (`branch changed: expected X, found Y`)
+- `recovery_apply_workdir()` - After a successful resume, re-apply the recorded workdir (`.cwd` sidecar + registry) so the tab label survives the reboot
+- `recovery_revoke_identity_rebind()` - Drop the `.rebind` marker when a launch fails, so the next hook event cannot re-pin a stale identity
+- `recovery_sync_live_sidecars()` / `_recovery_mirror_sidecar()` / `recovery_desired_set_workspace()` - On browser open, mirror each live session's `.cwd`/`.bg` sidecars into the durable identity dir and refresh the desired record's workspace fields
 
 **Title helpers:**
-- `_title_valid(title)` - Validate title (<=60 chars, no newlines)
+- `_title_valid(title)` - Validate title (<=60 chars, no newlines, not the bare `Claude Code` placeholder)
+- `_title_normalize(title, effective_dir, out_var)` - Strip Claude's transient decorations (a trailing ` - 🔄 Reconnecting…` segment, a trailing ` - <dirname>`); Go twin `normalizeTitle`. The scan also applies hysteresis: an invalid pane title never replaces an existing task (the first-message fallback only fills an empty one), in bash and Go alike
+
+**Presets (lib/presets.sh):**
+- `am_preset_names()` / `am_preset_get(name)` / `am_preset_field(name, field)` - Read presets from config.json (the args field prints one per line; workspace and shell print true/false)
+- `am_preset_save(name, json)` / `am_preset_rm(name)` - Write / delete under the presets key of config.json; the key is dropped when empty
+- `_preset_from_flags(flags...)` - Build the JSON object from `am new`-style flags (`-t -d -n -W [branch] --shell -- args`)
+- `_preset_render(name)` - Equivalent `am new` command line, shell-quoted
+- `preset_main(sub, ...)` - Entry for `am preset save|list|show|rm|help`
+- `_cmd_new_apply_preset(name, fill)` (in the am entry point) - Merge a preset into cmd_new's locals; fill=true also supplies directory/agent/task/workspace where the flags left gaps
+
+**Dispatch (in the am entry point):**
+- `_wait_many(mode, states, timeout, json, sessions...)` - Multi-session wait behind `am wait --all|--any`; one background `agent_wait_state` per session, results in a private tmpdir, exit 3 when any timed out
+- `cmd_done` / `cmd_result` - Worker-recorded summary in `$AM_DIR/results/<session>.txt` (mode 700 dir); `result --wait` polls until the file exists or the session ends (exit 2)
+- `_fzf_state_selected(state)` (lib/fzf.sh) - `am list --state` filter, driven by `AM_LIST_STATE_FILTER`
+
+**Doctor (lib/doctor.sh):**
+- `doctor_main([--capture] [session])` - Global report (versions, dirs, markers, hooks installed, per-session summary) or one session in depth; `--capture` writes a tarball under `$AM_DIR/doctor/`
+- `_doc_resolve_state(session, state_var, layer_var)` - Runs `agent_get_state` with `AM_STATE_DEBUG=1 AM_STATE_DEBUG_SINK=<tmp>` to learn which resolver layer answered
+
+**Notifications (lib/hooks/state-hook.sh, lib/config.sh):**
+- `_notify_maybe(session, state)` - Fired from the hook's detached tail only on a state transition into one of the configured notify states; skipped when an attached client displays the session; `AM_NOTIFY_CMD` env > notify_cmd config > osascript / notify-send
+- `am_notify_enabled()` / `am_notify_states()` - Config readers (notify: bool, default true; notify_states: default waiting_user; notify_cmd: string)
+
+**Install fingerprint (in the am entry point):**
+- `_install_inputs()` / `_install_fingerprint()` - Version + cksum over the mtimes of everything `am install` derives artifacts from (am, lib/tmux.sh, hooks, scripts/install.sh, skills, Go sources)
+- `_install_is_stale()` / `_install_stamp_write()` / `_install_refresh([quiet])` / `_install_refresh_if_stale()` - Stamp compare, quiet idempotent refresh (skills, Go build when sources newer, tmux.conf), browser hook (`AM_NO_INSTALL_REFRESH=1` disables); `am install --refresh` runs it by hand
 
 **Registry (JSON metadata):**
 - `registry_add/get_field/get_fields/update/remove` - CRUD for sessions.json. All writes are read-jq-rename cycles serialized under an exclusive lock on `$AM_REGISTRY.lock` (`_registry_lock`/`_registry_unlock`: the flock CLI on Linux, a perl flock syscall on an inherited fd on macOS — no flock CLI there; **not reentrant**, don't nest). The Go twin (`internal/sessions/lock.go:lockRegistry`) takes the same lock via `syscall.Flock`, so bash and Go writers can't lost-update each other; `RefreshTitles` computes titles unlocked, then re-reads and applies under the lock
-- `registry_gc()` - Remove entries for dead tmux sessions. Two independently throttled halves: registry rows + hook state files (incl. `.sid` sidecars) on `$AM_DIR/.gc_last`, mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; bash-only extras (`sessions_log_gc`, orphan state-file sweep) on `$AM_DIR/.gc_extras_last` so Go stamping `.gc_last` can't starve them.
+- `registry_gc()` - Remove entries for dead tmux sessions. Two independently throttled halves: registry rows + hook state files (incl. `.sid` sidecars) on `$AM_DIR/.gc_last` — one lock, tmux snapshot taken inside it, one jq rewrite, rows younger than `AM_GC_GRACE_SECS` (default 5) spared — mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; bash-only extras (`sessions_log_gc`, `sessions_log_snapshot_gc`, orphan state-file sweep, leaked temp sweep: `.sessions-log.*` >60s, `.dir_repo_cache.tmp.*` and `*.log.??????` >1h) on `$AM_DIR/.gc_extras_last`. The status-bar tick calls `registry_gc` after `auto_title_scan`, so the extras half runs even when nobody opens `am status`
+- `_registry_tmp_guard(tmp)` / `_registry_tmp_release()` - Signal-safe temp files for the sessions-log rewrites: lock first, then mktemp, then trap HUP/INT/TERM/PIPE to remove the temp, release the lock, restore the caller's traps and re-raise
+- `_titler_log(msg)` - Title-scan trace, gated on `AM_TITLER_DEBUG=1` (was unconditional and grew `titler.log` to 84MB); `_am_debug_logs_cap` caps `titler.log`, `.state-debug.log`, `.hook-debug.log` at 20MB via `am_log_cap` on each unthrottled scan
 
 **Sessions log (for restore):**
 - `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
@@ -465,6 +507,9 @@ am restore
 
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
+- `am_file_mtime(file, [out_var])` / `am_files_mtime(assoc, files...)` - Portable mtime, flavor picked once from `$OSTYPE` (no probe fork); the batched form is one stat call for all files (status-bar tick, install fingerprint)
+- `am_log_cap(file, max_bytes)` - Keep the newest half of a log (whole lines, temp + rename) once it exceeds the cap
+- `am_mkdir_private(dir)` - `mkdir -p` with mode 700 (state, log, results, queue dirs)
 - `git_head_branch(dir, [out_var])` - Fork-free branch lookup: walk up to the nearest `.git` (dir or worktree/submodule pointer file), read HEAD → branch name, 8-char sha when detached, empty outside a repo. `detect_git_branch` delegates to it; Go twin `GitHeadBranch`
 - `claude_first_user_message(dir, session_id)` - First user message of exactly the Claude transcript bound to a session; the directory only locates the per-project store. No id → empty (never the newest file in the store)
 - `pi_first_user_message(dir, session_id)` - Pi twin, same contract
@@ -537,7 +582,11 @@ Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir`
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch (Workspace/Branch are conditional on `am_workspace_cmd`, so field indices only shift when it is configured) |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
-| Add config option | `lib/config.sh` → `am_config_init()` defaults |
+| Add config option | `lib/config.sh` → `am_config_init()` defaults, `am_config_key_alias/type/value_is_valid`, `am_config_print`; `am` → `cmd_config` get case + help |
+| Add a preset field | `lib/presets.sh` → `_preset_from_flags` + `_preset_render`; `am` → `_cmd_new_apply_preset`; `lib/form.sh` → `_form_apply_preset` |
+| Add a doctor section | `lib/doctor.sh` → new `_doc_*` function, called from `_doc_session` / `_doc_global` |
+| Change notification text/targets | `lib/hooks/state-hook.sh` → `_notify_maybe` |
+| Add an install-derived artifact | `am` → `_install_inputs` (fingerprint) + `_install_refresh` (quiet rebuild) |
 | Add state detection signal | `lib/state.sh` → extend `_state_resolve()` ordering |
 | Add hook state event | `lib/hooks/state-hook.sh` → event-to-state mapping |
 | Add/edit dispatch skill | `skills/agent-manager-dispatch/SKILL.md` |

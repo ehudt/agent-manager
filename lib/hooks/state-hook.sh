@@ -82,6 +82,15 @@
 
 set -euo pipefail
 
+# A state hook must never fail the agent's turn: Claude Code surfaces a
+# non-zero hook exit to the user. Every deliberate exit below is `exit 0`;
+# this trap makes the same true of anything errexit or nounset trips.
+trap 'exit 0' EXIT
+
+# This script is invoked as `bash <path>` and stays Bash-3.2-clean on purpose
+# (macOS /bin/bash): no associative arrays, namerefs, or 4.x expansions. It
+# therefore needs no version gate — do not add 4.x features here.
+
 AM_DIR="${AM_DIR:-${HOME}/.agent-manager}"
 AM_REGISTRY="${AM_REGISTRY:-${AM_DIR}/sessions.json}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
@@ -111,6 +120,62 @@ _hook_debug() {
         >> "$dir/.hook-debug.log" 2>/dev/null || true
 }
 
+# Desktop notification when a session enters a state the user should know
+# about. Runs only on a state *transition*, off the critical path (inside the
+# detached tail subshell), and never when the session is the one an attached
+# tmux client is already showing. Config keys (config.json): `notify`
+# (default true), `notify_states` (default "waiting_user"; "waiting_user,ready"
+# also announces finished turns), `notify_cmd` (a bash snippet; env carries
+# AM_NOTIFY_SESSION / AM_NOTIFY_STATE / AM_NOTIFY_TITLE / AM_NOTIFY_BODY).
+# AM_NOTIFY_CMD in the environment overrides notify_cmd (tests). Without a
+# command: osascript on macOS, notify-send on Linux, otherwise nothing.
+# Usage: _notify_maybe <session> <state>
+_notify_maybe() {
+    local session="$1" state="$2"
+    local cfg="${AM_DIR:-$HOME/.agent-manager}/config.json"
+    local enabled="true" states="waiting_user" cmd=""
+    if [[ -f "$cfg" ]]; then
+        IFS=$'\x1f' read -r enabled states cmd < <(jq -r \
+            '[((if has("notify") then .notify else true end) | tostring),(.notify_states // "waiting_user"), (.notify_cmd // "")] | join("")' \
+            "$cfg" 2>/dev/null || printf 'true\x1fwaiting_user\x1f\n')
+    fi
+    [[ -n "${AM_NOTIFY_CMD:-}" ]] && cmd="$AM_NOTIFY_CMD"
+    case "${enabled,,}" in true|1|yes|on) ;; *) return 0 ;; esac
+    [[ ",${states// /}," == *",$state,"* ]] || return 0
+    # On screen already: an attached client is displaying this session.
+    if [[ -z "${AM_NOTIFY_CMD:-}" ]] && command -v tmux >/dev/null 2>&1 \
+        && tmux -L "${AM_TMUX_SOCKET:-agent-manager}" list-clients -F '#{client_session}' 2>/dev/null \
+            | grep -qx -- "$session"; then
+        return 0
+    fi
+    local task="" label="$session" reg="${AM_REGISTRY:-${AM_DIR:-$HOME/.agent-manager}/sessions.json}"
+    if [[ -f "$reg" ]]; then
+        IFS=$'\x1f' read -r task label < <(jq -r --arg n "$session" \
+            '.sessions[$n] // {} | [(.task // ""),
+              ((((.workdir // "") | select(. != "")) // .directory // "") | split("/") | last)
+              + (if (.branch // "") != "" and .branch != "main" and .branch != "master" then "/" + .branch else "" end)]
+             | join("")' "$reg" 2>/dev/null || printf '\x1f\n')
+        [[ -n "$label" ]] || label="$session"
+    fi
+    local verb
+    case "$state" in
+        waiting_user) verb="needs you" ;;
+        ready) verb="finished" ;;
+        *) verb="$state" ;;
+    esac
+    export AM_NOTIFY_SESSION="$session" AM_NOTIFY_STATE="$state"
+    export AM_NOTIFY_TITLE="am · $label · $verb"
+    export AM_NOTIFY_BODY="${task:-$session}"
+    if [[ -n "$cmd" ]]; then
+        bash -c "$cmd" >/dev/null 2>&1 || true
+    elif command -v osascript >/dev/null 2>&1; then
+        osascript -e 'display notification (system attribute "AM_NOTIFY_BODY") with title (system attribute "AM_NOTIFY_TITLE")' \
+            >/dev/null 2>&1 || true
+    elif command -v notify-send >/dev/null 2>&1; then
+        notify-send -- "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >/dev/null 2>&1 || true
+    fi
+}
+
 # Read full stdin
 hook_input=$(cat)
 
@@ -119,23 +184,52 @@ if ! command -v jq &>/dev/null; then
     exit 0
 fi
 
-# Extract hook type
-hook_type=$(printf '%s' "$hook_input" | jq -r '.hook_event_name // empty' 2>/dev/null || true)
+# Every payload field this script consults, extracted in one jq call: the
+# hook runs synchronously on each tool call, so every avoided jq fork is
+# time off Claude's turn. Fields are NUL-joined (a path may contain anything
+# but NUL) and read back with `read -d ''`; background_tasks travels as
+# compact JSON for the count below. Invalid JSON leaves every field empty,
+# so the event name check exits.
+{
+    IFS= read -r -d '' hook_type || true
+    IFS= read -r -d '' is_background_agent || true
+    IFS= read -r -d '' stop_hook_active || true
+    IFS= read -r -d '' notification_type || true
+    IFS= read -r -d '' hook_session_id || true
+    IFS= read -r -d '' transcript_path || true
+    IFS= read -r -d '' hook_cwd || true
+    IFS= read -r -d '' bg_field_present || true
+    IFS= read -r -d '' bg_tasks_json || true
+} < <(printf '%s' "$hook_input" | jq -j '
+    def s: (. // "") | tostring;
+    ([0] | implode) as $nul
+    | [ (.hook_event_name | s),
+        (.is_background_agent // false | tostring),
+        (.stop_hook_active // false | tostring),
+        (.notification_type | s),
+        ((.conversation_id // .session_id // .sessionId) | s),
+        (.transcript_path | s),
+        (.cwd | s),
+        (has("background_tasks") | tostring),
+        (.background_tasks // null | tojson) ]
+    | join($nul)' 2>/dev/null; printf '\0')
 [[ -z "$hook_type" ]] && exit 0
 
 # Cursor background/subagent hook events inherit the parent pane's
 # AM_SESSION_NAME. They describe a different conversation and must never
 # overwrite the parent session's state or durable resume identity.
-is_background_agent=$(printf '%s' "$hook_input" | jq -r '.is_background_agent // false' 2>/dev/null || echo "false")
 [[ "$is_background_agent" == "true" ]] && exit 0
 
 # Guard against infinite loops from the Stop hook
-if [[ "$hook_type" == "Stop" ]]; then
-    stop_hook_active=$(printf '%s' "$hook_input" | jq -r '.stop_hook_active // false' 2>/dev/null || echo "false")
-    if [[ "$stop_hook_active" == "true" ]]; then
-        exit 0
-    fi
+if [[ "$hook_type" == "Stop" && "$stop_hook_active" == "true" ]]; then
+    exit 0
 fi
+
+# The state dir is user-only: it holds cwd, conversation-id, and transcript
+# sidecars for every session. umask covers the whole path mkdir -p creates.
+_state_dir_ensure() {
+    [[ -d "$AM_STATE_DIR" ]] || (umask 077; mkdir -p "$AM_STATE_DIR")
+}
 
 # Ready states are refined to background when the payload reports
 # background work (subagents / background shells) still running.
@@ -227,21 +321,30 @@ _bg_shell_task_is_leftover() {
 _bg_owned_running_count() {
     local tasks="$1"
     [[ -z "$tasks" || "$tasks" == "null" ]] && echo 0 && return 0
-    local running
-    running=$(printf '%s' "$tasks" | jq -c '[.[]? | select(.status == "running")]' 2>/dev/null) \
-        || { echo 0; return 0; }
-    local len
-    len=$(printf '%s' "$running" | jq 'length' 2>/dev/null) || { echo 0; return 0; }
-    [[ "$len" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+
+    # One jq call lists the running entries as NUL-separated type/id/command
+    # triples (plain indexed arrays: bash 3.2 has no associative ones).
+    local -a types=() ids=() commands=()
+    local type id command
+    while IFS= read -r -d '' type && IFS= read -r -d '' id && IFS= read -r -d '' command; do
+        types+=("$type")
+        ids+=("$id")
+        commands+=("$command")
+    done < <(printf '%s' "$tasks" | jq -j '
+        def s: (. // "") | tostring;
+        ([0] | implode) as $nul
+        | [ .[]? | select(.status == "running") | (.type | s), (.id | s), (.command | s) ]
+        | map(. + $nul) | add // ""' 2>/dev/null || true)
+    local len=${#types[@]}
     (( len == 0 )) && echo 0 && return 0
 
     _bg_load_ps
 
-    local idx type id command n=0
+    local idx n=0
     for (( idx = 0; idx < len; idx++ )); do
-        type=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].type // empty' 2>/dev/null || true)
-        id=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].id // empty' 2>/dev/null || true)
-        command=$(printf '%s' "$running" | jq -r --argjson i "$idx" '.[$i].command // empty' 2>/dev/null || true)
+        type=${types[$idx]}
+        id=${ids[$idx]}
+        command=${commands[$idx]}
         case "$type" in
             monitor)
                 # Passive watcher (artifact live updates, Monitor wait): never work.
@@ -261,11 +364,7 @@ _bg_owned_running_count() {
 }
 
 _bg_running_count() {
-    local tasks
-    tasks=$(printf '%s' "$hook_input" | jq -c '.background_tasks // empty' 2>/dev/null) \
-        || { echo 0; return 0; }
-    [[ -z "$tasks" || "$tasks" == "null" ]] && echo 0 && return 0
-    _bg_owned_running_count "$tasks"
+    _bg_owned_running_count "$bg_tasks_json"
 }
 
 # Does the payload carry the background_tasks field at all? Events that lack
@@ -275,7 +374,7 @@ _bg_running_count() {
 # ready, unless a previous Stop left a snapshot whose leftover
 # shells have all been reparented off this Claude.
 _bg_field_present() {
-    printf '%s' "$hook_input" | jq -e 'has("background_tasks")' >/dev/null 2>&1
+    [[ "$bg_field_present" == "true" ]]
 }
 
 # Map hook event to am state
@@ -289,7 +388,6 @@ case "$hook_type" in
         am_state="ready"
         ;;
     Notification)
-        notification_type=$(printf '%s' "$hook_input" | jq -r '.notification_type // empty' 2>/dev/null || true)
         case "$notification_type" in
             idle_prompt)
                 am_state="ready"
@@ -323,36 +421,36 @@ esac
 # Registry is required for any session lookup or validation
 [[ ! -f "$AM_REGISTRY" ]] && exit 0
 
-# Helper: echo the session name if it exists in the registry, otherwise empty.
-# Always returns success so callers can use command substitution under set -e.
-_registry_has() {
-    jq -e --arg k "$1" '.sessions[$k] // empty' "$AM_REGISTRY" &>/dev/null && echo "$1"
-    return 0
+# Helper: print the session's registered agent_type — empty when the session
+# is not in the registry (every registry_add writes the field). One jq call
+# serves both the existence check and the family gate. Always succeeds, for
+# command substitution under set -e.
+_registry_agent_type() {
+    jq -r --arg k "$1" '.sessions[$k].agent_type // empty' "$AM_REGISTRY" 2>/dev/null || true
 }
 
-# Helper: true when the session's registered agent_type belongs to the
-# hook's agent family.
+# Helper: true when a registered agent_type belongs to the hook's agent family.
 _family_match() {
-    local t
-    t=$(jq -r --arg k "$1" '.sessions[$k].agent_type // empty' "$AM_REGISTRY" 2>/dev/null || true)
-    [[ -n "$t" && " $hook_family " == *" $t "* ]]
+    [[ -n "$1" && " $hook_family " == *" $1 "* ]]
 }
 
 session_name=""
+session_agent=""
 
 # 1. AM_SESSION_NAME — authoritative when set by agent_launch. If set but not
 #    in the registry, the session was removed or renamed; do not fall through
 #    to cwd matching, which would silently clobber the wrong session's state.
 if [[ -n "${AM_SESSION_NAME:-}" ]]; then
-    session_name=$(_registry_has "$AM_SESSION_NAME")
-    if [[ -z "$session_name" ]]; then
+    session_agent=$(_registry_agent_type "$AM_SESSION_NAME")
+    if [[ -z "$session_agent" ]]; then
         _hook_debug "AM_SESSION_NAME=$AM_SESSION_NAME not in registry; exiting"
         exit 0
     fi
-    if ! _family_match "$session_name"; then
-        _hook_debug "AM_SESSION_NAME=$session_name agent_type outside hook family ($hook_family); exiting"
+    if ! _family_match "$session_agent"; then
+        _hook_debug "AM_SESSION_NAME=$AM_SESSION_NAME agent_type $session_agent outside hook family ($hook_family); exiting"
         exit 0
     fi
+    session_name="$AM_SESSION_NAME"
 fi
 
 # 2. TMUX_PANE — agents inherit this from their tmux pane; resolving it to the
@@ -361,10 +459,13 @@ fi
 if [[ -z "$session_name" && -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/null; then
     tmux_session=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)
     if [[ -n "$tmux_session" ]]; then
-        session_name=$(_registry_has "$tmux_session")
-        if [[ -n "$session_name" ]] && ! _family_match "$session_name"; then
-            _hook_debug "tmux session $session_name agent_type outside hook family ($hook_family); exiting"
-            exit 0
+        session_agent=$(_registry_agent_type "$tmux_session")
+        if [[ -n "$session_agent" ]]; then
+            if ! _family_match "$session_agent"; then
+                _hook_debug "tmux session $tmux_session agent_type $session_agent outside hook family ($hook_family); exiting"
+                exit 0
+            fi
+            session_name="$tmux_session"
         fi
     fi
 fi
@@ -372,16 +473,21 @@ fi
 # Neither variable named an am pane: this process was not launched by am
 # (an agent started by hand in some directory, possibly one that also hosts
 # an am session). Its events are not ours. There is deliberately no
-# directory-based guess here — see the header.
+# directory-based guess here — see the header. This is the exit every
+# non-am Claude on the machine takes on every event, so nothing is computed
+# for the log line unless debugging is on.
 if [[ -z "$session_name" ]]; then
-    _hook_debug "no AM_SESSION_NAME/TMUX_PANE match; not an am pane (cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // .workspace_roots[0] // "?"' 2>/dev/null || echo '?')); exiting"
+    if [[ "${AM_HOOK_DEBUG:-}" == "1" ]]; then
+        dbg_cwd="$hook_cwd"
+        [[ -n "$dbg_cwd" ]] || dbg_cwd=$(printf '%s' "$hook_input" | jq -r '.workspace_roots[0]? // "?"' 2>/dev/null || echo '?')
+        _hook_debug "no AM_SESSION_NAME/TMUX_PANE match; not an am pane (cwd=$dbg_cwd); exiting"
+    fi
     exit 0
 fi
 
-# Conversation identity carried by the payload, persisted as the
-# .sid/.transcript sidecars further down.
-hook_session_id=$(printf '%s' "$hook_input" | jq -r '.conversation_id // .session_id // .sessionId // empty' 2>/dev/null || true)
-transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+# Conversation identity carried by the payload (hook_session_id /
+# transcript_path, extracted above), persisted as the .sid/.transcript
+# sidecars further down.
 if [[ -z "$hook_session_id" && -n "$transcript_path" ]]; then
     hook_session_id=$(basename "$transcript_path" .jsonl)
 fi
@@ -392,8 +498,7 @@ fi
 # non-scraped signal that the agent has cd'd into another checkout. Written on
 # every event, rewritten only on change; the title scan turns it into the
 # registry's `workdir` plus a refreshed `branch` (lib/registry.sh
-# auto_title_scan / Go RefreshTitles).
-hook_cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // empty' 2>/dev/null || true)
+# auto_title_scan / Go RefreshTitles). hook_cwd was extracted above.
 if [[ "$hook_cwd" == /* && "$hook_cwd" != *$'\n'* && -d "$hook_cwd" ]]; then
     cwd_file="$AM_STATE_DIR/$session_name.cwd"
     prev_cwd=""
@@ -401,7 +506,7 @@ if [[ "$hook_cwd" == /* && "$hook_cwd" != *$'\n'* && -d "$hook_cwd" ]]; then
         IFS= read -r prev_cwd < "$cwd_file" || true
     fi
     if [[ "$hook_cwd" != "$prev_cwd" ]]; then
-        mkdir -p "$AM_STATE_DIR"
+        _state_dir_ensure
         printf '%s' "$hook_cwd" > "$cwd_file"
         # Let the next status-bar tick relabel within ~5s instead of 60s.
         rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
@@ -454,7 +559,8 @@ fi
 # idle_prompt can re-check leftover shells after a wrap-up Stop that
 # will not fire again until the next user prompt.
 if _bg_field_present; then
-    printf '%s' "$hook_input" | jq -c '.background_tasks' > "$state_file.bg" 2>/dev/null || true
+    _state_dir_ensure
+    printf '%s' "$bg_tasks_json" > "$state_file.bg" 2>/dev/null || true
 fi
 
 # background may only be downgraded to ready by an event
@@ -492,11 +598,13 @@ fi
 # of a running session is covered by tmux session_activity (the staleness
 # gate in lib/state.sh measures against max(mtime, activity)), so the old
 # rewrite-as-heartbeat behavior is not needed.
-mkdir -p "$AM_STATE_DIR"
+_state_dir_ensure
 current=$(head -1 "$state_file" 2>/dev/null || true)
 _normalize_state_value "$current"
+state_transitioned=false
 if [[ "$NORMALIZED_STATE" != "$am_state" ]]; then
     printf '%s' "$am_state" > "$state_file"
+    state_transitioned=true
 fi
 
 # Persist the Claude/Codex conversation id alongside the state when the hook
@@ -559,21 +667,30 @@ else
     fi
 fi
 
-# Invalidate list cache so the next fzf reload picks up the new state
-rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
-
-# Invalidate title-scan throttle on prompt boundaries so the next status-bar
-# tick refreshes the registry task field within ~5s instead of waiting up to
-# 60s. Only fire on prompt boundaries — tool hooks would defeat the throttle
-# for busy sessions.
-case "$hook_type" in
-    UserPromptSubmit|Stop|beforeSubmitPrompt|stop|sessionStart)
-        rm -f "$AM_DIR/.title_scan_last" "$AM_DIR/.restore_scan_last" 2>/dev/null || true
-        ;;
-esac
-
-# Push status-bar refresh to the dedicated tmux server so the new glyph
-# appears immediately instead of waiting for the 5s status-interval tick.
-if command -v tmux &>/dev/null; then
-    tmux -L "${AM_TMUX_SOCKET:-agent-manager}" refresh-client -S 2>/dev/null || true
-fi
+# Everything after the state write is a side effect on am's own caches and
+# display, not on the state itself, so it runs off Claude's critical path:
+# Claude waits for this process to exit and for its stdout/stderr to close,
+# so the subshell is detached with every fd pointed away from the hook's
+# pipes and the hook returns immediately.
+#
+#  - list cache: the next fzf reload picks up the new state
+#  - title-scan / restore-scan throttles, on prompt boundaries only (tool
+#    hooks would defeat the throttle for busy sessions): the next status-bar
+#    tick refreshes the registry task field within ~5s instead of up to 60s
+#  - refresh-client on the dedicated tmux server: the new glyph appears now
+#    instead of at the next 5s status-interval tick
+(
+    rm -f "$AM_DIR/.list_cache" 2>/dev/null || true
+    case "$hook_type" in
+        UserPromptSubmit|Stop|beforeSubmitPrompt|stop|sessionStart)
+            rm -f "$AM_DIR/.title_scan_last" "$AM_DIR/.restore_scan_last" 2>/dev/null || true
+            ;;
+    esac
+    if command -v tmux &>/dev/null; then
+        tmux -L "${AM_TMUX_SOCKET:-agent-manager}" refresh-client -S 2>/dev/null || true
+    fi
+    if [[ "$state_transitioned" == true ]]; then
+        _notify_maybe "$session_name" "$am_state"
+    fi
+) </dev/null >/dev/null 2>&1 &
+disown 2>/dev/null || true

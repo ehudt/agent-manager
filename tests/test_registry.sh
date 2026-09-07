@@ -287,8 +287,18 @@ test_registry_gc() {
     assert_eq "true" "$(registry_exists test-am-stale-fake && echo true || echo false)" \
         "gc setup: stale entry exists"
 
-    # Run GC (force to bypass throttle)
+    # --- Test: grace window. A row registered moments ago is not an orphan
+    # even when tmux does not list it yet (default AM_GC_GRACE_SECS=5).
     local removed
+    removed=$(registry_gc 1)
+    assert_eq "0" "$removed" "registry_gc: row younger than the grace window is not reaped"
+    assert_eq "true" "$(registry_exists test-am-stale-fake && echo true || echo false)" \
+        "registry_gc: fresh stale-looking entry survives the grace window"
+
+    # The rest of this test adds rows and reaps them immediately.
+    export AM_GC_GRACE_SECS=0
+
+    # Run GC (force to bypass throttle)
     removed=$(registry_gc 1)
     assert_eq "true" "$(test "$removed" -ge 1 && echo true || echo false)" \
         "registry_gc: removed at least 1 stale item"
@@ -334,10 +344,226 @@ test_registry_gc() {
     rm -rf "$extras_state_dir"
     registry_remove "test-am-stale-fake-3"
 
+    # --- Test: the rows half is one locked rewrite that drops every orphan
+    # (not N registry_remove calls) and leaves the live row intact.
+    unset AM_GC_GRACE_SECS
+    registry_add "test-am-stale-old-1" "/tmp/gone-old-1" "main" "claude" ""
+    registry_add "test-am-stale-old-2" "/tmp/gone-old-2" "main" "claude" ""
+    registry_update "test-am-stale-old-1" "created_at" "2020-01-01T00:00:00Z"
+    registry_update "test-am-stale-old-2" "created_at" "2020-01-01T00:00:00Z"
+    registry_add "test-am-stale-young" "/tmp/gone-young" "main" "claude" ""
+    removed=$(registry_gc 1)
+    assert_eq "2" "$removed" "registry_gc: reaps all old orphans in one pass"
+    assert_eq "false" "$(registry_exists test-am-stale-old-1 && echo true || echo false)" \
+        "registry_gc: old orphan 1 removed"
+    assert_eq "false" "$(registry_exists test-am-stale-old-2 && echo true || echo false)" \
+        "registry_gc: old orphan 2 removed"
+    assert_eq "true" "$(registry_exists test-am-stale-young && echo true || echo false)" \
+        "registry_gc: concurrently created row (young created_at) kept"
+    assert_eq "true" "$(registry_exists "$live_session" && echo true || echo false)" \
+        "registry_gc: live row kept by the single-pass rewrite"
+    assert_cmd_succeeds "registry_gc: registry still valid JSON after the rewrite" \
+        jq -e '.sessions | type == "object"' "$AM_REGISTRY"
+    AM_GC_GRACE_SECS=0 registry_gc 1 >/dev/null
+
     # Cleanup
     [[ -n "$live_session" ]] && agent_kill "$live_session" 2>/dev/null
     rm -rf "$test_dir"
     teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
+# The bash-only extras half: sessions-log pruning, unreferenced snapshots,
+# and leaked temp files. No tmux server is needed (nothing is live).
+test_registry_gc_extras() {
+    $SUMMARY_MODE || echo "=== Testing registry_gc extras (sessions log, snapshots, temp files) ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+
+    setup_isolated_am_dir
+    mkdir -p "$AM_SNAPSHOTS_DIR"
+
+    # A transcript that exists (keeps its entry) and one that never did. The
+    # transcript store is keyed by the symlink-resolved directory.
+    local live_dir
+    live_dir=$(cd "$(mktemp -d)" && pwd -P)
+    local encoded="${live_dir//\//-}"
+    encoded="${encoded//./-}"
+    local claude_dir="$HOME/.claude/projects/$encoded"
+    mkdir -p "$claude_dir"
+    echo '{"type":"user","message":{"role":"user","content":"keep me around please"}}' \
+        > "$claude_dir/sid-kept.jsonl"
+
+    local recent_iso
+    recent_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    {
+        # Stale: claude, has a sid, directory gone, transcript never existed
+        # (the shape of the 703 leftover test-am-* rows observed in the wild).
+        jq -cn --arg d "/tmp/tmp.gone-$$" '{session_name:"test-am-stale-1",session_id:"sid-gone",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"snapshots/sid-gone.txt",transcript_path:""}'
+        jq -cn --arg d "/tmp/tmp.gone-$$" '{session_name:"test-am-stale-2",session_id:"sid-gone-2",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"",transcript_path:""}'
+        # Kept: transcript exists.
+        jq -cn --arg d "$live_dir" '{session_name:"test-am-kept",session_id:"sid-kept",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"snapshots/sid-kept.txt",transcript_path:""}'
+        # Kept: no sid yet but recent (24h grace for id backfill).
+        jq -cn --arg d "$live_dir" --arg c "$recent_iso" '{session_name:"test-am-fresh",session_id:"",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:$c,closed_at:null,snapshot_file:"",transcript_path:""}'
+    } > "$AM_SESSIONS_LOG"
+
+    # Snapshots: referenced+old (kept), unreferenced+old (removed),
+    # unreferenced+fresh (kept: may be mid-scan), stale entry's own (removed
+    # with its entry).
+    printf 'x\n' > "$AM_SNAPSHOTS_DIR/sid-kept.txt"
+    printf 'x\n' > "$AM_SNAPSHOTS_DIR/orphan-old.txt"
+    printf 'x\n' > "$AM_SNAPSHOTS_DIR/orphan-fresh.txt"
+    printf 'x\n' > "$AM_SNAPSHOTS_DIR/sid-gone.txt"
+    touch -t 202601010000 "$AM_SNAPSHOTS_DIR/sid-kept.txt" "$AM_SNAPSHOTS_DIR/orphan-old.txt"
+
+    # Leaked writer temps and detached repo-scan temps.
+    : > "$AM_DIR/.sessions-log.leakOLD"
+    : > "$AM_DIR/.sessions-log.leakNEW"
+    : > "$AM_DIR/.dir_repo_cache.tmp.111"
+    : > "$AM_DIR/.dir_repo_cache.tmp.222"
+    : > "$AM_DIR/titler.log.AbCdEf"
+    : > "$AM_DIR/titler.log"
+    touch -t 202601010000 "$AM_DIR/.sessions-log.leakOLD" "$AM_DIR/.dir_repo_cache.tmp.111" \
+        "$AM_DIR/titler.log.AbCdEf" "$AM_DIR/titler.log"
+
+    registry_gc 1 >/dev/null 2>&1
+
+    local names
+    names=$(jq -r '.session_name' "$AM_SESSIONS_LOG" | sort | tr '\n' ' ')
+    assert_eq "test-am-fresh test-am-kept " "$names" \
+        "gc extras: sessions_log_gc drops entries whose transcript is gone, keeps live and fresh"
+    assert_cmd_succeeds "gc extras: .gc_extras_last stamped" test -f "$AM_DIR/.gc_extras_last"
+
+    assert_cmd_succeeds "gc extras: referenced old snapshot kept" test -f "$AM_SNAPSHOTS_DIR/sid-kept.txt"
+    assert_cmd_fails "gc extras: unreferenced old snapshot removed" test -f "$AM_SNAPSHOTS_DIR/orphan-old.txt"
+    assert_cmd_succeeds "gc extras: unreferenced fresh snapshot kept (age gate)" test -f "$AM_SNAPSHOTS_DIR/orphan-fresh.txt"
+    assert_cmd_fails "gc extras: pruned entry's snapshot removed" test -f "$AM_SNAPSHOTS_DIR/sid-gone.txt"
+
+    assert_cmd_fails "gc extras: leaked .sessions-log temp older than 60s removed" test -f "$AM_DIR/.sessions-log.leakOLD"
+    assert_cmd_succeeds "gc extras: fresh .sessions-log temp kept (writer may own it)" test -f "$AM_DIR/.sessions-log.leakNEW"
+    assert_cmd_fails "gc extras: stale .dir_repo_cache.tmp removed" test -f "$AM_DIR/.dir_repo_cache.tmp.111"
+    assert_cmd_succeeds "gc extras: fresh .dir_repo_cache.tmp kept" test -f "$AM_DIR/.dir_repo_cache.tmp.222"
+    assert_cmd_fails "gc extras: stale am_log_cap temp (<log>.XXXXXX) removed" test -f "$AM_DIR/titler.log.AbCdEf"
+    assert_cmd_succeeds "gc extras: the log itself is not swept" test -f "$AM_DIR/titler.log"
+    assert_cmd_succeeds "gc extras: sessions log itself untouched by the temp sweep" test -f "$AM_SESSIONS_LOG"
+
+    # Throttled path: nothing to do and no marker rewrite.
+    local before after
+    before=$(cat "$AM_DIR/.gc_extras_last")
+    : > "$AM_DIR/.sessions-log.leakAGAIN"
+    touch -t 202601010000 "$AM_DIR/.sessions-log.leakAGAIN"
+    assert_eq "0" "$(registry_gc)" "gc extras: throttled call reports 0"
+    after=$(cat "$AM_DIR/.gc_extras_last")
+    assert_eq "$before" "$after" "gc extras: throttled call leaves the marker alone"
+    assert_cmd_succeeds "gc extras: throttled call sweeps nothing" test -f "$AM_DIR/.sessions-log.leakAGAIN"
+
+    rm -rf "$claude_dir" "$live_dir"
+    teardown_isolated_am_dir
+
+    $SUMMARY_MODE || echo ""
+}
+
+# Interrupted sessions-log writers must not leave .sessions-log.* behind:
+# the temp file is created after the lock and removed by the signal guard.
+test_registry_tmp_guard() {
+    $SUMMARY_MODE || echo "=== Testing _registry_tmp_guard (interrupted writers) ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+
+    setup_isolated_am_dir
+    jq -cn '{session_name:"test-am-w",session_id:"s",directory:"/tmp",branch:"",agent_type:"claude",task:"",created_at:"2026-01-01T00:00:00Z",closed_at:null,snapshot_file:"",transcript_path:""}' \
+        > "$AM_SESSIONS_LOG"
+
+    # A jq that dawdles, so the writer is mid-jq when the signal arrives.
+    local fake_bin real_jq
+    fake_bin=$(mktemp -d)
+    real_jq=$(command -v jq)
+    printf '#!/usr/bin/env bash\nsleep 1.5\nexec %q "$@"\n' "$real_jq" > "$fake_bin/jq"
+    chmod +x "$fake_bin/jq"
+
+    local pid rc=0
+    (
+        export PATH="$fake_bin:$PATH" AM_LIB_DIR="$LIB_DIR"
+        exec bash -c 'source "$AM_LIB_DIR/utils.sh"; source "$AM_LIB_DIR/tmux.sh"; source "$AM_LIB_DIR/registry.sh"
+                      sessions_log_update test-am-w task "interrupted"'
+    ) 2>/dev/null &
+    pid=$!
+    sleep 0.5
+    kill -TERM "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || rc=$?
+    assert_eq "143" "$rc" "tmp guard: interrupted writer dies with SIGTERM after cleanup"
+    local leaks
+    leaks=$(find "$AM_DIR" -maxdepth 1 -name '.sessions-log.*' | wc -l | tr -d ' ')
+    assert_eq "0" "$leaks" "tmp guard: no .sessions-log.* temp file left by the killed writer"
+    assert_eq "" "$(jq -r 'select(.task == "interrupted") | .task' "$AM_SESSIONS_LOG")" \
+        "tmp guard: interrupted update was not applied"
+
+    # A normal update leaves no temp file and restores the caller's traps.
+    trap 'echo outer' TERM
+    local before after
+    before=$(trap -p TERM)
+    sessions_log_update test-am-w task "done"
+    after=$(trap -p TERM)
+    trap - TERM
+    assert_eq "done" "$(jq -r '.task' "$AM_SESSIONS_LOG")" "tmp guard: normal update applied"
+    assert_eq "$before" "$after" "tmp guard: caller's TERM trap restored after release"
+    leaks=$(find "$AM_DIR" -maxdepth 1 -name '.sessions-log.*' | wc -l | tr -d ' ')
+    assert_eq "0" "$leaks" "tmp guard: normal update leaves no temp file"
+    assert_eq "" "${_REGISTRY_LOCK_FD:-}" "tmp guard: lock released after a normal update"
+
+    # sessions_log_gc takes the same path.
+    sessions_log_gc >/dev/null 2>&1
+    leaks=$(find "$AM_DIR" -maxdepth 1 -name '.sessions-log.*' | wc -l | tr -d ' ')
+    assert_eq "0" "$leaks" "tmp guard: sessions_log_gc leaves no temp file"
+
+    rm -rf "$fake_bin"
+    teardown_isolated_am_dir
+
+    $SUMMARY_MODE || echo ""
+}
+
+# Titler tracing is opt-in (AM_TITLER_DEBUG=1) and the throttled no-op path
+# never logs; the debug logs are capped from the unthrottled scan path.
+test_titler_log_gated() {
+    $SUMMARY_MODE || echo "=== Testing titler log gating and log caps ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+
+    setup_isolated_am_dir
+    unset AM_TITLER_DEBUG
+
+    auto_title_scan 1 >/dev/null 2>&1
+    assert_cmd_fails "titler: no titler.log without AM_TITLER_DEBUG (forced scan)" test -e "$AM_DIR/titler.log"
+    auto_title_scan >/dev/null 2>&1
+    assert_cmd_fails "titler: throttled scan writes nothing either" test -e "$AM_DIR/titler.log"
+
+    AM_TITLER_DEBUG=1 auto_title_scan 1 >/dev/null 2>&1
+    assert_cmd_succeeds "titler: AM_TITLER_DEBUG=1 creates titler.log" test -s "$AM_DIR/titler.log"
+    assert_contains "$(cat "$AM_DIR/titler.log")" "scan start" "titler: enabled log records the scan"
+    assert_not_contains "$(cat "$AM_DIR/titler.log")" "throttled" "titler: no throttled-path line"
+    local lines_before lines_after
+    lines_before=$(wc -l < "$AM_DIR/titler.log")
+    AM_TITLER_DEBUG=1 auto_title_scan >/dev/null 2>&1
+    lines_after=$(wc -l < "$AM_DIR/titler.log")
+    assert_eq "$lines_before" "$lines_after" "titler: throttled scan logs nothing even when enabled"
+
+    # Caps: an oversized debug log is halved on the unthrottled path.
+    local big="$AM_DIR/.hook-debug.log"
+    head -c $(( 21 * 1024 * 1024 )) /dev/zero | tr '\0' 'x' | fold -w 100 > "$big"
+    auto_title_scan 1 >/dev/null 2>&1
+    local size
+    size=$(wc -c < "$big" | tr -d ' ')
+    assert_eq "true" "$( (( size <= 10 * 1024 * 1024 )) && echo true || echo false)" \
+        "titler: oversized .hook-debug.log capped to half of 20MB by the scan (got $size)"
+
+    teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
 }
@@ -433,6 +659,19 @@ test_auto_title_session() {
         _title_valid "Claude Code"
     assert_cmd_succeeds "title_gen: accepts titles that merely mention Claude Code" \
         _title_valid "Claude Code hooks question"
+
+    # --- Test 2c: Title normalization - Claude's transient suffixes ---
+    local _norm
+    _title_normalize "Fix flaky test - 🔄 Reconnecting…" "/home/u/proj" _norm
+    assert_eq "Fix flaky test" "$_norm" "title_norm: strips the reconnecting suffix"
+    _title_normalize "Fix flaky test - proj" "/home/u/proj" _norm
+    assert_eq "Fix flaky test" "$_norm" "title_norm: strips a trailing ' - <dirname>'"
+    _title_normalize "Fix flaky test - proj - 🔄 Reconnecting" "/home/u/proj" _norm
+    assert_eq "Fix flaky test" "$_norm" "title_norm: strips both decorations"
+    _title_normalize "Fix flaky test - other" "/home/u/proj" _norm
+    assert_eq "Fix flaky test - other" "$_norm" "title_norm: keeps an unrelated ' - x' tail"
+    _title_normalize "Fix flaky test" "" _norm
+    assert_eq "Fix flaky test" "$_norm" "title_norm: no dir, no change"
 
     # --- Test 3: Integration - registry update on successful title ---
     registry_add "test-title-reg" "/tmp/test" "main" "claude" ""
@@ -1009,6 +1248,9 @@ run_registry_tests() {
     _run_test test_registry_get_fields
     _run_test test_registry_gc
     _run_test test_registry_gc_go_path
+    _run_test test_registry_gc_extras
+    _run_test test_registry_tmp_guard
+    _run_test test_titler_log_gated
     _run_test test_auto_title_session
     _run_test test_auto_title_scan
     _run_test test_agent_kill_sid_binding

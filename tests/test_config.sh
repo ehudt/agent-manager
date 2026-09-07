@@ -16,11 +16,32 @@ test_config() {
     assert_eq "true" "$(test -f "$AM_CONFIG" && echo true || echo false)" "config: creates config file"
     assert_eq "claude" "$(am_default_agent)" "config: default agent fallback"
     assert_eq "true" "$(am_stream_logs_enabled && echo true || echo false)" "config: default logs fallback"
-    assert_eq "default_agent auto_restore stream_logs shell_pane" \
+    assert_eq "default_agent auto_restore stream_logs shell_pane notify notify_states" \
         "$(jq -r 'keys_unsorted | join(" ")' "$AM_CONFIG")" \
         "config: fresh config has no yolo/sandbox keys"
     assert_eq "true" "$(am_auto_restore_enabled && echo true || echo false)" \
         "config: reboot recovery defaults on"
+
+    # Notifications: on by default, waiting_user only; keys validate
+    assert_eq "true" "$(am_notify_enabled && echo true || echo false)" "config: notify defaults on"
+    assert_eq "waiting_user" "$(am_notify_states)" "config: notify_states defaults to waiting_user"
+    assert_eq "notify" "$(am_config_key_alias notifications)" "config: notifications alias"
+    assert_eq "boolean" "$(am_config_key_type notify)" "config: notify is boolean"
+    assert_eq "string" "$(am_config_key_type notify_cmd)" "config: notify_cmd is a string"
+    assert_cmd_succeeds "config: notify_states accepts a state list" \
+        am_config_value_is_valid notify_states "waiting_user,ready"
+    assert_cmd_fails "config: notify_states rejects an unknown state" \
+        am_config_value_is_valid notify_states "waiting_user,bogus"
+    am_config_set "notify" "false" "boolean"
+    assert_eq "false" "$(am_notify_enabled && echo true || echo false)" "config: saved notify=false"
+    jq 'del(.notify)' "$AM_CONFIG" > "$AM_CONFIG.tmp" && mv "$AM_CONFIG.tmp" "$AM_CONFIG"
+    assert_eq "true" "$(am_notify_enabled && echo true || echo false)" "config: missing notify key means on"
+    AM_NOTIFY=0 assert_eq "false" "$(AM_NOTIFY=0 am_notify_enabled && echo true || echo false)" \
+        "config: AM_NOTIFY env overrides"
+    am_config_set "notify_states" "waiting_user,ready" "string"
+    assert_eq "waiting_user,ready" "$(am_notify_states)" "config: saved notify_states"
+    assert_contains "$(am_config_print)" "notify_states=waiting_user,ready" "config: print shows notify_states"
+    am_config_unset "notify_states"
 
     am_config_set "default_agent" "codex" "string"
     am_config_set "stream_logs" "yes" "boolean"

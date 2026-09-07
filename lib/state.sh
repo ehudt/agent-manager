@@ -79,7 +79,9 @@ _state_normalize() {
 # Gated by AM_STATE_DEBUG=1.
 _state_debug() {
     [[ "${AM_STATE_DEBUG:-}" != "1" ]] && return 0
-    local sink="${AM_DIR:-$HOME/.agent-manager}/.state-debug.log"
+    # AM_STATE_DEBUG_SINK redirects the trace (am doctor reads one call's
+    # trail from a private file instead of the shared log).
+    local sink="${AM_STATE_DEBUG_SINK:-${AM_DIR:-$HOME/.agent-manager}/.state-debug.log}"
     printf '%s\t%s\t%s\t%s\t%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-?}" "$3" "$4" \
         >> "$sink" 2>/dev/null || true
@@ -218,7 +220,7 @@ _state_hook_read() {
     local state_file="$AM_STATE_DIR/$session"
     [[ -f "$state_file" ]] || return 0
     local mtime
-    mtime=$(stat -c %Y "$state_file" 2>/dev/null || stat -f %m "$state_file" 2>/dev/null) || return 0
+    am_file_mtime "$state_file" mtime || return 0
     [[ -z "$now_epoch" ]] && now_epoch=$(date +%s)
     local line="" normalized=""
     IFS= read -r line < "$state_file" 2>/dev/null || true
