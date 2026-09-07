@@ -8,49 +8,62 @@ import (
 	"time"
 )
 
-const reapThrottle = 60 * time.Second
+const defaultGCGraceSecs = 5
 
 // ReapOrphans removes registry entries whose tmux session is no longer alive
 // and deletes their hook state file and identity sidecars. Throttled once per
-// 60s via $amDir/.gc_last (shared with the rows half of bash registry_gc so
-// they coordinate). The sessions log is not touched here — the bash-only
-// extras half of registry_gc handles it on its own marker (.gc_extras_last).
+// 60s via $amDir/.gc_last. The sessions log is not touched here — the extras
+// half of Env.GC handles it on its own marker (.gc_extras_last).
+//
+// listLive is called *inside* the registry lock: agent_launch creates the
+// tmux session before registry_add (which takes this lock), so a row that
+// exists while we hold the lock always has its session in a snapshot taken
+// now. Rows younger than AM_GC_GRACE_SECS (default 5) are left alone as
+// well, for any writer that registers before its session exists.
 //
 // Returns the number of registry rows removed.
-func ReapOrphans(amDir, stateDir string, live []TmuxSession) int {
-	return reapOrphansAt(amDir, stateDir, live, time.Now())
+func ReapOrphans(amDir, stateDir string, listLive func() []TmuxSession) int {
+	removed, _ := reapOrphans(amDir, stateDir, listLive, time.Now(), false)
+	return removed
 }
 
-func reapOrphansAt(amDir, stateDir string, live []TmuxSession, now time.Time) int {
+// reapOrphans is ReapOrphans with an injectable clock and a force switch that
+// bypasses the marker. It also returns the live set it observed (nil when it
+// did not run) so a caller can reuse it.
+func reapOrphans(amDir, stateDir string, listLive func() []TmuxSession, now time.Time, force bool) (int, map[string]struct{}) {
 	markerPath := filepath.Join(amDir, ".gc_last")
-	if last, ok := readScanMarker(markerPath); ok {
-		if now.Sub(last) < reapThrottle {
-			return 0
-		}
+	if !force && !markerDue(markerPath, now) {
+		return 0, nil
 	}
-	if err := os.WriteFile(markerPath, []byte(strconv.FormatInt(now.Unix(), 10)), 0o644); err != nil {
-		return 0
+	if err := stampMarker(markerPath, now); err != nil {
+		return 0, nil
 	}
 
-	// Read-modify-write on sessions.json: hold the registry lock so a
-	// concurrent bash registry_add/update/remove is not clobbered.
+	// One locked read-modify-write on sessions.json (lock shared with bash
+	// registry_add/update/remove), tmux snapshot inside it.
 	lock := lockRegistry(amDir)
 	defer unlockRegistry(lock)
+
+	liveSet := make(map[string]struct{})
+	if listLive != nil {
+		for _, s := range listLive() {
+			liveSet[s.Name] = struct{}{}
+		}
+	}
 
 	regPath := filepath.Join(amDir, "sessions.json")
 	registry := ReadRegistry(regPath)
 	if len(registry.Sessions) == 0 {
-		return 0
+		return 0, liveSet
 	}
 
-	liveSet := make(map[string]struct{}, len(live))
-	for _, s := range live {
-		liveSet[s.Name] = struct{}{}
-	}
-
+	cutoff := now.Add(-gcGrace())
 	var removed int
-	for name := range registry.Sessions {
+	for name, meta := range registry.Sessions {
 		if _, ok := liveSet[name]; ok {
+			continue
+		}
+		if created, err := time.Parse(time.RFC3339, meta.CreatedAt); err == nil && !created.Before(cutoff) {
 			continue
 		}
 		delete(registry.Sessions, name)
@@ -65,10 +78,20 @@ func reapOrphansAt(amDir, stateDir string, live []TmuxSession, now time.Time) in
 	}
 
 	if removed == 0 {
-		return 0
+		return 0, liveSet
 	}
 	writeRegistryAtomic(regPath, registry)
-	return removed
+	return removed, liveSet
+}
+
+// gcGrace is AM_GC_GRACE_SECS (default 5s).
+func gcGrace() time.Duration {
+	if v := os.Getenv("AM_GC_GRACE_SECS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return defaultGCGraceSecs * time.Second
 }
 
 // isSafeSessionName guards the state-file remove against path traversal in

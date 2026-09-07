@@ -128,19 +128,15 @@ mapfile -t session_meta < <(am_tmux list-sessions -F '#{session_created} #{sessi
 
 [[ ${#session_meta[@]} -eq 0 ]] && exit 0
 
-# Refresh registry task field from pane titles / Claude JSONL fallback before
-# the bulk read below. Self-throttled to 60s via $AM_DIR/.title_scan_last, so
-# the 5s status-interval tick stays cheap. Without this, brand-new sessions
-# (and post-/clear conversations) stay untitled in the status bar until the
-# user runs `am`.
-auto_title_scan >/dev/null 2>&1 || true
-
-# Reap dead registry rows / orphan state files, and prune the sessions log,
-# snapshots, and leaked temp files. Both halves are self-throttled to 60s
-# (.gc_last / .gc_extras_last) and the throttled path is fork-free, so this
-# costs nothing on the ordinary tick. This is the only periodic caller of
-# the bash-only extras half (`am status` was the sole caller before).
-registry_gc >/dev/null 2>&1 || true
+# One maintenance tick before the bulk read below (bin/am-core): refresh
+# task/workdir/branch fields from pane titles, sidecars, and the transcript
+# fallback; roll restore snapshots and bind session ids; reap dead registry
+# rows / orphan state files and prune the sessions log, snapshots, and leaked
+# temps. Each part is self-throttled to 60s on its own marker
+# (.title_scan_last / .restore_scan_last / .gc_last / .gc_extras_last), so the
+# 5s status-interval tick costs one short-lived process. Without this,
+# brand-new sessions stay untitled in the status bar until the user runs `am`.
+am_tick >/dev/null 2>&1 || true
 
 # Bulk registry read — one jq invocation for all sessions' fields, indexed by
 # name into associative arrays. Replaces N separate `registry_get_fields`

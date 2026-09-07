@@ -288,25 +288,25 @@ am_files_mtime() {
     return 0
 }
 
-# Keep an append-only log bounded: when <file> exceeds <max_bytes>, keep its
-# last half (whole lines) via temp + rename. Never fails the caller. Meant to
-# run from an already-throttled path (auto_title_scan's unthrottled branch),
-# not per call.
-# Usage: am_log_cap <file> <max_bytes>
-am_log_cap() {
-    local file="$1" max="$2" size tmp
-    [[ -f "$file" ]] || return 0
-    size=$(wc -c < "$file" 2>/dev/null) || return 0
-    size="${size//[[:space:]]/}"
-    [[ "$size" =~ ^[0-9]+$ ]] && (( size > max )) || return 0
-    tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 0
-    # tail -c may start mid-line; sed 1d drops that partial first line.
-    if tail -c "$(( max / 2 ))" "$file" 2>/dev/null | sed -E '1d' > "$tmp" 2>/dev/null; then
-        command mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp"
-    else
-        rm -f "$tmp"
+# Run the compiled maintenance/query back end (bin/am-core, package
+# internal/sessions) with the caller's effective paths. Bash derives
+# AM_SESSIONS_LOG and friends from AM_DIR after sourcing (tests re-point them),
+# so the values are passed explicitly rather than trusted to be exported; the
+# binary applies utils.sh's defaults for anything unset. A missing binary
+# prints one line and returns 127: periodic wrappers turn that into 0, query
+# wrappers into a failed lookup.
+# Usage: am_core <subcommand> [args...]
+am_core() {
+    local bin="$AM_ROOT_DIR/bin/am-core"
+    if [[ ! -x "$bin" || ! -s "$bin" ]]; then
+        echo "am: bin/am-core is not built. Run 'make' (or 'am install') to build it." >&2
+        return 127
     fi
-    return 0
+    command env "AM_DIR=$AM_DIR" "AM_SESSIONS_LOG=$AM_SESSIONS_LOG" \
+        "AM_TMUX_SOCKET=$AM_TMUX_SOCKET" "AM_SESSION_PREFIX=$AM_SESSION_PREFIX" \
+        ${AM_STATE_DIR:+"AM_STATE_DIR=$AM_STATE_DIR"} \
+        ${AM_IDENTITY_DIR:+"AM_IDENTITY_DIR=$AM_IDENTITY_DIR"} \
+        "$bin" "$@"
 }
 
 # Generate a short hash for session naming
@@ -322,150 +322,24 @@ generate_hash() {
     fi
 }
 
-# Extract first meaningful user message from Claude session JSONL
+# First meaningful user message (>10 chars, tags stripped) of exactly the
+# transcript bound to a session — the id the pane's own hook reported. The
+# directory only locates the agent's per-project store; it never chooses among
+# the transcripts in it, because that store is shared with other am sessions
+# and with agents started outside am. No id → nothing. The readers live in Go
+# (internal/sessions FirstMessage, behind bin/am-core); these wrappers keep
+# the call sites in lib/preview and lib/doctor.sh. Store overrides for tests:
+# AM_PI_SESSIONS_DIR, AM_CURSOR_PROJECTS_DIR (inherited from the environment).
 # Usage: claude_first_user_message <directory> <session_id>
-# Reads exactly the transcript bound to this session — the id the pane's own
-# hook reported. The directory only locates Claude's per-project transcript
-# store; it never chooses among the transcripts in it, because that store is
-# shared with other am sessions and with agents started outside am, so
-# "newest file here" is not this session. No id → nothing.
-# Returns: cleaned text of the first user message with >10 chars, or empty
-claude_first_user_message() {
-    local directory="$1"
-    local session_id="${2:-}"
-    [[ -n "$session_id" ]] || return 0
-
-    # Convert directory to Claude's project path format (/ and . become -)
-    local project_path="${directory//\//-}"
-    project_path="${project_path//./-}"
-    local session_file="$HOME/.claude/projects/$project_path/$session_id.jsonl"
-    [[ -f "$session_file" ]] || return 0
-
-    local line content cleaned
-    while IFS= read -r line; do
-        content=$(echo "$line" | jq -r '
-            .message.content |
-            if type == "string" then .
-            elif type == "array" then
-                [.[] | select(.type == "text") | .text] | join(" ")
-            else empty
-            end
-        ' 2>/dev/null) || continue
-
-        [[ -z "$content" ]] && continue
-
-        # Strip XML tags, collapse whitespace
-        cleaned=$(echo "$content" | \
-            sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
-            tr '\n' ' ' | \
-            sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-        if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
-            echo "$cleaned"
-            return 0
-        fi
-    done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
-}
+claude_first_user_message() { am_core first-message claude "$1" "${2:-}"; }
 
 # Usage: pi_first_user_message <directory> <session_id>
-# Pi twin of claude_first_user_message. Pi stores sessions at
-# ~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl where the
-# encoded cwd is "--" + path minus leading slash with [/\:] -> "-" + "--"
-# (dots preserved). Message entries look like
-# {"type":"message",...,"message":{"role":"user","content":<string|blocks>}}.
-# Same contract as the Claude version: exactly the bound transcript, no id →
-# nothing.
-pi_first_user_message() {
-    local directory="$1"
-    local session_id="${2:-}"
-    [[ -n "$session_id" ]] || return 0
+pi_first_user_message() { am_core first-message pi "$1" "${2:-}"; }
 
-    local resolved
-    resolved=$(cd "$directory" 2>/dev/null && pwd -P) || resolved="$directory"
-    local encoded="${resolved#/}"
-    encoded=$(printf '%s' "$encoded" | sed -E 's|[/\\:]|-|g')
-    local pi_project_dir="${AM_PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}/--${encoded}--"
-
-    [[ -d "$pi_project_dir" ]] || return 0
-
-    local session_file=""
-    local _matches=("$pi_project_dir"/*_"${session_id}".jsonl)
-    [[ -f "${_matches[0]}" ]] && session_file="${_matches[0]}"
-    [[ -n "$session_file" && -f "$session_file" ]] || return 0
-
-    local line content cleaned
-    while IFS= read -r line; do
-        content=$(echo "$line" | jq -r '
-            select(.type == "message") | .message |
-            select(.role == "user") | .content |
-            if type == "string" then .
-            elif type == "array" then
-                [.[] | select(.type == "text") | .text] | join(" ")
-            else empty
-            end
-        ' 2>/dev/null) || continue
-
-        [[ -z "$content" ]] && continue
-
-        cleaned=$(echo "$content" | \
-            sed 's/<[^>]*>[^<]*<\/[^>]*>//g; s/<[^>]*>//g' | \
-            tr '\n' ' ' | \
-            sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-        if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
-            echo "$cleaned"
-            return 0
-        fi
-    done < <(grep '"role":"user"' "$session_file" 2>/dev/null | head -10)
-}
-
+# Cursor: the hook-provided transcript_path is authoritative; the standard
+# layout addressed by session_id is the fallback.
 # Usage: cursor_first_user_message <directory> [session_id] [transcript_path]
-# Cursor stores each transcript at:
-# ~/.cursor/projects/<encoded-cwd>/agent-transcripts/<id>/<id>.jsonl
-# The hook-provided transcript_path is authoritative; the standard layout
-# addressed by session_id is the fallback. Neither → nothing: the per-project
-# store is shared with conversations that are not this session. Cursor user
-# records use role=user with block content and commonly wrap the actual
-# prompt in <user_query>.
-cursor_first_user_message() {
-    local directory="$1"
-    local session_id="${2:-}"
-    local transcript_path="${3:-}"
-    local session_file=""
-
-    if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-        session_file="$transcript_path"
-    elif [[ -n "$session_id" ]]; then
-        local resolved
-        resolved=$(cd "$directory" 2>/dev/null && pwd -P) || resolved="$directory"
-        local encoded="${resolved#/}"
-        encoded="${encoded//\//-}"
-        encoded="${encoded//./-}"
-        local cursor_dir="${AM_CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}/$encoded/agent-transcripts"
-        [[ -f "$cursor_dir/$session_id/$session_id.jsonl" ]] && session_file="$cursor_dir/$session_id/$session_id.jsonl"
-    fi
-    [[ -n "$session_file" && -f "$session_file" ]] || return 0
-
-    local line content cleaned
-    while IFS= read -r line; do
-        content=$(echo "$line" | jq -r '
-            select(.role == "user") | .message.content |
-            if type == "string" then .
-            elif type == "array" then
-                [.[] | select(.type == "text") | .text] | join(" ")
-            else empty
-            end
-        ' 2>/dev/null) || continue
-        [[ -n "$content" ]] || continue
-
-        cleaned=$(printf '%s' "$content" | tr '\n' ' ' | \
-            sed -E 's|.*<user_query>(.*)</user_query>.*|\1|; s|<[^>]*>||g; s/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [[ -n "$cleaned" && ${#cleaned} -gt 10 ]]; then
-            echo "$cleaned"
-            return 0
-        fi
-    done < "$session_file"
-}
+cursor_first_user_message() { am_core first-message cursor "$1" "${2:-}" "${3:-}"; }
 
 # TRACE=1 profiling — uses bash set -x with timestamped PS4.
 # Traces every line automatically, no per-function instrumentation needed.

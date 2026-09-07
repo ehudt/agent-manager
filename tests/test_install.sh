@@ -180,7 +180,7 @@ EOF
     local _saved_bin="$temp_root/saved-bin"
     mkdir -p "$_saved_bin"
     local _bin
-    for _bin in am-list-internal am-browse; do
+    for _bin in am-list-internal am-browse am-core; do
         if [[ -f "$PROJECT_DIR/bin/$_bin" ]]; then
             cp -p "$PROJECT_DIR/bin/$_bin" "$_saved_bin/$_bin"
         fi
@@ -248,6 +248,8 @@ EOF
         "install: builds am-list-internal with Go 1.19"
     assert_contains "$install_output" "Built bin/am-browse" \
         "install: builds am-browse with Go 1.19"
+    assert_contains "$install_output" "Built bin/am-core" \
+        "install: builds am-core with Go 1.19"
     assert_not_contains "$install_output" "unexpected go invocation" \
         "install: fake Go handled all invocations"
 
@@ -271,7 +273,7 @@ EOF
     # Restore the real binaries that the fake-go stub clobbered, or remove the
     # stubs so other workers fall back to the bash path instead of exec'ing a
     # 0-byte file.
-    for _bin in am-list-internal am-browse; do
+    for _bin in am-list-internal am-browse am-core; do
         if [[ -f "$_saved_bin/$_bin" ]]; then
             cp -p "$_saved_bin/$_bin" "$PROJECT_DIR/bin/$_bin"
         else
@@ -587,7 +589,8 @@ test_install_refresh_stamp() {
     temp_root=$(mktemp -d)
     local am_dir="$temp_root/am-dir" claude_skills="$temp_root/claude-skills" cursor_skills="$temp_root/cursor-skills"
     mkdir -p "$am_dir"
-    local env_common=(AM_DIR="$am_dir" AM_CLAUDE_SKILLS_DIR="$claude_skills" AM_CURSOR_SKILLS_DIR="$cursor_skills" PATH="$temp_root/nogo:$PATH")
+    local cursor_hooks="$temp_root/cursor-hooks"
+    local env_common=(AM_DIR="$am_dir" AM_CLAUDE_SKILLS_DIR="$claude_skills" AM_CURSOR_SKILLS_DIR="$cursor_skills" AM_CURSOR_HOOKS_DIR="$cursor_hooks" PATH="$temp_root/nogo:$PATH")
     mkdir -p "$temp_root/nogo"
 
     local out rc=0
@@ -618,6 +621,20 @@ test_install_refresh_stamp() {
     printf 'stale\n' > "$am_dir/.install_stamp"
     assert_eq "true" "$(_install_is_stale && echo true || echo false)" "install stamp: a different stamp is stale"
     assert_eq "$stamp1" "$(_install_fingerprint)" "install fingerprint: recomputes the same value"
+
+    # Cursor hook copy: a stale managed copy is rewritten, a foreign file is left alone
+    mkdir -p "$cursor_hooks"
+    cp "$PROJECT_DIR/lib/hooks/state-hook.sh" "$cursor_hooks/am-state-hook.sh"
+    printf '\n# drifted\n' >> "$cursor_hooks/am-state-hook.sh"
+    out=$(env "${env_common[@]}" "$PROJECT_DIR/am" install --refresh 2>&1)
+    assert_contains "$out" "cursor hook copy" "install --refresh: reports the Cursor hook copy refresh"
+    assert_cmd_succeeds "install --refresh: Cursor hook copy matches the source again" \
+        cmp -s "$cursor_hooks/am-state-hook.sh" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+    out=$(env "${env_common[@]}" "$PROJECT_DIR/am" install --refresh 2>&1)
+    assert_not_contains "$out" "cursor hook copy" "install --refresh: identical copy is not rewritten"
+    printf '#!/usr/bin/env bash\necho mine\n' > "$cursor_hooks/am-state-hook.sh"
+    env "${env_common[@]}" "$PROJECT_DIR/am" install --refresh >/dev/null 2>&1
+    assert_eq "echo mine" "$(tail -1 "$cursor_hooks/am-state-hook.sh")" "install --refresh: unmanaged helper is left alone"
 
     rm -rf "$temp_root"
 }

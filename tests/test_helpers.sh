@@ -299,6 +299,45 @@ teardown_isolated_am_dir() {
     fi
 }
 
+# Fake tmux on PATH for tests that drive the compiled maintenance path
+# (bin/am-core: title scan, restore scan, gc) without a tmux server. Bash
+# function stubs do not survive the exec, so the fake answers display-message
+# (pane title) and capture-pane (pane text) per target from files, and fails
+# every other subcommand (no sessions are listed). Targets are the
+# '<session>:.{top}' form the scanners use.
+# Usage: setup_fake_tmux; fake_tmux_title <session> <text>;
+#        fake_tmux_pane <session> <text>; ...; teardown_fake_tmux
+setup_fake_tmux() {
+    TEST_FAKE_TMUX_OLD_PATH="$PATH"
+    TEST_FAKE_TMUX_DIR=$(mktemp -d)
+    mkdir -p "$TEST_FAKE_TMUX_DIR/bin" "$TEST_FAKE_TMUX_DIR/titles" "$TEST_FAKE_TMUX_DIR/panes"
+    printf '%s\n' '#!/bin/sh' \
+        'cmd=""; target=""' \
+        'while [ $# -gt 0 ]; do' \
+        '  case "$1" in' \
+        '    -t) target="$2"; shift ;;' \
+        '    display-message|capture-pane|list-sessions) cmd="$1" ;;' \
+        '  esac' \
+        '  shift' \
+        'done' \
+        "root='$TEST_FAKE_TMUX_DIR'" \
+        'case "$cmd" in' \
+        '  display-message) cat "$root/titles/$target" 2>/dev/null; exit 0 ;;' \
+        '  capture-pane) cat "$root/panes/$target" 2>/dev/null; exit 0 ;;' \
+        '  *) exit 1 ;;' \
+        'esac' > "$TEST_FAKE_TMUX_DIR/bin/tmux"
+    chmod +x "$TEST_FAKE_TMUX_DIR/bin/tmux"
+    export PATH="$TEST_FAKE_TMUX_DIR/bin:$PATH"
+}
+
+fake_tmux_title() { printf '%s\n' "$2" > "$TEST_FAKE_TMUX_DIR/titles/$1:.{top}"; }
+fake_tmux_pane() { printf '%s\n' "$2" > "$TEST_FAKE_TMUX_DIR/panes/$1:.{top}"; }
+
+teardown_fake_tmux() {
+    export PATH="$TEST_FAKE_TMUX_OLD_PATH"
+    rm -rf "$TEST_FAKE_TMUX_DIR"
+}
+
 # ============================================
 # Integration test helpers
 # ============================================

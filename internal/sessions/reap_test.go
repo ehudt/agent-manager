@@ -25,6 +25,28 @@ func writeRegistry(t *testing.T, path string, names ...string) {
 	}
 }
 
+// reapOrphansAt runs the reaper against a fixed live list (the tmux snapshot
+// the production path takes inside the lock), marker throttle honoured.
+func reapOrphansAt(amDir, stateDir string, live []TmuxSession, now time.Time) int {
+	removed, _ := reapOrphans(amDir, stateDir, func() []TmuxSession { return live }, now, false)
+	return removed
+}
+
+// testEnv is an Env rooted in amDir with isolated state/identity dirs, the
+// test tmux socket, and HOME as the process has it (tests t.Setenv HOME).
+func testEnv(t *testing.T, amDir string) Env {
+	t.Helper()
+	return Env{
+		AmDir:       amDir,
+		StateDir:    EnvOr("AM_STATE_DIR", t.TempDir()),
+		IdentityDir: filepath.Join(amDir, "identities"),
+		SessionsLog: filepath.Join(amDir, "sessions_log.jsonl"),
+		Socket:      "test-socket",
+		Prefix:      "am-",
+		Home:        HomeDir(),
+	}
+}
+
 func readRegistryNames(t *testing.T, path string) []string {
 	t.Helper()
 	reg := ReadRegistry(path)

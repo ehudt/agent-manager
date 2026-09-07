@@ -394,9 +394,9 @@ test_first_user_message_char_length() {
 }
 
 # am_file_mtime / am_files_mtime: one stat flavor probe per process, one
-# stat call for a batch. am_log_cap: bounded append-only logs.
+# stat call for a batch.
 test_file_mtime_and_log_cap() {
-    $SUMMARY_MODE || echo "=== Testing am_file_mtime / am_files_mtime / am_log_cap ==="
+    $SUMMARY_MODE || echo "=== Testing am_file_mtime / am_files_mtime ==="
     source "$LIB_DIR/utils.sh"
 
     local root now
@@ -438,23 +438,7 @@ test_file_mtime_and_log_cap() {
     am_files_mtime MT2
     assert_eq "0" "${#MT2[@]}" "am_files_mtime: no files, no entries, no error"
 
-    # am_log_cap
-    local log="$root/x.log" i
-    for (( i = 1; i <= 300; i++ )); do printf 'line %03d padding padding\n' "$i"; done > "$log"
-    local size_before
-    size_before=$(wc -c < "$log" | tr -d ' ')
-    am_log_cap "$log" 100000
-    assert_eq "$size_before" "$(wc -c < "$log" | tr -d ' ')" "am_log_cap: file under the cap untouched"
-    am_log_cap "$log" 2000
-    local size_after
-    size_after=$(wc -c < "$log" | tr -d ' ')
-    assert_eq "true" "$( (( size_after <= 1000 && size_after > 0 )) && echo true || echo false)" \
-        "am_log_cap: oversized file cut to at most half the cap (got $size_after)"
-    assert_eq "line 300 padding padding" "$(tail -n 1 "$log")" "am_log_cap: newest line kept"
-    assert_eq "true" "$(head -n 1 "$log" | grep -qE '^line [0-9]{3} padding padding$' && echo true || echo false)" \
-        "am_log_cap: first kept line is whole (partial line dropped)"
-    assert_cmd_succeeds "am_log_cap: missing file is a no-op" am_log_cap "$root/nope.log" 10
-    assert_eq "0" "$(find "$root" -name 'x.log.*' | wc -l | tr -d ' ')" "am_log_cap: no temp file left behind"
+    # The debug-log cap moved to Go (internal/sessions capLog, TestCapLog).
 
     rm -rf "$root"
 }

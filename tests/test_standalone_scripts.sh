@@ -210,8 +210,8 @@ test_standalone_status_bar() {
     output=$("$LIB_DIR/status-bar" --print "$s1" 2>&1) || rc=$?
     assert_eq "0" "$rc" "status-bar: exits 0 with mixed states"
 
-    # The tick runs registry_gc: the bash-only extras half (sessions-log
-    # pruning) has no other periodic caller. A stale entry whose transcript
+    # The tick runs gc (am-core): the extras half (sessions-log pruning, temp
+    # sweeps) has no other periodic caller. A stale entry whose transcript
     # never existed must disappear on a tick whose extras marker is due.
     jq -cn '{session_name:"test-am-gc-stale",session_id:"sid-nope",directory:"/tmp/tmp.nope",branch:"",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"",transcript_path:""}' \
         >> "$AM_SESSIONS_LOG"

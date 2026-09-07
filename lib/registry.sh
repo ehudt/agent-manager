@@ -94,10 +94,11 @@ registry_add() {
     local created_at
     created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    local tmp_file
-    tmp_file=$(mktemp)
-
+    # Lock first, then mktemp: a writer blocked on the lock owns no temp file
+    # (same order as sessions_log_update).
     _registry_lock
+    local tmp_file rc=0
+    tmp_file=$(mktemp) || { _registry_unlock; return 1; }
     jq --arg name "$name" \
        --arg dir "$directory" \
        --arg branch "$branch" \
@@ -111,8 +112,8 @@ registry_add() {
            "agent_type": $agent,
            "created_at": $created,
            "task": $task
-       }' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
-    local rc=$?
+       }' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY" || rc=$?
+    (( rc )) && rm -f "$tmp_file"
     _registry_unlock
     return $rc
 }
@@ -151,16 +152,15 @@ registry_update() {
     local field="$2"
     local value="$3"
 
-    local tmp_file
-    tmp_file=$(mktemp)
-
     _registry_lock
+    local tmp_file rc=0
+    tmp_file=$(mktemp) || { _registry_unlock; return 1; }
     jq --arg name "$name" \
        --arg field "$field" \
        --arg value "$value" \
        'if .sessions[$name] then .sessions[$name][$field] = $value else . end' \
-       "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
-    local rc=$?
+       "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY" || rc=$?
+    (( rc )) && rm -f "$tmp_file"
     _registry_unlock
     return $rc
 }
@@ -170,514 +170,61 @@ registry_update() {
 registry_remove() {
     local name="$1"
 
-    local tmp_file
-    tmp_file=$(mktemp)
-
     _registry_lock
-    jq --arg name "$name" 'del(.sessions[$name])' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY"
-    local rc=$?
+    local tmp_file rc=0
+    tmp_file=$(mktemp) || { _registry_unlock; return 1; }
+    jq --arg name "$name" 'del(.sessions[$name])' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY" || rc=$?
+    (( rc )) && rm -f "$tmp_file"
     _registry_unlock
     return $rc
 }
 
-# Garbage collection: remove registry entries for sessions that no longer exist in tmux
+# Garbage collection. Two independently throttled halves (60s each, unless
+# force=1), both in Go (internal/sessions Env.GC):
+#   - Registry rows + hook state files (marker .gc_last; ReapOrphans, also run
+#     by am-browse / am-list-internal): one locked read-modify-write with the
+#     tmux snapshot taken inside the lock, rows younger than AM_GC_GRACE_SECS
+#     (default 5) spared.
+#   - Extras (marker .gc_extras_last): orphan state files and sidecars,
+#     sessions-log pruning, unreferenced snapshots older than 10 min, leaked
+#     temps (.sessions-log.* >60s; .dir_repo_cache.tmp.* and *.log.?????? >1h).
+# Prints the number of registry rows removed.
 # Usage: registry_gc [force]
-# Two independently throttled halves (60s each, unless force=1):
-#   - Registry rows + hook state files: marker .gc_last, shared with the Go
-#     twin (internal/sessions ReapOrphans) which does the same work.
-#   - Bash-only extras (sessions log GC, orphan state-file sweep): marker
-#     .gc_extras_last. The Go twin never does this work, so it
-#     must not be skipped just because Go stamped .gc_last first.
-#
-# Called from the 5s status-bar tick, so the throttled path must be
-# fork-free: markers are read with `read`, the clock with printf %T.
 registry_gc() {
-    local force="${1:-0}"
-    local now
-    printf -v now '%(%s)T' -1
-    local removed=0
-
-    local run_rows=1 run_extras=1
-    if [[ "$force" != "1" ]]; then
-        local last=0
-        { IFS= read -r last < "$AM_DIR/.gc_last"; } 2>/dev/null || last=0
-        [[ "$last" =~ ^[0-9]+$ ]] || last=0
-        (( now - last < 60 )) && run_rows=0
-        last=0
-        { IFS= read -r last < "$AM_DIR/.gc_extras_last"; } 2>/dev/null || last=0
-        [[ "$last" =~ ^[0-9]+$ ]] || last=0
-        (( now - last < 60 )) && run_extras=0
-    fi
-    if (( !run_rows && !run_extras )); then
-        echo "0"
-        return 0
-    fi
-
-    local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
-    local -A live_sessions=()
-    local _sname
-
-    # --- Registry rows + hook state files (Go twin: ReapOrphans) ---
-    if (( run_rows )); then
-        echo "$now" > "$AM_DIR/.gc_last"
-
-        # One locked read-modify-write. The tmux snapshot is taken *inside*
-        # the lock: agent_launch creates the tmux session before registry_add
-        # (which takes this lock), so a row that exists when we hold the lock
-        # always has its session in a snapshot taken now. Rows younger than
-        # AM_GC_GRACE_SECS are left alone as well, for any writer that
-        # registers before its session exists.
-        _registry_lock
-        local live_list=""
-        while IFS= read -r _sname; do
-            [[ -n "$_sname" ]] || continue
-            live_sessions[$_sname]=1
-            live_list+="$_sname"$'\n'
-        done < <(tmux_list_am_sessions)
-
-        local -a orphans=()
-        mapfile -t orphans < <(jq -r --arg live "$live_list" \
-            --argjson grace "${AM_GC_GRACE_SECS:-5}" '
-            ($live | split("\n") | map(select(length > 0))
-                   | map({key: ., value: true}) | from_entries) as $alive
-            | (now - $grace) as $cutoff
-            | .sessions | to_entries[]
-            | select((($alive[.key] // false) | not)
-                     and ((.value.created_at // "" | try fromdateiso8601 catch 0) < $cutoff))
-            | .key' "$AM_REGISTRY" 2>/dev/null || true)
-
-        if (( ${#orphans[@]} > 0 )); then
-            local names="" tmp_file
-            printf -v names '%s\n' "${orphans[@]}"
-            tmp_file=$(mktemp)
-            if jq --arg names "$names" \
-                '($names | split("\n") | map(select(length > 0))) as $n
-                 | del(.sessions[$n[]])' "$AM_REGISTRY" > "$tmp_file" 2>/dev/null; then
-                command mv "$tmp_file" "$AM_REGISTRY"
-                local name
-                for name in "${orphans[@]}"; do
-                    [[ -n "$name" && "$name" != */* ]] || continue
-                    rm -f "$state_dir/$name" "$state_dir/$name.sid" \
-                          "$state_dir/$name.transcript" "$state_dir/$name.cwd" \
-                          "$state_dir/$name.bg"
-                    removed=$((removed + 1))
-                done
-            else
-                rm -f "$tmp_file"
-            fi
-        fi
-        _registry_unlock
-    fi
-
-    # --- Bash-only extras (no Go twin) ---
-    if (( run_extras )); then
-        echo "$now" > "$AM_DIR/.gc_extras_last"
-
-        if (( ${#live_sessions[@]} == 0 )); then
-            while IFS= read -r _sname; do
-                [[ -n "$_sname" ]] && live_sessions[$_sname]=1
-            done < <(tmux_list_am_sessions)
-        fi
-
-        # Clean up orphan hook state files and sidecars (session gone but file remains).
-        # Strip known sidecar suffixes before checking liveness.
-        if [[ -d "$state_dir" ]]; then
-            local state_file sname
-            for state_file in "$state_dir"/${AM_SESSION_PREFIX}*; do
-                [[ -f "$state_file" ]] || continue
-                sname="${state_file##*/}"
-                sname="${sname%.sid}"
-                sname="${sname%.transcript}"
-                sname="${sname%.cwd}"
-                sname="${sname%.bg}"
-                if [[ -z "${live_sessions[$sname]:-}" ]]; then
-                    rm -f "$state_file"
-                fi
-            done
-        fi
-
-        # Prune sessions log (for restore)
-        sessions_log_gc 2>/dev/null || true
-
-        # Snapshots no sessions-log entry references. Age-gated (10 min):
-        # sessions_log_scan writes a snapshot and only then records its name
-        # in the log, and live sessions rewrite theirs every scan.
-        sessions_log_snapshot_gc 2>/dev/null || true
-
-        # Leftovers of interrupted writers: sessions-log temp files older than
-        # 60s (see _registry_tmp_guard), detached repo-scan temps older than
-        # 1h (fzf.sh _dir_repo_scan_cached), and log-cap temps older than 1h
-        # (utils.sh am_log_cap: <log>.XXXXXX).
-        find "$AM_DIR" -maxdepth 1 \
-            \( -name '.sessions-log.*' -mmin +1 \
-               -o -name '.dir_repo_cache.tmp.*' -mmin +60 \
-               -o -name '*.log.??????' -mmin +60 \) \
-            -type f -delete 2>/dev/null || true
-    fi
-
-    if (( removed > 0 )); then
-        log_info "Cleaned up $removed stale registry entries"
-    fi
-
-    echo "$removed"
+    local removed
+    removed=$(am_core gc "${1:-0}") || removed=0
+    echo "${removed:-0}"
 }
 
-# --- Title Helpers ---
+# --- Periodic maintenance (compiled: bin/am-core, package internal/sessions) ---
+# The title/workdir/branch refresh, the restore scan (rolling snapshots,
+# session-id binding from the hook sidecars, task/branch sync into the
+# sessions log), and both GC halves run in Go; bash used to carry a second
+# copy of each. The names below are kept so callers, tests, and docs read the
+# same. Each wrapper is one exec of bin/am-core with the caller's effective
+# paths (see utils.sh am_core). The marker files (.title_scan_last,
+# .restore_scan_last, .gc_last, .gc_extras_last) and their 60s throttles are
+# unchanged; force=1 bypasses them. Tracing: AM_TITLER_DEBUG=1 appends to
+# $AM_DIR/titler.log. A missing binary logs one line and returns 0: periodic
+# work must never fail the status-bar tick or `am list`.
 
-# Check if a title is valid (<=60 chars, no newlines). The bare "Claude Code"
-# is the placeholder Claude paints until a conversation has a summary, not a
-# title: rejecting it lets the JSONL first-message fallback name the tab.
-# Mirrored in Go (internal/sessions/titles.go:titleValid).
-# Strip the transient decorations Claude Code appends to its terminal title so
-# the tab does not relabel on every reconnect: a trailing " - 🔄 Reconnecting…"
-# segment (any " - 🔄 …" tail) and a trailing " - <dirname>" that only repeats
-# the directory the tab already shows. Fork-free. Go twin: normalizeTitle.
-# Usage: _title_normalize <title> <effective_dir> <out_var>
-_title_normalize() {
-    local t="$1" dir="$2"
-    local -n __tn_out="$3"
-    local base="${dir##*/}"
-    if [[ "$t" == *" - 🔄"* ]]; then
-        t="${t% - 🔄*}"
-    fi
-    if [[ -n "$base" && "$t" == *" - $base" ]]; then
-        t="${t% - "$base"}"
-    fi
-    # Trailing whitespace
-    while [[ "$t" == *[[:space:]] ]]; do t="${t%?}"; done
-    __tn_out="$t"
-}
+# One maintenance tick: title scan, restore scan, gc — each on its own marker.
+# The status-bar tick and `am list` call this and nothing else.
+# Usage: am_tick [force]
+am_tick() { am_core tick "${1:-0}" || return 0; }
 
-# Usage: _title_valid <title> && echo yes
-_title_valid() {
-    local t="$1"
-    [[ -n "$t" && ${#t} -le 60 && "$t" != *$'\n'* && "$t" != "Claude Code" ]]
-}
-
-# Extract a task candidate from pi's self-maintained terminal title.
-# Pi titles: "pi - <session name> - <cwd basename>" when the session is
-# named, "pi - <cwd basename>" otherwise. Named -> the middle part (the
-# name may itself contain " - "; strip only the first and last segments).
-# Unnamed/bare -> empty so the caller falls back to the JSONL first message.
-# Non-pi-shaped titles pass through unchanged.
-_pi_title_extract() {
-    local t="$1"
-    case "$t" in
-        "pi - "*" - "*)
-            t="${t#pi - }"
-            printf '%s\n' "${t% - *}"
-            ;;
-        "pi - "*|pi)
-            printf '\n'
-            ;;
-        *)
-            printf '%s\n' "$t"
-            ;;
-    esac
-}
-
-# Cursor paints transient context/status titles while a turn is active. These
-# are not task names; the hook-bound transcript is the exact title source.
-_cursor_title_extract() {
-    local title="$1"
-    case "$title" in
-        *" - ✅ Ready") title="${title% - ✅ Ready}" ;;
-        *" - ⏳ Working"*) title="${title%% - ⏳ Working*}" ;;
-        *" - ❓ Waiting for you") title="${title% - ❓ Waiting for you}" ;;
-    esac
-    case "$title" in
-        "Cursor Agent"|"Shell Command") printf '\n' ;;
-        *) printf '%s\n' "$title" ;;
-    esac
-}
-
-# Scan active sessions and update task from agent pane title.
-# Agents set the terminal title via escape sequences; tmux exposes it as #{pane_title}.
-# Throttled to once per 60s unless force=1.
-# Logs to $AM_DIR/titler.log (tail -f ~/.agent-manager/titler.log)
-# Refresh one session's workdir + branch registry fields from the .cwd sidecar
-# and the effective directory's .git/HEAD. Writes only on change. Bash twin of
-# the workdir/branch half of Go's RefreshTitles.
-# Usage: _title_scan_refresh_workdir <name> <directory> <cur_workdir> <cur_branch>
-_title_scan_refresh_workdir() {
-    local name="$1" directory="$2" workdir="$3" cur_branch="$4"
-    local cwd_file="${AM_STATE_DIR:-/tmp/am-state}/$name.cwd"
-    if [[ -f "$cwd_file" ]]; then
-        local sidecar=""
-        IFS= read -r sidecar < "$cwd_file" || true
-        if [[ -d "$sidecar" ]]; then
-            workdir="$sidecar"
-            [[ "$workdir" == "$directory" ]] && workdir=""
-        fi
-    fi
-    if [[ "$workdir" != "$3" ]]; then
-        registry_update "$name" "workdir" "$workdir"
-        _titler_log "  $name: workdir=\"${workdir:-<directory>}\""
-    fi
-    local effective="${workdir:-$directory}" branch=""
-    [[ -n "$effective" && -d "$effective" ]] || return 0
-    git_head_branch "$effective" branch   # out-var: no subshell on the scan path
-    if [[ "$branch" != "$cur_branch" ]]; then
-        registry_update "$name" "branch" "$branch"
-        _titler_log "  $name: branch=\"$branch\""
-    fi
-}
-
+# Refresh each registry row's workdir (.cwd sidecar), branch (.git/HEAD of the
+# effective directory) and task (agent pane title; first user message of the
+# bound transcript as the fallback), then chain into sessions_log_scan.
 # Usage: auto_title_scan [force]
-# Trace line for the title/restore scanners. Gated by AM_TITLER_DEBUG=1 (same
-# pattern as _state_debug / AM_STATE_DEBUG); fork-free when off, and the
-# timestamp is printf %T rather than a date fork when on. Ungated, this wrote
-# a line per 5s status-bar tick (84MB observed).
-_titler_log() {
-    [[ "${AM_TITLER_DEBUG:-}" == "1" ]] || return 0
-    local ts
-    printf -v ts '%(%H:%M:%S)T' -1
-    printf '%s %s\n' "$ts" "$*" >> "$AM_DIR/titler.log" 2>/dev/null || true
-}
+auto_title_scan() { am_core titles "${1:-0}" || return 0; }
 
-# Debug/trace logs that grow without bound otherwise. Capped at 20MB each
-# (kept: the newest half), checked only from auto_title_scan's unthrottled
-# path, i.e. at most once per 60s per process.
-_am_debug_logs_cap() {
-    local max=$(( 20 * 1024 * 1024 ))
-    am_log_cap "$AM_DIR/titler.log" "$max"
-    am_log_cap "$AM_DIR/.state-debug.log" "$max"
-    am_log_cap "$AM_DIR/.hook-debug.log" "$max"
-}
-
-auto_title_scan() {
-    local force="${1:-0}"
-
-    # Throttle. The Go twin (internal/sessions RefreshTitles) shares this
-    # marker but never does the restore-log work, so on the throttled path we
-    # still run sessions_log_scan (it has its own marker).
-    local marker="$AM_DIR/.title_scan_last"
-    local now
-    now=$(date +%s)
-    if [[ "$force" != "1" && -f "$marker" ]]; then
-        local last
-        last=$(cat "$marker" 2>/dev/null || echo 0)
-        if (( now - last < 60 )); then
-            sessions_log_scan "$force"
-            return 0
-        fi
-    fi
-    echo "$now" > "$marker"
-
-    _am_debug_logs_cap
-    _titler_log "scan start (force=$force)"
-
-    # Bulk-read all sessions with their fields in one jq call (avoids N+1 registry reads)
-    local -A reg_task reg_dir reg_agent reg_created reg_branch reg_workdir
-    local _rname _rtask _rdir _ragent _rcreated _rbranch _rworkdir
-    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated _rbranch _rworkdir; do
-        reg_task[$_rname]=$_rtask
-        reg_dir[$_rname]=$_rdir
-        reg_agent[$_rname]=$_ragent
-        reg_created[$_rname]=$_rcreated
-        reg_branch[$_rname]=$_rbranch
-        reg_workdir[$_rname]=$_rworkdir
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // "", .value.branch // "", .value.workdir // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
-
-    local name title scanned=0 updated=0
-    for name in "${!reg_task[@]}"; do
-        scanned=$((scanned + 1))
-
-        # Live working directory + branch. `directory` stays the launch cwd
-        # (it keys the agent's transcript store and restore); `workdir` is
-        # where the agent is actually working, from the hook's .cwd sidecar
-        # (Claude) or `am cd`, stored only when it differs. The branch is
-        # re-read from whichever of the two is in effect, so a checkout in
-        # place or a move to another copy both relabel the tab.
-        _title_scan_refresh_workdir "$name" "${reg_dir[$name]}" \
-            "${reg_workdir[$name]}" "${reg_branch[$name]}"
-
-        # Read the agent pane title (set by the agent via terminal escape sequences)
-        title=$(tmux_pane_title "${name}:.{top}" 2>/dev/null) || title=""
-        # Trim leading non-alphanumeric characters (escape artifacts, symbols)
-        title=$(echo "$title" | sed -E 's/^[^[:alnum:]]*//')
-
-        # Pi maintains its own "pi - [name -] dir" title; extract the session
-        # name or blank it so the JSONL fallback kicks in.
-        if [[ "${reg_agent[$name]}" == "pi" ]]; then
-            title=$(_pi_title_extract "$title")
-        elif [[ "${reg_agent[$name]}" == "cursor" ]]; then
-            title=$(_cursor_title_extract "$title")
-        else
-            _title_normalize "$title" "${reg_workdir[$name]:-${reg_dir[$name]}}" title
-        fi
-
-        if ! _title_valid "$title"; then
-            # Hysteresis: a title the session already has is kept until the
-            # pane paints a new valid one. Transient placeholders (the bare
-            # "Claude Code", an empty title mid-repaint) must not swap a real
-            # title for the first-message fallback and back again.
-            if [[ -n "${reg_task[$name]}" ]]; then
-                _titler_log "  $name: keep \"${reg_task[$name]}\" (pane=${title:0:40})"
-                continue
-            fi
-            # Fallback: for agent sessions with JSONL storage, derive task from
-            # the first user message. Covers fresh sessions (title not painted
-            # yet), bash-only panes, and legacy sessions created before
-            # auto-titling existed.
-            local fallback=""
-            if [[ ( "${reg_agent[$name]}" == "claude" || "${reg_agent[$name]}" == "pi" || "${reg_agent[$name]}" == "cursor" ) && -n "${reg_dir[$name]}" ]]; then
-                # THIS session's conversation id, from the sidecar its own
-                # hook wrote. The readers open exactly that transcript; with
-                # no id there is no fallback (the directory's transcript store
-                # is shared with other sessions and with agents outside am).
-                local _sid
-                _sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_agent[$name]}" 2>/dev/null || true)
-                if [[ "${reg_agent[$name]}" == "pi" ]]; then
-                    fallback=$(pi_first_user_message "${reg_dir[$name]}" "$_sid" 2>/dev/null || true)
-                elif [[ "${reg_agent[$name]}" == "cursor" ]]; then
-                    local _transcript
-                    _transcript=$(_sessions_log_sidecar_transcript "$name")
-                    fallback=$(cursor_first_user_message "${reg_dir[$name]}" "$_sid" "$_transcript" 2>/dev/null || true)
-                else
-                    fallback=$(claude_first_user_message "${reg_dir[$name]}" "$_sid" 2>/dev/null || true)
-                fi
-                fallback="${fallback:0:60}"
-            fi
-            if [[ -n "$fallback" ]] && _title_valid "$fallback"; then
-                title="$fallback"
-                _titler_log "  $name: jsonl fallback=\"$title\""
-            else
-                _titler_log "  $name: skip (no valid title: pane=${title:0:40})"
-                continue
-            fi
-        fi
-
-        # Skip if title hasn't changed
-        [[ "$title" == "${reg_task[$name]}" ]] && continue
-
-        registry_update "$name" "task" "$title"
-        updated=$((updated + 1))
-        _titler_log "  $name: title=\"$title\""
-    done
-
-    sessions_log_scan "$force"
-
-    _titler_log "scan done: $scanned scanned, $updated updated"
-}
-
-# Rolling snapshots + session_id backfill + sessions-log task sync for
-# resumable harness sessions. Bash-only restore plumbing with no Go twin, so it runs on
-# its own throttle marker (.restore_scan_last) — the Go title scanner stamping
-# .title_scan_last must not starve it.
+# Rolling pane snapshots + session_id binding + task/branch sync for
+# resumable sessions (claude, codex, pi, cursor) that have a sessions-log
+# entry. Own marker (.restore_scan_last): a fresh .title_scan_last must not
+# starve it.
 # Usage: sessions_log_scan [force]
-sessions_log_scan() {
-    local force="${1:-0}"
-    [[ -f "$AM_SESSIONS_LOG" ]] || return 0
-
-    # Throttle (independent of .title_scan_last)
-    local marker="$AM_DIR/.restore_scan_last"
-    local now
-    now=$(date +%s)
-    if [[ "$force" != "1" && -f "$marker" ]]; then
-        local last
-        last=$(cat "$marker" 2>/dev/null || echo 0)
-        (( now - last < 60 )) && return 0
-    fi
-    echo "$now" > "$marker"
-
-    # Bulk-read registry fields (one jq call)
-    local -A reg_task reg_dir reg_agent reg_created reg_branch
-    local _rname _rtask _rdir _ragent _rcreated _rbranch
-    while IFS='|' read -r _rname _rtask _rdir _ragent _rcreated _rbranch; do
-        reg_task[$_rname]=$_rtask
-        reg_dir[$_rname]=$_rdir
-        reg_agent[$_rname]=$_ragent
-        reg_created[$_rname]=$_rcreated
-        reg_branch[$_rname]=$_rbranch
-    done < <(jq -r '.sessions | to_entries[] | [.key, .value.task // "", .value.directory // "", .value.agent_type // "", .value.created_at // "", .value.branch // ""] | join("|")' "$AM_REGISTRY" 2>/dev/null || true)
-
-    # Build lookup of sessions_log entries (bulk parse — one jq call)
-    local -A slog_sid slog_snap slog_transcript
-    local _sl_sname _sl_sid _sl_snap _sl_transcript
-    while IFS='|' read -r _sl_sname _sl_sid _sl_snap _sl_transcript; do
-        [[ -z "$_sl_sname" ]] && continue
-        # Keep last entry per session_name (later lines overwrite)
-        slog_sid[$_sl_sname]="$_sl_sid"
-        slog_snap[$_sl_sname]="$_sl_snap"
-        slog_transcript[$_sl_sname]="$_sl_transcript"
-    done < <(jq -r '[.session_name // "", .session_id // "", .snapshot_file // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null)
-
-    local name snap_count=0
-    for name in "${!reg_agent[@]}"; do
-        case "${reg_agent[$name]}" in claude|codex|pi|cursor) ;; *) continue ;; esac
-        # Only process sessions that have a log entry
-        [[ -n "${slog_sid[$name]+x}" ]] || continue
-
-        local sid="${slog_sid[$name]}"
-        local transcript="${slog_transcript[$name]:-}"
-        if [[ "${reg_agent[$name]}" == "cursor" ]]; then
-            local sidecar_transcript
-            sidecar_transcript=$(_sessions_log_sidecar_transcript "$name")
-            if [[ -n "$sidecar_transcript" && "$sidecar_transcript" != "$transcript" ]]; then
-                sessions_log_update "$name" "transcript_path" "$sidecar_transcript"
-                transcript="$sidecar_transcript"
-                slog_transcript[$name]="$transcript"
-                _titler_log "  $name: bound transcript_path from sidecar"
-            fi
-        fi
-
-        # The hook sidecar is authoritative — it was written by the agent pane
-        # itself. Correct the logged sid whenever it disagrees (heals wrong
-        # mtime-based guesses and tracks forked resumes); fall back to
-        # directory detection only while no sidecar exists yet.
-        local sidecar_sid=""
-        if [[ -n "${reg_dir[$name]}" ]]; then
-            sidecar_sid=$(_sessions_log_sidecar_id "$name")
-            if [[ -n "$sidecar_sid" && "${reg_agent[$name]}" != "codex" ]] \
-                && ! _sessions_log_jsonl_exists "${reg_dir[$name]}" "$sidecar_sid" "${reg_agent[$name]}" "$transcript"; then
-                sidecar_sid=""
-            fi
-        fi
-        if [[ -n "$sidecar_sid" && "$sidecar_sid" != "$sid" ]]; then
-            sessions_log_update "$name" "session_id" "$sidecar_sid"
-            _titler_log "  $name: session_id ${sid:-<empty>} -> $sidecar_sid (sidecar)"
-            sid="$sidecar_sid"
-            slog_sid[$name]="$sid"
-        elif [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
-            sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_agent[$name]}")
-            if [[ -n "$sid" ]]; then
-                sessions_log_update "$name" "session_id" "$sid"
-                slog_sid[$name]="$sid"
-                _titler_log "  $name: backfilled session_id=$sid"
-            fi
-        fi
-        # Migrate a snapshot still keyed by session_name once the sid is known
-        if [[ -n "$sid" && -f "$AM_SNAPSHOTS_DIR/${name}.txt" ]]; then
-            command mv "$AM_SNAPSHOTS_DIR/${name}.txt" "$AM_SNAPSHOTS_DIR/${sid}.txt" 2>/dev/null || true
-            sessions_log_update "$name" "snapshot_file" "snapshots/${sid}.txt"
-        fi
-
-        # Capture pane snapshot
-        local snap_key="${sid:-$name}"
-        local snap_file
-        snap_file=$(sessions_log_snapshot "$name" "$snap_key")
-        if [[ -n "$snap_file" ]]; then
-            # Update snapshot_file in log if changed
-            if [[ "$snap_file" != "${slog_snap[$name]}" ]]; then
-                sessions_log_update "$name" "snapshot_file" "$snap_file"
-            fi
-            ((snap_count++))
-        fi
-    done
-    _titler_log "  snapshots captured: $snap_count"
-
-    # Also sync task and branch into the sessions log, so the restore picker
-    # shows the branch the session ended on rather than the one it started on.
-    for name in "${!reg_agent[@]}"; do
-        case "${reg_agent[$name]}" in claude|codex|pi|cursor) ;; *) continue ;; esac
-        [[ -n "${slog_sid[$name]+x}" ]] || continue
-        local current_task="${reg_task[$name]}"
-        [[ -n "$current_task" ]] && sessions_log_update "$name" "task" "$current_task"
-        local current_branch="${reg_branch[$name]:-}"
-        [[ -n "$current_branch" ]] && sessions_log_update "$name" "branch" "$current_branch"
-    done
-}
+sessions_log_scan() { am_core restore-scan "${1:-0}" || return 0; }
 
 # --- Sessions Log (for session restore) ---
 # Persistent log of resumable sessions with exact IDs and pane snapshots.
@@ -852,218 +399,29 @@ _sessions_log_field() {
 # is shared with other am sessions and with agents started outside am, so the
 # newest transcript in it is not this session. Until the first hook fires the
 # session has no identity, and nothing worth restoring either.
+# Go: internal/sessions Env.DetectID.
 # Usage: _sessions_log_detect_id_for_session <session_name> <directory> [agent_type]
 _sessions_log_detect_id_for_session() {
-    local session_name="$1"
-    local dir="$2"
-    local agent="${3:-claude}"
-
-    local sid
-    sid=$(_sessions_log_sidecar_id "$session_name")
-    [[ -n "$sid" ]] || return 0
-    if [[ "$agent" == "codex" ]]; then
-        echo "$sid"
-        return 0
-    fi
-    local sidecar_transcript=""
-    [[ "$agent" == "cursor" ]] && sidecar_transcript=$(_sessions_log_sidecar_transcript "$session_name")
-    if _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$sidecar_transcript"; then
-        echo "$sid"
-    fi
-    return 0
+    am_core detect-id "$1" "$2" "${3:-claude}"
 }
 
-# Check if an agent conversation JSONL still exists for a directory + sid.
-# Usage: _sessions_log_jsonl_exists <directory> <session_id> [agent_type]
+# Check if an agent conversation JSONL still exists for a directory + sid
+# (codex: any well-formed id; cursor: the hook-reported transcript path first).
+# Go: internal/sessions Env.JSONLExists.
+# Usage: _sessions_log_jsonl_exists <directory> <session_id> [agent_type] [transcript_path]
 _sessions_log_jsonl_exists() {
-    local dir="$1"
-    local session_id="$2"
-    local agent="${3:-claude}"
-    local transcript_path="${4:-}"
-
-    # Resolve symlinks only when the directory exists; a vanished directory
-    # (the common GC case) costs no fork.
-    local resolved="$dir"
-    if [[ -d "$dir" ]]; then
-        resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
-    fi
-
-    if [[ "$agent" == "codex" ]]; then
-        _sessions_log_valid_id "$session_id"
-        return
-    fi
-
-    if [[ "$agent" == "pi" ]]; then
-        local pi_dir
-        pi_dir="$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"
-        local matches=("$pi_dir"/*_"${session_id}".jsonl)
-        [[ -f "${matches[0]}" ]]
-        return
-    fi
-
-    if [[ "$agent" == "cursor" ]]; then
-        if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-            return 0
-        fi
-        local cursor_dir
-        cursor_dir="$(_cursor_projects_root)/$(_slog_encode_cursor_dir "$resolved")/agent-transcripts"
-        [[ -f "$cursor_dir/$session_id/$session_id.jsonl" ]]
-        return
-    fi
-
-    # Inline _slog_encode_dir (/ and . -> -): this runs per entry in
-    # sessions_log_gc, so no fork.
-    local encoded="${resolved//\//-}"
-    encoded="${encoded//./-}"
-    [[ -f "$HOME/.claude/projects/$encoded/${session_id}.jsonl" ]]
+    am_core jsonl-exists "$1" "$2" "${3:-claude}" "${4:-}"
 }
 
-# GC for sessions log: remove entries whose Claude JSONL no longer exists.
+# Prune the sessions log: drop entries whose transcript is gone (and their
+# snapshot), and id-less entries older than 24h. One locked rewrite. Runs from
+# registry_gc's extras half; exposed for `am` callers and tests.
+# Go: internal/sessions Env.SessionsLogGC.
 # Usage: sessions_log_gc
-sessions_log_gc() {
-    [[ -f "$AM_SESSIONS_LOG" ]] || return 0
-    _registry_lock
+sessions_log_gc() { am_core slog-gc || return 0; }
 
-    # Bulk-parse all fields in one jq call
-    local all_fields
-    all_fields=$(jq -r '[.agent_type // "", .session_id // "", .directory // "", .created_at // "", .snapshot_file // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) \
-        || { _registry_unlock; return 0; }
-    # Locked and mktemp'd after it, guarded against interruption — see
-    # _registry_tmp_guard.
-    local tmp_file
-    tmp_file=$(mktemp "$AM_DIR/.sessions-log.XXXXXX") || { _registry_unlock; return 0; }
-    _registry_tmp_guard "$tmp_file"
-
-    # Read raw lines and parsed fields into parallel arrays
-    local lines=() fields_arr=()
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        lines+=("$line")
-    done < "$AM_SESSIONS_LOG"
-
-    while IFS= read -r fline; do
-        fields_arr+=("$fline")
-    done <<< "$all_fields"
-
-    local removed=0
-
-    # Compute 24h cutoff as ISO string — avoids per-entry date subprocess calls
-    local cutoff_iso
-    cutoff_iso=$(date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
-        || date -u -d "24 hours ago" +"%Y-%m-%dT%H:%M:%SZ")
-
-    local i
-    for (( i=0; i<${#lines[@]}; i++ )); do
-        local agent sid dir created_at snap transcript
-        IFS='|' read -r agent sid dir created_at snap transcript <<< "${fields_arr[$i]}"
-
-        local keep=true
-
-        if [[ ( "$agent" == "claude" || "$agent" == "codex" || "$agent" == "pi" || "$agent" == "cursor" ) && -n "$sid" && -n "$dir" ]]; then
-            if ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$transcript"; then
-                keep=false
-            fi
-        elif [[ ( "$agent" == "claude" || "$agent" == "codex" || "$agent" == "pi" || "$agent" == "cursor" ) && -z "$sid" ]]; then
-            # ISO 8601 UTC timestamps sort lexicographically
-            if [[ -n "$created_at" && "$created_at" < "$cutoff_iso" ]]; then
-                keep=false
-            fi
-        fi
-
-        if $keep; then
-            printf '%s\n' "${lines[$i]}" >> "$tmp_file"
-        else
-            [[ -n "$snap" && -f "$AM_DIR/$snap" ]] && rm -f "$AM_DIR/$snap"
-            ((removed++))
-        fi
-    done
-
-    command mv "$tmp_file" "$AM_SESSIONS_LOG"
-    _registry_tmp_release
-    _registry_unlock
-
-    if (( removed > 0 )); then
-        log_info "Sessions log: pruned $removed stale entries"
-    fi
-}
-
-# Remove snapshot files under $AM_SNAPSHOTS_DIR that no sessions-log entry
-# references and that are older than 10 minutes. The age gate covers the
-# window in sessions_log_scan between writing a snapshot and recording its
-# name in the log; a live session's snapshot is rewritten every scan, so it
-# never ages out while referenced or in use.
-# Usage: sessions_log_snapshot_gc
-sessions_log_snapshot_gc() {
-    [[ -d "$AM_SNAPSHOTS_DIR" ]] || return 0
-
-    local -A referenced=()
-    local snap
-    if [[ -f "$AM_SESSIONS_LOG" ]]; then
-        while IFS= read -r snap; do
-            [[ -n "$snap" ]] && referenced["${snap##*/}"]=1
-        done < <(jq -r '.snapshot_file // empty' "$AM_SESSIONS_LOG" 2>/dev/null || true)
-    fi
-
-    local file removed=0
-    while IFS= read -r file; do
-        [[ -n "$file" ]] || continue
-        [[ -n "${referenced[${file##*/}]:-}" ]] && continue
-        rm -f "$file" && removed=$((removed + 1))
-    done < <(find "$AM_SNAPSHOTS_DIR" -maxdepth 1 -type f -name '*.txt' -mmin +10 2>/dev/null || true)
-
-    if (( removed > 0 )); then
-        log_info "Snapshots: removed $removed unreferenced files"
-    fi
-    return 0
-}
-
-# List restorable sessions for the restore picker.
+# JSONL lines of the sessions that can be restored (resumable agent, id
+# bound, not alive, transcript present), newest first, one line per
+# conversation id. Go: internal/sessions Env.Restorable.
 # Usage: sessions_log_restorable
-# Returns: JSONL lines for sessions that can be restored (not alive, JSONL exists)
-sessions_log_restorable() {
-    [[ -f "$AM_SESSIONS_LOG" ]] || return 0
-
-    # Get set of live tmux sessions
-    local -A live_sessions
-    local _sname
-    while IFS= read -r _sname; do
-        live_sessions[$_sname]=1
-    done < <(tmux_list_am_sessions)
-
-    # Bulk-parse all fields in one jq call
-    local all_fields
-    all_fields=$(jq -r '[.session_name // "", .session_id // "", .agent_type // "", .directory // "", .transcript_path // ""] | join("|")' "$AM_SESSIONS_LOG" 2>/dev/null) || return 0
-
-    # Read raw lines and parsed fields into parallel arrays
-    local lines=() fields_arr=()
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        lines+=("$line")
-    done < "$AM_SESSIONS_LOG"
-
-    while IFS= read -r fline; do
-        fields_arr+=("$fline")
-    done <<< "$all_fields"
-
-    # Deduplicate: iterate in reverse (newest first), keep first occurrence of each session_id
-    local -A seen_ids
-    local i result=()
-    for (( i=${#lines[@]}-1; i>=0; i-- )); do
-        local sname sid agent dir transcript
-        IFS='|' read -r sname sid agent dir transcript <<< "${fields_arr[$i]}"
-
-        case "$agent" in claude|codex|pi|cursor) ;; *) continue ;; esac
-        [[ -n "$sid" ]] || continue
-        [[ -z "${live_sessions[$sname]:-}" ]] || continue
-        [[ -z "${seen_ids[$sid]:-}" ]] || continue
-
-        if _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$transcript"; then
-            seen_ids[$sid]=1
-            result+=("${lines[$i]}")
-        fi
-    done
-
-    for line in "${result[@]}"; do
-        printf '%s\n' "$line"
-    done
-}
+sessions_log_restorable() { am_core restorable; }

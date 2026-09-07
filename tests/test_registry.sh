@@ -129,22 +129,9 @@ test_registry_extended() {
         "pi detect id: sidecar without a transcript → empty, no substitute"
     unset AM_PI_SESSIONS_DIR
 
-    # --- _pi_title_extract ---
-    assert_eq "Refactor auth" "$(_pi_title_extract 'pi - Refactor auth - proj')" \
-        "_pi_title_extract: named session"
-    assert_eq "a - b" "$(_pi_title_extract 'pi - a - b - proj')" \
-        "_pi_title_extract: name containing dashes"
-    assert_eq "" "$(_pi_title_extract 'pi - proj')" "_pi_title_extract: unnamed"
-    assert_eq "" "$(_pi_title_extract 'pi')" "_pi_title_extract: bare"
-    assert_eq "plain title" "$(_pi_title_extract 'plain title')" "_pi_title_extract: non-pi shape"
-
-    # --- _cursor_title_extract ---
-    assert_eq "" "$(_cursor_title_extract 'Cursor Agent - ✅ Ready')" \
-        "_cursor_title_extract: generic ready context is not a task"
-    assert_eq "" "$(_cursor_title_extract 'Shell Command - ⏳ Working .··')" \
-        "_cursor_title_extract: generic working context is not a task"
-    assert_eq "Cursor Pong" "$(_cursor_title_extract 'Cursor Pong - ✅ Ready')" \
-        "_cursor_title_extract: task title strips ready suffix"
+    # Pi / Cursor pane-title extraction lives in Go only (internal/sessions
+    # piTitleExtract / cursorTitleExtract; TestPiTitleExtract,
+    # TestCursorTitleExtract).
 
     # --- sessions_log_restorable accepts pi ---
     local pr_home; pr_home=$(mktemp -d)
@@ -446,7 +433,7 @@ test_registry_gc_extras() {
     assert_cmd_succeeds "gc extras: fresh .sessions-log temp kept (writer may own it)" test -f "$AM_DIR/.sessions-log.leakNEW"
     assert_cmd_fails "gc extras: stale .dir_repo_cache.tmp removed" test -f "$AM_DIR/.dir_repo_cache.tmp.111"
     assert_cmd_succeeds "gc extras: fresh .dir_repo_cache.tmp kept" test -f "$AM_DIR/.dir_repo_cache.tmp.222"
-    assert_cmd_fails "gc extras: stale am_log_cap temp (<log>.XXXXXX) removed" test -f "$AM_DIR/titler.log.AbCdEf"
+    assert_cmd_fails "gc extras: stale log-cap temp (<log>.XXXXXX) removed" test -f "$AM_DIR/titler.log.AbCdEf"
     assert_cmd_succeeds "gc extras: the log itself is not swept" test -f "$AM_DIR/titler.log"
     assert_cmd_succeeds "gc extras: sessions log itself untouched by the temp sweep" test -f "$AM_SESSIONS_LOG"
 
@@ -608,10 +595,11 @@ test_registry_gc_go_path() {
     mkdir -p "$state_dir"
     : > "$state_dir/test-am-stale-go"
 
-    # Ensure throttle does not skip.
+    # Ensure throttle does not skip, and drop the create-grace window (the
+    # stale row was registered a moment ago).
     rm -f "$AM_DIR/.gc_last"
 
-    "$bin" >/dev/null 2>&1 || true
+    AM_GC_GRACE_SECS=0 "$bin" >/dev/null 2>&1 || true
 
     assert_eq "false" "$(registry_exists test-am-stale-go && echo true || echo false)" \
         "go path: stale entry removed"
@@ -622,7 +610,7 @@ test_registry_gc_go_path() {
 
     # Throttle check: add another orphan, run again immediately, marker should block reap.
     registry_add "test-am-stale-go-2" "/tmp/gone-go-2" "main" "claude" ""
-    "$bin" >/dev/null 2>&1 || true
+    AM_GC_GRACE_SECS=0 "$bin" >/dev/null 2>&1 || true
     assert_eq "true" "$(registry_exists test-am-stale-go-2 && echo true || echo false)" \
         "go path: throttle keeps stale entry within 60s"
 
@@ -642,38 +630,12 @@ test_auto_title_session() {
 
     setup_isolated_am_dir
 
-    # Use production title functions directly (sourced from lib/registry.sh)
+    # Title validation (length, newlines, the bare "Claude Code" placeholder)
+    # and normalization (reconnecting / " - <dirname>" suffixes) live in Go
+    # only: internal/sessions titleValid / normalizeTitle, covered by
+    # TestTitleValid and TestNormalizeTitle.
 
-    # --- Test 1: Title validation - length check ---
-    assert_cmd_succeeds "title_gen: accepts valid short title" \
-        _title_valid "Short title"
-    assert_cmd_fails "title_gen: rejects title >60 chars" \
-        _title_valid "This is a really really really really really really really long title over 60 chars"
-
-    # --- Test 2: Title validation - newline check ---
-    assert_cmd_fails "title_gen: rejects multiline titles" \
-        _title_valid $'Multi\nline'
-
-    # --- Test 2b: Title validation - Claude's pre-summary placeholder ---
-    assert_cmd_fails "title_gen: rejects the bare 'Claude Code' placeholder" \
-        _title_valid "Claude Code"
-    assert_cmd_succeeds "title_gen: accepts titles that merely mention Claude Code" \
-        _title_valid "Claude Code hooks question"
-
-    # --- Test 2c: Title normalization - Claude's transient suffixes ---
-    local _norm
-    _title_normalize "Fix flaky test - 🔄 Reconnecting…" "/home/u/proj" _norm
-    assert_eq "Fix flaky test" "$_norm" "title_norm: strips the reconnecting suffix"
-    _title_normalize "Fix flaky test - proj" "/home/u/proj" _norm
-    assert_eq "Fix flaky test" "$_norm" "title_norm: strips a trailing ' - <dirname>'"
-    _title_normalize "Fix flaky test - proj - 🔄 Reconnecting" "/home/u/proj" _norm
-    assert_eq "Fix flaky test" "$_norm" "title_norm: strips both decorations"
-    _title_normalize "Fix flaky test - other" "/home/u/proj" _norm
-    assert_eq "Fix flaky test - other" "$_norm" "title_norm: keeps an unrelated ' - x' tail"
-    _title_normalize "Fix flaky test" "" _norm
-    assert_eq "Fix flaky test" "$_norm" "title_norm: no dir, no change"
-
-    # --- Test 3: Integration - registry update on successful title ---
+    # --- Integration - registry update on successful title ---
     registry_add "test-title-reg" "/tmp/test" "main" "claude" ""
     registry_update "test-title-reg" "task" "Refactor API layer"
     local stored_task
@@ -698,39 +660,25 @@ test_auto_title_scan() {
 
     setup_isolated_am_dir
 
-    # Stub tmux_pane_title to return titles based on session name
-    tmux_pane_title() {
-        local target="$1"
-        case "$target" in
-            test-scan-1:*) echo "Fix the login bug in auth" ;;
-            test-scan-2:*) echo "Updated title from pane" ;;
-            test-scan-3:*) echo "" ;;
-            test-scan-4:*) echo "Throttle test title" ;;
-            test-scan-5:*) echo "First scanned title" ;;
-            test-scan-6:*) echo "Existing Title" ;;
-            test-scan-7:*) echo ">>> Clean up the mess" ;;
-            test-scan-10:*) echo "Stale JSONL guard" ;;
-            test-scan-11:*) echo "Sidecar session id" ;;
-            test-scan-12:*) echo "Sidecar pending JSONL" ;;
-            test-scan-13:*) echo "Title that must not land" ;;
-            test-scan-cursor:*) echo "Cursor Agent" ;;
-            *) echo "" ;;
-        esac
-    }
-    tmux_session_pane_target() {
-        echo "$1:.{top}"
-    }
-    tmux_capture_pane() {
-        local target="$1"
-        case "$target" in
-            test-scan-10:*) echo "snapshot for test-scan-10" ;;
-            test-scan-11:*) echo "snapshot for test-scan-11" ;;
-            test-scan-12:*) echo "snapshot for test-scan-12" ;;
-            test-scan-13:*) echo "snapshot for test-scan-13" ;;
-            test-scan-14:*) echo "snapshot for test-scan-14" ;;
-            *) echo "" ;;
-        esac
-    }
+    # The scan runs in bin/am-core, so pane titles and snapshots come from a
+    # fake tmux on PATH (test_helpers.sh) keyed by session name.
+    setup_fake_tmux
+    fake_tmux_title test-scan-1 "Fix the login bug in auth"
+    fake_tmux_title test-scan-2 "Updated title from pane"
+    fake_tmux_title test-scan-3 ""
+    fake_tmux_title test-scan-4 "Throttle test title"
+    fake_tmux_title test-scan-5 "First scanned title"
+    fake_tmux_title test-scan-6 "Existing Title"
+    fake_tmux_title test-scan-7 ">>> Clean up the mess"
+    fake_tmux_title test-scan-10 "Stale JSONL guard"
+    fake_tmux_title test-scan-11 "Sidecar session id"
+    fake_tmux_title test-scan-12 "Sidecar pending JSONL"
+    fake_tmux_title test-scan-13 "Title that must not land"
+    fake_tmux_title test-scan-cursor "Cursor Agent"
+    local _snap_session
+    for _snap_session in test-scan-10 test-scan-11 test-scan-12 test-scan-13 test-scan-14; do
+        fake_tmux_pane "$_snap_session" "snapshot for $_snap_session"
+    done
 
     # --- Test 1: Updates session task from pane title ---
     registry_add "test-scan-1" "/tmp/project" "main" "claude" ""
@@ -1018,7 +966,7 @@ test_auto_title_scan() {
         "scan: Cursor status-only title uses exact transcript first message"
 
     # --- Cleanup ---
-    unset -f tmux_pane_title tmux_session_pane_target tmux_capture_pane
+    teardown_fake_tmux
     teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
@@ -1179,11 +1127,9 @@ test_auto_title_scan_workdir() {
     source "$LIB_DIR/registry.sh"
 
     setup_isolated_am_dir
-    # No pane titles and no Claude project dir: isolate the title half so only
-    # the workdir/branch half acts.
-    tmux_pane_title() { echo ""; }
-    tmux_session_pane_target() { echo "$1:.{top}"; }
-    tmux_capture_pane() { echo ""; }
+    # No pane titles (fake tmux with nothing registered) and no Claude project
+    # dir: isolate the title half so only the workdir/branch half acts.
+    setup_fake_tmux
     local old_home="$HOME"
     export HOME="$AM_DIR/fake_home"
     mkdir -p "$HOME" "$AM_STATE_DIR"
@@ -1238,6 +1184,7 @@ test_auto_title_scan_workdir() {
         "scan: branch blank in a non-git workdir"
 
     export HOME="$old_home"
+    teardown_fake_tmux
     teardown_isolated_am_dir
 }
 

@@ -7,13 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
-const titleScanThrottle = 60 * time.Second
 const titleMaxLen = 60
 
 var leadingNonAlnum = regexp.MustCompile(`^[^[:alnum:]]+`)
@@ -32,51 +32,55 @@ func (u metaUpdate) empty() bool { return !u.setTask && !u.setWorkdir && !u.setB
 // message), the live working directory (`workdir`, from the state hook's .cwd
 // sidecar or `am cd`, stored only when it differs from the launch directory)
 // and the branch (re-read from the effective directory's .git/HEAD, so a
-// checkout in place or a move to another copy both relabel the tab).
-// Throttled to 60s via .title_scan_last, shared with bash auto_title_scan.
-func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
-	if len(sessions) == 0 {
-		return
-	}
-
-	markerPath := filepath.Join(amDir, ".title_scan_last")
+// checkout in place or a move to another copy both relabel the tab). Every
+// registry row is scanned (a row whose tmux session is gone yields an empty
+// title and is left to GC). Throttled to 60s via .title_scan_last unless
+// forced; the marker is stamped on every run. Backs bash auto_title_scan via
+// `am-core titles`.
+func RefreshTitles(e Env, force bool) {
+	markerPath := filepath.Join(e.AmDir, ".title_scan_last")
 	now := time.Now()
-	if last, ok := readScanMarker(markerPath); ok {
-		if now.Sub(last) < titleScanThrottle {
-			return
-		}
+	if !force && !markerDue(markerPath, now) {
+		return
 	}
-	if err := os.WriteFile(markerPath, []byte(strconv.FormatInt(now.Unix(), 10)), 0o644); err != nil {
+	if err := stampMarker(markerPath, now); err != nil {
 		return
 	}
 
-	regPath := filepath.Join(amDir, "sessions.json")
+	e.capDebugLogs()
+	e.titlerLog("scan start (force=%v)", force)
+
+	regPath := e.RegistryPath()
 	registry := ReadRegistry(regPath)
-	if len(registry.Sessions) == 0 {
-		return
-	}
-
-	home := homeDir()
-	stateDir := EnvOr("AM_STATE_DIR", "/tmp/am-state")
 
 	// Phase 1 (unlocked): compute updates against a registry snapshot. Slow
 	// (tmux exec + file reads per session), so it must not run under the
 	// registry lock.
 	updates := make(map[string]metaUpdate)
-	for _, s := range sessions {
-		meta, ok := registry.Sessions[s.Name]
-		if !ok {
-			continue
-		}
+	names := make([]string, 0, len(registry.Sessions))
+	for name := range registry.Sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		meta := registry.Sessions[name]
 		var u metaUpdate
-		u.workdir, u.setWorkdir, u.branch, u.setBranch = refreshedWorkdir(stateDir, s.Name, meta)
-		if title, ok := refreshedTitle(socket, home, stateDir, s, meta); ok {
+		u.workdir, u.setWorkdir, u.branch, u.setBranch = refreshedWorkdir(e.StateDir, name, meta)
+		if u.setWorkdir {
+			e.titlerLog("  %s: workdir=%q", name, u.workdir)
+		}
+		if u.setBranch {
+			e.titlerLog("  %s: branch=%q", name, u.branch)
+		}
+		if title, ok := e.refreshedTitle(name, meta); ok {
 			u.task, u.setTask = title, true
+			e.titlerLog("  %s: title=%q", name, title)
 		}
 		if !u.empty() {
-			updates[s.Name] = u
+			updates[name] = u
 		}
 	}
+	e.titlerLog("scan done: %d scanned, %d updated", len(names), len(updates))
 
 	if len(updates) == 0 {
 		return
@@ -86,7 +90,7 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 	// bash (lib/registry.sh:_registry_lock) and apply only the refreshed
 	// fields — writing back the phase-1 snapshot would clobber concurrent
 	// writers.
-	lock := lockRegistry(amDir)
+	lock := lockRegistry(e.AmDir)
 	defer unlockRegistry(lock)
 
 	fresh := ReadRegistry(regPath)
@@ -116,7 +120,7 @@ func RefreshTitles(amDir, socket string, sessions []TmuxSession) {
 	writeRegistryAtomic(regPath, fresh)
 }
 
-// refreshedWorkdir mirrors lib/registry.sh:_title_scan_refresh_workdir. The
+// refreshedWorkdir is the workdir/branch half of the title scan. The
 // .cwd sidecar (written by the state hook from Claude's tracked tool cwd, or by
 // `am cd`) becomes workdir when it names an existing directory other than the
 // launch directory. The branch is re-read from whichever directory is in
@@ -152,8 +156,8 @@ func refreshedWorkdir(stateDir, name string, meta Session) (workdir string, setW
 // refreshedTitle returns the session's current title when it is valid and
 // differs from the registry task: the agent's pane title, else (Claude / pi /
 // Cursor) the first user message of this session's transcript.
-func refreshedTitle(socket, home, stateDir string, s TmuxSession, meta Session) (string, bool) {
-	title := readPaneTitle(socket, s.Name+":.{top}")
+func (e Env) refreshedTitle(name string, meta Session) (string, bool) {
+	title := readPaneTitle(e.Socket, name+":.{top}")
 	title = leadingNonAlnum.ReplaceAllString(title, "")
 	if meta.AgentType == "pi" {
 		title = piTitleExtract(title)
@@ -167,7 +171,7 @@ func refreshedTitle(socket, home, stateDir string, s TmuxSession, meta Session) 
 		title = normalizeTitle(title, dir)
 	}
 	if !titleValid(title) {
-		// Hysteresis (mirrors lib/registry.sh): a title the session already
+		// Hysteresis: a title the session already
 		// has is kept until the pane paints a new valid one, so transient
 		// placeholders never swap it for the first-message fallback.
 		if meta.Task != "" {
@@ -178,23 +182,18 @@ func refreshedTitle(socket, home, stateDir string, s TmuxSession, meta Session) 
 			// hook wrote; the readers open exactly that transcript. With no
 			// id there is no fallback: the directory's transcript store is
 			// shared with other sessions and with agents outside am.
-			var fallback string
-			if meta.AgentType == "pi" {
-				sid := resolvePiSessionID(home, stateDir, s.Name, meta.Directory)
-				fallback = piFirstUserMessage(meta.Directory, sid)
-			} else if meta.AgentType == "cursor" {
-				transcript := readCursorTranscriptSidecar(stateDir, s.Name)
-				sid := resolveCursorSessionID(home, stateDir, s.Name, meta.Directory, transcript)
-				fallback = cursorFirstUserMessage(meta.Directory, sid, transcript)
-			} else {
-				sid := resolveClaudeSessionID(home, stateDir, s.Name, meta.Directory)
-				fallback = claudeFirstUserMessage(meta.Directory, sid)
+			transcript := ""
+			if meta.AgentType == "cursor" {
+				transcript = e.SidecarTranscript(name)
 			}
+			sid := e.DetectID(name, meta.Directory, meta.AgentType)
+			fallback := FirstMessage(meta.AgentType, meta.Directory, sid, transcript)
 			if len(fallback) > titleMaxLen {
 				fallback = fallback[:titleMaxLen]
 			}
 			if titleValid(fallback) {
 				title = fallback
+				e.titlerLog("  %s: jsonl fallback=%q", name, title)
 			} else {
 				return "", false
 			}
@@ -230,7 +229,7 @@ func readPaneTitle(socket, target string) string {
 	return strings.TrimRight(string(out), "\n")
 }
 
-// normalizeTitle mirrors lib/registry.sh:_title_normalize — strips the
+// normalizeTitle strips the
 // transient decorations Claude Code appends to its terminal title: a trailing
 // " - 🔄 Reconnecting…" segment and a trailing " - <dirname>" that repeats the
 // directory the tab already shows.
@@ -244,7 +243,7 @@ func normalizeTitle(t, dir string) string {
 	return strings.TrimRight(t, " \t")
 }
 
-// titleValid mirrors lib/registry.sh:_title_valid. The bare "Claude Code" is
+// titleValid accepts a pane title as a task name. The bare "Claude Code" is
 // the placeholder Claude paints until a conversation has a summary, not a
 // title; rejecting it lets the JSONL first-message fallback name the tab.
 func titleValid(t string) bool {
@@ -275,7 +274,7 @@ func writeRegistryAtomic(path string, reg Registry) {
 	_ = os.Rename(tmpName, path)
 }
 
-// claudeFirstUserMessage mirrors lib/utils.sh:claude_first_user_message.
+// claudeFirstUserMessage backs the bash claude_first_user_message wrapper.
 // Returns the first user-message text (>10 chars) from exactly the Claude
 // JSONL bound to this session (the id the pane's own hook reported), with
 // tags stripped and whitespace collapsed. The directory only locates the
@@ -395,30 +394,6 @@ func cursorFirstUserMessage(directory, sessionID, transcriptPath string) string 
 	return ""
 }
 
-func readCursorTranscriptSidecar(stateDir, sessionName string) string {
-	b, err := os.ReadFile(filepath.Join(stateDir, sessionName+".transcript"))
-	if err != nil {
-		return ""
-	}
-	path := strings.TrimSpace(string(b))
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return ""
-}
-
-func resolveCursorSessionID(home, stateDir, sessionName, directory, transcriptPath string) string {
-	b, err := os.ReadFile(filepath.Join(stateDir, sessionName+".sid"))
-	if err != nil {
-		return ""
-	}
-	sid := strings.TrimSpace(string(b))
-	if validSessionID.MatchString(sid) && cursorJSONLExists(home, directory, sid, transcriptPath) {
-		return sid
-	}
-	return ""
-}
-
 func extractContent(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -452,11 +427,9 @@ func cleanContent(s string) string {
 }
 
 // titleWorthy is the first-message length gate shared by the Claude, Cursor,
-// and pi transcript readers. It counts characters, not bytes, to match the
-// bash twins (`${#cleaned} -gt 10` in lib/utils.sh): both scanners share one
-// throttle marker, so a byte count here would let a short non-ASCII message
-// through on the Go path that bash rejects, and the two would keep writing
-// different titles.
+// and pi transcript readers. It counts characters, not bytes (the contract
+// the bash readers had: `${#cleaned} -gt 10`), so a short non-ASCII message
+// is rejected the same way regardless of its encoding.
 func titleWorthy(text string) bool {
 	return utf8.RuneCountInString(text) > 10
 }
@@ -469,25 +442,9 @@ func homeDir() string {
 	return h
 }
 
+// validSessionID is the conversation-id character set (bash
+// _sessions_log_valid_id).
 var validSessionID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
-// resolveClaudeSessionID mirrors lib/registry.sh:_sessions_log_detect_id_for_session:
-// the conversation id is the hook-written .sid sidecar (authored by the agent
-// pane itself), verified against the transcript store. There is no
-// directory-based guess — the store is shared with other am sessions and with
-// agents started outside am, so the newest transcript in it is not this
-// session. "" until the pane's first hook fires.
-func resolveClaudeSessionID(home, stateDir, sessionName, dir string) string {
-	b, err := os.ReadFile(filepath.Join(stateDir, sessionName+".sid"))
-	if err != nil {
-		return ""
-	}
-	sid := strings.TrimSpace(string(b))
-	if validSessionID.MatchString(sid) && claudeJSONLExists(home, dir, sid) {
-		return sid
-	}
-	return ""
-}
 
 // piTitleExtract pulls a task candidate out of pi's self-maintained title.
 // "pi - <name> - <base>" -> "<name>" (name may contain " - "; only the
@@ -508,7 +465,7 @@ func piTitleExtract(title string) string {
 	return rest[:idx]
 }
 
-// piFirstUserMessage mirrors lib/utils.sh:pi_first_user_message: exactly the
+// piFirstUserMessage backs the bash pi_first_user_message wrapper: exactly the
 // bound transcript, no id → "".
 func piFirstUserMessage(directory, sessionID string) string {
 	if sessionID == "" {
@@ -555,22 +512,4 @@ func piFirstUserMessage(directory, sessionID string) string {
 		}
 	}
 	return ""
-}
-
-// resolvePiSessionID mirrors resolveClaudeSessionID for pi session files
-// (<timestamp>_<uuid>.jsonl under ~/.pi/agent/sessions/<encoded-cwd>/).
-func resolvePiSessionID(home, stateDir, sessionName, dir string) string {
-	b, err := os.ReadFile(filepath.Join(stateDir, sessionName+".sid"))
-	if err != nil {
-		return ""
-	}
-	sid := strings.TrimSpace(string(b))
-	if !validSessionID.MatchString(sid) {
-		return ""
-	}
-	matches, _ := filepath.Glob(filepath.Join(piSessionsRoot(home), encodedPiSessionDir(dir), "*_"+sid+".jsonl"))
-	if len(matches) == 0 {
-		return ""
-	}
-	return sid
 }

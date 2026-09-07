@@ -82,7 +82,7 @@ func TestRefreshTitlesPreservesRegistryMetadata(t *testing.T) {
 	wantSession := want["sessions"].(map[string]any)["am-title"].(map[string]any)
 	wantSession["task"] = "Updated task"
 
-	RefreshTitles(amDir, "test-socket", []TmuxSession{{Name: "am-title"}})
+	RefreshTitles(testEnv(t, amDir), false)
 
 	got := readJSONDocument(t, regPath)
 	if !reflect.DeepEqual(got, want) {
@@ -377,20 +377,33 @@ func TestResolveSessionIDSidecarOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := resolveClaudeSessionID(home, stateDir, "am-x", dir); got != "" {
+	env := Env{Home: home, StateDir: stateDir, IdentityDir: filepath.Join(tmp, "identities")}
+	if got := env.DetectID("am-x", dir, "claude"); got != "" {
 		t.Errorf("no sidecar: got %q, want empty", got)
 	}
 	if err := os.WriteFile(filepath.Join(stateDir, "am-x.sid"), []byte("mine\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolveClaudeSessionID(home, stateDir, "am-x", dir); got != "mine" {
+	if got := env.DetectID("am-x", dir, "claude"); got != "mine" {
 		t.Errorf("sidecar: got %q, want mine", got)
 	}
 	if err := os.WriteFile(filepath.Join(stateDir, "am-x.sid"), []byte("gone\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolveClaudeSessionID(home, stateDir, "am-x", dir); got != "" {
+	if got := env.DetectID("am-x", dir, "claude"); got != "" {
 		t.Errorf("sidecar without transcript: got %q, want empty (no substitute)", got)
+	}
+	// The durable identity (mirrored for reboot recovery) wins over the
+	// ephemeral sidecar: /tmp is gone after a reboot, the identity dir is not.
+	writeFile(t, filepath.Join(env.IdentityDir, "am-x.sid"), "mine\n")
+	if got := env.DetectID("am-x", dir, "claude"); got != "mine" {
+		t.Errorf("durable identity: got %q, want mine", got)
+	}
+	if got := env.SidecarID("am-x"); got != "mine" {
+		t.Errorf("SidecarID prefers the durable copy: got %q", got)
+	}
+	if got := env.DetectID("am-x", dir, "codex"); got != "mine" {
+		t.Errorf("codex: unverified sidecar id, got %q", got)
 	}
 
 	piDir := filepath.Join(piSessionsRoot(home), encodedPiSessionDir(dir))
@@ -400,8 +413,12 @@ func TestResolveSessionIDSidecarOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(piDir, "2026-07-19T08-00-00-000Z_pi-stranger.jsonl"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := resolvePiSessionID(home, stateDir, "am-pi", dir); got != "" {
+	if got := env.DetectID("am-pi", dir, "pi"); got != "" {
 		t.Errorf("pi no sidecar: got %q, want empty", got)
+	}
+	writeFile(t, filepath.Join(stateDir, "am-pi.sid"), "pi-stranger\n")
+	if got := env.DetectID("am-pi", dir, "pi"); got != "pi-stranger" {
+		t.Errorf("pi sidecar verified against the store: got %q", got)
 	}
 }
 
@@ -432,7 +449,7 @@ func TestRefreshTitlesWorkdirAndBranch(t *testing.T) {
 	}})
 	refresh := func() Session {
 		os.Remove(filepath.Join(amDir, ".title_scan_last"))
-		RefreshTitles(amDir, "test-socket", []TmuxSession{{Name: "am-wd"}})
+		RefreshTitles(testEnv(t, amDir), false)
 		return ReadRegistry(regPath).Sessions["am-wd"]
 	}
 

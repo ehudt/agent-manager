@@ -371,12 +371,14 @@ func LoadBrowserEntries() []Entry {
 }
 
 func loadActiveEntries(amDir, socket string, tmuxSessions []TmuxSession, now time.Time) []Entry {
+	env := LoadEnv()
+	env.AmDir, env.Socket = amDir, socket
+
 	// Reap orphan registry rows + hook state files for tmux sessions that are
-	// gone. Throttled (60s, shared with bash registry_gc via .gc_last) so it's
-	// cheap on the hot fzf-reload path. Runs even when no live sessions remain
-	// so the last orphan rows get cleaned up.
-	stateDir := EnvOr("AM_STATE_DIR", "/tmp/am-state")
-	ReapOrphans(amDir, stateDir, tmuxSessions)
+	// gone. Throttled (60s via .gc_last, the marker `am-core tick` uses too)
+	// so it's cheap on the hot fzf-reload path. Runs even when no live
+	// sessions remain so the last orphan rows get cleaned up.
+	ReapOrphans(env.AmDir, env.StateDir, env.ListLive)
 
 	if len(tmuxSessions) == 0 {
 		return nil
@@ -389,7 +391,7 @@ func loadActiveEntries(amDir, socket string, tmuxSessions []TmuxSession, now tim
 	// Refresh registry task fields from pane titles (and Claude JSONL fallback)
 	// before reading. Throttled to once per 60s via shared marker file, so this
 	// is cheap on the hot fzf-reload path.
-	RefreshTitles(amDir, socket, tmuxSessions)
+	RefreshTitles(env, false)
 
 	registry := ReadRegistry(filepath.Join(amDir, "sessions.json"))
 	nowUnix := now.Unix()

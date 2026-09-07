@@ -200,6 +200,14 @@ main() {
     local worker_ids=()
     local pids=()
 
+    # The bash maintenance wrappers exec bin/am-core, and the browser path
+    # uses am-browse / am-list-internal. Build them from the current sources
+    # first, so a stale or missing binary cannot mask a regression.
+    if command -v go >/dev/null 2>&1; then
+        make -s -C "$SCRIPT_DIR/.." build >/dev/null \
+            || echo "test_all: make build failed; the bash wrappers will run against stale binaries" >&2
+    fi
+
     # Launch workers in parallel, each with its own tmux socket
     # PID in socket name allows concurrent test_all.sh runs
     local _run_id=$$

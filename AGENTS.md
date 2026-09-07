@@ -9,6 +9,7 @@ Architecture reference for AI agents working with this codebase.
 - Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
 - Run live state-detection labs: `tests/live_lab/run.sh` (Claude), `run_cursor.sh` (Cursor), and `run_pi.sh` (pi). They record hook payloads, pane titles, and transitions; they are opt-in and spend tokens.
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
+- Build the Go binaries: `make -s build` → `bin/am-list-internal`, `bin/am-browse`, `bin/am-core`; `go vet ./... && go test ./...` for the Go side. `tests/test_all.sh` builds them first, because the bash maintenance wrappers exec `bin/am-core`
 
 ## Versioning
 
@@ -32,6 +33,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 ## Gotchas
 
 - Registry writes must go through `registry_add/update/remove` (or Go's `lockRegistry`-wrapped paths) — a bare jq-rewrite of `sessions.json` bypasses the write lock and reintroduces lost updates. Don't spawn background jobs while `_registry_lock` is held (children inherit the lock fd and keep the lock alive until they exit)
+- Periodic maintenance and store queries run in `bin/am-core`; the bash names (`auto_title_scan`, `registry_gc`, `sessions_log_scan`, `sessions_log_gc`, `sessions_log_restorable`, `_sessions_log_detect_id_for_session`, `_sessions_log_jsonl_exists`, `*_first_user_message`) are one-line wrappers. Consequences: a bash function stub for `tmux_pane_title` / `tmux_capture_pane` no longer reaches the scan (tests put a fake `tmux` on PATH via `setup_fake_tmux`); `am_core` passes `AM_DIR`, `AM_SESSIONS_LOG`, the socket, the prefix, and `AM_STATE_DIR` / `AM_IDENTITY_DIR` explicitly, so anything else the Go side reads (`AM_GC_GRACE_SECS`, `AM_TITLER_DEBUG`, `AM_PI_SESSIONS_DIR`, `AM_CURSOR_PROJECTS_DIR`, `HOME`) must be exported; a missing binary is one stderr line, and the periodic wrappers return 0 so the status-bar tick never fails
 - Sourced libs derive their own dir as `_<MODULE>_LIB_DIR` from `AM_LIB_DIR` (exported by the `am` entry point); standalone scripts like `lib/status-bar` set their own `SCRIPT_DIR`
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
 - The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
@@ -47,7 +49,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 |------|---------|
 | `am` | Main entry point. Handles CLI args, routes to commands. |
 | `lib/utils.sh` | Shared: colors, logging, time formatting, paths, agent JSONL extraction |
-| `lib/registry.sh` | JSON storage for session metadata, sessions log (restore), auto-titling |
+| `lib/registry.sh` | JSON storage for session metadata (locked jq rewrites), sessions-log append/update/snapshot, and the thin bash wrappers (`am_tick`, `auto_title_scan`, `registry_gc`, `sessions_log_scan/gc/restorable`, detect-id, jsonl-exists) that exec `bin/am-core` |
 | `lib/recovery.sh` | Durable desired-session store, boot/machine identity, reboot preflight, and progressive recovery worker |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
@@ -56,7 +58,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/doctor.sh` | `am doctor [session] [--capture]`: one report with every state input (registry row, tmux panes/titles, hook sidecars, identity, transcript, process tree, desired record, resolver layer via `AM_STATE_DEBUG_SINK`) plus the version-drift canary (installed agents vs `tests/live_lab/VERIFIED`, observed hook payload keys vs the fields the hook reads) |
 | `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
 | `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
-| `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
+| `cmd/am-core/main.go` | Compiled Go back end of the bash maintenance and query wrappers: `tick` (title/workdir/branch refresh + restore scan + gc, one status-bar tick), `titles`, `restore-scan`, `gc`, `slog-gc`, `restorable`, `first-message`, `detect-id`, `jsonl-exists`. Paths from the environment (`AM_DIR`, `AM_STATE_DIR`, `AM_IDENTITY_DIR`, `AM_SESSIONS_LOG`, `AM_TMUX_SOCKET`, `AM_SESSION_PREFIX`, `HOME`) with utils.sh's defaults |
+| `internal/sessions/` | Shared Go package: tmux queries, registry parsing and locking, formatting, title/workdir/branch refresh (`titles.go`), session identity and transcript readers (`identity.go`), sessions-log rewrites (`slog.go`), the periodic maintenance entry points and GC (`maintenance.go`, `reap.go`), environment/paths (`env.go`) |
 | `lib/fzf.sh` | Browser launcher (`fzf_main`), directory picker, restore picker, `am list` helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
 | `lib/status-bar` | Standalone script: renders whole bottom bar as a clickable session-tab strip (idx, state glyph, dir/branch label, title, age). Adaptive layout, one fit shared by every tab (`_fit_strip`): rungs are full `dir/branch · title` → branch-or-dir `· title` (water-filled, ≥12 chars/field) → title only (label for untitled sessions) → no ages; fields truncate with a 1-col `…` and default branches (main/master) are hidden. Tab age is time-in-state (state-file mtime) for waiting_* and running sessions, tmux activity otherwise. The dir half of the label is the registry `workdir` (where the agent moved) when set, else `directory`. Also writes `@am_sidebar` (label-only pane-border variant). `AM_STATUS_WIDTH` overrides the client-width probe for tests and ad-hoc inspection. |
@@ -83,7 +86,9 @@ am new ~/project → agent_launch() → tmux_create_session(name, dir, VAR=VAL..
 am new -W branch → agent_workspace_allocate(branch) → $workspace_cmd (AM_BRANCH=branch) → agent_launch(dir, ...)
 am id → current_session() → $AM_SESSION_NAME, else attached session on the am tmux server
 am cd [dir] → current_session() → agent_set_workdir() → .cwd sidecar + registry workdir/branch → am_refresh_sidebar_cache()
-agent cd's (Bash tool) → Claude hook payload cwd → state-hook.sh writes /tmp/am-state/<session>.cwd → auto_title_scan / RefreshTitles → registry workdir + branch (from .git/HEAD) → tab label
+agent cd's (Bash tool) → Claude hook payload cwd → state-hook.sh writes /tmp/am-state/<session>.cwd → am-core tick (RefreshTitles) → registry workdir + branch (from .git/HEAD) → tab label
+status-bar tick / am list → am_tick() → am-core tick → RefreshTitles (.title_scan_last) → RestoreScan (.restore_scan_last) → GC rows (.gc_last) + extras (.gc_extras_last)
+auto_title_scan / registry_gc / sessions_log_scan / sessions_log_gc / sessions_log_restorable / _sessions_log_detect_id_for_session / _sessions_log_jsonl_exists / *_first_user_message → am_core <sub> → bin/am-core (env: AM_DIR, AM_SESSIONS_LOG, AM_STATE_DIR, AM_IDENTITY_DIR, socket, prefix)
 am list-internal → am-list-internal (Go binary) → stdout
 am new -p name → _cmd_new_apply_preset(name, fill=true) → preset fields where flags left gaps, preset args first → agent_launch()
 form Preset field → --preset=name in the flags field → _cmd_new_apply_preset(name, fill=false) (args + shell only)
@@ -201,10 +206,11 @@ running/background/waiting_user from a conversation the pane never ran,
 overwrote its `.sid`/`.transcript` sidecars, and left it stuck at
 `waiting_user`. The same rule governs identity and titles: a session's
 conversation id comes only from the sidecar its own hook wrote
-(`_sessions_log_detect_id_for_session` / Go `resolveClaudeSessionID`,
-`resolvePiSessionID`), and the first-message title fallback opens exactly
-that transcript (`claude_first_user_message(dir, sid)` and its pi/Cursor/Go
-twins) — never the newest file in the directory's transcript store. A
+(Go `DetectID`; the bash `_sessions_log_detect_id_for_session` is a wrapper
+over it), and the first-message title fallback opens exactly that
+transcript (Go `FirstMessage`; `claude_first_user_message(dir, sid)` and its
+pi/Cursor wrappers) — never the newest file in the directory's transcript
+store. A
 session whose hooks have not fired yet has no identity, no
 transcript-derived title, and nothing to restore; the next hook event fills
 all three in.
@@ -441,7 +447,7 @@ am restore
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
-- `auto_title_scan([force])` - Piggyback scanner: reads agent pane titles and updates session task field (throttled 60s). For Claude and pi sessions, falls back to the JSONL first user message when the pane title is empty/invalid. Mirrored in Go (`internal/sessions.RefreshTitles`) for the am-browse / am-list-internal path; both share the `$AM_DIR/.title_scan_last` throttle marker. Before the title logic (so untitled sessions are covered too) it refreshes each session's workdir field (from the .cwd sidecar) and branch field (from the effective directory's .git/HEAD) via `_title_scan_refresh_workdir`; Go mirrors that in `refreshedWorkdir`. Always chains into `sessions_log_scan` (even when title-throttled), which does the bash-only restore work — rolling snapshots, session_id backfill, sessions-log task and branch sync — on its own `$AM_DIR/.restore_scan_last` marker so Go stamping can't starve it.
+- `auto_title_scan([force])` - Wrapper over `am-core titles` (Go `RefreshTitles`, then `RestoreScan`): for every registry row, refresh the workdir field (from the .cwd sidecar) and the branch field (from the effective directory's .git/HEAD), then the task field from the agent pane title; when the title is empty or invalid and the row has no task, fall back to the first user message of the transcript bound by the session's own hook sidecar (`DetectID` + `FirstMessage`); an invalid title never replaces an existing task (hysteresis). Throttled 60s on `$AM_DIR/.title_scan_last`, shared with the am-browse / am-list-internal path (which calls `RefreshTitles` in-process). Always chains into `sessions_log_scan` (even when title-throttled), which runs on its own `$AM_DIR/.restore_scan_last` marker so the browser stamping first can't starve it.
 - `agent_resume_args(agent_type, session_id)` - Build agent-specific resume args (claude → --resume, pi → --session)
 
 **Pane environment / workspaces:**
@@ -467,9 +473,9 @@ am restore
 - `recovery_revoke_identity_rebind()` - Drop the `.rebind` marker when a launch fails, so the next hook event cannot re-pin a stale identity
 - `recovery_sync_live_sidecars()` / `_recovery_mirror_sidecar()` / `recovery_desired_set_workspace()` - On browser open, mirror each live session's `.cwd`/`.bg` sidecars into the durable identity dir and refresh the desired record's workspace fields
 
-**Title helpers:**
-- `_title_valid(title)` - Validate title (<=60 chars, no newlines, not the bare `Claude Code` placeholder)
-- `_title_normalize(title, effective_dir, out_var)` - Strip Claude's transient decorations (a trailing ` - 🔄 Reconnecting…` segment, a trailing ` - <dirname>`); Go twin `normalizeTitle`. The scan also applies hysteresis: an invalid pane title never replaces an existing task (the first-message fallback only fills an empty one), in bash and Go alike
+**Title helpers (Go only, `internal/sessions/titles.go`):**
+- `titleValid` - <=60 chars, no newlines, not the bare `Claude Code` placeholder
+- `normalizeTitle` - Strip Claude's transient decorations (a trailing ` - 🔄 Reconnecting…` segment, a trailing ` - <dirname>`); `piTitleExtract` / `cursorTitleExtract` handle pi's `pi - <name> - <dir>` shape and Cursor's status suffixes. The scan applies hysteresis: an invalid pane title never replaces an existing task (the first-message fallback only fills an empty one)
 
 **Presets (lib/presets.sh):**
 - `am_preset_names()` / `am_preset_get(name)` / `am_preset_field(name, field)` - Read presets from config.json (the args field prints one per line; workspace and shell print true/false)
@@ -500,24 +506,25 @@ am restore
 - `_install_is_stale()` / `_install_stamp_write()` / `_install_refresh([quiet])` / `_install_refresh_if_stale()` - Stamp compare, quiet idempotent refresh (skills, Go build when sources newer, tmux.conf), browser hook (`AM_NO_INSTALL_REFRESH=1` disables); `am install --refresh` runs it by hand
 
 **Registry (JSON metadata):**
-- `registry_add/get_field/get_fields/update/remove` - CRUD for sessions.json. All writes are read-jq-rename cycles serialized under an exclusive lock on `$AM_REGISTRY.lock` (`_registry_lock`/`_registry_unlock`: the flock CLI on Linux, a perl flock syscall on an inherited fd on macOS — no flock CLI there; **not reentrant**, don't nest). The Go twin (`internal/sessions/lock.go:lockRegistry`) takes the same lock via `syscall.Flock`, so bash and Go writers can't lost-update each other; `RefreshTitles` computes titles unlocked, then re-reads and applies under the lock
-- `registry_gc()` - Remove entries for dead tmux sessions. Two independently throttled halves: registry rows + hook state files (incl. `.sid` sidecars) on `$AM_DIR/.gc_last` — one lock, tmux snapshot taken inside it, one jq rewrite, rows younger than `AM_GC_GRACE_SECS` (default 5) spared — mirrored in Go (`internal/sessions.ReapOrphans`) for the am-browse / am-list-internal path; bash-only extras (`sessions_log_gc`, `sessions_log_snapshot_gc`, orphan state-file sweep, leaked temp sweep: `.sessions-log.*` >60s, `.dir_repo_cache.tmp.*` and `*.log.??????` >1h) on `$AM_DIR/.gc_extras_last`. The status-bar tick calls `registry_gc` after `auto_title_scan`, so the extras half runs even when nobody opens `am status`
-- `_registry_tmp_guard(tmp)` / `_registry_tmp_release()` - Signal-safe temp files for the sessions-log rewrites: lock first, then mktemp, then trap HUP/INT/TERM/PIPE to remove the temp, release the lock, restore the caller's traps and re-raise
-- `_titler_log(msg)` - Title-scan trace, gated on `AM_TITLER_DEBUG=1` (was unconditional and grew `titler.log` to 84MB); `_am_debug_logs_cap` caps `titler.log`, `.state-debug.log`, `.hook-debug.log` at 20MB via `am_log_cap` on each unthrottled scan
+- `registry_add/get_field/get_fields/update/remove` - CRUD for sessions.json. All writes are read-jq-rename cycles serialized under an exclusive lock on `$AM_REGISTRY.lock` (`_registry_lock`/`_registry_unlock`: the flock CLI on Linux, a perl flock syscall on an inherited fd on macOS — no flock CLI there; **not reentrant**, don't nest). The Go twin (`internal/sessions/lock.go:lockRegistry`) takes the same lock via `syscall.Flock`, so bash and Go writers can't lost-update each other; `RefreshTitles` computes titles unlocked, then re-reads and applies under the lock. The bash writers lock first and mktemp inside the lock (a writer blocked on the lock owns no temp file; the temp is removed when jq or the rename fails)
+- `am_tick([force])` - One maintenance tick, `am-core tick`: `RefreshTitles`, `RestoreScan`, and both GC halves, each on its own marker. The status-bar tick and `am list` call this and nothing else
+- `registry_gc([force])` - Wrapper over `am-core gc` (Go `GC`); prints the number of registry rows removed. Two independently throttled halves: registry rows + hook state files (incl. `.sid`/`.transcript`/`.cwd`/`.bg` sidecars) on `$AM_DIR/.gc_last` — `ReapOrphans`, also run by the am-browse / am-list-internal path: one lock, tmux snapshot taken inside it, one rewrite, rows younger than `AM_GC_GRACE_SECS` (default 5) spared; extras on `$AM_DIR/.gc_extras_last`: orphan state files and sidecars under the session prefix, `SessionsLogGC`, `SnapshotGC` (unreferenced snapshots older than 10 min), leaked temp sweep (`.sessions-log.*` >60s, `.dir_repo_cache.tmp.*` and `*.log.??????` >1h)
+- `_registry_tmp_guard(tmp)` / `_registry_tmp_release()` - Signal-safe temp files for the bash sessions-log rewrites (`sessions_log_update`): lock first, then mktemp, then trap HUP/INT/TERM/PIPE to remove the temp, release the lock, restore the caller's traps and re-raise
+- Titler trace: `AM_TITLER_DEBUG=1` makes the Go scan append to `$AM_DIR/titler.log` (off by default; an ungated version once grew it to 84MB). Each unthrottled title scan caps `titler.log`, `.state-debug.log`, `.hook-debug.log` at 20MB, keeping the newest half (Go `capLog`)
 
 **Sessions log (for restore):**
 - `sessions_log_append(session_name, directory, branch, agent_type, [task])` - Append session to `~/.agent-manager/sessions_log.jsonl`
 - `sessions_log_update(session_name, field, value)` - Update field in most recent log entry for a session
 - `sessions_log_snapshot(session_name, [snapshot_key])` - Capture pane text to `~/.agent-manager/snapshots/`
-- `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude, Codex, Cursor, and pi sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. Ephemeral and durable hook sidecars are authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
-- `sessions_log_gc()` - Remove entries whose JSONL no longer exists
-- `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
-- `_sessions_log_detect_id_for_session(session_name, directory, [agent])` - The conversation id bound to a session: the sidecar its own hook wrote (ephemeral `.sid`, else the durable identity), verified against the agent's transcript store. No directory-based guess — the store is shared with other sessions and with agents outside am. Go twins `resolveClaudeSessionID` / `resolvePiSessionID` / `resolveCursorSessionID`
+- `sessions_log_scan([force])` - Wrapper over `am-core restore-scan` (Go `RestoreScan`): rolling pane snapshots + session_id binding + task/branch sync into the log for live Claude, Codex, Cursor, and pi sessions that have a log entry (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. Ephemeral and durable hook sidecars are authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes) and the snapshot is re-keyed; with no sidecar nothing is guessed. All log updates of one scan are a single locked rewrite
+- `sessions_log_gc()` - Wrapper over `am-core slog-gc` (Go `SessionsLogGC`): drop entries whose transcript is gone (and their snapshot) and id-less entries older than 24h; lines this version cannot parse are kept verbatim
+- `sessions_log_restorable()` - Wrapper over `am-core restorable` (Go `Restorable`): raw JSONL lines of sessions that can be restored (resumable agent, id bound, not alive, transcript present), newest first, one per conversation id
+- `_sessions_log_detect_id_for_session(session_name, directory, [agent])` - Wrapper over `am-core detect-id` (Go `DetectID`): the conversation id bound to a session — the sidecar its own hook wrote (durable identity first, then the ephemeral `.sid`), verified against the agent's transcript store (codex ids are taken as-is). No directory-based guess — the store is shared with other sessions and with agents outside am
 - `_sessions_log_field(session_name, field)` - Read a field from the most recent sessions-log entry for a session
-- `_sessions_log_jsonl_exists(directory, session_id, [agent])` - Check if JSONL still exists (agent defaults to claude)
+- `_sessions_log_jsonl_exists(directory, session_id, [agent], [transcript_path])` - Wrapper over `am-core jsonl-exists` (Go `JSONLExists`): whether the transcript still exists (agent defaults to claude; cursor checks the hook-reported transcript path first)
+- `_sessions_log_sidecar_id(session_name)` / `_sessions_log_sidecar_transcript(session_name)` - First line of the ephemeral or durable `.sid` / `.transcript` sidecar (bash readers for `agent_kill`)
 - `_slog_encode_pi_dir(directory)` - Encode directory path for pi session storage (strip leading slash, replace [/\:] with -, wrap with --)
 - `_pi_sessions_root()` - Return pi sessions root (~/.pi/agent/sessions)
-- `_pi_title_extract(raw_title)` - Extract task from pi pane title (strips cwd prefix)
 
 **State detection (lib/state.sh):**
 - `agent_get_state(session_name)` - Public entry: checks existence, looks up registry fields, delegates to `_state_resolve`, and returns one canonical lifecycle state. State-file reads and `am wait --state` accept the pre-0.12 `waiting_*` aliases, but all public output is canonical.
@@ -533,12 +540,12 @@ am restore
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
 - `am_file_mtime(file, [out_var])` / `am_files_mtime(assoc, files...)` - Portable mtime, flavor picked once from `$OSTYPE` (no probe fork); the batched form is one stat call for all files (status-bar tick, install fingerprint)
-- `am_log_cap(file, max_bytes)` - Keep the newest half of a log (whole lines, temp + rename) once it exceeds the cap
+- `am_core(subcommand, args...)` - Run `$AM_ROOT_DIR/bin/am-core` with the caller's effective paths passed explicitly (`AM_DIR`, `AM_SESSIONS_LOG`, `AM_TMUX_SOCKET`, `AM_SESSION_PREFIX`, and `AM_STATE_DIR` / `AM_IDENTITY_DIR` when set) — bash derives them after sourcing and tests re-point them, so exports cannot be trusted. Missing binary: one stderr line, return 127; the periodic wrappers turn that into 0, the query wrappers into a failed lookup
 - `am_mkdir_private(dir)` - `mkdir -p` with mode 700 (state, log, results, queue dirs)
 - `git_head_branch(dir, [out_var])` - Fork-free branch lookup: walk up to the nearest `.git` (dir or worktree/submodule pointer file), read HEAD → branch name, 8-char sha when detached, empty outside a repo. `detect_git_branch` delegates to it; Go twin `GitHeadBranch`
-- `claude_first_user_message(dir, session_id)` - First user message of exactly the Claude transcript bound to a session; the directory only locates the per-project store. No id → empty (never the newest file in the store)
-- `pi_first_user_message(dir, session_id)` - Pi twin, same contract
-- `cursor_first_user_message(dir, [session_id], [transcript_path])` - Cursor twin: the hook-reported transcript path, else the standard layout addressed by id; neither → empty
+- `claude_first_user_message(dir, session_id)` - Wrapper over `am-core first-message claude` (Go `FirstMessage`): first user message of exactly the Claude transcript bound to a session; the directory only locates the per-project store. No id → empty (never the newest file in the store). Used by the preview and doctor scripts
+- `pi_first_user_message(dir, session_id)` - Pi twin, same contract (`AM_PI_SESSIONS_DIR` overrides the store root)
+- `cursor_first_user_message(dir, [session_id], [transcript_path])` - Cursor twin: the hook-reported transcript path, else the standard layout addressed by id (`AM_CURSOR_PROJECTS_DIR` overrides the root); neither → empty
 
 **tmux:**
 - `tmux_create_session(name, dir, [VAR=VALUE...])` - New detached session; env args are passed as new-session -e and stored in the session environment so later splits inherit them
@@ -603,7 +610,8 @@ Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir`
 | Modify session display | `internal/sessions/sessions.go` → `FormatDisplayBase()` |
 | Add metadata field | `lib/registry.sh` → `registry_add()` |
 | Change preview content | `lib/preview` (session), `lib/dir-preview` (directory picker) |
-| Change title source | `lib/registry.sh` → `auto_title_scan()` |
+| Change title source | `internal/sessions/titles.go` → `refreshedTitle` (the bash `auto_title_scan` only execs `am-core titles`) |
+| Add periodic maintenance or a store query | `internal/sessions/maintenance.go` (+ `identity.go` / `slog.go`), a subcommand in `cmd/am-core/main.go`, a bash wrapper via `am_core` in `lib/registry.sh` or `lib/utils.sh`; Go parity test in `maintenance_test.go` (fake tmux: `fakeTmux`; bash: `setup_fake_tmux`) |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
 | Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch (Workspace/Branch are conditional on `am_workspace_cmd`, so field indices only shift when it is configured) |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |

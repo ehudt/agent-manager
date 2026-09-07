@@ -126,12 +126,12 @@ config). Verified installed live.
 
 | Store | Path | Tense | Contract |
 |---|---|---|---|
-| Registry | `~/.agent-manager/sessions.json` | present | Live sessions only. Written by launch/kill/title-scan; read by everything. GC'd against actual tmux sessions (`registry_gc`, mirrored in Go as `ReapOrphans`). |
+| Registry | `~/.agent-manager/sessions.json` | present | Live sessions only. Written by launch/kill/title-scan; read by everything. GC'd against actual tmux sessions (Go `ReapOrphans`; the bash `registry_gc` execs `am-core gc`). |
 | Hook state + sid sidecar | `/tmp/am-state/<session>[.sid]` | now | One word per session; **mtime = entry time**. Written by the hook (plus one self-heal in the resolver). |
 | Desired sessions + durable identity | `~/.agent-manager/desired_sessions.json` and `identities/<session>.*` | future | Exact conversation identity, safe launch profile, and user intent to keep a session open. Runtime sidecars are mirrored durably because `/tmp` disappears on reboot. |
 | Sessions log + snapshots | `~/.agent-manager/sessions_log.jsonl` | past | Append-only afterlife. Rolling pane snapshots and session-id backfill feed `am restore`; entries GC'd when the Claude JSONL disappears. |
 | Pane logs | `/tmp/am-logs/<session>/{agent,shell}.log` | now | Streamed scrollback via tmux pipe-pane; powers `am peek --follow/--history`. Transport, not truth. |
-| Throttle markers & caches | `$AM_DIR/.title_scan_last · .gc_last · .list_cache …` | — | Coordination, not data. Bash and Go share markers; bash-only work runs on *separate* markers (`.gc_extras_last`, `.restore_scan_last`) so Go stamping can't starve it. Hooks delete caches to force fast refresh. |
+| Throttle markers & caches | `$AM_DIR/.title_scan_last · .restore_scan_last · .gc_last · .gc_extras_last · .list_cache …` | — | Coordination, not data. All four markers are stamped by Go (`am-core tick` from the status bar and `am list`; am-browse / am-list-internal stamp only `.title_scan_last` and `.gc_last` in-process). The restore scan and the gc extras keep *separate* markers so the browser stamping first can't starve them. Hooks delete caches to force fast refresh. |
 
 **Rule of thumb:** registry = present tense, sessions log = past tense,
 state dir = right now, desired sessions = future intent. A new fact's tense
@@ -167,16 +167,25 @@ binding its own hooks established — the sidecar wins, then the
 already-logged sid. There is no guess: a session whose hooks never fired has
 no id and does not appear in the restore picker.
 
-## Performance doctrine: the bash/Go mirror and the fork budget
+## Performance doctrine: Go owns the stores, bash owns the hot path
 
-Correctness logic is written once in bash; the *hot paths* — session list
-(`am-list-internal`), browser TUI (`am-browse`), title refresh, orphan
-reaping — are mirrored in Go under `internal/sessions/`. Two disciplines
-keep the mirror honest:
+Store logic is written once, in Go under `internal/sessions/`: the session
+list (`am-list-internal`), the browser TUI (`am-browse`), and the periodic
+maintenance and store queries (`am-core`: title/workdir/branch refresh,
+restore scan, gc, sessions-log pruning, restorable list, session-id
+detection, first-message readers). Bash keeps the CLI, launch/kill, state
+resolution, and the fork-free helpers the status bar needs per tick
+(`git_head_branch`, `format_time_ago`); its maintenance functions are thin
+wrappers that exec `bin/am-core` with the caller's paths. Two disciplines
+keep this honest:
 
-- **Shared markers, split responsibilities.** Both sides throttle on the
-  same files, but work only bash does runs on its own markers so the Go
-  side stamping first can't starve it.
+- **Wrappers, not twins.** A bash function whose body would duplicate Go
+  logic becomes an `am_core` call; parity tests for the moved logic live in
+  Go (`maintenance_test.go`, fake tmux on PATH), and the bash tests keep
+  their end-to-end assertions through the wrapper (`setup_fake_tmux`).
+  Markers stay split (`.title_scan_last` / `.restore_scan_last`, `.gc_last`
+  / `.gc_extras_last`) because the browser path stamps only the first of
+  each pair in-process.
 - **Fork-frugality in bash.** The status bar runs on the attach hot path;
   it resolves state for all sessions from *bulk fixtures* (one `ps`, one
   tmux call, nameref maps into `_state_resolve`) and lookup tables instead

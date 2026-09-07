@@ -278,7 +278,7 @@ Sessions are titled via `auto_title_scan()`, a piggyback scanner that runs durin
 
 Key implementation details:
 - Agents set the terminal title via escape sequences; tmux exposes it as `#{pane_title}`
-- Rejects titles over 60 chars or multiline (`_title_valid`)
+- Rejects titles over 60 chars or multiline (Go `titleValid`)
 - Logs to `~/.agent-manager/titler.log` for debugging
 
 ## Dependencies

@@ -18,6 +18,7 @@ __pycache__/
 # Compiled Go binaries
 bin/am-list-internal
 bin/am-browse
+bin/am-core
 
 .evolver/
 
