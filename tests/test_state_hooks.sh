@@ -597,6 +597,58 @@ test_state_hooks() {
         "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"codex-resumed\",\"cwd\":\"$real_project_dir\"}"
     assert_eq "codex-resumed" "$(cat "$identity_dir/am-codex.sid" 2>/dev/null || echo)" \
         "Codex recovered process: exact identity consumes rebind"
+
+    # --- Same-family identity gate on the cwd fallback. Observed live: an
+    #     interactive Claude started from Obsidian's terminal plugin in
+    #     ~/obsidian (no AM_SESSION_NAME / TMUX_PANE) cwd-matched the am
+    #     session launched there and drove its tab through running /
+    #     background / waiting_user from a conversation the pane never ran,
+    #     overwriting the .sid/.transcript sidecars along the way. ---
+    local gate_registry="$tmp_dir/gate.json"
+    jq -n --arg dir "$real_project_dir" \
+        '{sessions: {"am-gate": {name: "am-gate", directory: $dir, branch: "main", agent_type: "claude", task: "t"}}}' \
+        > "$gate_registry"
+    rm -f "$state_dir/am-gate" "$state_dir/am-gate.sid" "$state_dir/am-gate.transcript" \
+        "$identity_dir/am-gate.sid" "$identity_dir/am-gate.transcript" "$identity_dir/am-gate.rebind"
+
+    # The pane's own Claude (env-resolved) pins the identity.
+    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-gate" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"session_id\":\"pane-conv\",\"transcript_path\":\"$tmp_dir/pane.jsonl\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "pane-conv" "$(cat "$identity_dir/am-gate.sid" 2>/dev/null || echo)" \
+        "identity gate: pane hook pins the durable identity"
+    assert_eq "ready" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
+        "identity gate: pane hook writes state"
+
+    # A foreign Claude in the same directory, cwd-matched, other conversation.
+    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"obsidian-conv\",\"transcript_path\":\"$tmp_dir/obsidian.jsonl\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "ready" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
+        "identity gate: foreign cwd-matched conversation leaves state untouched"
+    assert_eq "pane-conv" "$(cat "$state_dir/am-gate.sid" 2>/dev/null || echo)" \
+        "identity gate: foreign conversation leaves the sid sidecar untouched"
+    assert_eq "$tmp_dir/pane.jsonl" "$(cat "$state_dir/am-gate.transcript" 2>/dev/null || echo)" \
+        "identity gate: foreign conversation leaves the transcript sidecar untouched"
+
+    # Same conversation via the cwd fallback (a pane predating the env
+    # export): still accepted.
+    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"pane-conv\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "running" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
+        "identity gate: matching id via cwd fallback still writes state"
+
+    # Id-less payload via cwd: accepted as before (nothing to compare).
+    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+    assert_eq "ready" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
+        "identity gate: id-less cwd-matched payload still writes state"
+
+    # A pending rebind (recovery restarted the process) lifts the gate.
+    : > "$identity_dir/am-gate.rebind"
+    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"resumed-conv\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "waiting_user" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
+        "identity gate: pending rebind admits a new conversation id"
+    rm -f "$identity_dir/am-gate.rebind"
     assert_eq "false" "$(test -f "$identity_dir/am-codex.rebind" && echo true || echo false)" \
         "Codex recovered process: rebind consumed only after exact identity"
 

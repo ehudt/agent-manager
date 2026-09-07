@@ -97,7 +97,10 @@ flowchart TD
   identifies its session as `AM_SESSION_NAME` → `TMUX_PANE` → cwd match,
   and if `AM_SESSION_NAME` is set but missing from the registry it *exits*
   rather than fall through and clobber another session sharing the
-  directory. Cursor's durable identity is pinned to the first complete
+  directory. A cwd match must also agree with the session's recorded
+  conversation id once it has one, so an unmanaged agent of the same
+  family running in that directory (a Claude started from Obsidian's
+  terminal, say) cannot drive the tab. Cursor's durable identity is pinned to the first complete
   conversation-id/transcript pair because nested agents inherit
   `AM_SESSION_NAME` and do not reliably identify themselves as background.
 - **Staleness gates are fallback-only.** Claude, Cursor, and pi have reliable

@@ -61,7 +61,10 @@
 #   2. $TMUX_PANE → tmux session name — works for sessions running before
 #      AM_SESSION_NAME was added, since agents inherit TMUX_PANE from their pane
 #   3. cwd match against registry — last resort; cannot disambiguate when
-#      multiple am sessions share a directory (two Claude instances in one repo)
+#      multiple am sessions share a directory (two Claude instances in one repo).
+#      Gated on conversation identity: once the matched session has a recorded
+#      id (durable, else ephemeral .sid), the payload must carry the same id,
+#      so an unmanaged same-family agent in that directory cannot drive it
 #
 # All three layers are gated on the agent family: the hook's event name
 # proves which agent fired it (CamelCase → Claude Code / Codex; camelCase →
@@ -393,6 +396,39 @@ if [[ -z "$session_name" ]]; then
     exit 0
 fi
 
+# Conversation identity carried by the payload. Used by the cwd identity
+# gate below and persisted as the .sid/.transcript sidecars further down.
+hook_session_id=$(printf '%s' "$hook_input" | jq -r '.conversation_id // .session_id // .sessionId // empty' 2>/dev/null || true)
+transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+if [[ -z "$hook_session_id" && -n "$transcript_path" ]]; then
+    hook_session_id=$(basename "$transcript_path" .jsonl)
+fi
+
+# 3b. Identity gate for cwd-matched sessions. Layer 3 proves only that
+# *some* agent of the right family runs in this directory. An unmanaged
+# same-family agent — observed live: an interactive Claude started from
+# Obsidian's terminal plugin in ~/obsidian, with no AM_SESSION_NAME or
+# TMUX_PANE — matches the am session launched there and drives its tab
+# through running / background / waiting_user from a conversation the pane
+# never ran, overwriting the .sid/.transcript sidecars on the way. Once the
+# session has a recorded conversation id (durable first, ephemeral as
+# fallback), a cwd-matched payload must carry the same id. A pending rebind
+# (recovery restarted the process under a new id) lifts the check; id-less
+# payloads and sessions with no identity yet pass, as before.
+if [[ "$session_resolution" == "cwd" && -n "$hook_session_id" \
+    && ! -f "$AM_IDENTITY_DIR/$session_name.rebind" ]]; then
+    known_sid=""
+    if [[ -f "$AM_IDENTITY_DIR/$session_name.sid" ]]; then
+        IFS= read -r known_sid < "$AM_IDENTITY_DIR/$session_name.sid" 2>/dev/null || true
+    elif [[ -f "$AM_STATE_DIR/$session_name.sid" ]]; then
+        IFS= read -r known_sid < "$AM_STATE_DIR/$session_name.sid" 2>/dev/null || true
+    fi
+    if [[ -n "$known_sid" && "$known_sid" != "$hook_session_id" ]]; then
+        _hook_debug "cwd-matched $session_name belongs to conversation $known_sid; payload id $hook_session_id is a foreign process in the same directory; exiting"
+        exit 0
+    fi
+fi
+
 # Live working directory sidecar. Claude Code stamps hook payloads (and every
 # transcript entry) with the Bash tool's *tracked* cwd — the agent process cwd
 # and tmux's pane_current_path never move, so this is the only cheap,
@@ -510,16 +546,9 @@ if [[ "$NORMALIZED_STATE" != "$am_state" ]]; then
 fi
 
 # Persist the Claude/Codex conversation id alongside the state when the hook
-# payload exposes it. This lets restore snapshots bind to the exact pane that
-# fired the hook instead of guessing by cwd, which is ambiguous for duplicate
-# sessions in one repo.
-hook_session_id=$(printf '%s' "$hook_input" | jq -r '.conversation_id // .session_id // .sessionId // empty' 2>/dev/null || true)
-transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
-if [[ -z "$hook_session_id" ]]; then
-    if [[ -n "$transcript_path" ]]; then
-        hook_session_id=$(basename "$transcript_path" .jsonl)
-    fi
-fi
+# payload exposes it (extracted above, before the cwd identity gate). This
+# lets restore snapshots bind to the exact pane that fired the hook instead
+# of guessing by cwd, which is ambiguous for duplicate sessions in one repo.
 if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
     printf '%s' "$hook_session_id" > "$AM_STATE_DIR/$session_name.sid"
 fi

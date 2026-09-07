@@ -192,6 +192,17 @@ Cursor nested agents are a same-family exception: they inherit
 identity is pinned to the physical session's first complete
 conversation-id/transcript pair.
 
+The cwd fallback is additionally gated by **conversation identity**: once the
+matched session has a recorded id (durable `identities/<session>.sid`, else
+the ephemeral `.sid` sidecar), a cwd-matched payload must carry the same
+`session_id`/`conversation_id`, unless a `.rebind` marker is pending. The
+family gate cannot catch a same-family stranger: observed live, an
+interactive Claude started from Obsidian's terminal plugin in `~/obsidian`
+(no `AM_SESSION_NAME`, no `TMUX_PANE`) cwd-matched the am session launched
+there and drove its tab through running/background/waiting_user from a
+conversation the pane never ran, and left it stuck at `waiting_user`.
+Id-less payloads and sessions with no identity yet pass as before.
+
 `background` (Claude's main turn ended but a background agent/task/
 workflow/shell is still running) is written directly by the hook: the `Stop`
 payload carries a `background_tasks` array (documented; Claude Code ≥2.1) —
