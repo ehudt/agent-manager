@@ -10,6 +10,7 @@ test_state_hooks() {
         echo ""
         return
     fi
+    source "$LIB_DIR/utils.sh"   # am_file_mode (portable mode check below)
 
     # Set up isolated temp dirs
     local tmp_dir registry_dir state_dir identity_dir
@@ -63,7 +64,7 @@ test_state_hooks() {
     AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$fresh_state" AM_SESSION_NAME="am-abc123" \
         /bin/bash "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
     assert_eq "ready" "$(cat "$fresh_state/am-abc123" 2>/dev/null)" "hook: writes state into a freshly created state dir"
-    assert_eq "700" "$(stat -f %Lp "$fresh_state" 2>/dev/null || stat -c %a "$fresh_state")" \
+    assert_eq "700" "$(am_file_mode "$fresh_state")" \
         "hook: creates the state dir 0700"
 
     # --- Stop hook writes ready ---

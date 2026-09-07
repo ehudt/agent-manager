@@ -134,7 +134,7 @@ test_doctor_hook_schema_recording() {
         "schema: Stop keys recorded sorted"
     assert_cmd_fails "schema: no .prev on first observation" test -e "$f.prev"
     local mode
-    mode=$(stat -f %Lp "$am_dir/hook-schema" 2>/dev/null || stat -c %a "$am_dir/hook-schema" 2>/dev/null)
+    mode=$(am_file_mode "$am_dir/hook-schema")
     assert_eq "700" "$mode" "schema: directory is private"
 
     # Same key set again (different values, different state): no rewrite.

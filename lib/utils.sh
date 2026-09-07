@@ -300,6 +300,46 @@ _am_stat_mtimes() {
     return 0
 }
 
+# One stat field of one file with the current flavor.
+# Usage: _am_stat_one <bsd_fmt> <gnu_fmt> <file>
+_am_stat_one() {
+    case "${_AM_STAT_FLAVOR:-}" in
+        bsd) stat -f "$1" "$3" 2>/dev/null ;;
+        *)   stat -c "$2" "$3" 2>/dev/null ;;
+    esac
+    return 0
+}
+
+# One stat field validated against a regex, flipping the flavor once when the
+# guess produces garbage. Never chain `stat -f X || stat -c Y` by hand: on GNU
+# coreutils `stat -f` is *filesystem* status and succeeds with a blob (so the
+# `||` never runs), and a blob in `(( ... ))` is an "unbound variable" crash.
+# Prints the value, empty (rc 1) when the file is missing or unreadable.
+# Usage: _am_stat_field <bsd_fmt> <gnu_fmt> <regex> <file>
+_am_stat_field() {
+    _am_stat_flavor_init
+    local __asf_v
+    __asf_v=$(_am_stat_one "$1" "$2" "$4")
+    if [[ ! "$__asf_v" =~ $3 ]]; then
+        [[ -e "$4" ]] || return 1
+        _am_stat_flavor_flip
+        __asf_v=$(_am_stat_one "$1" "$2" "$4")
+        if [[ ! "$__asf_v" =~ $3 ]]; then
+            _am_stat_flavor_flip
+            return 1
+        fi
+    fi
+    printf '%s\n' "$__asf_v"
+}
+
+# Octal permission bits ("700", "644") of a path; empty and rc 1 when missing.
+# Usage: am_file_mode <path>
+am_file_mode() { _am_stat_field '%Lp' '%a' '^[0-7]{3,4}$' "$1"; }
+
+# Size in bytes of a file; empty and rc 1 when missing.
+# Usage: am_file_size <path>
+am_file_size() { _am_stat_field '%z' '%s' '^[0-9]+$' "$1"; }
+
 # Mtime of one file as epoch seconds. Prints it, or assigns it to <out_var>
 # when given (callers on a hot path skip the subshell). Empty and rc 1 when
 # the file is missing.

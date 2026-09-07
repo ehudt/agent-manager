@@ -289,6 +289,10 @@ _ensure_install_lib_sourced() {
     if [[ "$(type -t _install_claude_hooks)" != "function" || "$(type -t _install_codex_hooks)" != "function" || "$(type -t _install_cursor_hooks)" != "function" || "$(type -t _install_pi_extension)" != "function" ]]; then
         # Extract just the hook installer functions from install.sh (can't
         # source the whole file because it runs install logic at top level).
+        # They report progress through install.sh's `log`, which sits outside
+        # the extracted range: give them a silent one. Without it Linux fails
+        # with "log: command not found" (macOS was masked by /usr/bin/log).
+        [[ "$(type -t log)" == function ]] || log() { :; }
         eval "$(awk '/^_install_claude_hooks\(\)/ {p=1} /^while \[\[/ {p=0} p {print}' "$PROJECT_DIR/scripts/install.sh")"
     fi
 }

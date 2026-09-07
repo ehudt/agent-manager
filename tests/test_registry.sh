@@ -148,10 +148,8 @@ test_registry_extended() {
         > "$pr_log"
     local pr_out
     pr_out=$(AM_SESSIONS_LOG="$pr_log" sessions_log_restorable)
-    echo "$pr_out" | grep -q "am-pia01" && pass "restorable: pi with jsonl kept" \
-        || fail "restorable: pi with jsonl kept"
-    echo "$pr_out" | grep -q "am-pia02" && fail "restorable: pi without jsonl dropped" \
-        || pass "restorable: pi without jsonl dropped"
+    assert_contains "$pr_out" "am-pia01" "restorable: pi with jsonl kept"
+    assert_not_contains "$pr_out" "am-pia02" "restorable: pi without jsonl dropped"
     unset AM_PI_SESSIONS_DIR
 
     # --- Codex exact hook identities use the native `codex resume ID` store ---
@@ -183,10 +181,8 @@ test_registry_extended() {
         > "$cr_log"
     local cr_out
     cr_out=$(AM_SESSIONS_LOG="$cr_log" sessions_log_restorable)
-    echo "$cr_out" | grep -q "am-cursor1" && pass "restorable: Cursor exact transcript kept" \
-        || fail "restorable: Cursor exact transcript kept"
-    echo "$cr_out" | grep -q "am-cursor2" && fail "restorable: Cursor missing transcript dropped" \
-        || pass "restorable: Cursor missing transcript dropped"
+    assert_contains "$cr_out" "am-cursor1" "restorable: Cursor exact transcript kept"
+    assert_not_contains "$cr_out" "am-cursor2" "restorable: Cursor missing transcript dropped"
     rm -rf "$cr_home" "$cr_log" "$pr_home" "$pr_log" "$codex_log"
 
     teardown_isolated_am_dir

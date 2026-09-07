@@ -25,23 +25,13 @@ _doc_kv() { printf '  %-22s %s\n' "$1:" "${2:-}"; }
 _doc_warn() { printf '  %b! %s%b\n' "${YELLOW:-}" "$1" "${RESET:-}"; }
 _doc_ok() { printf '  %b✓ %s%b\n' "${GREEN:-}" "$1" "${RESET:-}"; }
 
-# Epoch mtime of a file (portable, one fork). Empty when missing.
-_doc_mtime() {
-    [[ -e "$1" ]] || return 0
-    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || true
-}
-
-# Size in bytes (portable, one fork). Empty when missing.
-_doc_size() {
-    [[ -e "$1" ]] || return 0
-    stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || true
-}
-
-# Octal mode (portable, one fork).
-_doc_mode() {
-    [[ -e "$1" ]] || return 0
-    stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null || true
-}
+# Epoch mtime / size in bytes / octal mode of a path, via the flavor-aware
+# utils.sh stat helpers (a hand-rolled `stat -f … || stat -c …` returned a
+# filesystem blob on GNU coreutils and crashed the global report with
+# "File: unbound variable" inside the size compare). Empty when missing.
+_doc_mtime() { am_file_mtime "$1" || true; }
+_doc_size()  { am_file_size "$1" || true; }
+_doc_mode()  { am_file_mode "$1" || true; }
 
 # "<age> ago" for an epoch, or "-".
 _doc_age() {
@@ -100,7 +90,7 @@ _doc_dirs() {
         [[ -f "$f" ]] || continue
         sz=$(_doc_size "$f")
         _doc_kv "${f##*/}" "$(_doc_human "$sz")"
-        (( sz > 50 * 1048576 )) && _doc_warn "${f##*/} is $(_doc_human "$sz"); consider rotating"
+        (( ${sz:-0} > 50 * 1048576 )) && _doc_warn "${f##*/} is $(_doc_human "$sz"); consider rotating"
     done
     local leaked
     leaked=$(find "$AM_DIR" -maxdepth 1 -name '.sessions-log.*' 2>/dev/null | wc -l | tr -d ' ')

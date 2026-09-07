@@ -440,8 +440,9 @@ test_private_dirs() {
 
     setup_integration_env
 
-    # Octal permission bits of a path (BSD stat -f, GNU stat -c).
-    file_mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null; }
+    # Octal permission bits of a path (flavor-aware; a hand-rolled
+    # `stat -f || stat -c` returns a filesystem blob on GNU coreutils).
+    file_mode() { am_file_mode "$1"; }
 
     local test_dir state_dir
     test_dir=$(mktemp -d)

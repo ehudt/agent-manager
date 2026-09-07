@@ -307,7 +307,10 @@ test_cli_extended() {
 
     # The stub agent is a bash script, which the shell-pane check reads as
     # "agent exited" (idle). The default send refuses that with exit 2 rather
-    # than typing into a shell; --force overrides.
+    # than typing into a shell; --force overrides. A session younger than 5s
+    # still resolves as `starting` (refused with exit 4), so wait it out first:
+    # a fast CI runner reaches this line well inside the window.
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" wait --state idle --timeout 20 "$session_name" >/dev/null 2>&1 || true
     local send_rc=0 send_err
     send_err=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$session_name" "run tests now" 2>&1 >/dev/null) || send_rc=$?
     assert_eq "2" "$send_rc" "am send: refuses a session with no running agent (exit 2)"
@@ -632,6 +635,10 @@ test_cli_dispatch() {
     assert_eq "0" "$rc" "am doctor (global): exits 0"
 
     # --- am kill --state ---
+    # s3/s4 were created moments ago and read as `starting` for their first
+    # 5s; the idle filter must see them settled or it skips them on a fast runner.
+    env "${am_env[@]}" "$PROJECT_DIR/am" wait --state idle --timeout 20 "$s3" >/dev/null 2>&1 || true
+    env "${am_env[@]}" "$PROJECT_DIR/am" wait --state idle --timeout 20 "$s4" >/dev/null 2>&1 || true
     rc=0
     out=$(env "${am_env[@]}" "$PROJECT_DIR/am" kill --state ready -y 2>&1) || rc=$?
     assert_eq "0" "$rc" "am kill --state: no match is not an error"

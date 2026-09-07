@@ -203,13 +203,17 @@ test_recovery_preflight_matrix() {
 
     # Conversation history is looked up under the launch directory, not the
     # directory the agent had moved to.
-    local jsonl_probe="$AM_DIR/jsonl-probe"
+    # Stub the transcript check, then put the real wrapper back: `unset -f`
+    # would delete the production function for every later test in this
+    # worker (recovery.sh: "_sessions_log_jsonl_exists: command not found").
+    local jsonl_probe="$AM_DIR/jsonl-probe" real_jsonl_exists
+    real_jsonl_exists=$(declare -f _sessions_log_jsonl_exists)
     _sessions_log_jsonl_exists() { printf '%s' "$1" > "$jsonl_probe"; return 0; }
     record=$(jq -c '.effective_directory="/definitely/missing/am-workdir"' <<< "$base")
     recovery_preflight_record "$record" >/dev/null || true
     assert_eq "/tmp" "$(cat "$jsonl_probe")" \
         "recovery preflight: transcript lookup uses the launch directory"
-    unset -f _sessions_log_jsonl_exists
+    eval "$real_jsonl_exists"
 
     # A pooled checkout that still exists but was re-allocated to another
     # branch is blocked with the expected/found pair.
