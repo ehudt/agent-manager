@@ -36,7 +36,7 @@ Each item names the commit that closed it.
 - [ ] C1 One ticker: `am ticker` (Go) owns title scan, restore scan, gc, sidebar cache; markers removed; hook signals via request file.
 - [ ] C2 Go owns the stores: remove bash twins (title scan, gc, sessions-log scan/gc/restorable, detect-id, first-message readers, git_head_branch, format_time_ago, encoders); bash calls the Go binary. Carefully, with parity tests first.
 - [ ] C3 Agent adapter table: one manifest (bash + Go) with command, aliases, prompt mode, resume args, transcript root/encoding, title parser, turn-boundary reliability, hook namespace, preflight.
-- [ ] C4 Version-drift canary: hook records agent version + observed payload fields; verified-against pin; `am doctor`/`am status` warn.
+- [x] C4 Version-drift canary: `tests/live_lab/VERIFIED` pins the agent versions the labs last confirmed (labs print the installed version at the end); the hook records observed payload keys per `<agent>.<event>` (`$AM_DIR/hook-schema/`, `.sub` for subagent tool events, `.prev` on change); `am doctor` warns on newer-than-verified agents and on missing load-bearing fields, and checks hook installs per family (Claude/Codex/Cursor event lists mirror install.sh; Cursor's hook copy compared byte-for-byte). Version probing stays in doctor, not the hook (nothing on the turn path). First live run: Claude 2.1.263 and cursor-agent 2026.09.02 newer than pins; pi has no pin yet (run `tests/live_lab/run_pi.sh`).
 - [x] C5 `lib/form.sh`: keep (actively used via prefix-n / Ctrl-N; recently improved). No action.
 
 ## Deferred / noted

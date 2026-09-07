@@ -270,5 +270,8 @@ fi
 echo "STOP" > "$CURRENT_SCENARIO_FILE"
 wait "$SAMPLER_PID" 2>/dev/null || true
 mark done "pi live lab complete; results in $RESULTS"
+agent_ver=$(pi --version 2>/dev/null | head -1 | tr -d '\r')
+printf 'agent_version\tpi\t%s\n' "${agent_ver:-unknown}" >> "$RESULTS/report.txt"
+log "pi ${agent_ver:-unknown}: if the report agrees, update the pi line in tests/live_lab/VERIFIED"
 log "report: $RESULTS/report.txt"
 log "timeline: $RESULTS/timeline.tsv"

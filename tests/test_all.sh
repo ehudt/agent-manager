@@ -180,7 +180,7 @@ WORKER_PLAN=(
     "1:run_utils_tests run_config_tests run_form_tests run_presets_tests run_fzf_tests run_install_tests run_state_hooks_tests"
     "2:run_registry_tests run_tmux_tests run_recovery_tests"
     "3:run_agents_tests"
-    "4:run_state_tests run_state_lab_tests"
+    "4:run_state_tests run_state_lab_tests run_doctor_tests"
     "5:run_cli_tests"
     "6:run_bin_helpers_tests"
     "7:run_standalone_scripts_tests run_perf_session_switch_tests"

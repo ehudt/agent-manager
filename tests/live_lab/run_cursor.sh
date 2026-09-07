@@ -270,3 +270,6 @@ fi
 echo STOP > "$CURRENT_SCENARIO_FILE"
 wait "$SAMPLER_PID" 2>/dev/null || true
 mark done "Cursor live lab complete; results in $RESULTS"
+agent_ver=$(cursor-agent --version 2>/dev/null | head -1 | tr -d '\r')
+printf 'agent_version\tcursor-agent\t%s\n' "${agent_ver:-unknown}" >> "$RESULTS/report.txt"
+log "cursor-agent ${agent_ver:-unknown}: if the report agrees, update the cursor-agent line in tests/live_lab/VERIFIED"

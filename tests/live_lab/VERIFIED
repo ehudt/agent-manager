@@ -1,0 +1,10 @@
+# Agent versions the live labs last confirmed against lib/state.sh and
+# lib/hooks/state-hook.sh. `am doctor` warns when an installed agent is newer
+# than its pin: re-run the named lab, check report.txt + timeline.tsv for
+# glyph/hook/state agreement, then update the line (the lab prints the
+# installed version at the end of its run).
+#
+# Whitespace-separated: <agent binary> <version> <date> <lab> <note...>
+claude 2.1.237 2026-08-25 tests/live_lab/run.sh s1-s7 agree; ✳ title static since 2.1.234; ctrl-b Stop fires
+cursor-agent 2026.08 2026-08-25 tests/live_lab/run_cursor.sh Ready/Working/Waiting title suffixes; tasks footer after "Add a follow-up"
+# pi: no pin yet. Run tests/live_lab/run_pi.sh and add a line.

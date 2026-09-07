@@ -240,6 +240,7 @@ am peek --follow am-abc123               # Stream agent output in real time
 am peek --lines 100 am-abc123            # Include the last 100 lines
 am peek --pane shell --history --grep 'ERROR|FAIL' --lines 50 am-abc123   # Search the streamed shell scrollback
 am doctor am-abc123                      # Every input behind the tab's state, in one report
+am doctor                                # Global health: hooks installed, agents newer than last verified, payload drift
 ```
 
 When a session needs you (a permission or question dialog) and you are not
@@ -445,7 +446,7 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 | `am restore` | Browse and resume closed Claude, Codex, Cursor, and pi sessions |
 | `am kill <session> \| --all \| --state s1,s2` | Kill a session, every session, or every session in given states |
 | `am status [--json]` | Show detailed session info |
-| `am doctor [session]` | Print every input behind a session's state (`--capture` for a tarball) |
+| `am doctor [session]` | Print every input behind a session's state (`--capture` for a tarball); the global report also flags agents newer than the last live-lab verified version and hook payload fields that went missing |
 | `am config` | Show or change saved defaults |
 | `am install [--refresh]` | First-time setup for dependencies, config, skills, and PATH |
 | `am help` | Show help |

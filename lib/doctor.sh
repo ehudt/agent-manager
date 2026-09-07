@@ -125,23 +125,179 @@ _doc_markers() {
     done
 }
 
-_doc_hooks_installed() {
-    _doc_h2 "claude hooks"
-    local settings="$HOME/.claude/settings.json"
-    [[ -f "$settings" ]] || { _doc_warn "no $settings"; return 0; }
+# Check that <file>'s .hooks[<event>] entries include the am state hook, for
+# every event scripts/install.sh registers for that family. Codex and Cursor
+# hook files are optional (only present when that agent is installed).
+# Claude/Codex nest commands as .hooks[ev][].hooks[].command; Cursor keeps
+# them flat as .hooks[ev][].command, and its command runs a *copy* of the
+# hook (<hooks_dir>/am-state-hook.sh, written by scripts/install.sh) — so
+# when <helper> is given, the command must name the helper and the helper
+# must be byte-identical to the expected hook script (a stale copy is what
+# `am install --refresh` fixes).
+# Usage: _doc_hooks_check <label> <file> <optional:true|false> <helper|-> <event>...
+_doc_hooks_check() {
+    local label="$1" file="$2" optional="$3" helper="$4"; shift 4
     local expected="$AM_LIB_DIR/hooks/state-hook.sh"
-    local ev cmds
-    for ev in Stop Notification UserPromptSubmit PreToolUse PostToolUse PermissionRequest; do
-        cmds=$(jq -r --arg ev "$ev" '.hooks[$ev][]?.hooks[]?.command // empty' "$settings" 2>/dev/null | grep -F 'state-hook.sh' || true)
+    if [[ ! -f "$file" ]]; then
+        if [[ "$optional" == true ]]; then _doc_kv "$label" "not configured ($file)"
+        else _doc_warn "$label: no $file"; fi
+        return 0
+    fi
+    local ev cmds target="$expected"
+    [[ "$helper" != "-" ]] && target="$helper"
+    for ev in "$@"; do
+        cmds=$(jq -r --arg ev "$ev" '.hooks[$ev][]? | (.hooks[]?.command // .command) // empty' "$file" 2>/dev/null | grep -F 'state-hook' || true)
         if [[ -z "$cmds" ]]; then
-            _doc_warn "$ev: no am state hook installed"
-        elif ! grep -qF "$expected" <<< "$cmds"; then
-            _doc_warn "$ev: hook points elsewhere: $(head -1 <<< "$cmds")"
+            _doc_warn "$label $ev: no am state hook installed"
+        elif ! grep -qF "$target" <<< "$cmds"; then
+            _doc_warn "$label $ev: hook points elsewhere: $(head -1 <<< "$cmds")"
         else
-            _doc_ok "$ev"
+            _doc_ok "$label $ev"
         fi
     done
+    if [[ "$helper" != "-" ]]; then
+        if [[ ! -f "$helper" ]]; then
+            _doc_warn "$label helper missing: $helper"
+        elif ! cmp -s "$helper" "$expected"; then
+            _doc_warn "$label helper $helper is a stale copy of the hook; run: am install --refresh"
+        fi
+    fi
+}
+
+_doc_hooks_installed() {
+    _doc_h2 "state hooks installed"
+    local expected="$AM_LIB_DIR/hooks/state-hook.sh"
+    local cursor_home="${CURSOR_CONFIG_HOME:-$HOME/.cursor}"
+    # Event lists mirror scripts/install.sh (_install_claude_hooks,
+    # _install_codex_hooks, _install_cursor_hooks).
+    _doc_hooks_check claude "$HOME/.claude/settings.json" false - \
+        Stop Notification UserPromptSubmit PostToolUse
+    _doc_hooks_check codex "${CODEX_HOME:-$HOME/.codex}/hooks.json" true - \
+        Stop UserPromptSubmit PreToolUse PostToolUse PermissionRequest
+    _doc_hooks_check cursor "$cursor_home/hooks.json" true "${CURSOR_HOOKS_DIR:-$cursor_home/hooks}/am-state-hook.sh" \
+        sessionStart beforeSubmitPrompt preToolUse postToolUse afterAgentResponse stop
     [[ -x "$expected" || -f "$expected" ]] || _doc_warn "hook script missing: $expected"
+}
+
+# --- version-drift canary ----------------------------------------------------
+#
+# State detection rests on empirical agent behavior (see AGENTS.md, State
+# Detection). Two signals catch an agent upgrade quietly moving that ground:
+#  - tests/live_lab/VERIFIED pins the agent versions the live labs last
+#    confirmed; a newer installed version is a prompt to re-run the lab.
+#  - the state hook records the top-level keys of every payload it sees
+#    ($AM_DIR/hook-schema/<agent>.<event>.keys); a load-bearing field that
+#    disappears is reported here.
+
+# First line of `<agent> --version`; fails when the agent is not installed.
+_doc_agent_version() {
+    command -v "$1" >/dev/null 2>&1 || return 1
+    "$1" --version 2>/dev/null | head -1 | tr -d '\r'
+}
+
+# Leading dotted-numeric core of a version string:
+# "2.1.263 (Claude Code)" → 2.1.263, "v2026.09.02-c22c1a3" → 2026.09.02.
+_doc_ver_core() {
+    local v="${1#v}"
+    [[ "$v" =~ ^[0-9]+(\.[0-9]+)* ]] && printf '%s' "${BASH_REMATCH[0]}"
+    return 0
+}
+
+# _doc_ver_newer A B: success when dotted version A is strictly newer than B.
+# Missing components count as 0 (2.1 == 2.1.0); non-numeric input → false.
+_doc_ver_newer() {
+    local a b i x y
+    a=$(_doc_ver_core "$1"); b=$(_doc_ver_core "$2")
+    [[ -n "$a" && -n "$b" ]] || return 1
+    local -a pa=() pb=()
+    IFS=. read -r -a pa <<< "$a"
+    IFS=. read -r -a pb <<< "$b"
+    for (( i = 0; i < ${#pa[@]} || i < ${#pb[@]}; i++ )); do
+        x=$(( 10#${pa[i]:-0} )); y=$(( 10#${pb[i]:-0} ))
+        (( x > y )) && return 0
+        (( x < y )) && return 1
+    done
+    return 1
+}
+
+# Payload fields the state machine reads (the single jq extraction in
+# lib/hooks/state-hook.sh). "<agent>.*" applies to every event of that agent.
+_doc_required_keys() {
+    case "$1" in
+        "claude.*") printf 'hook_event_name session_id transcript_path cwd' ;;
+        claude.Stop) printf 'stop_hook_active background_tasks' ;;
+        claude.Notification|codex.Notification) printf 'notification_type' ;;
+        "codex.*") printf 'hook_event_name cwd' ;;
+        "cursor.*") printf 'hook_event_name conversation_id' ;;
+    esac
+}
+
+# Comma-separated key sets → " -removed +added" summary.
+_doc_keys_diff() {
+    local prev="$1" cur="$2" k out=""
+    local IFS=,
+    for k in $prev; do [[ ",$cur," == *",$k,"* ]] || out+=" -$k"; done
+    for k in $cur; do [[ ",$prev," == *",$k,"* ]] || out+=" +$k"; done
+    printf '%s' "${out# }"
+}
+
+_doc_drift() {
+    _doc_h2 "version drift"
+    local verified="${AM_VERIFIED_FILE:-$AM_LIB_DIR/../tests/live_lab/VERIFIED}"
+    local -A pin=() pin_date=() pin_lab=()
+    local agent ver date lab note installed
+    if [[ -f "$verified" ]]; then
+        while read -r agent ver date lab note; do
+            [[ -z "$agent" || "$agent" == \#* ]] && continue
+            pin[$agent]=$ver; pin_date[$agent]=$date; pin_lab[$agent]=$lab
+        done < "$verified"
+    else
+        _doc_warn "no verified-version pin file at $verified"
+    fi
+    for agent in claude cursor-agent pi codex; do
+        installed=$(_doc_agent_version "$agent") || continue
+        if [[ -z "${pin[$agent]:-}" ]]; then
+            case "$agent" in
+                claude) lab="tests/live_lab/run.sh" ;;
+                cursor-agent) lab="tests/live_lab/run_cursor.sh" ;;
+                pi) lab="tests/live_lab/run_pi.sh" ;;
+                *) lab="" ;;
+            esac
+            if [[ -n "$lab" ]]; then
+                _doc_kv "$agent" "$installed (no verified pin; run $lab and add a line to tests/live_lab/VERIFIED)"
+            else
+                _doc_kv "$agent" "$installed (no live lab; state detection unverified)"
+            fi
+        elif _doc_ver_newer "$installed" "${pin[$agent]}"; then
+            _doc_warn "$agent $installed is newer than the last live-lab verified ${pin[$agent]} (${pin_date[$agent]}); run ${pin_lab[$agent]} and update tests/live_lab/VERIFIED"
+        else
+            _doc_ok "$agent $installed (verified ${pin[$agent]}, ${pin_date[$agent]})"
+        fi
+    done
+
+    _doc_h2 "hook payload schema"
+    local dir="$AM_DIR/hook-schema" f base keys prev key missing when now
+    if [[ ! -d "$dir" ]] || ! ls "$dir"/*.keys >/dev/null 2>&1; then
+        _doc_kv "observed" "none yet (the state hook records one file per agent+event)"
+        return 0
+    fi
+    now=$(date +%s)
+    for f in "$dir"/*.keys; do
+        base="${f##*/}"; base="${base%.keys}"
+        keys=""; IFS= read -r keys < "$f" || true
+        when=$(_doc_age "$(_doc_mtime "$f")" "$now")
+        _doc_kv "$base" "$keys"
+        missing=""
+        for key in $(_doc_required_keys "${base%%.*}.*") $(_doc_required_keys "${base%.sub}"); do
+            [[ ",$keys," == *",$key,"* ]] || missing+=" $key"
+        done
+        [[ -n "$missing" ]] && _doc_warn "$base: load-bearing field(s) missing:$missing (last change $when)"
+        if [[ -f "$f.prev" ]]; then
+            prev=""; IFS= read -r prev < "$f.prev" || true
+            _doc_kv "  changed $when" "$(_doc_keys_diff "$prev" "$keys")"
+        fi
+    done
+    return 0
 }
 
 # One row per live session: name, state, layer, hook age, title signal.
@@ -420,6 +576,7 @@ _doc_global() {
     _doc_dirs
     _doc_markers
     _doc_hooks_installed
+    _doc_drift
     _doc_h2 "registry vs tmux"
     local -A live=() reg=()
     local n
@@ -454,6 +611,7 @@ _doc_capture() {
     local state_dir="${AM_STATE_DIR:-/tmp/am-state}"
     mkdir -p "$dir/am-state"
     cp "$state_dir"/* "$dir/am-state/" 2>/dev/null || true
+    cp -R "$AM_DIR/hook-schema" "$dir/hook-schema" 2>/dev/null || true
     for f in .hook-debug.log .state-debug.log titler.log; do
         [[ -f "$AM_DIR/$f" ]] && tail -2000 "$AM_DIR/$f" > "$dir/$f.tail" 2>/dev/null
     done

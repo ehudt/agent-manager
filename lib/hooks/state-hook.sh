@@ -200,6 +200,7 @@ fi
     IFS= read -r -d '' hook_cwd || true
     IFS= read -r -d '' bg_field_present || true
     IFS= read -r -d '' bg_tasks_json || true
+    IFS= read -r -d '' payload_keys || true
 } < <(printf '%s' "$hook_input" | jq -j '
     def s: (. // "") | tostring;
     ([0] | implode) as $nul
@@ -211,7 +212,8 @@ fi
         (.transcript_path | s),
         (.cwd | s),
         (has("background_tasks") | tostring),
-        (.background_tasks // null | tojson) ]
+        (.background_tasks // null | tojson),
+        (if type == "object" then (keys | sort | join(",")) else "" end) ]
     | join($nul)' 2>/dev/null; printf '\0')
 [[ -z "$hook_type" ]] && exit 0
 
@@ -691,6 +693,30 @@ fi
     fi
     if [[ "$state_transitioned" == true ]]; then
         _notify_maybe "$session_name" "$am_state"
+    fi
+    # Payload-schema canary: remember the top-level keys each agent's
+    # events carry, one file per <agent>.<event>, rewritten only when the
+    # set changes (the previous set is kept in .prev). `am doctor` compares
+    # the latest set against the fields the state machine reads, so a field
+    # that disappears after an agent upgrade is reported instead of silently
+    # degrading state detection. Tool events raised by a Claude subagent
+    # carry agent_id/agent_type and get their own `.sub` file, otherwise the
+    # main-agent and subagent sets would alternate on every turn.
+    if [[ -n "$payload_keys" && "$hook_type" =~ ^[A-Za-z]+$ ]]; then
+        schema_dir="$AM_DIR/hook-schema"
+        schema_origin=""
+        [[ ",$payload_keys," == *",agent_id,"* ]] && schema_origin=".sub"
+        schema_file="$schema_dir/${session_agent:-unknown}.${hook_type}${schema_origin}.keys"
+        prev_keys=""
+        if [[ -f "$schema_file" ]]; then
+            IFS= read -r prev_keys < "$schema_file" || true
+        fi
+        if [[ "$prev_keys" != "$payload_keys" ]]; then
+            umask 077
+            mkdir -p "$schema_dir" 2>/dev/null || true
+            [[ -n "$prev_keys" ]] && printf '%s\n' "$prev_keys" > "$schema_file.prev"
+            printf '%s\n' "$payload_keys" > "$schema_file"
+        fi
     fi
 ) </dev/null >/dev/null 2>&1 &
 disown 2>/dev/null || true

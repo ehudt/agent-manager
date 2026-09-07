@@ -53,7 +53,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit); shows a Preset select field first when any preset exists |
 | `lib/presets.sh` | Named launch presets for `am new -p` (stored under `presets` in config.json): `am preset save/list/show/rm` |
-| `lib/doctor.sh` | `am doctor [session] [--capture]`: one report with every state input (registry row, tmux panes/titles, hook sidecars, identity, transcript, process tree, desired record, resolver layer via `AM_STATE_DEBUG_SINK`) |
+| `lib/doctor.sh` | `am doctor [session] [--capture]`: one report with every state input (registry row, tmux panes/titles, hook sidecars, identity, transcript, process tree, desired record, resolver layer via `AM_STATE_DEBUG_SINK`) plus the version-drift canary (installed agents vs `tests/live_lab/VERIFIED`, observed hook payload keys vs the fields the hook reads) |
 | `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
 | `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing, formatting, title refresh (`titles.go`) |
@@ -65,7 +65,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: title glyph + hook file + process tree, wait/poll |
 | `lib/hooks/am-state.ts` | Pi extension: lifecycle events → am state files (session_start/agent_settled → ready, agent_start → running) |
-| `tests/live_lab/run.sh`, `run_cursor.sh`, `run_pi.sh` | Empirical state labs for real agent sessions |
+| `tests/live_lab/run.sh`, `run_cursor.sh`, `run_pi.sh` | Empirical state labs for real agent sessions; each prints the installed agent version at the end so `tests/live_lab/VERIFIED` (the per-agent verified-version pins `am doctor` compares against) can be updated |
 | `skills/agent-manager-dispatch/SKILL.md` | Claude/Cursor skill: teaches agents to use am for multi-session dispatch/orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `bin/toggle-shell` | tmux helper (prefix+\`): toggle the collapsible shell panel — create on first use via `am shell`, then hide/show by parking the pane in the hidden `_amshell` window |
@@ -303,6 +303,28 @@ the Claude lab when Claude Code updates or when changing `lib/state.sh` /
 question, subagent, stop, resume, and background-task footer behavior.
 `tests/live_lab/run_pi.sh` covers pi.
 
+**Version-drift canary.** Everything above is empirical, so an agent upgrade
+can move the ground without any test failing. Two signals make that visible
+in `am doctor` (sections "version drift" and "hook payload schema"):
+
+- `tests/live_lab/VERIFIED` pins, per agent binary, the version the lab last
+  confirmed (whitespace-separated: agent, version, date, lab script, note).
+  Doctor warns when the installed version is newer than the pin (dotted
+  numeric compare, suffixes ignored) and names the lab to re-run; each lab
+  prints the installed version at the end of its run and appends an
+  `agent_version` line to `report.txt`. Update the pin only after the report
+  agrees. Codex has no lab and is reported as unverified.
+- The state hook records the sorted top-level keys of every payload it sees
+  in `$AM_DIR/hook-schema/<agent>.<event>.keys` (subagent-originated tool
+  events, which carry `agent_id`, in a separate `.sub` file), rewritten only
+  when the set changes with the previous set kept in `.keys.prev`. Doctor
+  lists them, shows the diff against the previous set, and warns when a
+  field the hook reads is missing (`hook_event_name`, `session_id`,
+  `transcript_path`, `cwd` on every Claude event; `stop_hook_active` +
+  `background_tasks` on `Stop`; `notification_type` on `Notification`;
+  `conversation_id` on Cursor events). Written from the hook's detached tail,
+  so it costs Claude's turn nothing.
+
 ### Debug instrumentation
 
 - `AM_STATE_DEBUG=1` — `_state_resolve` appends one line per call to
@@ -463,8 +485,11 @@ am restore
 - `_fzf_state_selected(state)` (lib/fzf.sh) - `am list --state` filter, driven by `AM_LIST_STATE_FILTER`
 
 **Doctor (lib/doctor.sh):**
-- `doctor_main([--capture] [session])` - Global report (versions, dirs, markers, hooks installed, per-session summary) or one session in depth; `--capture` writes a tarball under `$AM_DIR/doctor/`
+- `doctor_main([--capture] [session])` - Global report (versions, dirs, markers, hooks installed, version drift, hook payload schema, per-session summary) or one session in depth; `--capture` writes a tarball under `$AM_DIR/doctor/` (includes `hook-schema/`)
 - `_doc_resolve_state(session, state_var, layer_var)` - Runs `agent_get_state` with `AM_STATE_DEBUG=1 AM_STATE_DEBUG_SINK=<tmp>` to learn which resolver layer answered
+- `_doc_hooks_installed()` / `_doc_hooks_check(label, file, optional, helper|-, events...)` - Per-family check that the events scripts/install.sh registers name the am hook: Claude (settings.json, nested command shape), Codex and Cursor (optional hooks.json; Cursor's flat shape runs a byte copy of the hook, compared with cmp - a stale copy points at `am install --refresh`)
+- `_doc_drift()` - Version-drift canary: installed agent versions vs `tests/live_lab/VERIFIED` pins (`AM_VERIFIED_FILE` overrides the path), then every `$AM_DIR/hook-schema/*.keys` file against the fields the hook reads (`_doc_required_keys`), with `_doc_keys_diff` against `.keys.prev`
+- `_doc_ver_newer(a, b)` / `_doc_ver_core(v)` / `_doc_agent_version(agent)` - Dotted-numeric version compare (missing components are 0, non-numeric never compares newer), version-string core extraction, first line of `<agent> --version`
 
 **Notifications (lib/hooks/state-hook.sh, lib/config.sh):**
 - `_notify_maybe(session, state)` - Fired from the hook's detached tail only on a state transition into one of the configured notify states; skipped when an attached client displays the session; `AM_NOTIFY_CMD` env > notify_cmd config > osascript / notify-send
