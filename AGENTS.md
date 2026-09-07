@@ -156,9 +156,8 @@ for waiting_* tabs, "running for" on running tabs.
 also drops the title-scan throttle so the tab relabels on the next status-bar
 tick). On Claude Code this is the Bash tool's *tracked* cwd — verified live:
 it flips with `cd` while the process cwd stays put — so an agent that moves
-into another checkout is relabelled without pane scraping. Sessions resolved
-by cwd matching record nothing (their cwd equals `directory` by
-construction). The scan (`auto_title_scan` / `RefreshTitles`) turns the
+into another checkout is relabelled without pane scraping. The scan
+(`auto_title_scan` / `RefreshTitles`) turns the
 sidecar into the registry `workdir` and re-reads the branch from the
 effective directory's `.git/HEAD` (fork-free `git_head_branch` /
 `GitHeadBranch`), so a checkout in place also updates the label. Agents
@@ -177,31 +176,39 @@ without hooks, and shell tools that hand out a checkout (`wp allocate`), call
 States not covered by hooks (`starting`, `idle`, `dead`) use existing
 process/tmux checks which are already reliable.
 
-Hook writes are gated by **agent family**: the event name proves the source
-(CamelCase → Claude Code / Codex; camelCase → Cursor; pi never calls the
-script — its states come from the in-process extension), and the resolved
-session's registered `agent_type` must belong to that family. A positively
-identified session (`AM_SESSION_NAME` / `TMUX_PANE`) of the wrong family
-makes the hook exit — no fallthrough to cwd matching — and the cwd fallback
-filters candidates by family. Without the gate, an unmanaged agent process
-(e.g. a Cursor conversation run outside am) whose cwd hosts another agent's
-am session clobbers that session's state and `.sid`/`.transcript` sidecars
-(observed live: a stray Cursor run flipped a mid-turn pi session to `ready`).
-Cursor nested agents are a same-family exception: they inherit
+Hook writes require a **positive pane signal**: the hook identifies its
+session from `AM_SESSION_NAME` (seeded into every am pane at creation) or,
+failing that, `TMUX_PANE` mapped to its tmux session. There is no
+directory-based fallback. A directory is a shared resource — other am
+sessions, wp copies, and agents started outside am all run in it — and a
+process that carries neither variable is not in an am pane, so its events
+are dropped (one line under `AM_HOOK_DEBUG=1`). Observed live before this
+rule: an interactive Claude started from Obsidian's terminal plugin in
+`~/obsidian` (no `AM_SESSION_NAME`, no `TMUX_PANE`) was matched by directory
+to the am session launched there, drove its tab through
+running/background/waiting_user from a conversation the pane never ran,
+overwrote its `.sid`/`.transcript` sidecars, and left it stuck at
+`waiting_user`. The same rule governs identity and titles: a session's
+conversation id comes only from the sidecar its own hook wrote
+(`_sessions_log_detect_id_for_session` / Go `resolveClaudeSessionID`,
+`resolvePiSessionID`), and the first-message title fallback opens exactly
+that transcript (`claude_first_user_message(dir, sid)` and its pi/Cursor/Go
+twins) — never the newest file in the directory's transcript store. A
+session whose hooks have not fired yet has no identity, no
+transcript-derived title, and nothing to restore; the next hook event fills
+all three in.
+
+Hook writes are further gated by **agent family**: the event name proves the
+source (CamelCase → Claude Code / Codex; camelCase → Cursor; pi never calls
+the script — its states come from the in-process extension), and the
+resolved session's registered `agent_type` must belong to that family. A
+positively identified session of the wrong family means a foreign agent is
+nested inside an am pane (observed live: a cursor-agent run by hand in a pi
+session's shell pane); the hook exits rather than write another agent's
+state. Cursor nested agents are a same-family exception: they inherit
 `AM_SESSION_NAME` and do not reliably set `is_background_agent`, so reboot
 identity is pinned to the physical session's first complete
 conversation-id/transcript pair.
-
-The cwd fallback is additionally gated by **conversation identity**: once the
-matched session has a recorded id (durable `identities/<session>.sid`, else
-the ephemeral `.sid` sidecar), a cwd-matched payload must carry the same
-`session_id`/`conversation_id`, unless a `.rebind` marker is pending. The
-family gate cannot catch a same-family stranger: observed live, an
-interactive Claude started from Obsidian's terminal plugin in `~/obsidian`
-(no `AM_SESSION_NAME`, no `TMUX_PANE`) cwd-matched the am session launched
-there and drove its tab through running/background/waiting_user from a
-conversation the pane never ran, and left it stuck at `waiting_user`.
-Id-less payloads and sessions with no identity yet pass as before.
 
 `background` (Claude's main turn ended but a background agent/task/
 workflow/shell is still running) is written directly by the hook: the `Stop`
@@ -438,8 +445,7 @@ am restore
 - `sessions_log_scan([force])` - Rolling snapshots + session_id backfill + task sync for live Claude, Codex, Cursor, and pi sessions (throttled 60s via `.restore_scan_last`); chained from `auto_title_scan`. Ephemeral and durable hook sidecars are authoritative for session_id: a logged sid that disagrees with the sidecar is corrected (heals wrong guesses, tracks forked resumes)
 - `sessions_log_gc()` - Remove entries whose JSONL no longer exists
 - `sessions_log_restorable()` - List sessions that can be restored (not alive, JSONL exists)
-- `_sessions_log_detect_id(directory, [not_before_iso], [agent])` - Detect session UUID from JSONL filename (agent defaults to claude; newest-mtime guess; callers must not use it when the directory hosts multiple sessions)
-- `_sessions_log_dir_is_shared(session_name, directory, [agent])` - True when another registered session of the same agent type shares the directory; gates the mtime-based session-id guess in `_sessions_log_detect_id_for_session`
+- `_sessions_log_detect_id_for_session(session_name, directory, [agent])` - The conversation id bound to a session: the sidecar its own hook wrote (ephemeral `.sid`, else the durable identity), verified against the agent's transcript store. No directory-based guess — the store is shared with other sessions and with agents outside am. Go twins `resolveClaudeSessionID` / `resolvePiSessionID` / `resolveCursorSessionID`
 - `_sessions_log_field(session_name, field)` - Read a field from the most recent sessions-log entry for a session
 - `_sessions_log_jsonl_exists(directory, session_id, [agent])` - Check if JSONL still exists (agent defaults to claude)
 - `_slog_encode_pi_dir(directory)` - Encode directory path for pi session storage (strip leading slash, replace [/\:] with -, wrap with --)
@@ -460,8 +466,9 @@ am restore
 **Utils:**
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
 - `git_head_branch(dir, [out_var])` - Fork-free branch lookup: walk up to the nearest `.git` (dir or worktree/submodule pointer file), read HEAD → branch name, 8-char sha when detached, empty outside a repo. `detect_git_branch` delegates to it; Go twin `GitHeadBranch`
-- `claude_first_user_message(dir)` - Extract first user message from Claude session JSONL
-- `pi_first_user_message(dir, [session_id], [strict])` - Extract first user message from pi session JSONL
+- `claude_first_user_message(dir, session_id)` - First user message of exactly the Claude transcript bound to a session; the directory only locates the per-project store. No id → empty (never the newest file in the store)
+- `pi_first_user_message(dir, session_id)` - Pi twin, same contract
+- `cursor_first_user_message(dir, [session_id], [transcript_path])` - Cursor twin: the hook-reported transcript path, else the standard layout addressed by id; neither → empty
 
 **tmux:**
 - `tmux_create_session(name, dir, [VAR=VALUE...])` - New detached session; env args are passed as new-session -e and stored in the session environment so later splits inherit them

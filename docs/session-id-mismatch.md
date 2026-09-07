@@ -1,8 +1,11 @@
 # Session-id mismatch (restore resumes the wrong conversation)
 
-Status: **still reproduces sometimes** (as of 2026-07) despite several fixes.
-This note records what has been fixed, where the residual holes are, and
-exactly what to capture when it happens again.
+Status: **closed 2026-09 (v0.21.0).** Every residual hole below was a
+directory-based guess; they were removed rather than guarded. A session's id
+now comes only from the sidecar its own hook wrote, the first-message title
+fallback opens only that transcript, and the state hook drops events from
+processes that carry neither `AM_SESSION_NAME` nor `TMUX_PANE`. The note is
+kept as the investigation record.
 
 ## Symptom
 
@@ -19,9 +22,10 @@ title/snapshot shown in the restore picker belongs to a sibling session.
 | `f4541ff` | Restore snapshots keyed correctly for duplicate directories |
 | `6640867` | Status-bar same-dir title mixup |
 | `5ca0724` | Restore picker resuming the wrong same-directory session |
-| (scan) | `sessions_log_scan` treats the sidecar as authoritative and *corrects* a previously guessed sid that disagrees; `_sessions_log_dir_is_shared` gates the mtime guess when another registered same-agent session shares the directory |
+| (scan) | `sessions_log_scan` treats the sidecar as authoritative and *corrects* a previously guessed sid that disagrees; `_sessions_log_dir_is_shared` gated the mtime guess when another registered same-agent session shared the directory |
+| v0.21.0 | Directory-based guessing removed outright: `_sessions_log_detect_id`, `_sessions_log_dir_is_shared`, and the Go mtime scans are gone; `_sessions_log_detect_id_for_session` is sidecar-only; `claude/pi/cursor_first_user_message` read only the bound transcript; the state hook has no cwd fallback |
 
-## Residual suspects (why it can still happen)
+## Residual suspects (historical — 1 and 2 no longer exist as of v0.21.0)
 
 1. **No sidecar yet → mtime guess.** The sidecar only exists after a
    lifecycle hook fires. A session that is launched and closed quickly, or

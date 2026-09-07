@@ -33,11 +33,12 @@ test_state_hooks() {
         '{sessions: {($session): {name: $session, directory: $dir, branch: "main", agent_type: "claude", task: "test task"}}}' \
         > "$registry"
 
-    # Helper: run hook with given JSON input
+    # Helper: run hook with given JSON input, as the pane's own agent would
+    # (AM_SESSION_NAME is seeded into every am pane at creation).
     run_hook() {
         local input="$1"
         AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
-            AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="" \
+            AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-abc123" \
             "$hook_script" <<< "$input"
     }
 
@@ -516,9 +517,9 @@ test_state_hooks() {
     #     agent_type matches the hook's source agent. CamelCase events come
     #     only from Claude Code / Codex; camelCase events only from Cursor;
     #     pi never calls this script (in-process extension instead).
-    #     Observed live: an unmanaged Cursor conversation running in a
-    #     directory that hosts a pi am session resolved via the cwd fallback
-    #     and clobbered the pi session's state mid-turn (plus its .sid /
+    #     Observed live: a cursor-agent run by hand inside a pi session's
+    #     shell pane inherited AM_SESSION_NAME and would otherwise have
+    #     clobbered the pi session's state mid-turn (plus its .sid /
     #     .transcript sidecars). ---
     local fam_registry="$tmp_dir/family.json"
     jq -n --arg dir "$real_project_dir" \
@@ -527,12 +528,13 @@ test_state_hooks() {
             "am-cur": {name: "am-cur", directory: $dir, branch: "main", agent_type: "cursor", task: "t"}
          }}' > "$fam_registry"
 
-    # Cursor stop via cwd fallback: must skip the pi session (listed first)
-    # and land on the cursor session — including the sidecars.
+    # Cursor stop in the cursor pane: lands on the cursor session — sidecars
+    # and durable identity included — and leaves the pi session alone.
     rm -f "$state_dir/am-pi" "$state_dir/am-pi.sid" "$state_dir/am-pi.transcript" \
         "$state_dir/am-cur" "$state_dir/am-cur.sid" "$identity_dir/am-cur.sid" \
         "$identity_dir/am-cur.transcript"
-    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-cur" \
         "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-x\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
     assert_eq "" "$(cat "$state_dir/am-pi" 2>/dev/null || echo)" \
         "family gate: Cursor stop leaves pi session state untouched"
@@ -542,30 +544,35 @@ test_state_hooks() {
         "family gate: Cursor stop leaves pi transcript sidecar untouched"
     assert_eq "ready" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
         "family gate: Cursor stop targets the cursor session"
-    assert_eq "" "$(cat "$identity_dir/am-cur.sid" 2>/dev/null || echo)" \
-        "cwd fallback: cannot establish durable recovery identity"
+    assert_eq "conv-x" "$(cat "$identity_dir/am-cur.sid" 2>/dev/null || echo)" \
+        "pane-resolved Cursor stop establishes the durable recovery identity"
 
-    # Claude Stop via cwd fallback with only pi + cursor sessions in the
-    # directory: no session may be written.
+    # No AM_SESSION_NAME and no TMUX_PANE: not an am pane. The directory
+    # hosts two am sessions, and neither may be written — by either family.
     rm -f "$state_dir/am-pi" "$state_dir/am-cur"
-    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
+    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" TMUX_PANE="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-y\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
+        "no pane signal: Cursor stop in the launch dir leaves pi session untouched"
+    assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
+        "no pane signal: Cursor stop in the launch dir leaves cursor session untouched"
+    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" TMUX_PANE="" \
         "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
     assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
-        "family gate: Claude Stop leaves pi session untouched"
+        "no pane signal: Claude Stop in the launch dir leaves pi session untouched"
     assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
-        "family gate: Claude Stop leaves cursor session untouched"
+        "no pane signal: Claude Stop in the launch dir leaves cursor session untouched"
 
     # AM_SESSION_NAME inherited by a foreign agent (e.g. cursor-agent run
-    # manually inside a pi session's shell pane): wrong family → exit, and
-    # do NOT fall through to cwd matching (that would clobber the cursor
-    # session with a rogue, unmanaged conversation's state).
+    # manually inside a pi session's shell pane): wrong family → exit; the
+    # cursor session in the same directory is not a candidate either.
     rm -f "$state_dir/am-pi" "$state_dir/am-cur"
     AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-pi" \
         "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-x\",\"workspace_roots\":[\"$real_project_dir\"]}"
     assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
         "family gate: AM_SESSION_NAME type mismatch writes nothing"
     assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
-        "family gate: AM_SESSION_NAME type mismatch does not fall through to cwd"
+        "family gate: AM_SESSION_NAME type mismatch touches no other session"
 
     # CamelCase events come from Claude Code or Codex — a codex session is
     # family-compatible with them.
@@ -573,13 +580,13 @@ test_state_hooks() {
     jq -n --arg dir "$real_project_dir" \
         '{sessions: {"am-codex": {name: "am-codex", directory: $dir, branch: "main", agent_type: "codex", task: "t"}}}' \
         > "$codex_registry"
-    rm -f "$state_dir/am-codex"
-    AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"session_id\":\"rogue-cwd-id\",\"cwd\":\"$real_project_dir\"}"
+    rm -f "$state_dir/am-codex" "$identity_dir/am-codex.sid"
+    AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-codex" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"session_id\":\"codex-parent\",\"cwd\":\"$real_project_dir\"}"
     assert_eq "ready" "$(cat "$state_dir/am-codex" 2>/dev/null || echo)" \
         "family gate: CamelCase Stop may target a codex session"
-    assert_eq "" "$(cat "$identity_dir/am-codex.sid" 2>/dev/null || echo)" \
-        "Codex cwd fallback: cannot establish durable recovery identity"
+    assert_eq "codex-parent" "$(cat "$identity_dir/am-codex.sid" 2>/dev/null || echo)" \
+        "Codex pane hook establishes the durable recovery identity"
 
     AM_REGISTRY="$codex_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-codex" \
         "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"codex-parent\",\"cwd\":\"$real_project_dir\"}"
@@ -598,67 +605,94 @@ test_state_hooks() {
     assert_eq "codex-resumed" "$(cat "$identity_dir/am-codex.sid" 2>/dev/null || echo)" \
         "Codex recovered process: exact identity consumes rebind"
 
-    # --- Same-family identity gate on the cwd fallback. Observed live: an
-    #     interactive Claude started from Obsidian's terminal plugin in
-    #     ~/obsidian (no AM_SESSION_NAME / TMUX_PANE) cwd-matched the am
-    #     session launched there and drove its tab through running /
-    #     background / waiting_user from a conversation the pane never ran,
-    #     overwriting the .sid/.transcript sidecars along the way. ---
-    local gate_registry="$tmp_dir/gate.json"
-    jq -n --arg dir "$real_project_dir" \
-        '{sessions: {"am-gate": {name: "am-gate", directory: $dir, branch: "main", agent_type: "claude", task: "t"}}}' \
-        > "$gate_registry"
-    rm -f "$state_dir/am-gate" "$state_dir/am-gate.sid" "$state_dir/am-gate.transcript" \
-        "$identity_dir/am-gate.sid" "$identity_dir/am-gate.transcript" "$identity_dir/am-gate.rebind"
-
-    # The pane's own Claude (env-resolved) pins the identity.
-    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-gate" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"session_id\":\"pane-conv\",\"transcript_path\":\"$tmp_dir/pane.jsonl\",\"cwd\":\"$real_project_dir\"}"
-    assert_eq "pane-conv" "$(cat "$identity_dir/am-gate.sid" 2>/dev/null || echo)" \
-        "identity gate: pane hook pins the durable identity"
-    assert_eq "ready" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
-        "identity gate: pane hook writes state"
-
-    # A foreign Claude in the same directory, cwd-matched, other conversation.
-    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"obsidian-conv\",\"transcript_path\":\"$tmp_dir/obsidian.jsonl\",\"cwd\":\"$real_project_dir\"}"
-    assert_eq "ready" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
-        "identity gate: foreign cwd-matched conversation leaves state untouched"
-    assert_eq "pane-conv" "$(cat "$state_dir/am-gate.sid" 2>/dev/null || echo)" \
-        "identity gate: foreign conversation leaves the sid sidecar untouched"
-    assert_eq "$tmp_dir/pane.jsonl" "$(cat "$state_dir/am-gate.transcript" 2>/dev/null || echo)" \
-        "identity gate: foreign conversation leaves the transcript sidecar untouched"
-
-    # Same conversation via the cwd fallback (a pane predating the env
-    # export): still accepted.
-    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"pane-conv\",\"cwd\":\"$real_project_dir\"}"
-    assert_eq "running" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
-        "identity gate: matching id via cwd fallback still writes state"
-
-    # Id-less payload via cwd: accepted as before (nothing to compare).
-    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
-    assert_eq "ready" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
-        "identity gate: id-less cwd-matched payload still writes state"
-
-    # A pending rebind (recovery restarted the process) lifts the gate.
-    : > "$identity_dir/am-gate.rebind"
-    AM_REGISTRY="$gate_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"resumed-conv\",\"cwd\":\"$real_project_dir\"}"
-    assert_eq "waiting_user" "$(cat "$state_dir/am-gate" 2>/dev/null || echo)" \
-        "identity gate: pending rebind admits a new conversation id"
-    rm -f "$identity_dir/am-gate.rebind"
     assert_eq "false" "$(test -f "$identity_dir/am-codex.rebind" && echo true || echo false)" \
         "Codex recovered process: rebind consumed only after exact identity"
 
-    # --- No matching session → no state file written ---
+    # --- Agents outside am. Observed live: an interactive Claude started
+    #     from Obsidian's terminal plugin in ~/obsidian (no AM_SESSION_NAME,
+    #     no TMUX_PANE) was matched by directory to the am session launched
+    #     there and drove its tab through running / background /
+    #     waiting_user from a conversation the pane never ran, overwriting
+    #     the .sid/.transcript sidecars along the way. A process with no
+    #     positive pane signal now writes nothing: not state, not sidecars,
+    #     not identity, whatever its payload says. ---
+    local host_registry="$tmp_dir/host.json"
+    jq -n --arg dir "$real_project_dir" \
+        '{sessions: {"am-host": {name: "am-host", directory: $dir, branch: "main", agent_type: "claude", task: "t"}}}' \
+        > "$host_registry"
+    rm -f "$state_dir/am-host" "$state_dir/am-host.sid" "$state_dir/am-host.transcript" \
+        "$state_dir/am-host.cwd" "$state_dir/am-host.bg" \
+        "$identity_dir/am-host.sid" "$identity_dir/am-host.transcript" "$identity_dir/am-host.rebind"
+
+    # The pane's own Claude binds the identity.
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$host_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-host" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"session_id\":\"pane-conv\",\"transcript_path\":\"$tmp_dir/pane.jsonl\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "pane-conv" "$(cat "$identity_dir/am-host.sid" 2>/dev/null || echo)" \
+        "stranger: pane hook binds the durable identity"
+    assert_eq "ready" "$(cat "$state_dir/am-host" 2>/dev/null || echo)" \
+        "stranger: pane hook writes state"
+    assert_eq "$real_project_dir" "$(cat "$state_dir/am-host.cwd" 2>/dev/null || echo)" \
+        "stranger: pane hook records the cwd sidecar"
+
+    # A stranger in the same directory, every event kind: nothing moves.
+    local stranger_payload
+    for stranger_payload in \
+        "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"obsidian-conv\",\"transcript_path\":\"$tmp_dir/obsidian.jsonl\",\"cwd\":\"$real_project_dir\"}" \
+        "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"session_id\":\"obsidian-conv\",\"cwd\":\"$tmp_dir\"}" \
+        "{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"obsidian-conv\",\"transcript_path\":\"$tmp_dir/obsidian.jsonl\",\"cwd\":\"$real_project_dir\"}" \
+        "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"session_id\":\"obsidian-conv\",\"transcript_path\":\"$tmp_dir/obsidian.jsonl\",\"background_tasks\":[{\"id\":\"x\",\"type\":\"shell\",\"status\":\"running\"}],\"cwd\":\"$real_project_dir\"}" \
+        "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+    do
+        AM_DIR="$tmp_dir/am" AM_REGISTRY="$host_registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="" TMUX_PANE="" \
+            "$hook_script" <<< "$stranger_payload"
+    done
+    assert_eq "ready" "$(cat "$state_dir/am-host" 2>/dev/null || echo)" \
+        "stranger: state untouched by a same-family process outside am"
+    assert_eq "pane-conv" "$(cat "$state_dir/am-host.sid" 2>/dev/null || echo)" \
+        "stranger: sid sidecar untouched"
+    assert_eq "$tmp_dir/pane.jsonl" "$(cat "$state_dir/am-host.transcript" 2>/dev/null || echo)" \
+        "stranger: transcript sidecar untouched"
+    assert_eq "pane-conv" "$(cat "$identity_dir/am-host.sid" 2>/dev/null || echo)" \
+        "stranger: durable identity untouched"
+    assert_eq "$real_project_dir" "$(cat "$state_dir/am-host.cwd" 2>/dev/null || echo)" \
+        "stranger: cwd sidecar untouched"
+    assert_cmd_fails "stranger: no background snapshot written" \
+        test -f "$state_dir/am-host.bg"
+
+    # A TMUX_PANE that names no am session (the user's own tmux) proves
+    # nothing either.
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$host_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="" TMUX_PANE="%999999" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"other-conv\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "ready" "$(cat "$state_dir/am-host" 2>/dev/null || echo)" \
+        "stranger: foreign TMUX_PANE writes nothing"
+
+    # The pane's own hook still moves the session.
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$host_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-host" \
+        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"pane-conv\",\"cwd\":\"$real_project_dir\"}"
+    assert_eq "running" "$(cat "$state_dir/am-host" 2>/dev/null || echo)" \
+        "stranger: the pane's own hook still writes state"
+
+    # --- The pane's cwd is irrelevant to resolution: the agent may have
+    #     cd'd anywhere, its events still land on its own session ---
     rm -f "$state_dir/am-abc123"
     local other_dir="$tmp_dir/other_project"
     mkdir -p "$other_dir"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$other_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "" "$state" "No matching session: no state file written"
+    assert_eq "ready" "$state" "Pane-resolved hook writes state whatever the cwd"
+
+    # --- No pane signal (no AM_SESSION_NAME, no TMUX_PANE) → nothing written,
+    #     even from the registered directory ---
+    rm -f "$state_dir/am-abc123"
+    AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="" TMUX_PANE="" \
+        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
+    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
+    assert_eq "" "$state" "No pane signal: no state file written"
 
     # --- Unknown event → no state file written ---
     rm -f "$state_dir/am-abc123"
@@ -858,15 +892,16 @@ test_state_hook_cwd_sidecar() {
     assert_eq "$home" "$(cat "$state_dir/am-cwd1.cwd")" \
         "hook: missing cwd does not overwrite the sidecar"
 
-    # Sessions resolved by cwd matching (no AM_SESSION_NAME) record nothing:
-    # their cwd equals the registry directory by construction.
-    rm -f "$state_dir/am-cwd1.cwd"
+    # A process with no positive pane signal (no AM_SESSION_NAME, no
+    # TMUX_PANE) is not in an am pane, even when it runs in the launch
+    # directory: nothing is written, not state and not the sidecar.
+    rm -f "$state_dir/am-cwd1" "$state_dir/am-cwd1.cwd"
     AM_DIR="$am_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
-        AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="" \
+        AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="" TMUX_PANE="" \
         "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$home\"}"
-    assert_eq "ready" "$(cat "$state_dir/am-cwd1" 2>/dev/null)" \
-        "hook: cwd-matched session still gets its state"
-    assert_cmd_fails "hook: cwd-matched session writes no sidecar" \
+    assert_cmd_fails "hook: unmanaged process in the launch dir writes no state" \
+        test -f "$state_dir/am-cwd1"
+    assert_cmd_fails "hook: unmanaged process in the launch dir writes no sidecar" \
         test -f "$state_dir/am-cwd1.cwd"
 
     rm -rf "$tmp_dir"

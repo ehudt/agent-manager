@@ -59,8 +59,20 @@ test_standalone_preview() {
 {"type":"assistant","message":{"role":"assistant","content":"Response"},"uuid":"test-uuid-2","timestamp":"2026-03-10T09:00:01.000Z"}
 EOF
     registry_update "$session_name" "directory" "$test_dir"
+    # Without a bound session id the preview shows no transcript excerpt,
+    # however many JSONLs sit in the directory's store.
+    local preview_state_dir="$AM_DIR/preview-state"
+    mkdir -p "$preview_state_dir"
     rc=0
     output=$(AM_REGISTRY="$AM_REGISTRY" AM_TMUX_SOCKET="$AM_TMUX_SOCKET" \
+        AM_STATE_DIR="$preview_state_dir" AM_IDENTITY_DIR="$preview_state_dir/ids" \
+        "$LIB_DIR/preview" "$session_name" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "preview: exits 0 without a bound session id"
+    assert_not_contains "$output" "first user message" "preview: no transcript excerpt without a bound session id"
+    printf '%s\n' "session" > "$preview_state_dir/$session_name.sid"
+    rc=0
+    output=$(AM_REGISTRY="$AM_REGISTRY" AM_TMUX_SOCKET="$AM_TMUX_SOCKET" \
+        AM_STATE_DIR="$preview_state_dir" AM_IDENTITY_DIR="$preview_state_dir/ids" \
         "$LIB_DIR/preview" "$session_name" 2>&1) || rc=$?
     assert_eq "0" "$rc" "preview: exits 0 with valid JSONL"
     assert_contains "$output" "first user message" "preview: extracts first user message"

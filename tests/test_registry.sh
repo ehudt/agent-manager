@@ -112,8 +112,21 @@ test_registry_extended() {
     assert_cmd_fails "pi jsonl missing sid" \
         _sessions_log_jsonl_exists "$pi_dir" "0199aaaa-bbbb-cccc-dddd-eeeeffff9999" "pi"
 
+    # The session id comes only from the sidecar this session's own hook
+    # wrote; a transcript sitting in the directory's store proves nothing.
+    local pi_state="$pi_home/state"
+    mkdir -p "$pi_state"
+    assert_eq "" \
+        "$(AM_STATE_DIR="$pi_state" AM_IDENTITY_DIR="$pi_home/ids" _sessions_log_detect_id_for_session am-pitest "$pi_dir" pi)" \
+        "pi detect id: no sidecar → no guess from the store"
+    printf '%s\n' "0199aaaa-bbbb-cccc-dddd-eeeeffff0001" > "$pi_state/am-pitest.sid"
     assert_eq "0199aaaa-bbbb-cccc-dddd-eeeeffff0001" \
-        "$(_sessions_log_detect_id "$pi_dir" "" "pi")" "pi detect id: newest jsonl"
+        "$(AM_STATE_DIR="$pi_state" AM_IDENTITY_DIR="$pi_home/ids" _sessions_log_detect_id_for_session am-pitest "$pi_dir" pi)" \
+        "pi detect id: sidecar verified against the store"
+    printf '%s\n' "0199aaaa-bbbb-cccc-dddd-eeeeffff9999" > "$pi_state/am-pitest.sid"
+    assert_eq "" \
+        "$(AM_STATE_DIR="$pi_state" AM_IDENTITY_DIR="$pi_home/ids" _sessions_log_detect_id_for_session am-pitest "$pi_dir" pi)" \
+        "pi detect id: sidecar without a transcript → empty, no substitute"
     unset AM_PI_SESSIONS_DIR
 
     # --- _pi_title_extract ---
@@ -537,7 +550,9 @@ test_auto_title_scan() {
 
     # --- Test 8: JSONL fallback when pane title is empty (Claude only) ---
     # Set up a fake Claude project dir with a JSONL whose first user message
-    # should be used as the task.
+    # should be used as the task. The scan opens exactly the transcript the
+    # session's own hook bound (.sid sidecar); a store with only a stranger's
+    # transcript yields no title.
     local fake_home_8="$AM_DIR/fake_home_8"
     local fake_dir_8="/tmp/jsonl-fallback-test-8"
     local fake_proj_8
@@ -546,9 +561,18 @@ test_auto_title_scan() {
     mkdir -p "$fake_home_8/.claude/projects/$fake_proj_8"
     printf '%s\n' '{"type":"user","message":{"content":"Investigate JSONL fallback path"}}' \
         > "$fake_home_8/.claude/projects/$fake_proj_8/test.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"A stranger conversation in the same dir"}}' \
+        > "$fake_home_8/.claude/projects/$fake_proj_8/stranger.jsonl"
     local old_home_8="$HOME"
     export HOME="$fake_home_8"
     registry_add "test-scan-8" "$fake_dir_8" "main" "claude" ""
+    auto_title_scan 1
+    task=$(registry_get_field "test-scan-8" "task")
+    assert_eq "" "$task" \
+        "scan: no JSONL title without a bound session id"
+    mkdir -p "$AM_STATE_DIR"
+    printf '%s\n' "test" > "$AM_STATE_DIR/test-scan-8.sid"
+    rm -f "$AM_DIR/.title_scan_last"
     auto_title_scan 1
     task=$(registry_get_field "test-scan-8" "task")
     export HOME="$old_home_8"

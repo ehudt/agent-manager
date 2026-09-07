@@ -381,21 +381,20 @@ auto_title_scan() {
             # auto-titling existed.
             local fallback=""
             if [[ ( "${reg_agent[$name]}" == "claude" || "${reg_agent[$name]}" == "pi" || "${reg_agent[$name]}" == "cursor" ) && -n "${reg_dir[$name]}" ]]; then
-                # Resolve THIS session's id (sidecar, else mtime>=created) so two
-                # sessions in one directory don't share the newest JSONL's first
-                # message as their title.
+                # THIS session's conversation id, from the sidecar its own
+                # hook wrote. The readers open exactly that transcript; with
+                # no id there is no fallback (the directory's transcript store
+                # is shared with other sessions and with agents outside am).
                 local _sid
-                _sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}" "${reg_agent[$name]}" 2>/dev/null || true)
-                # strict=1: if we can't pin this session's id, don't guess from
-                # a directory with multiple JSONLs (would inherit a sibling's task).
+                _sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_agent[$name]}" 2>/dev/null || true)
                 if [[ "${reg_agent[$name]}" == "pi" ]]; then
-                    fallback=$(pi_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
+                    fallback=$(pi_first_user_message "${reg_dir[$name]}" "$_sid" 2>/dev/null || true)
                 elif [[ "${reg_agent[$name]}" == "cursor" ]]; then
                     local _transcript
                     _transcript=$(_sessions_log_sidecar_transcript "$name")
-                    fallback=$(cursor_first_user_message "${reg_dir[$name]}" "$_sid" "$_transcript" 1 2>/dev/null || true)
+                    fallback=$(cursor_first_user_message "${reg_dir[$name]}" "$_sid" "$_transcript" 2>/dev/null || true)
                 else
-                    fallback=$(claude_first_user_message "${reg_dir[$name]}" "$_sid" 1 2>/dev/null || true)
+                    fallback=$(claude_first_user_message "${reg_dir[$name]}" "$_sid" 2>/dev/null || true)
                 fi
                 fallback="${fallback:0:60}"
             fi
@@ -503,7 +502,7 @@ sessions_log_scan() {
             sid="$sidecar_sid"
             slog_sid[$name]="$sid"
         elif [[ -z "$sid" && -n "${reg_dir[$name]}" ]]; then
-            sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_created[$name]}" "${reg_agent[$name]}")
+            sid=$(_sessions_log_detect_id_for_session "$name" "${reg_dir[$name]}" "${reg_agent[$name]}")
             if [[ -n "$sid" ]]; then
                 sessions_log_update "$name" "session_id" "$sid"
                 slog_sid[$name]="$sid"
@@ -661,18 +660,6 @@ _pi_sessions_root() {
     echo "${AM_PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
 }
 
-_slog_iso_epoch() {
-    local value="$1"
-    [[ -n "$value" ]] || return 1
-    date -d "$value" +%s 2>/dev/null \
-        || TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s 2>/dev/null
-}
-
-_slog_file_mtime() {
-    local path="$1"
-    stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null
-}
-
 _sessions_log_valid_id() {
     local sid="$1"
     [[ -n "$sid" && "$sid" =~ ^[A-Za-z0-9._-]+$ ]]
@@ -717,132 +704,31 @@ _sessions_log_field() {
         "$AM_SESSIONS_LOG" 2>/dev/null || true
 }
 
-# True when another registered Claude session shares the directory.
-# Usage: _sessions_log_dir_is_shared <session_name> <directory>
-_sessions_log_dir_is_shared() {
-    local session_name="$1"
-    local dir="$2"
-    local agent="${3:-claude}"
-    [[ -f "$AM_REGISTRY" ]] || return 1
-
-    local count
-    count=$(jq -r --arg name "$session_name" --arg dir "$dir" --arg agent "$agent" \
-        '[.sessions | to_entries[]
-          | select(.key != $name and .value.agent_type == $agent and .value.directory == $dir)]
-         | length' "$AM_REGISTRY" 2>/dev/null) || return 1
-    [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 ))
-}
-
-# Detect the agent session ID for a specific am session.
-# Prefer the hook sidecar, because it was written by the agent pane itself.
-# Fall back to directory scanning only for JSONLs updated after this am session
-# was created; older same-directory JSONLs belong to previous sessions.
+# Conversation id bound to an am session: the sidecar its own hook wrote
+# (ephemeral $AM_STATE_DIR/<session>.sid, else the durable identity), verified
+# against the transcript store. There is no directory-based guess: the store
+# is shared with other am sessions and with agents started outside am, so the
+# newest transcript in it is not this session. Until the first hook fires the
+# session has no identity, and nothing worth restoring either.
+# Usage: _sessions_log_detect_id_for_session <session_name> <directory> [agent_type]
 _sessions_log_detect_id_for_session() {
     local session_name="$1"
     local dir="$2"
-    local created_at="${3:-}"
-    local agent="${4:-claude}"
-
-    local sid sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
-    local durable_sid_file="${AM_IDENTITY_DIR:-$AM_DIR/identities}/$session_name.sid"
-    sid=$(_sessions_log_sidecar_id "$session_name")
-    if [[ -f "$sid_file" || -f "$durable_sid_file" ]]; then
-        local sidecar_transcript=""
-        [[ "$agent" == "cursor" ]] && sidecar_transcript=$(_sessions_log_sidecar_transcript "$session_name")
-        if [[ -n "$sid" && "$agent" == "codex" ]]; then
-            echo "$sid"
-        elif [[ -n "$sid" ]] && _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$sidecar_transcript"; then
-            echo "$sid"
-        fi
-        return 0
-    fi
-
-    # The mtime fallback below guesses "newest JSONL in this directory", which
-    # binds the wrong conversation whenever another am session shares the
-    # directory. Skip it then: a missing sid gets retried on the next scan,
-    # a wrong one sticks forever.
-    if _sessions_log_dir_is_shared "$session_name" "$dir" "$agent"; then
-        return 0
-    fi
-
-    _sessions_log_detect_id "$dir" "$created_at" "$agent"
-}
-
-# Detect the agent session ID for a directory.
-# Usage: _sessions_log_detect_id <directory> [not_before_iso] [agent_type]
-# Returns the session UUID of the most recently modified JSONL file.
-# Returns: session UUID on stdout, or empty
-_sessions_log_detect_id() {
-    local dir="$1"
-    local not_before="${2:-}"
     local agent="${3:-claude}"
 
-    local resolved
-    resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
-
-    local min_epoch=0
-    if [[ -n "$not_before" ]]; then
-        min_epoch=$(_slog_iso_epoch "$not_before" 2>/dev/null || echo 0)
-    fi
-
-    [[ "$agent" == "codex" ]] && return 0
-
-    if [[ "$agent" == "pi" ]]; then
-        local pi_dir
-        pi_dir="$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"
-        [[ -d "$pi_dir" ]] || return 0
-        local jsonl_path base sid mtime
-        while IFS= read -r jsonl_path; do
-            [[ -n "$jsonl_path" && -f "$jsonl_path" ]] || continue
-            if (( min_epoch > 0 )); then
-                mtime=$(_slog_file_mtime "$jsonl_path" 2>/dev/null || echo 0)
-                (( mtime > 0 && mtime < min_epoch )) && continue
-            fi
-            base=$(basename "$jsonl_path" .jsonl)
-            sid="${base##*_}"
-            _sessions_log_valid_id "$sid" || continue
-            echo "$sid"
-            return 0
-        done < <(command ls -t "$pi_dir"/*.jsonl 2>/dev/null)
-        return 0
-    fi
-
-    if [[ "$agent" == "cursor" ]]; then
-        local cursor_dir
-        cursor_dir="$(_cursor_projects_root)/$(_slog_encode_cursor_dir "$resolved")/agent-transcripts"
-        [[ -d "$cursor_dir" ]] || return 0
-        local cursor_jsonl cursor_sid cursor_mtime
-        while IFS= read -r cursor_jsonl; do
-            [[ -n "$cursor_jsonl" && -f "$cursor_jsonl" ]] || continue
-            if (( min_epoch > 0 )); then
-                cursor_mtime=$(_slog_file_mtime "$cursor_jsonl" 2>/dev/null || echo 0)
-                (( cursor_mtime > 0 && cursor_mtime < min_epoch )) && continue
-            fi
-            cursor_sid=$(basename "$cursor_jsonl" .jsonl)
-            _sessions_log_valid_id "$cursor_sid" || continue
-            echo "$cursor_sid"
-            return 0
-        done < <(command ls -t "$cursor_dir"/*/*.jsonl 2>/dev/null)
-        return 0
-    fi
-
-    local encoded project_dir
-    encoded=$(_slog_encode_dir "$resolved")
-    project_dir="$HOME/.claude/projects/$encoded"
-    [[ -d "$project_dir" ]] || return 0
-
-    local jsonl_path mtime sid
-    while IFS= read -r jsonl_path; do
-        [[ -n "$jsonl_path" && -f "$jsonl_path" ]] || continue
-        if (( min_epoch > 0 )); then
-            mtime=$(_slog_file_mtime "$jsonl_path" 2>/dev/null || echo 0)
-            (( mtime > 0 && mtime < min_epoch )) && continue
-        fi
-        sid=$(basename "$jsonl_path" .jsonl)
-        _sessions_log_valid_id "$sid" || continue
+    local sid
+    sid=$(_sessions_log_sidecar_id "$session_name")
+    [[ -n "$sid" ]] || return 0
+    if [[ "$agent" == "codex" ]]; then
         echo "$sid"
         return 0
-    done < <(command ls -t "$project_dir"/*.jsonl 2>/dev/null)
+    fi
+    local sidecar_transcript=""
+    [[ "$agent" == "cursor" ]] && sidecar_transcript=$(_sessions_log_sidecar_transcript "$session_name")
+    if _sessions_log_jsonl_exists "$dir" "$sid" "$agent" "$sidecar_transcript"; then
+        echo "$sid"
+    fi
+    return 0
 }
 
 # Check if an agent conversation JSONL still exists for a directory + sid.

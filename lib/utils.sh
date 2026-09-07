@@ -210,39 +210,23 @@ generate_hash() {
 }
 
 # Extract first meaningful user message from Claude session JSONL
-# Usage: claude_first_user_message <directory> [session_id] [strict]
-# When session_id is given, reads that exact JSONL — this disambiguates
-# multiple sessions sharing one directory (otherwise the newest JSONL wins,
-# so an older session would inherit a newer session's first message).
-# When session_id is empty/missing: by default falls back to the newest JSONL.
-# In strict mode (strict=1), the newest fallback is only used when the
-# directory holds exactly one JSONL — with two or more it's ambiguous which
-# belongs to this session, so we return nothing rather than guess wrong.
+# Usage: claude_first_user_message <directory> <session_id>
+# Reads exactly the transcript bound to this session — the id the pane's own
+# hook reported. The directory only locates Claude's per-project transcript
+# store; it never chooses among the transcripts in it, because that store is
+# shared with other am sessions and with agents started outside am, so
+# "newest file here" is not this session. No id → nothing.
 # Returns: cleaned text of the first user message with >10 chars, or empty
 claude_first_user_message() {
     local directory="$1"
     local session_id="${2:-}"
-    local strict="${3:-0}"
+    [[ -n "$session_id" ]] || return 0
 
     # Convert directory to Claude's project path format (/ and . become -)
     local project_path="${directory//\//-}"
     project_path="${project_path//./-}"
-    local claude_project_dir="$HOME/.claude/projects/$project_path"
-
-    [[ -d "$claude_project_dir" ]] || return 0
-
-    local session_file=""
-    if [[ -n "$session_id" && -f "$claude_project_dir/$session_id.jsonl" ]]; then
-        session_file="$claude_project_dir/$session_id.jsonl"
-    elif [[ "$strict" == "1" ]]; then
-        # Ambiguous unless there's exactly one JSONL — don't guess.
-        local _jsonls=("$claude_project_dir"/*.jsonl)
-        [[ ${#_jsonls[@]} -eq 1 && -f "${_jsonls[0]}" ]] || return 0
-        session_file="${_jsonls[0]}"
-    else
-        session_file=$(command ls -t "$claude_project_dir"/*.jsonl 2>/dev/null | head -1)
-    fi
-    [[ -n "$session_file" && -f "$session_file" ]] || return 0
+    local session_file="$HOME/.claude/projects/$project_path/$session_id.jsonl"
+    [[ -f "$session_file" ]] || return 0
 
     local line content cleaned
     while IFS= read -r line; do
@@ -270,17 +254,18 @@ claude_first_user_message() {
     done < <(grep '"type":"user"' "$session_file" 2>/dev/null | head -10)
 }
 
-# Usage: pi_first_user_message <directory> [session_id] [strict]
+# Usage: pi_first_user_message <directory> <session_id>
 # Pi twin of claude_first_user_message. Pi stores sessions at
 # ~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl where the
 # encoded cwd is "--" + path minus leading slash with [/\:] -> "-" + "--"
 # (dots preserved). Message entries look like
 # {"type":"message",...,"message":{"role":"user","content":<string|blocks>}}.
-# Semantics of session_id/strict match the Claude version.
+# Same contract as the Claude version: exactly the bound transcript, no id →
+# nothing.
 pi_first_user_message() {
     local directory="$1"
     local session_id="${2:-}"
-    local strict="${3:-0}"
+    [[ -n "$session_id" ]] || return 0
 
     local resolved
     resolved=$(cd "$directory" 2>/dev/null && pwd -P) || resolved="$directory"
@@ -291,19 +276,8 @@ pi_first_user_message() {
     [[ -d "$pi_project_dir" ]] || return 0
 
     local session_file=""
-    if [[ -n "$session_id" ]]; then
-        local _matches=("$pi_project_dir"/*_"${session_id}".jsonl)
-        [[ -f "${_matches[0]}" ]] && session_file="${_matches[0]}"
-    fi
-    if [[ -z "$session_file" ]]; then
-        if [[ "$strict" == "1" ]]; then
-            local _jsonls=("$pi_project_dir"/*.jsonl)
-            [[ ${#_jsonls[@]} -eq 1 && -f "${_jsonls[0]}" ]] || return 0
-            session_file="${_jsonls[0]}"
-        else
-            session_file=$(command ls -t "$pi_project_dir"/*.jsonl 2>/dev/null | head -1)
-        fi
-    fi
+    local _matches=("$pi_project_dir"/*_"${session_id}".jsonl)
+    [[ -f "${_matches[0]}" ]] && session_file="${_matches[0]}"
     [[ -n "$session_file" && -f "$session_file" ]] || return 0
 
     local line content cleaned
@@ -332,34 +306,30 @@ pi_first_user_message() {
     done < <(grep '"role":"user"' "$session_file" 2>/dev/null | head -10)
 }
 
-# Usage: cursor_first_user_message <directory> [session_id] [transcript_path] [strict]
+# Usage: cursor_first_user_message <directory> [session_id] [transcript_path]
 # Cursor stores each transcript at:
 # ~/.cursor/projects/<encoded-cwd>/agent-transcripts/<id>/<id>.jsonl
-# The hook-provided transcript_path is authoritative; the standard layout is
-# used only as a fallback. Cursor user records use role=user with block content
-# and commonly wrap the actual prompt in <user_query>.
+# The hook-provided transcript_path is authoritative; the standard layout
+# addressed by session_id is the fallback. Neither → nothing: the per-project
+# store is shared with conversations that are not this session. Cursor user
+# records use role=user with block content and commonly wrap the actual
+# prompt in <user_query>.
 cursor_first_user_message() {
     local directory="$1"
     local session_id="${2:-}"
     local transcript_path="${3:-}"
-    local strict="${4:-0}"
     local session_file=""
 
     if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         session_file="$transcript_path"
-    else
+    elif [[ -n "$session_id" ]]; then
         local resolved
         resolved=$(cd "$directory" 2>/dev/null && pwd -P) || resolved="$directory"
         local encoded="${resolved#/}"
         encoded="${encoded//\//-}"
         encoded="${encoded//./-}"
         local cursor_dir="${AM_CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}/$encoded/agent-transcripts"
-
-        if [[ -n "$session_id" && -f "$cursor_dir/$session_id/$session_id.jsonl" ]]; then
-            session_file="$cursor_dir/$session_id/$session_id.jsonl"
-        elif [[ "$strict" != "1" ]]; then
-            session_file=$(command ls -t "$cursor_dir"/*/*.jsonl 2>/dev/null | head -1)
-        fi
+        [[ -f "$cursor_dir/$session_id/$session_id.jsonl" ]] && session_file="$cursor_dir/$session_id/$session_id.jsonl"
     fi
     [[ -n "$session_file" && -f "$session_file" ]] || return 0
 

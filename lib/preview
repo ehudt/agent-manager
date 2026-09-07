@@ -23,13 +23,24 @@ fi
 
 # Read directory and task from registry in one jq call (avoids sourcing registry.sh)
 AM_REGISTRY="${AM_REGISTRY:-${HOME}/.agent-manager/sessions.json}"
-directory="" task="" workdir=""
+directory="" task="" workdir="" agent_type=""
 if [[ -f "$AM_REGISTRY" ]]; then
     local_fields=$(jq -r --arg name "$session_name" \
-        '.sessions[$name] | [.directory // "", .task // "", .workdir // ""] | join("|")' \
+        '.sessions[$name] | [.directory // "", .task // "", .workdir // "", .agent_type // ""] | join("|")' \
         "$AM_REGISTRY" 2>/dev/null || true)
-    IFS='|' read -r directory task workdir <<< "$local_fields"
+    IFS='|' read -r directory task workdir agent_type <<< "$local_fields"
 fi
+
+# This session's conversation id: the sidecar its own hook wrote (ephemeral,
+# else durable). The first-message readers open exactly that transcript.
+session_id=""
+for sid_file in "${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid" \
+                "${AM_IDENTITY_DIR:-${HOME}/.agent-manager/identities}/$session_name.sid"; do
+    if [[ -f "$sid_file" ]]; then
+        IFS= read -r session_id < "$sid_file" 2>/dev/null || true
+        [[ -n "$session_id" ]] && break
+    fi
+done
 
 echo -e "\033[1mSession:\033[0m $session_name"
 if [[ -n "$directory" ]]; then
@@ -43,9 +54,13 @@ if [[ -n "$task" ]]; then
     echo -e "\033[1;36m$task\033[0m"
 fi
 
-# Show first user message from Claude JSONL if available
-if [[ -n "$directory" ]]; then
-    first_msg=$(claude_first_user_message "$directory" 2>/dev/null || true)
+# Show the first user message of this session's own transcript, if bound
+if [[ -n "$directory" && -n "$session_id" ]]; then
+    first_msg=""
+    case "$agent_type" in
+        pi) first_msg=$(pi_first_user_message "$directory" "$session_id" 2>/dev/null || true) ;;
+        *)  first_msg=$(claude_first_user_message "$directory" "$session_id" 2>/dev/null || true) ;;
+    esac
     if [[ -n "$first_msg" ]]; then
         echo ""
         echo -e "\033[2m$first_msg\033[0m"

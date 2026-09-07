@@ -56,27 +56,29 @@
 #   AM_STATE_GUARD_SECS  — grace window (s) during which tool hooks may not
 #                          flip ready back to running (default: 10)
 #
-# Session identification (in order of preference):
-#   1. $AM_SESSION_NAME (exported by am when launching the agent) — exact match
-#   2. $TMUX_PANE → tmux session name — works for sessions running before
-#      AM_SESSION_NAME was added, since agents inherit TMUX_PANE from their pane
-#   3. cwd match against registry — last resort; cannot disambiguate when
-#      multiple am sessions share a directory (two Claude instances in one repo).
-#      Gated on conversation identity: once the matched session has a recorded
-#      id (durable, else ephemeral .sid), the payload must carry the same id,
-#      so an unmanaged same-family agent in that directory cannot drive it
+# Session identification — positive signals only:
+#   1. $AM_SESSION_NAME (seeded into the pane by am at creation) — exact match
+#   2. $TMUX_PANE → tmux session name — agents inherit TMUX_PANE from their
+#      pane, so this covers a pane whose environment lost the variable
 #
-# All three layers are gated on the agent family: the hook's event name
-# proves which agent fired it (CamelCase → Claude Code / Codex; camelCase →
-# Cursor; pi never calls this script — its states come from the in-process
-# extension lib/hooks/am-state.ts), and the resolved session's registered
-# agent_type must belong to that family. Without the gate, an unmanaged
-# agent process (e.g. a Cursor conversation run outside am) whose cwd hosts
-# an am session of a *different* agent clobbers that session's state and
-# .sid/.transcript sidecars — observed live: a stray Cursor daily-log run
-# flipped a mid-turn pi session to ready. A positively identified
-# session (layers 1–2) with the wrong type means a foreign agent is nested
-# inside an am pane; the hook exits rather than guessing by cwd.
+# There is no cwd fallback. A directory is a shared resource: other am
+# sessions, wp copies, and agents started outside am all run in it. Observed
+# live: an interactive Claude launched from Obsidian's terminal plugin in
+# ~/obsidian (neither variable set) was matched by directory to the am
+# session launched there, drove its tab through running / background /
+# waiting_user from a conversation the pane never ran, and overwrote its
+# .sid/.transcript sidecars on the way. A process that carries neither
+# variable is not in an am pane; its events are dropped (one line under
+# AM_HOOK_DEBUG=1). The same holds for pi's in-process extension
+# (lib/hooks/am-state.ts), which is a no-op without AM_SESSION_NAME.
+#
+# Both layers are gated on the agent family: the hook's event name proves
+# which agent fired it (CamelCase → Claude Code / Codex; camelCase → Cursor;
+# pi never calls this script), and the resolved session's registered
+# agent_type must belong to that family. A positively identified session of
+# the wrong type means a foreign agent is nested inside an am pane (observed
+# live: a cursor-agent run by hand in a pi session's shell pane); the hook
+# exits rather than write another agent's state.
 
 set -euo pipefail
 
@@ -337,7 +339,6 @@ _family_match() {
 }
 
 session_name=""
-session_resolution=""
 
 # 1. AM_SESSION_NAME — authoritative when set by agent_launch. If set but not
 #    in the registry, the session was removed or renamed; do not fall through
@@ -352,7 +353,6 @@ if [[ -n "${AM_SESSION_NAME:-}" ]]; then
         _hook_debug "AM_SESSION_NAME=$session_name agent_type outside hook family ($hook_family); exiting"
         exit 0
     fi
-    session_resolution="env"
 fi
 
 # 2. TMUX_PANE — agents inherit this from their tmux pane; resolving it to the
@@ -366,67 +366,24 @@ if [[ -z "$session_name" && -n "${TMUX_PANE:-}" ]] && command -v tmux &>/dev/nul
             _hook_debug "tmux session $session_name agent_type outside hook family ($hook_family); exiting"
             exit 0
         fi
-        [[ -n "$session_name" ]] && session_resolution="tmux"
     fi
 fi
 
-# 3. cwd match — last resort; ambiguous when two sessions share a directory
+# Neither variable named an am pane: this process was not launched by am
+# (an agent started by hand in some directory, possibly one that also hosts
+# an am session). Its events are not ours. There is deliberately no
+# directory-based guess here — see the header.
 if [[ -z "$session_name" ]]; then
-    cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // .workspace_roots[0] // empty' 2>/dev/null || true)
-    if [[ -z "$cwd" ]]; then
-        _hook_debug "no AM_SESSION_NAME/TMUX_PANE/cwd; cannot resolve session"
-        exit 0
-    fi
-    cwd_real=$(cd "$cwd" 2>/dev/null && pwd) || {
-        _hook_debug "cwd '$cwd' not accessible; exiting"
-        exit 0
-    }
-    session_name=$(jq -r --arg cwd "$cwd_real" --arg fam "$hook_family" '
-        .sessions
-        | to_entries[]
-        | select(.value.directory == $cwd)
-        | select((.value.agent_type // "") as $t | ($fam | split(" ") | index($t)) != null)
-        | .key
-    ' "$AM_REGISTRY" 2>/dev/null | head -1 || true)
-    [[ -n "$session_name" ]] && session_resolution="cwd"
-fi
-
-if [[ -z "$session_name" ]]; then
-    _hook_debug "no session matched (cwd=${cwd_real:-?})"
+    _hook_debug "no AM_SESSION_NAME/TMUX_PANE match; not an am pane (cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // .workspace_roots[0] // "?"' 2>/dev/null || echo '?')); exiting"
     exit 0
 fi
 
-# Conversation identity carried by the payload. Used by the cwd identity
-# gate below and persisted as the .sid/.transcript sidecars further down.
+# Conversation identity carried by the payload, persisted as the
+# .sid/.transcript sidecars further down.
 hook_session_id=$(printf '%s' "$hook_input" | jq -r '.conversation_id // .session_id // .sessionId // empty' 2>/dev/null || true)
 transcript_path=$(printf '%s' "$hook_input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 if [[ -z "$hook_session_id" && -n "$transcript_path" ]]; then
     hook_session_id=$(basename "$transcript_path" .jsonl)
-fi
-
-# 3b. Identity gate for cwd-matched sessions. Layer 3 proves only that
-# *some* agent of the right family runs in this directory. An unmanaged
-# same-family agent — observed live: an interactive Claude started from
-# Obsidian's terminal plugin in ~/obsidian, with no AM_SESSION_NAME or
-# TMUX_PANE — matches the am session launched there and drives its tab
-# through running / background / waiting_user from a conversation the pane
-# never ran, overwriting the .sid/.transcript sidecars on the way. Once the
-# session has a recorded conversation id (durable first, ephemeral as
-# fallback), a cwd-matched payload must carry the same id. A pending rebind
-# (recovery restarted the process under a new id) lifts the check; id-less
-# payloads and sessions with no identity yet pass, as before.
-if [[ "$session_resolution" == "cwd" && -n "$hook_session_id" \
-    && ! -f "$AM_IDENTITY_DIR/$session_name.rebind" ]]; then
-    known_sid=""
-    if [[ -f "$AM_IDENTITY_DIR/$session_name.sid" ]]; then
-        IFS= read -r known_sid < "$AM_IDENTITY_DIR/$session_name.sid" 2>/dev/null || true
-    elif [[ -f "$AM_STATE_DIR/$session_name.sid" ]]; then
-        IFS= read -r known_sid < "$AM_STATE_DIR/$session_name.sid" 2>/dev/null || true
-    fi
-    if [[ -n "$known_sid" && "$known_sid" != "$hook_session_id" ]]; then
-        _hook_debug "cwd-matched $session_name belongs to conversation $known_sid; payload id $hook_session_id is a foreign process in the same directory; exiting"
-        exit 0
-    fi
 fi
 
 # Live working directory sidecar. Claude Code stamps hook payloads (and every
@@ -435,22 +392,19 @@ fi
 # non-scraped signal that the agent has cd'd into another checkout. Written on
 # every event, rewritten only on change; the title scan turns it into the
 # registry's `workdir` plus a refreshed `branch` (lib/registry.sh
-# auto_title_scan / Go RefreshTitles). Sessions matched by cwd have
-# cwd == directory by construction, so there is nothing to record.
-if [[ "$session_resolution" != "cwd" ]]; then
-    hook_cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // empty' 2>/dev/null || true)
-    if [[ "$hook_cwd" == /* && "$hook_cwd" != *$'\n'* && -d "$hook_cwd" ]]; then
-        cwd_file="$AM_STATE_DIR/$session_name.cwd"
-        prev_cwd=""
-        if [[ -f "$cwd_file" ]]; then
-            IFS= read -r prev_cwd < "$cwd_file" || true
-        fi
-        if [[ "$hook_cwd" != "$prev_cwd" ]]; then
-            mkdir -p "$AM_STATE_DIR"
-            printf '%s' "$hook_cwd" > "$cwd_file"
-            # Let the next status-bar tick relabel within ~5s instead of 60s.
-            rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
-        fi
+# auto_title_scan / Go RefreshTitles).
+hook_cwd=$(printf '%s' "$hook_input" | jq -r '.cwd // empty' 2>/dev/null || true)
+if [[ "$hook_cwd" == /* && "$hook_cwd" != *$'\n'* && -d "$hook_cwd" ]]; then
+    cwd_file="$AM_STATE_DIR/$session_name.cwd"
+    prev_cwd=""
+    if [[ -f "$cwd_file" ]]; then
+        IFS= read -r prev_cwd < "$cwd_file" || true
+    fi
+    if [[ "$hook_cwd" != "$prev_cwd" ]]; then
+        mkdir -p "$AM_STATE_DIR"
+        printf '%s' "$hook_cwd" > "$cwd_file"
+        # Let the next status-bar tick relabel within ~5s instead of 60s.
+        rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
     fi
 fi
 
@@ -561,7 +515,7 @@ fi
 # without a transcript path; persisting only half would combine unrelated
 # generations. Background agents were rejected above, and durable fields are
 # updated together only from one complete hook payload.
-if [[ "$session_resolution" != "cwd" && "$hook_family" == "cursor" ]]; then
+if [[ "$hook_family" == "cursor" ]]; then
     if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ \
         && "$transcript_path" == /* && "$transcript_path" != *$'\n'* ]]; then
         mkdir -p "$AM_IDENTITY_DIR"
@@ -580,7 +534,7 @@ if [[ "$session_resolution" != "cwd" && "$hook_family" == "cursor" ]]; then
             rm -f "$AM_IDENTITY_DIR/$session_name.rebind"
         fi
     fi
-elif [[ "$session_resolution" != "cwd" ]]; then
+else
     mkdir -p "$AM_IDENTITY_DIR"
     durable_sid=""
     allow_rebind=false

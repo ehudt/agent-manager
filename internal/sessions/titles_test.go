@@ -91,7 +91,7 @@ func TestClaudeFirstUserMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := claudeFirstUserMessage(directory, "", false)
+	got := claudeFirstUserMessage(directory, "session")
 	if got != "Fix the broken login flow in auth" {
 		t.Errorf("got %q, want %q", got, "Fix the broken login flow in auth")
 	}
@@ -115,7 +115,7 @@ func TestClaudeFirstUserMessageArrayContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := claudeFirstUserMessage(directory, "", false)
+	got := claudeFirstUserMessage(directory, "session")
 	if got != "Add JSONL fallback for tasks" {
 		t.Errorf("got %q, want %q", got, "Add JSONL fallback for tasks")
 	}
@@ -140,7 +140,7 @@ func TestClaudeFirstUserMessageSkipsShort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := claudeFirstUserMessage(directory, "", false)
+	got := claudeFirstUserMessage(directory, "session")
 	if got != "This is the real user task description" {
 		t.Errorf("got %q, want non-short message", got)
 	}
@@ -149,7 +149,7 @@ func TestClaudeFirstUserMessageSkipsShort(t *testing.T) {
 func TestClaudeFirstUserMessageMissingDir(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
-	if got := claudeFirstUserMessage("/nonexistent/dir/xyz", "", false); got != "" {
+	if got := claudeFirstUserMessage("/nonexistent/dir/xyz", "session"); got != "" {
 		t.Errorf("got %q, want empty for missing dir", got)
 	}
 }
@@ -166,7 +166,8 @@ func TestClaudeFirstUserMessageDisambiguatesBySessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Two sessions in one directory. The older one must keep its own title.
+	// Two conversations in one directory's store. Each session reads only
+	// the transcript bound to it; the newer file is never "this session".
 	older := `{"type":"user","message":{"content":"Older session original task"}}` + "\n"
 	newer := `{"type":"user","message":{"content":"Newer session different task"}}` + "\n"
 	if err := os.WriteFile(filepath.Join(claudeDir, "aaaa-old.jsonl"), []byte(older), 0o644); err != nil {
@@ -175,35 +176,31 @@ func TestClaudeFirstUserMessageDisambiguatesBySessionID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "bbbb-new.jsonl"), []byte(newer), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Make the "old" file the least recently modified so the newest-wins
-	// fallback would otherwise pick the new file for both sessions.
 	old := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(filepath.Join(claudeDir, "aaaa-old.jsonl"), old, old); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := claudeFirstUserMessage(directory, "aaaa-old", false); got != "Older session original task" {
+	if got := claudeFirstUserMessage(directory, "aaaa-old"); got != "Older session original task" {
 		t.Errorf("explicit id: got %q, want older session's message", got)
 	}
-	// Empty id keeps newest-wins behavior.
-	if got := claudeFirstUserMessage(directory, "", false); got != "Newer session different task" {
-		t.Errorf("empty id: got %q, want newest message", got)
+	if got := claudeFirstUserMessage(directory, "bbbb-new"); got != "Newer session different task" {
+		t.Errorf("explicit newer id: got %q, want newer session's message", got)
 	}
-	// Missing id file falls back to newest.
-	if got := claudeFirstUserMessage(directory, "does-not-exist", false); got != "Newer session different task" {
-		t.Errorf("missing id file: got %q, want newest message", got)
+	// No id → nothing, however many transcripts the store holds.
+	if got := claudeFirstUserMessage(directory, ""); got != "" {
+		t.Errorf("empty id: got %q, want empty", got)
 	}
-	// strict + no usable id + multiple JSONLs → refuse to guess.
-	if got := claudeFirstUserMessage(directory, "", true); got != "" {
-		t.Errorf("strict ambiguous: got %q, want empty", got)
-	}
-	// strict + valid id still resolves.
-	if got := claudeFirstUserMessage(directory, "aaaa-old", true); got != "Older session original task" {
-		t.Errorf("strict with id: got %q, want older session's message", got)
+	// An id whose transcript is not there → nothing, no substitute.
+	if got := claudeFirstUserMessage(directory, "does-not-exist"); got != "" {
+		t.Errorf("missing id file: got %q, want empty", got)
 	}
 }
 
-func TestClaudeFirstUserMessageStrictSingleJSONL(t *testing.T) {
+// A lone transcript in the store is still not evidence that it belongs to
+// this session: an agent started outside am may have written it. The reader
+// needs the bound id even then.
+func TestClaudeFirstUserMessageRequiresBoundID(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
@@ -214,13 +211,15 @@ func TestClaudeFirstUserMessageStrictSingleJSONL(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	content := `{"type":"user","message":{"content":"Only session here, unambiguous"}}` + "\n"
+	content := `{"type":"user","message":{"content":"Stranger's conversation in this directory"}}` + "\n"
 	if err := os.WriteFile(filepath.Join(claudeDir, "only.jsonl"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// One JSONL → strict is safe to use it even without an id.
-	if got := claudeFirstUserMessage(directory, "", true); got != "Only session here, unambiguous" {
-		t.Errorf("strict single: got %q, want the lone session's message", got)
+	if got := claudeFirstUserMessage(directory, ""); got != "" {
+		t.Errorf("lone transcript without id: got %q, want empty", got)
+	}
+	if got := claudeFirstUserMessage(directory, "only"); got != "Stranger's conversation in this directory" {
+		t.Errorf("lone transcript with its id: got %q", got)
 	}
 }
 
@@ -262,8 +261,11 @@ func TestCursorFirstUserMessage(t *testing.T) {
 	if err := os.WriteFile(transcript, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := cursorFirstUserMessage("/unused", "cursor-id", transcript, true); got != "Implement exact Cursor restore" {
+	if got := cursorFirstUserMessage("/unused", "cursor-id", transcript); got != "Implement exact Cursor restore" {
 		t.Fatalf("cursorFirstUserMessage = %q", got)
+	}
+	if got := cursorFirstUserMessage("/unused", "", ""); got != "" {
+		t.Fatalf("cursorFirstUserMessage without id or transcript = %q, want empty", got)
 	}
 }
 
@@ -289,11 +291,59 @@ func TestPiFirstUserMessage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(piDir, "2026-07-19T08-00-00-000Z_"+sid+".jsonl"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := piFirstUserMessage(resolved, "", false); got != "Fix the flaky registry test" {
-		t.Fatalf("piFirstUserMessage = %q", got)
-	}
-	if got := piFirstUserMessage(resolved, sid, true); got != "Fix the flaky registry test" {
+	if got := piFirstUserMessage(resolved, sid); got != "Fix the flaky registry test" {
 		t.Fatalf("piFirstUserMessage sid-pinned = %q", got)
+	}
+	// No id → nothing, even with a single transcript in the store.
+	if got := piFirstUserMessage(resolved, ""); got != "" {
+		t.Fatalf("piFirstUserMessage without id = %q, want empty", got)
+	}
+}
+
+// Resolvers read only the sidecar the pane's own hook wrote; a transcript
+// store full of other conversations yields no id.
+func TestResolveSessionIDSidecarOnly(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	stateDir := filepath.Join(tmp, "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := "/some/path/shared"
+	claudeDir := filepath.Join(home, ".claude", "projects", encodedClaudeProjectDir(dir))
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, sid := range []string{"stranger-1", "stranger-2", "mine"} {
+		if err := os.WriteFile(filepath.Join(claudeDir, sid+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := resolveClaudeSessionID(home, stateDir, "am-x", dir); got != "" {
+		t.Errorf("no sidecar: got %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "am-x.sid"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveClaudeSessionID(home, stateDir, "am-x", dir); got != "mine" {
+		t.Errorf("sidecar: got %q, want mine", got)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "am-x.sid"), []byte("gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveClaudeSessionID(home, stateDir, "am-x", dir); got != "" {
+		t.Errorf("sidecar without transcript: got %q, want empty (no substitute)", got)
+	}
+
+	piDir := filepath.Join(piSessionsRoot(home), encodedPiSessionDir(dir))
+	if err := os.MkdirAll(piDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piDir, "2026-07-19T08-00-00-000Z_pi-stranger.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolvePiSessionID(home, stateDir, "am-pi", dir); got != "" {
+		t.Errorf("pi no sidecar: got %q, want empty", got)
 	}
 }
 

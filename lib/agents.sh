@@ -507,7 +507,7 @@ agent_kill() {
             sid=$(_sessions_log_field "$session_name" "session_id" 2>/dev/null || true)
         fi
         if [[ -z "$sid" ]]; then
-            sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$created_at" "$agent_type" 2>/dev/null || true)
+            sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$agent_type" 2>/dev/null || true)
         fi
         local snap_file
         if [[ -n "$sid" ]]; then

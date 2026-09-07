@@ -90,32 +90,44 @@ test_claude_first_user_message() {
     local claude_dir="$HOME/.claude/projects/$project_path"
     mkdir -p "$claude_dir"
 
-    # Test: no JSONL files returns empty
+    # Test: no JSONL for the bound id returns empty
     local result
-    result=$(claude_first_user_message "$test_dir")
+    result=$(claude_first_user_message "$test_dir" session1)
     assert_eq "" "$result" "claude_first_msg: empty when no JSONL"
 
     # Test: JSONL with string content
     echo '{"type":"user","message":{"role":"user","content":"Fix the login bug in the auth module"}}' \
         > "$claude_dir/session1.jsonl"
-    result=$(claude_first_user_message "$test_dir")
+    result=$(claude_first_user_message "$test_dir" session1)
     assert_contains "$result" "Fix the login bug" "claude_first_msg: extracts string content"
 
     # Test: skips messages with only XML tags
     echo '{"type":"user","message":{"role":"user","content":"<system-tag>short</system-tag>"}}
 {"type":"user","message":{"role":"user","content":"Refactor the database connection pooling"}}' \
         > "$claude_dir/session2.jsonl"
-    result=$(claude_first_user_message "$test_dir")
+    result=$(claude_first_user_message "$test_dir" session2)
     assert_contains "$result" "Refactor the database" "claude_first_msg: skips XML-only messages"
 
     # Test: handles array content format
     echo '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Add pagination to the API endpoints"}]}}' \
         > "$claude_dir/session3.jsonl"
-    result=$(claude_first_user_message "$test_dir")
+    result=$(claude_first_user_message "$test_dir" session3)
     assert_contains "$result" "Add pagination" "claude_first_msg: handles array content"
 
+    # Test: each bound id reads its own transcript, newest or not
+    result=$(claude_first_user_message "$test_dir" session1)
+    assert_contains "$result" "Fix the login bug" "claude_first_msg: bound id ignores newer transcripts"
+
+    # Test: no id → nothing, however many transcripts the store holds
+    result=$(claude_first_user_message "$test_dir")
+    assert_eq "" "$result" "claude_first_msg: empty without a bound id"
+
+    # Test: an id whose transcript is missing → nothing, no substitute
+    result=$(claude_first_user_message "$test_dir" stranger)
+    assert_eq "" "$result" "claude_first_msg: empty for an unknown id"
+
     # Test: nonexistent directory returns empty
-    result=$(claude_first_user_message "/tmp/nonexistent-dir-xyz-$$")
+    result=$(claude_first_user_message "/tmp/nonexistent-dir-xyz-$$" session1)
     assert_eq "" "$result" "claude_first_msg: empty for nonexistent dir"
 
     # Cleanup
@@ -146,24 +158,25 @@ test_pi_first_user_message() {
         '{"type":"session","version":3,"id":"0199aaaa-0000-0000-0000-000000000001","cwd":"'"$pfum_resolved"'"}' \
         '{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":"Refactor the state machine please"}}' \
         > "$pfum_file"
+    local pfum_sid="0199aaaa-0000-0000-0000-000000000001"
     assert_eq "Refactor the state machine please" \
-        "$(pi_first_user_message "$pfum_dir")" "pi_first_user_message: string content"
+        "$(pi_first_user_message "$pfum_dir" "$pfum_sid")" "pi_first_user_message: string content"
 
     printf '%s\n%s\n' \
         '{"type":"session","version":3,"id":"0199aaaa-0000-0000-0000-000000000001","cwd":"'"$pfum_resolved"'"}' \
         '{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"Fix the flaky test in registry"}]}}' \
         > "$pfum_file"
     assert_eq "Fix the flaky test in registry" \
-        "$(pi_first_user_message "$pfum_dir")" "pi_first_user_message: block content"
+        "$(pi_first_user_message "$pfum_dir" "$pfum_sid")" "pi_first_user_message: block content"
 
-    assert_eq "" "$(pi_first_user_message /nonexistent/xyz)" "pi_first_user_message: missing dir"
+    assert_eq "" "$(pi_first_user_message /nonexistent/xyz "$pfum_sid")" "pi_first_user_message: missing dir"
 
-    # strict mode with two jsonls and no sid -> empty
-    touch "$AM_PI_SESSIONS_DIR/$pfum_enc/2026-07-19T09-00-00-000Z_0199aaaa-0000-0000-0000-000000000002.jsonl"
-    assert_eq "" "$(pi_first_user_message "$pfum_dir" "" 1)" "pi_first_user_message: strict ambiguous"
+    # no sid -> nothing, even with a lone transcript in the store
+    assert_eq "" "$(pi_first_user_message "$pfum_dir")" "pi_first_user_message: empty without a bound id"
     # sid pin still works with two jsonls
+    touch "$AM_PI_SESSIONS_DIR/$pfum_enc/2026-07-19T09-00-00-000Z_0199aaaa-0000-0000-0000-000000000002.jsonl"
     assert_eq "Fix the flaky test in registry" \
-        "$(pi_first_user_message "$pfum_dir" "0199aaaa-0000-0000-0000-000000000001" 1)" \
+        "$(pi_first_user_message "$pfum_dir" "$pfum_sid")" \
         "pi_first_user_message: sid pinned"
     unset AM_PI_SESSIONS_DIR
 
@@ -197,13 +210,15 @@ test_cursor_first_user_message() {
         > "$transcript"
 
     assert_eq "Implement exact Cursor restore support" \
-        "$(cursor_first_user_message "$project_dir" "$sid" "$transcript" 1)" \
+        "$(cursor_first_user_message "$project_dir" "$sid" "$transcript")" \
         "cursor_first_user_message: authoritative transcript path"
     assert_eq "Implement exact Cursor restore support" \
-        "$(cursor_first_user_message "$project_dir" "$sid" "" 1)" \
+        "$(cursor_first_user_message "$project_dir" "$sid" "")" \
         "cursor_first_user_message: standard-layout fallback"
-    assert_eq "" "$(cursor_first_user_message "$project_dir" missing "" 1)" \
-        "cursor_first_user_message: strict missing session"
+    assert_eq "" "$(cursor_first_user_message "$project_dir" missing "")" \
+        "cursor_first_user_message: missing session"
+    assert_eq "" "$(cursor_first_user_message "$project_dir" "" "")" \
+        "cursor_first_user_message: empty without id or transcript"
 
     unset AM_CURSOR_PROJECTS_DIR
     rm -rf "$root"

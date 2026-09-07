@@ -93,14 +93,14 @@ flowchart TD
   tool's live-updates watch, Monitor waits) sit at `status=running` for the
   life of the session and never complete, so nothing would re-fire Stop to
   clear them. The hook never counts them.
-- **Session identity resolves precisely, never loosely.** The hook
-  identifies its session as `AM_SESSION_NAME` → `TMUX_PANE` → cwd match,
-  and if `AM_SESSION_NAME` is set but missing from the registry it *exits*
-  rather than fall through and clobber another session sharing the
-  directory. A cwd match must also agree with the session's recorded
-  conversation id once it has one, so an unmanaged agent of the same
-  family running in that directory (a Claude started from Obsidian's
-  terminal, say) cannot drive the tab. Cursor's durable identity is pinned to the first complete
+- **Session identity comes from the pane, never from the directory.** The
+  hook identifies its session as `AM_SESSION_NAME` → `TMUX_PANE`; a
+  process that carries neither is not in an am pane and its events are
+  dropped, and if `AM_SESSION_NAME` is set but missing from the registry it
+  *exits* rather than clobber another session. A directory is shared with
+  other am sessions and with agents started outside am (a Claude started
+  from Obsidian's terminal, say), so nothing — state, sidecars, session
+  id, title — is ever attributed by cwd. Cursor's durable identity is pinned to the first complete
   conversation-id/transcript pair because nested agents inherit
   `AM_SESSION_NAME` and do not reliably identify themselves as background.
 - **Staleness gates are fallback-only.** Claude, Cursor, and pi have reliable
@@ -162,10 +162,10 @@ flowchart LR
     launch --> reboot
 ```
 
-Failure behavior worth knowing (verified): at kill time, a session-id
-*guess* may never overwrite a binding established while hooks were alive — the sidecar wins, then the
-already-logged sid, then a guarded newest-mtime guess that refuses when two
-sessions share a directory.
+Failure behavior worth knowing (verified): a session's id is only ever the
+binding its own hooks established — the sidecar wins, then the
+already-logged sid. There is no guess: a session whose hooks never fired has
+no id and does not appear in the restore picker.
 
 ## Performance doctrine: the bash/Go mirror and the fork budget
 
