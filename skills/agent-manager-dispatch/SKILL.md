@@ -74,7 +74,16 @@ the calling session, Claude sessions are tracked through the state hooks, and
 the branch is re-read from `.git/HEAD` on the next title scan. Agents without
 hooks run `am cd <dir>` after moving.
 
-## Choosing Cursor Agent
+## Choosing the Agent
+
+`am new -t <type>` accepts `claude` (default), `codex`, `cursor`, and `pi`.
+Everything am knows per type (launch command, aliases, whether the first
+prompt goes on stdin or argv, resume arguments, transcript store, how state
+is detected) is one table, `lib/agents.manifest` in the am checkout; read
+it when a type behaves unexpectedly rather than guessing. State detection
+is verified by live labs for claude, cursor, and pi; codex has no lab, so
+its `running` state can go stale and falls to `unknown` after 180s of
+silence.
 
 Launch Cursor explicitly with:
 
@@ -168,6 +177,10 @@ if [[ "$state" == "waiting_user" ]]; then
     am attach "$session"
 fi
 ```
+am already sends the user a desktop notification when a worker enters
+`waiting_user` (config `notify`, `notify_states`, `notify_cmd`; suppressed
+while a tmux client is showing that session). Do not add your own alert for
+the same transition; tell the user which session and what it is waiting for.
 
 **Interrupt and redirect:**
 ```bash
