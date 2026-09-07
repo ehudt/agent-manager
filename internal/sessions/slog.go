@@ -167,12 +167,10 @@ func lastSlogEntries(lines []slogLine) map[string]*slogLine {
 	return out
 }
 
+// isRestorableAgent: the manifest gives the (known) agent a resume form.
 func isRestorableAgent(agent string) bool {
-	switch agent {
-	case "claude", "codex", "pi", "cursor":
-		return true
-	}
-	return false
+	spec, ok := Agent(agent)
+	return ok && spec.Restorable()
 }
 
 // snapshotRel is the log's snapshot_file form: "snapshots/<key>.txt".

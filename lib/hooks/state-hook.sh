@@ -411,14 +411,43 @@ case "$hook_type" in
 esac
 
 # Agent family of the hook source, proven by the event name. CamelCase
-# events exist only in the Claude Code / Codex hook API; camelCase events
-# only in Cursor's. Unknown events already exited above.
+# events exist only in the Claude Code / Codex hook API (manifest hook_family
+# "claude"); camelCase events only in Cursor's ("cursor"). Unknown events
+# already exited above.
 case "$hook_type" in
     Stop|Notification|UserPromptSubmit|PreToolUse|PostToolUse|PermissionRequest)
-        hook_family="claude codex" ;;
+        hook_family="claude" ;;
     *)
         hook_family="cursor" ;;
 esac
+
+# Hook family of a registered agent_type, from lib/agents.manifest when the
+# hook runs from the repo (lib/hooks/ → lib/agents.manifest), else from the
+# inline table below — Cursor runs a byte copy of this script from
+# ~/.cursor/hooks, outside the repo. tests/test_agents.sh keeps the table
+# equal to the manifest. Prints nothing for unknown types.
+# Usage: _agent_hook_family <agent_type> <out_var>
+_AM_HOOK_FAMILY_FALLBACK="claude=claude codex=claude cursor=cursor pi=pi"
+_agent_hook_family() {
+    local _manifest="${AM_AGENT_MANIFEST:-${BASH_SOURCE[0]%/*}/../agents.manifest}" _key _value _pair
+    printf -v "$2" '%s' ""
+    if [[ -r "$_manifest" ]]; then
+        while read -r _key _value; do
+            if [[ "$_key" == "$1.hook_family" ]]; then
+                printf -v "$2" '%s' "$_value"
+                return 0
+            fi
+        done < "$_manifest"
+        return 0
+    fi
+    for _pair in $_AM_HOOK_FAMILY_FALLBACK; do
+        if [[ "${_pair%%=*}" == "$1" ]]; then
+            printf -v "$2" '%s' "${_pair#*=}"
+            return 0
+        fi
+    done
+    return 0
+}
 
 # Registry is required for any session lookup or validation
 [[ ! -f "$AM_REGISTRY" ]] && exit 0
@@ -433,7 +462,10 @@ _registry_agent_type() {
 
 # Helper: true when a registered agent_type belongs to the hook's agent family.
 _family_match() {
-    [[ -n "$1" && " $hook_family " == *" $1 "* ]]
+    local _fam=""
+    [[ -n "$1" ]] || return 1
+    _agent_hook_family "$1" _fam
+    [[ -n "$_fam" && "$_fam" == "$hook_family" ]]
 }
 
 session_name=""

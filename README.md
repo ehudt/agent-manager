@@ -425,6 +425,7 @@ Precedence: CLI flag > environment variable > saved config > built-in default.
 | `cursor` (`cursor-agent` alias) | `agent` |
 | `pi` | `pi` |
 
+Everything am knows per agent (command, aliases, how the first prompt is delivered, resume arguments, where transcripts live, how the pane title and state hooks are read) is one table, `lib/agents.manifest`, shared by the bash and Go sides.
 Unknown agent types are passed through as the command name, so `am new -t aider .` will try to run `aider`.
 Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permissions`.
 

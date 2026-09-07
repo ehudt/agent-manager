@@ -488,9 +488,87 @@ test_private_dirs() {
     $SUMMARY_MODE || echo ""
 }
 
+# --- Agent adapter manifest (lib/agents.manifest) ---
+test_agent_manifest() {
+    $SUMMARY_MODE || echo "=== Testing agent manifest ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    assert_eq "claude codex cursor pi" "${AM_AGENT_TYPES[*]}" \
+        "manifest: types in file order"
+    assert_eq "stdin" "$(am_agent_field claude prompt)" "manifest: claude.prompt"
+    assert_eq "argv" "$(am_agent_field cursor-agent prompt)" "manifest: field lookup through an alias"
+    assert_eq "resume {id}" "$(am_agent_field codex resume)" "manifest: value keeps its spaces"
+    assert_eq "" "$(am_agent_field codex lab)" "manifest: '-' reads as empty"
+    assert_eq "" "$(am_agent_field bogus command)" "manifest: unknown type → empty"
+    assert_eq "" "$(am_agent_field claude nosuchfield)" "manifest: unknown field → empty"
+    local v=""
+    am_agent_field pi resume v
+    assert_eq "--session {id}" "$v" "manifest: out_var form"
+    assert_eq "cursor" "$(am_agent_normalize cursor-agent)" "manifest: alias normalizes"
+    assert_eq "bogus" "$(am_agent_normalize bogus)" "manifest: unknown name passes through"
+    assert_eq "true" "$(am_agent_known cursor-agent && echo true || echo false)" "manifest: alias is known"
+    assert_eq "false" "$(am_agent_known bogus && echo true || echo false)" "manifest: bogus is unknown"
+
+    # Derived helpers in agents.sh
+    assert_eq "agent" "${AGENT_COMMANDS[cursor]}" "AGENT_COMMANDS built from the manifest"
+    assert_eq "4" "${#AGENT_COMMANDS[@]}" "AGENT_COMMANDS has one entry per type"
+    assert_eq "true" "$(agent_restorable claude && echo true || echo false)" "agent_restorable: claude"
+    assert_eq "true" "$(agent_restorable codex && echo true || echo false)" "agent_restorable: codex"
+    assert_eq "false" "$(agent_restorable bogus && echo true || echo false)" "agent_restorable: unknown type"
+    assert_eq "" "$(agent_resume_args bogus abc | paste -sd'|' -)" "agent_resume_args: unknown type → nothing"
+
+    # Every type carries every field the libs branch on.
+    local t f missing=""
+    for t in "${AM_AGENT_TYPES[@]}"; do
+        for f in command prompt resume store title title_state turn_boundary hook_family preflight version_bin; do
+            [[ -n "$(am_agent_field "$t" "$f")" ]] || missing+=" $t.$f"
+        done
+    done
+    assert_eq "" "$missing" "manifest: no type is missing a load-bearing field"
+
+    # The Go side embeds the same file (lib/agents.manifest is a symlink).
+    assert_eq "$(cd "$LIB_DIR" && readlink agents.manifest)" "../internal/sessions/agents.manifest" \
+        "manifest: lib/agents.manifest links to the Go-embedded file"
+
+    # The hook's inline fallback table (used by Cursor's out-of-repo copy)
+    # must say what the manifest says.
+    local table pair
+    table=$(sed -nE 's/^_AM_HOOK_FAMILY_FALLBACK="([^"]*)"$/\1/p' "$LIB_DIR/hooks/state-hook.sh")
+    assert_not_empty "$table" "hook: fallback family table present"
+    missing=""
+    for pair in $table; do
+        [[ "$(am_agent_field "${pair%%=*}" hook_family)" == "${pair#*=}" ]] || missing+=" $pair"
+    done
+    for t in "${AM_AGENT_TYPES[@]}"; do
+        [[ " $table " == *" $t="* ]] || missing+=" (no entry for $t)"
+    done
+    assert_eq "" "$missing" "hook: fallback family table matches the manifest"
+
+    # A custom manifest replaces the built-in one.
+    local alt_dir real_manifest="$AM_AGENT_MANIFEST"
+    alt_dir=$(mktemp -d)
+    printf '%s\n' "# alt" "aider.command aider" "aider.aliases ai" "aider.prompt argv" "aider.resume -" > "$alt_dir/alt.manifest"
+    AM_AGENT_MANIFEST="$alt_dir/alt.manifest"
+    am_agent_manifest_load
+    assert_eq "aider" "${AM_AGENT_TYPES[*]}" "manifest: AM_AGENT_MANIFEST override"
+    assert_eq "aider" "$(am_agent_normalize ai)" "manifest: override aliases"
+    assert_eq "false" "$(agent_restorable aider && echo true || echo false)" "manifest: resume '-' → not restorable"
+    AM_AGENT_MANIFEST="$real_manifest"
+    am_agent_manifest_load
+    rm -rf "$alt_dir"
+    assert_eq "claude codex cursor pi" "${AM_AGENT_TYPES[*]}" "manifest: real manifest reloaded"
+
+    $SUMMARY_MODE || echo ""
+}
+
 run_agents_tests() {
     _run_test test_agents
     _run_test test_agents_extended
+    _run_test test_agent_manifest
     _run_test test_integration_lifecycle
     _run_test test_shell_panel
     _run_test test_resolve_session

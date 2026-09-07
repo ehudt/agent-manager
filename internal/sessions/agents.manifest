@@ -1,0 +1,88 @@
+# Agent adapter manifest: every agent-specific fact am needs, in one place.
+#
+# Read by bash (lib/utils.sh: am_agent_field, via the lib/agents.manifest
+# symlink) and embedded by Go (internal/sessions/agents.go). The state hook
+# reads it too when it runs from the repo (Cursor's byte copy under
+# ~/.cursor/hooks falls back to an inline table; tests/test_agents.sh keeps
+# that table equal to this file).
+#
+# One fact per line: `<type>.<field> <value>`; the value is the rest of the
+# line, `-` means none. The first line for a type declares it. Fields:
+#
+#   command        binary to launch (also the install-time presence probe)
+#   aliases        other names `am new -t` / config accept for this type
+#   prompt         how the initial prompt reaches the agent: stdin | argv
+#   resume         args that resume conversation {id}; - = not restorable
+#   store          transcript store layout (root, dir encoding, file naming,
+#                  existence check, first-message reader): claude | cursor |
+#                  pi | none. Code for each layout lives in
+#                  internal/sessions/sessions.go + titles.go.
+#   title          pane-title parser: claude (strip " - 🔄…" / " - <dir>") |
+#                  cursor (strip status suffixes) | pi ("pi - X - base")
+#   title_state    title→state signal: glyph (Claude busy/✳ glyphs) |
+#                  suffix (Cursor ✅/⏳/❓) | none
+#   turn_boundary  reliable = turn-boundary hook events exist, read the
+#                  hook state ungated; gated = 180s running-staleness gate
+#   hook_family    hook namespace the agent's events arrive in: claude
+#                  (CamelCase shell hook: Claude Code, Codex) | cursor
+#                  (camelCase shell hook) | pi (in-process extension)
+#   preflight      restore preflight: transcript (must exist in the store) |
+#                  id (well-formed id only)
+#   version_bin    binary `am doctor` probes with --version and the name
+#                  tests/live_lab/VERIFIED pins
+#   lab            live lab that verifies state detection, or -
+#
+# Adding an agent: add its block here, then the store/title parsers it needs
+# in Go (only if it introduces a new layout), and a live lab.
+
+claude.command        claude
+claude.aliases        -
+claude.prompt         stdin
+claude.resume         --resume {id}
+claude.store          claude
+claude.title          claude
+claude.title_state    glyph
+claude.turn_boundary  reliable
+claude.hook_family    claude
+claude.preflight      transcript
+claude.version_bin    claude
+claude.lab            tests/live_lab/run.sh
+
+codex.command         codex
+codex.aliases         -
+codex.prompt          argv
+codex.resume          resume {id}
+codex.store           none
+codex.title           claude
+codex.title_state     none
+codex.turn_boundary   gated
+codex.hook_family     claude
+codex.preflight       id
+codex.version_bin     codex
+codex.lab             -
+
+cursor.command        agent
+cursor.aliases        cursor-agent
+cursor.prompt         argv
+cursor.resume         --resume {id}
+cursor.store          cursor
+cursor.title          cursor
+cursor.title_state    suffix
+cursor.turn_boundary  reliable
+cursor.hook_family    cursor
+cursor.preflight      transcript
+cursor.version_bin    cursor-agent
+cursor.lab            tests/live_lab/run_cursor.sh
+
+pi.command            pi
+pi.aliases            -
+pi.prompt             argv
+pi.resume             --session {id}
+pi.store              pi
+pi.title              pi
+pi.title_state        none
+pi.turn_boundary      reliable
+pi.hook_family        pi
+pi.preflight          transcript
+pi.version_bin        pi
+pi.lab                tests/live_lab/run_pi.sh

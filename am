@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.22.0"
+AM_VERSION="0.23.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -1768,7 +1768,8 @@ _install_go_ready_for_build() {
 _install_inputs() {
     local root="$AM_SCRIPT_DIR"
     printf '%s\n' "$root/am" "$root/lib/tmux.sh" "$root/lib/hooks/state-hook.sh" \
-        "$root/lib/hooks/am-state.ts" "$root/scripts/install.sh" "$root/go.mod" "$root/Makefile"
+        "$root/lib/hooks/am-state.ts" "$root/scripts/install.sh" "$root/go.mod" "$root/Makefile" \
+        "$root/internal/sessions/agents.manifest"
     local f
     for f in "$root"/skills/*/SKILL.md "$root"/cmd/*/*.go "$root"/internal/*/*.go; do
         [[ -f "$f" ]] && printf '%s\n' "$f"

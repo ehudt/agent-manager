@@ -54,42 +54,48 @@ func (e Env) SidecarTranscript(session string) string {
 	return p
 }
 
-// JSONLExists backs the bash _sessions_log_jsonl_exists wrapper: does the agent's transcript
-// for (dir, sid) still exist? Codex has no stable local rollout path, so a
-// well-formed id counts. Cursor accepts the hook-reported transcript path
-// first, then its standard per-project layout.
-func (e Env) JSONLExists(dir, sid, agent, transcript string) bool {
-	switch agent {
-	case "codex":
+// storeJSONLExists is the per-layout existence check behind JSONLExists and
+// the restorable filter. A layout of "none" (Codex: no stable local rollout
+// path) accepts any well-formed id. Cursor accepts the hook-reported
+// transcript path first, then its standard per-project layout.
+func storeJSONLExists(home, store, dir, sid, transcript string) bool {
+	switch store {
+	case "none":
 		return validSessionID.MatchString(sid)
 	case "pi":
-		return piJSONLExists(e.Home, dir, sid)
+		return piJSONLExists(home, dir, sid)
 	case "cursor":
-		return cursorJSONLExists(e.Home, dir, sid, transcript)
-	default:
-		return claudeJSONLExists(e.Home, dir, sid)
+		return cursorJSONLExists(home, dir, sid, transcript)
+	case "claude":
+		return claudeJSONLExists(home, dir, sid)
 	}
+	return false
+}
+
+// JSONLExists backs the bash _sessions_log_jsonl_exists wrapper: does the
+// agent's transcript for (dir, sid) still exist? The layout comes from the
+// agent's manifest `store` field (empty agent = claude).
+func (e Env) JSONLExists(dir, sid, agent, transcript string) bool {
+	return storeJSONLExists(e.Home, agentSpec(agent).Store, dir, sid, transcript)
 }
 
 // DetectID backs the bash _sessions_log_detect_id_for_session wrapper: the sidecar id,
-// verified against the transcript store (Codex: unverified). "" when the
+// verified against the transcript store (no store: unverified). "" when the
 // session has no sidecar or its transcript is gone — never a substitute.
 func (e Env) DetectID(session, dir, agent string) string {
-	if agent == "" {
-		agent = "claude"
-	}
+	spec := agentSpec(agent)
 	sid := e.SidecarID(session)
 	if sid == "" {
 		return ""
 	}
-	if agent == "codex" {
+	if !spec.HasStore() {
 		return sid
 	}
 	transcript := ""
-	if agent == "cursor" {
+	if spec.Store == "cursor" {
 		transcript = e.SidecarTranscript(session)
 	}
-	if e.JSONLExists(dir, sid, agent, transcript) {
+	if storeJSONLExists(e.Home, spec.Store, dir, sid, transcript) {
 		return sid
 	}
 	return ""
@@ -98,14 +104,15 @@ func (e Env) DetectID(session, dir, agent string) string {
 // FirstMessage is the first user message of exactly the transcript bound to
 // a session: `am-core first-message`, backing the bash
 // claude/pi/cursor_first_user_message wrappers. No id (Cursor: no id and no
-// transcript path) → "".
+// transcript path) → ""; so does an agent without a transcript store.
 func FirstMessage(agent, dir, sid, transcript string) string {
-	switch agent {
+	switch agentSpec(agent).Store {
 	case "pi":
 		return piFirstUserMessage(dir, sid)
 	case "cursor":
 		return cursorFirstUserMessage(dir, sid, transcript)
-	default:
+	case "claude":
 		return claudeFirstUserMessage(dir, sid)
 	}
+	return ""
 }

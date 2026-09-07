@@ -90,10 +90,7 @@ am_default_agent() {
         fi
     fi
 
-    case "$value" in
-        cursor-agent) echo "cursor" ;;
-        *) echo "$value" ;;
-    esac
+    am_agent_normalize "$value"
 }
 
 am_stream_logs_enabled() {

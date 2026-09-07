@@ -598,6 +598,22 @@ test_state_hooks() {
     assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
         "family gate: AM_SESSION_NAME type mismatch touches no other session"
 
+    # Cursor runs a byte copy of the hook from ~/.cursor/hooks, where
+    # lib/agents.manifest is not reachable: the inline family table must
+    # gate exactly like the manifest does.
+    rm -f "$state_dir/am-pi" "$state_dir/am-cur"
+    AM_AGENT_MANIFEST="$tmp_dir/no-such-manifest" \
+        AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-pi" \
+        "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-x\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
+        "family gate (no manifest): type mismatch writes nothing"
+    AM_AGENT_MANIFEST="$tmp_dir/no-such-manifest" \
+        AM_DIR="$tmp_dir/am" AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" \
+        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="am-cur" \
+        "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-x\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
+    assert_eq "ready" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
+        "family gate (no manifest): matching family still writes"
+
     # CamelCase events come from Claude Code or Codex — a codex session is
     # family-compatible with them.
     local codex_registry="$tmp_dir/codex.json"

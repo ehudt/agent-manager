@@ -53,6 +53,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/recovery.sh` | Durable desired-session store, boot/machine identity, reboot preflight, and progressive recovery worker |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
+| `lib/agents.manifest` | Agent adapter table (symlink to `internal/sessions/agents.manifest`, which Go embeds): per agent type, the launch command, aliases, prompt delivery (stdin/argv), resume-args template, transcript store layout, title parser, title→state signal, turn-boundary reliability, hook family, restore preflight, version binary, live lab. Bash reads it through `am_agent_field`; Go through `Agent()` / `AgentSpec`. Libs branch on these fields, not on agent names. The state hook reads it when run from the repo and falls back to an inline table (Cursor's byte copy runs outside the repo; `tests/test_agents.sh` keeps them equal) |
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit); shows a Preset select field first when any preset exists |
 | `lib/presets.sh` | Named launch presets for `am new -p` (stored under `presets` in config.json): `am preset save/list/show/rm` |
 | `lib/doctor.sh` | `am doctor [session] [--capture]`: one report with every state input (registry row, tmux panes/titles, hook sidecars, identity, transcript, process tree, desired record, resolver layer via `AM_STATE_DEBUG_SINK`) plus the version-drift canary (installed agents vs `tests/live_lab/VERIFIED`, observed hook payload keys vs the fields the hook reads) |
@@ -448,7 +449,8 @@ am restore
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
 - `auto_title_scan([force])` - Wrapper over `am-core titles` (Go `RefreshTitles`, then `RestoreScan`): for every registry row, refresh the workdir field (from the .cwd sidecar) and the branch field (from the effective directory's .git/HEAD), then the task field from the agent pane title; when the title is empty or invalid and the row has no task, fall back to the first user message of the transcript bound by the session's own hook sidecar (`DetectID` + `FirstMessage`); an invalid title never replaces an existing task (hysteresis). Throttled 60s on `$AM_DIR/.title_scan_last`, shared with the am-browse / am-list-internal path (which calls `RefreshTitles` in-process). Always chains into `sessions_log_scan` (even when title-throttled), which runs on its own `$AM_DIR/.restore_scan_last` marker so the browser stamping first can't starve it.
-- `agent_resume_args(agent_type, session_id)` - Build agent-specific resume args (claude → --resume, pi → --session)
+- `agent_resume_args(agent_type, session_id)` - The manifest resume template with `{id}` expanded, one arg per line (claude/cursor → --resume, pi → --session, codex → resume); empty for unknown types
+- `agent_restorable(agent_type)` - True when the manifest gives the type a resume form: gates the sessions-log append at launch and the snapshot/close at kill (Go twin `AgentSpec.Restorable`)
 
 **Pane environment / workspaces:**
 - `agent_pane_env(session_name, agent_type)` - Print the `VAR=VALUE` lines every am pane starts with (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR` when streaming); consumed by `tmux_create_session` and the shell-panel `split-window -e`
@@ -538,6 +540,9 @@ am restore
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Detect whether top pane is a plain shell (vs an agent process) from nameref bulk maps
 
 **Utils:**
+- `am_agent_manifest_load()` - Parse `$AM_AGENT_MANIFEST` (default `lib/agents.manifest`) once per process into the field table and `AM_AGENT_TYPES` (file order); runs when utils.sh is sourced
+- `am_agent_field(type, field, [out_var])` - One manifest fact for a type or alias; empty for unknown types/fields and `-` values. Fork-free with out_var (status-bar hot path)
+- `am_agent_normalize(name, [out_var])` / `am_agent_known(name)` - Alias → canonical type (unknown names pass through) / membership test
 - `_format_seconds(seconds, [ago])` - Shared duration formatter (used by `format_time_ago`/`format_duration`)
 - `am_file_mtime(file, [out_var])` / `am_files_mtime(assoc, files...)` - Portable mtime, flavor picked once from `$OSTYPE` (no probe fork); the batched form is one stat call for all files (status-bar tick, install fingerprint)
 - `am_core(subcommand, args...)` - Run `$AM_ROOT_DIR/bin/am-core` with the caller's effective paths passed explicitly (`AM_DIR`, `AM_SESSIONS_LOG`, `AM_TMUX_SOCKET`, `AM_SESSION_PREFIX`, and `AM_STATE_DIR` / `AM_IDENTITY_DIR` when set) — bash derives them after sourcing and tests re-point them, so exports cannot be trusted. Missing binary: one stderr line, return 127; the periodic wrappers turn that into 0, the query wrappers into a failed lookup
@@ -604,7 +609,7 @@ Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir`
 
 | Task | Where |
 |------|-------|
-| Add agent type | `lib/agents.sh` → `AGENT_COMMANDS` associative array |
+| Add agent type | `lib/agents.manifest` → one block of `<type>.<field>` lines (fields documented in the file header); a new transcript layout or title parser also needs its code in `internal/sessions/` (`storeJSONLExists`, `FirstMessage`, `refreshedTitle`) and `lib/doctor.sh` `_doc_transcript`; add a live lab and a `tests/live_lab/VERIFIED` pin |
 | Add CLI command | `am` → `case "$cmd"` in `main()` |
 | Change browser keybindings | `cmd/am-browse/main.go` |
 | Modify session display | `internal/sessions/sessions.go` → `FormatDisplayBase()` |
@@ -625,5 +630,5 @@ Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir`
 | Add/edit dispatch skill | `skills/agent-manager-dispatch/SKILL.md` |
 | Add/edit peek skill | `skills/am-peek/SKILL.md` |
 | Add new skill (auto-installed) | drop `skills/<name>/SKILL.md`; `am install` loops `skills/*/` |
-| Add restore agent support | `lib/agents.sh` → `agent_resume_args()`, `lib/registry.sh` → `sessions_log_restorable()` filter, `am` → `cmd_restore_internal()`, `internal/sessions` → Go mirrors |
+| Add restore agent support | `lib/agents.manifest` → `resume` template, `store`, `preflight` (the bash `agent_resume_args` / `agent_restorable` and Go `AgentSpec.ResumeArgs` / `Restorable` read them); a new store layout needs its Go existence check and first-message reader |
 | Change pi state mapping | `lib/hooks/am-state.ts` → event-to-state mapping |

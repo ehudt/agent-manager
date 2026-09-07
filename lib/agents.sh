@@ -9,43 +9,50 @@ _AGENTS_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 [[ "$(type -t registry_add)" != "function" ]] && source "$_AGENTS_LIB_DIR/registry.sh"
 [[ "$(type -t recovery_desired_upsert)" != "function" ]] && source "$_AGENTS_LIB_DIR/recovery.sh"
 
-# Supported agent types and their commands
-declare -A AGENT_COMMANDS=(
-    [claude]="claude"
-    [codex]="codex"
-    [cursor]="agent"
-    [pi]="pi"
-)
+# Supported agent types and their launch commands, from lib/agents.manifest
+# (tests override entries to point at a stub agent).
+declare -A AGENT_COMMANDS=()
+_agents_commands_init() {
+    local _t _cmd
+    for _t in "${AM_AGENT_TYPES[@]}"; do
+        am_agent_field "$_t" command _cmd
+        AGENT_COMMANDS[$_t]=$_cmd
+    done
+}
+_agents_commands_init
 
 # Normalize public aliases to the canonical registry/UI agent type.
 # Usage: agent_normalize_type <type>
 agent_normalize_type() {
-    case "$1" in
-        cursor-agent) echo "cursor" ;;
-        *) echo "$1" ;;
-    esac
+    am_agent_normalize "$1"
 }
 
-# Check if an agent type accepts the initial prompt as a CLI argument.
-# Codex, Cursor, and pi take [PROMPT] as a positional arg; Claude reads stdin.
+# Check if an agent type accepts the initial prompt as a CLI argument
+# (manifest `prompt`: argv) rather than on stdin.
 _agent_prompt_as_arg() {
-    case "$(agent_normalize_type "$1")" in
-        codex|cursor|pi) return 0 ;;
-        *) return 1 ;;
-    esac
+    local _mode
+    am_agent_field "$1" prompt _mode
+    [[ "$_mode" == "argv" ]]
 }
 
-# Print the CLI args (one per line) that resume a conversation for an agent.
+# True when the manifest gives the agent a resume form: its sessions are
+# logged for `am restore` and snapshotted on kill.
+# Usage: agent_restorable <agent_type>
+agent_restorable() {
+    local _tpl
+    am_agent_field "$1" resume _tpl
+    [[ -n "$_tpl" ]]
+}
+
+# Print the CLI args (one per line) that resume a conversation for an agent:
+# the manifest `resume` template with {id} expanded.
 # Usage: agent_resume_args <agent_type> <session_id>
 agent_resume_args() {
-    local agent_type
-    agent_type=$(agent_normalize_type "$1")
-    local session_id="$2"
-    case "$agent_type" in
-        codex) printf '%s\n' "resume" "$session_id" ;;
-        pi)    printf '%s\n' "--session" "$session_id" ;;
-        *)     printf '%s\n' "--resume" "$session_id" ;;
-    esac
+    local _tpl _word
+    am_agent_field "$1" resume _tpl
+    for _word in $_tpl; do
+        printf '%s\n' "${_word//\{id\}/$2}"
+    done
 }
 
 # Get the command for an agent type
@@ -184,7 +191,7 @@ agent_launch() {
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
 
     # Append to sessions log for restore support.
-    if [[ "$agent_type" == "claude" || "$agent_type" == "codex" || "$agent_type" == "pi" || "$agent_type" == "cursor" ]]; then
+    if agent_restorable "$agent_type"; then
         sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
     fi
 
@@ -500,12 +507,13 @@ agent_kill() {
         <<< "$(registry_get_fields "$session_name" agent_type directory created_at)"
 
     # Final snapshot + close timestamp for session restore (before killing tmux)
-    if [[ ( "$agent_type" == "claude" || "$agent_type" == "codex" || "$agent_type" == "pi" || "$agent_type" == "cursor" ) ]] && tmux_session_exists "$session_name"; then
+    if agent_restorable "$agent_type" && tmux_session_exists "$session_name"; then
         # Bind the conversation id: sidecar (authoritative) → already-logged
         # sid → guarded directory detection. A kill-time guess must never
         # overwrite a binding established while hooks were alive.
-        local sid transcript=""
-        if [[ "$agent_type" == "cursor" ]]; then
+        local sid transcript="" store
+        am_agent_field "$agent_type" store store
+        if [[ "$store" == "cursor" ]]; then
             transcript=$(_sessions_log_sidecar_transcript "$session_name" 2>/dev/null || true)
             [[ -z "$transcript" ]] && transcript=$(_sessions_log_field "$session_name" "transcript_path" 2>/dev/null || true)
             [[ -n "$transcript" ]] && sessions_log_update "$session_name" "transcript_path" "$transcript"

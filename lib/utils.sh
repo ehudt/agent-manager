@@ -12,6 +12,72 @@ AM_TMUX_CONF="${AM_TMUX_CONF:-$AM_DIR/tmux.conf}"
 AM_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 AM_ROOT_DIR="${AM_ROOT_DIR:-$(cd "$AM_LIB_DIR/.." && pwd -P)}"
 
+# Agent adapter manifest: every agent-specific fact (launch command, aliases,
+# prompt delivery, resume args, transcript store layout, title parser,
+# title→state signal, turn-boundary reliability, hook family, restore
+# preflight, version binary, live lab) lives in lib/agents.manifest, a symlink
+# to internal/sessions/agents.manifest, which Go embeds. Loaded once per
+# process into _AM_AGENT_FIELDS["<type>.<field>"]; libs branch on fields via
+# am_agent_field, never on agent names.
+AM_AGENT_MANIFEST="${AM_AGENT_MANIFEST:-$AM_LIB_DIR/agents.manifest}"
+# -g: utils.sh is sometimes sourced inside a function (tests, am's own
+# entry); a plain declare -A there would make the tables function-local.
+declare -gA _AM_AGENT_FIELDS=()
+declare -gA _AM_AGENT_ALIASES=()
+declare -ga AM_AGENT_TYPES=()
+
+am_agent_manifest_load() {
+    local key value type
+    _AM_AGENT_FIELDS=(); _AM_AGENT_ALIASES=(); AM_AGENT_TYPES=()
+    [[ -r "$AM_AGENT_MANIFEST" ]] || {
+        echo "error: agent manifest not readable: $AM_AGENT_MANIFEST" >&2
+        return 1
+    }
+    while read -r key value; do
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        type="${key%%.*}"
+        [[ "$type" == "$key" || -z "$type" ]] && continue
+        if [[ -z "${_AM_AGENT_FIELDS[$type.type]-}" ]]; then
+            _AM_AGENT_FIELDS[$type.type]=$type
+            AM_AGENT_TYPES+=("$type")
+        fi
+        [[ "$value" == "-" ]] && value=""
+        _AM_AGENT_FIELDS[$key]=$value
+        if [[ "${key#*.}" == "aliases" ]]; then
+            local alias
+            for alias in $value; do _AM_AGENT_ALIASES[$alias]=$type; done
+        fi
+    done < "$AM_AGENT_MANIFEST"
+}
+
+# Canonical type for a name or alias; unknown names pass through unchanged.
+# Usage: am_agent_normalize <name> [out_var]
+am_agent_normalize() {
+    # Locals carry a function-specific prefix so an out_var of the same
+    # plain name is never shadowed.
+    local _an_canon="${_AM_AGENT_ALIASES[$1]-$1}"
+    if [[ -n "${2:-}" ]]; then printf -v "$2" '%s' "$_an_canon"; else printf '%s\n' "$_an_canon"; fi
+}
+
+# One manifest field for an agent type (or alias); empty for unknown types,
+# unknown fields, and `-` values. Fork-free with out_var.
+# Usage: am_agent_field <type> <field> [out_var]
+am_agent_field() {
+    local _af_canon _af_val
+    am_agent_normalize "$1" _af_canon
+    _af_val="${_AM_AGENT_FIELDS[$_af_canon.$2]-}"
+    if [[ -n "${3:-}" ]]; then printf -v "$3" '%s' "$_af_val"; else printf '%s\n' "$_af_val"; fi
+}
+
+# True when the name (or alias) is a manifest type.
+am_agent_known() {
+    local _ak_canon
+    am_agent_normalize "$1" _ak_canon
+    [[ -n "${_AM_AGENT_FIELDS[$_ak_canon.type]-}" ]]
+}
+
+am_agent_manifest_load
+
 # Colors (only if terminal supports it)
 if [[ -t 1 ]]; then
     RED='\033[0;31m'

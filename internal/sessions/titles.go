@@ -157,13 +157,15 @@ func refreshedWorkdir(stateDir, name string, meta Session) (workdir string, setW
 // differs from the registry task: the agent's pane title, else (Claude / pi /
 // Cursor) the first user message of this session's transcript.
 func (e Env) refreshedTitle(name string, meta Session) (string, bool) {
+	spec := agentSpec(meta.AgentType)
 	title := readPaneTitle(e.Socket, name+":.{top}")
 	title = leadingNonAlnum.ReplaceAllString(title, "")
-	if meta.AgentType == "pi" {
+	switch spec.Title {
+	case "pi":
 		title = piTitleExtract(title)
-	} else if meta.AgentType == "cursor" {
+	case "cursor":
 		title = cursorTitleExtract(title)
-	} else {
+	default:
 		dir := meta.Workdir
 		if dir == "" {
 			dir = meta.Directory
@@ -177,13 +179,13 @@ func (e Env) refreshedTitle(name string, meta Session) (string, bool) {
 		if meta.Task != "" {
 			return "", false
 		}
-		if (meta.AgentType == "claude" || meta.AgentType == "pi" || meta.AgentType == "cursor") && meta.Directory != "" {
+		if spec.HasStore() && meta.Directory != "" {
 			// THIS session's conversation id comes from the sidecar its own
 			// hook wrote; the readers open exactly that transcript. With no
 			// id there is no fallback: the directory's transcript store is
 			// shared with other sessions and with agents outside am.
 			transcript := ""
-			if meta.AgentType == "cursor" {
+			if spec.Store == "cursor" {
 				transcript = e.SidecarTranscript(name)
 			}
 			sid := e.DetectID(name, meta.Directory, meta.AgentType)

@@ -172,7 +172,8 @@ func (e Env) RestoreScan(force bool) {
 		sid := entry.get("session_id")
 		transcript := entry.get("transcript_path")
 
-		if meta.AgentType == "cursor" {
+		spec := agentSpec(meta.AgentType)
+		if spec.Store == "cursor" {
 			if sc := e.SidecarTranscript(name); sc != "" && sc != transcript {
 				updates = append(updates, slogUpdate{name, "transcript_path", sc})
 				transcript = sc
@@ -183,7 +184,7 @@ func (e Env) RestoreScan(force bool) {
 		sidecar := ""
 		if meta.Directory != "" {
 			sidecar = e.SidecarID(name)
-			if sidecar != "" && meta.AgentType != "codex" && !e.JSONLExists(meta.Directory, sidecar, meta.AgentType, transcript) {
+			if sidecar != "" && spec.HasStore() && !e.JSONLExists(meta.Directory, sidecar, meta.AgentType, transcript) {
 				sidecar = ""
 			}
 		}

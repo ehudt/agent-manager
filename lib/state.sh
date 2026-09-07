@@ -368,8 +368,13 @@ _state_resolve() {
         return
     fi
 
-    # 2. Title glyph (version-dependent; see decision table in the header)
-    if [[ "$agent_type" == "claude" ]]; then
+    # 2. Title signal, per the agent's manifest `title_state`: glyph (Claude's
+    #    busy / ✳ glyphs; version-dependent, see the decision table in the
+    #    header), suffix (Cursor's status suffixes), or none.
+    local title_state="" turn_boundary=""
+    am_agent_field "$agent_type" title_state title_state
+    am_agent_field "$agent_type" turn_boundary turn_boundary
+    if [[ "$title_state" == "glyph" ]]; then
         local sig="none"
         _state_title_signal "$title_val" sig
         if [[ "$sig" == "busy" ]]; then
@@ -407,7 +412,7 @@ _state_resolve() {
 
     # Cursor 2026.08+ publishes explicit status suffixes. Trust them when
     # present; older versions fall through to ungated lifecycle hooks.
-    if [[ "$agent_type" == "cursor" ]]; then
+    if [[ "$title_state" == "suffix" ]]; then
         local cursor_sig="none" cursor_raw=""
         _state_cursor_title_signal "$title_val" cursor_sig
         if [[ "$cursor_sig" != "none" ]]; then
@@ -454,9 +459,10 @@ _state_resolve() {
         fi
     fi
 
-    # 3a. pi/Cursor/Claude: all three emit explicit turn-boundary lifecycle
-    # events (pi's in-process extension; Cursor's stop/beforeSubmitPrompt;
-    # Claude's Stop/UserPromptSubmit), so read their state ungated. Long
+    # 3a. Manifest turn_boundary=reliable (pi/Cursor/Claude): the agent emits
+    # explicit turn-boundary lifecycle events (pi's in-process extension;
+    # Cursor's stop/beforeSubmitPrompt; Claude's Stop/UserPromptSubmit), so
+    # read its state ungated. Long
     # quiet tool calls and long thinking stretches must not flap a live turn
     # to unknown — and the old staleness gate would: hooks skip same-state
     # rewrites (mtime pins turn start) and tmux session_activity is
@@ -465,7 +471,7 @@ _state_resolve() {
     # the pane to a shell, which step 1 catches; a ctrl-b backgrounded turn
     # fires its own Stop on 2.1.237 (live lab s6), so running files no
     # longer go silently stale.
-    if [[ "$agent_type" == "pi" || "$agent_type" == "cursor" || "$agent_type" == "claude" ]]; then
+    if [[ "$turn_boundary" == "reliable" ]]; then
         local lifecycle_hook=""
         _state_hook_raw "$session" lifecycle_hook
         if [[ -n "$lifecycle_hook" ]]; then
@@ -478,9 +484,9 @@ _state_resolve() {
         return
     fi
 
-    # 3b. Hook state, gated: Claude with a hook file (the primary path on
-    #     ≥2.1.234, where "✳" carries no signal), no glyph at all (title
-    #     disabled, agent still booting), or a non-Claude agent.
+    # 3b. Hook state, gated (turn_boundary=gated, e.g. Codex, and unknown
+    #     agent types): running goes stale after 180s without hook or tmux
+    #     activity.
     local hook_state=""
     _state_hook_read "$session" hook_state "$now_val" "$activity_val"
     if [[ -n "$hook_state" ]]; then

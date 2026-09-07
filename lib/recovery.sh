@@ -489,12 +489,15 @@ recovery_preflight_record() {
         return 1
     fi
 
-    case "$agent" in
-        codex)
-            # Codex validates its exact hook-reported id when `codex resume`
-            # starts; its rollout files are not stored under one stable path.
+    local preflight
+    am_agent_field "$agent" preflight preflight
+    case "$preflight" in
+        id)
+            # No addressable transcript store (Codex validates its exact
+            # hook-reported id when `codex resume` starts; its rollout files
+            # are not stored under one stable path): a well-formed id passes.
             ;;
-        claude|cursor|pi)
+        transcript)
             if ! _sessions_log_jsonl_exists \
                 "$directory" "$sid" "$agent" "$transcript"; then
                 echo "conversation history unavailable for $sid"

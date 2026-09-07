@@ -73,7 +73,7 @@ _doc_versions() {
     _doc_kv "tmux" "$(tmux -V 2>/dev/null || echo missing)"
     _doc_kv "jq" "$(jq --version 2>/dev/null || echo missing)"
     local agent bin ver
-    for agent in claude cursor-agent pi codex; do
+    for agent in $(_doc_version_bins); do
         bin=$(command -v "$agent" 2>/dev/null) || { _doc_kv "$agent" "not installed"; continue; }
         ver=$("$agent" --version 2>/dev/null | head -1 | tr -d '\r')
         _doc_kv "$agent" "${ver:-?} ($bin)"
@@ -254,15 +254,12 @@ _doc_drift() {
     else
         _doc_warn "no verified-version pin file at $verified"
     fi
-    for agent in claude cursor-agent pi codex; do
+    local type
+    for type in "${AM_AGENT_TYPES[@]}"; do
+        am_agent_field "$type" version_bin agent
         installed=$(_doc_agent_version "$agent") || continue
         if [[ -z "${pin[$agent]:-}" ]]; then
-            case "$agent" in
-                claude) lab="tests/live_lab/run.sh" ;;
-                cursor-agent) lab="tests/live_lab/run_cursor.sh" ;;
-                pi) lab="tests/live_lab/run_pi.sh" ;;
-                *) lab="" ;;
-            esac
+            am_agent_field "$type" lab lab
             if [[ -n "$lab" ]]; then
                 _doc_kv "$agent" "$installed (no verified pin; run $lab and add a line to tests/live_lab/VERIFIED)"
             else
@@ -441,7 +438,9 @@ _doc_transcript() {
     _doc_kv "session id" "$sid"
     local resolved path=""
     resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
-    case "$agent" in
+    local store
+    am_agent_field "$agent" store store
+    case "$store" in
         pi)
             local matches=("$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"/*_"${sid}".jsonl)
             [[ -f "${matches[0]}" ]] && path="${matches[0]}"
@@ -450,28 +449,38 @@ _doc_transcript() {
             if [[ -n "$tp" ]]; then path="$tp"
             else path="$(_cursor_projects_root)/$(_slog_encode_cursor_dir "$resolved")/agent-transcripts/$sid/$sid.jsonl"; fi
             ;;
-        codex)
-            path="(codex: id only; no local transcript check)"
+        claude)
+            path="$HOME/.claude/projects/$(_slog_encode_dir "$resolved")/$sid.jsonl"
             ;;
         *)
-            path="$HOME/.claude/projects/$(_slog_encode_dir "$resolved")/$sid.jsonl"
+            path="($agent: id only; no local transcript check)"
             ;;
     esac
     _doc_kv "path" "$path"
     if [[ -f "$path" ]]; then
         _doc_kv "exists" "yes, $(_doc_human "$(_doc_size "$path")"), modified $(_doc_age "$(_doc_mtime "$path")")"
         local first
-        case "$agent" in
+        case "$store" in
             pi)     first=$(pi_first_user_message "$dir" "$sid" 2>/dev/null || true) ;;
             cursor) first=$(cursor_first_user_message "$dir" "$sid" "$tp" 2>/dev/null || true) ;;
-            codex)  first="" ;;
-            *)      first=$(claude_first_user_message "$dir" "$sid" 2>/dev/null || true) ;;
+            claude) first=$(claude_first_user_message "$dir" "$sid" 2>/dev/null || true) ;;
+            *)      first="" ;;
         esac
         [[ -n "$first" ]] && _doc_kv "first user message" "${first:0:80}"
-    elif [[ "$agent" != "codex" ]]; then
+    elif [[ "$store" == "pi" || "$store" == "cursor" || "$store" == "claude" ]]; then
         _doc_warn "transcript file missing: restore will not offer this session"
     fi
     return 0
+}
+
+# Version binaries of every manifest agent, one per line (doctor probes and
+# the VERIFIED pins are keyed by these names, e.g. cursor-agent for cursor).
+_doc_version_bins() {
+    local type bin
+    for type in "${AM_AGENT_TYPES[@]}"; do
+        am_agent_field "$type" version_bin bin
+        [[ -n "$bin" ]] && printf '%s\n' "$bin"
+    done
 }
 
 _doc_processes() {

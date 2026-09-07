@@ -458,7 +458,8 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 	var entries []Entry
 	for i := len(logs) - 1; i >= 0; i-- {
 		log := logs[i]
-		if (log.AgentType != "claude" && log.AgentType != "codex" && log.AgentType != "pi" && log.AgentType != "cursor") || log.SessionID == "" {
+		spec, known := Agent(log.AgentType)
+		if !known || !spec.Restorable() || log.SessionID == "" {
 			continue
 		}
 		if liveSessions != nil && liveSessions[log.SessionName] {
@@ -467,19 +468,9 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 		if seenIDs[log.SessionID] {
 			continue
 		}
-		exists := false
-		if log.AgentType == "codex" {
-			// Current Codex exposes exact native resume by id, but does not
-			// expose one stable rollout-file location for local preflight.
-			exists = true
-		} else if log.AgentType == "pi" {
-			exists = piJSONLExists(home, log.Directory, log.SessionID)
-		} else if log.AgentType == "cursor" {
-			exists = cursorJSONLExists(home, log.Directory, log.SessionID, log.TranscriptPath)
-		} else {
-			exists = claudeJSONLExists(home, log.Directory, log.SessionID)
-		}
-		if !exists {
+		// Store "none" (Codex) exposes exact native resume by id but no
+		// stable rollout-file location, so a well-formed id passes.
+		if !storeJSONLExists(home, spec.Store, log.Directory, log.SessionID, log.TranscriptPath) {
 			continue
 		}
 
