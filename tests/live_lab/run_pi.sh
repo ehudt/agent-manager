@@ -23,11 +23,18 @@ SESSION="lab-pi-1"
 WORKDIR="$SCRIPT_DIR/workdir"
 mkdir -p "$WORKDIR"
 
+# Hermetic environment: when the lab is launched from inside an am session,
+# the pane's AM_SESSION_NAME / AM_AGENT_TYPE / AM_IDENTITY_DIR / AM_LOG_DIR
+# would leak into the lab's tmux server and its pi pane. AM_AGENT_TYPE=claude
+# in particular makes am-state.ts (family gate) exit without registering any
+# handler, so the lab never sees `ready` (observed 2026-09-07).
+unset AM_SESSION_NAME AM_AGENT_TYPE AM_IDENTITY_DIR AM_LOG_DIR
 export AM_STATE_DIR="$LAB/state"
 export AM_REGISTRY="$LAB/am/sessions.json"
 export AM_DIR="$LAB/am"
+export AM_IDENTITY_DIR="$LAB/identities"
 export AM_TMUX_SOCKET="$SOCKET"
-mkdir -p "$AM_STATE_DIR" "$AM_DIR"
+mkdir -p "$AM_STATE_DIR" "$AM_DIR" "$AM_IDENTITY_DIR"
 
 PI_ARGS="${LAB_PI_ARGS:-}"
 SCENARIOS="${LAB_SCENARIOS:-p1 p2 p3 p4}"
@@ -136,7 +143,7 @@ trap cleanup EXIT
 log "results -> $RESULTS"
 tmux -L "$SOCKET" new-session -d -s "$SESSION" -c "$WORKDIR" -x 200 -y 50
 tmux -L "$SOCKET" set-option -t "$SESSION" allow-rename off
-tmux -L "$SOCKET" send-keys -t "$SESSION" -l "export AM_SESSION_NAME=$SESSION AM_REGISTRY=$AM_REGISTRY AM_STATE_DIR=$AM_STATE_DIR AM_DIR=$AM_DIR AM_TMUX_SOCKET=$SOCKET; pi --no-extensions -e '$PROJECT_DIR/lib/hooks/am-state.ts' --no-session $PI_ARGS"
+tmux -L "$SOCKET" send-keys -t "$SESSION" -l "export AM_SESSION_NAME=$SESSION AM_AGENT_TYPE=pi AM_REGISTRY=$AM_REGISTRY AM_STATE_DIR=$AM_STATE_DIR AM_DIR=$AM_DIR AM_IDENTITY_DIR=$AM_IDENTITY_DIR AM_TMUX_SOCKET=$SOCKET; pi --no-extensions -e '$PROJECT_DIR/lib/hooks/am-state.ts' --no-session $PI_ARGS"
 tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
 
 sampler & SAMPLER_PID=$!

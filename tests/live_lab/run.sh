@@ -31,10 +31,16 @@ SESSION="lab-live-1"
 WORKDIR="$SCRIPT_DIR/workdir"
 mkdir -p "$WORKDIR"
 
+# Hermetic environment: launched from inside an am session, the pane's
+# AM_SESSION_NAME / AM_AGENT_TYPE / AM_IDENTITY_DIR / AM_LOG_DIR would leak
+# into the lab's tmux server (identity sidecars would land in the real
+# identities dir). The pane line below re-exports what the lab needs.
+unset AM_SESSION_NAME AM_AGENT_TYPE AM_IDENTITY_DIR AM_LOG_DIR
 export AM_STATE_DIR="$LAB/state"
 export AM_REGISTRY="$LAB/am/sessions.json"
 export AM_DIR="$LAB/am"
-mkdir -p "$AM_STATE_DIR" "$AM_DIR"
+export AM_IDENTITY_DIR="$LAB/identities"
+mkdir -p "$AM_STATE_DIR" "$AM_DIR" "$AM_IDENTITY_DIR"
 
 MODEL="${LAB_MODEL:-haiku}"
 SCENARIOS="${LAB_SCENARIOS:-s1 s2 s3 s4 s5 s6 s7}"
@@ -178,7 +184,7 @@ trap cleanup EXIT
 log "results -> $RESULTS"
 tmux -L "$SOCKET" new-session -d -s "$SESSION" -c "$WORKDIR" -x 200 -y 50
 tmux -L "$SOCKET" set-option -t "$SESSION" allow-rename off
-tmux -L "$SOCKET" send-keys -t "$SESSION" -l "export AM_SESSION_NAME=$SESSION AM_REGISTRY=$AM_REGISTRY AM_STATE_DIR=$AM_STATE_DIR AM_DIR=$AM_DIR AM_HOOK_DEBUG=1; exec claude --model $MODEL --settings $LAB/settings.json"
+tmux -L "$SOCKET" send-keys -t "$SESSION" -l "export AM_SESSION_NAME=$SESSION AM_AGENT_TYPE=claude AM_REGISTRY=$AM_REGISTRY AM_STATE_DIR=$AM_STATE_DIR AM_DIR=$AM_DIR AM_IDENTITY_DIR=$AM_IDENTITY_DIR AM_HOOK_DEBUG=1; exec claude --model $MODEL --settings $LAB/settings.json"
 tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
 
 sampler & SAMPLER_PID=$!

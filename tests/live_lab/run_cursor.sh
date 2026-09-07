@@ -21,10 +21,16 @@ WORKDIR="$LAB/workdir"
 SCENARIOS="${LAB_SCENARIOS:-c1 c2 c3 c4 c5 c6 c7}"
 CURSOR_ARGS="${LAB_CURSOR_ARGS:-}"
 
-mkdir -p "$RESULTS/snapshots" "$WORKDIR/.cursor" "$LAB/state" "$LAB/am"
+mkdir -p "$RESULTS/snapshots" "$WORKDIR/.cursor" "$LAB/state" "$LAB/am" "$LAB/identities"
+# Hermetic environment: launched from inside an am session, the pane's
+# AM_SESSION_NAME / AM_AGENT_TYPE / AM_IDENTITY_DIR / AM_LOG_DIR would leak
+# into the lab's tmux server (the hook's family gate and identity sidecars
+# read them).
+unset AM_SESSION_NAME AM_AGENT_TYPE AM_IDENTITY_DIR AM_LOG_DIR
 export AM_STATE_DIR="$LAB/state"
 export AM_REGISTRY="$LAB/am/sessions.json"
 export AM_DIR="$LAB/am"
+export AM_IDENTITY_DIR="$LAB/identities"
 export AM_TMUX_SOCKET="$SOCKET"
 
 log() { printf '\033[0;36m[live-lab-cursor]\033[0m %s\n' "$*" >&2; }
@@ -91,6 +97,17 @@ hook_state() { [[ -f "$AM_STATE_DIR/$SESSION" ]] && { IFS= read -r _s < "$AM_STA
 sid() { [[ -f "$AM_STATE_DIR/$SESSION.sid" ]] && { IFS= read -r _s < "$AM_STATE_DIR/$SESSION.sid"; printf '%s\n' "$_s"; } || true; }
 transcript() { [[ -f "$AM_STATE_DIR/$SESSION.transcript" ]] && { IFS= read -r _s < "$AM_STATE_DIR/$SESSION.transcript"; printf '%s\n' "$_s"; } || true; }
 resolved_state() { AM_TMUX_SOCKET="$SOCKET" agent_get_state "$SESSION" 2>/dev/null || echo unknown; }
+# Wait until the pane title contains a substring (Cursor's own ✅ Ready /
+# ⏳ Working / ❓ Waiting suffixes). Needed across a restart, where the hook
+# state file still holds the previous process's last state.
+wait_title() {  # substring timeout_s
+    local i
+    for (( i = 0; i < $2; i++ )); do
+        [[ "$(pane_title)" == *"$1"* ]] && return 0
+        sleep 1
+    done
+    return 1
+}
 
 CURRENT_SCENARIO_FILE="$LAB/current_scenario"
 echo boot > "$CURRENT_SCENARIO_FILE"
@@ -241,17 +258,32 @@ if [[ " $SCENARIOS " == *" c6 "* ]]; then
     press C-c
     press C-d
     sleep 3
+    # The state file still says ready from the process that just exited;
+    # drop it so the wait below is satisfied only by the resumed session's
+    # own hooks, and confirm readiness from Cursor's title (the shell prompt
+    # would otherwise resolve as idle and the next prompt land in a pane
+    # that is still booting).
+    rm -f "$AM_STATE_DIR/$SESSION"
     if [[ -n "$resume_sid" ]]; then
         tmux -L "$SOCKET" send-keys -t "$SESSION" -l \
             "export AM_SESSION_NAME='$SESSION'; agent --trust --resume '$resume_sid' $CURSOR_ARGS"
         tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
-        wait_state ready 60 && observe c6-resume \
-            || mark c6-resume "WARN: resumed session did not reach ready"
+        # A resumed Cursor fires no sessionStart/stop hook until its next
+        # prompt (observed 2026.09.02: hook file absent for 30s+ while the
+        # title already read ✅ Ready), so readiness here comes from the
+        # title layer of _state_resolve, not from the hook file.
+        if wait_title '✅ Ready' 60 && wait_resolved ready 30; then
+            sleep 1
+            observe c6-resume
+        else
+            mark c6-resume "WARN: resumed session did not reach ready"
+        fi
     fi
 fi
 
 if [[ " $SCENARIOS " == *" c7 "* ]]; then
-    wait_resolved ready 20 || { press C-c; wait_resolved ready 20 || true; }
+    wait_title '✅ Ready' 30 || { press C-c; wait_title '✅ Ready' 20 || true; }
+    wait_resolved ready 20 || true
     run_scenario c7-background-task
     send_prompt "Start this exact shell command as a background task: sleep 40. Finish your response as soon as Cursor labels it background; do not wait for it to complete."
     if wait_resolved background 60; then

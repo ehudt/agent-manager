@@ -5,6 +5,6 @@
 # installed version at the end of its run).
 #
 # Whitespace-separated: <agent binary> <version> <date> <lab> <note...>
-claude 2.1.237 2026-08-25 tests/live_lab/run.sh s1-s7 agree; ✳ title static since 2.1.234; ctrl-b Stop fires
-cursor-agent 2026.08 2026-08-25 tests/live_lab/run_cursor.sh Ready/Working/Waiting title suffixes; tasks footer after "Add a follow-up"
-# pi: no pin yet. Run tests/live_lab/run_pi.sh and add a line.
+claude 2.1.263 2026-09-07 tests/live_lab/run.sh s1-s7 agree with the 2.1.237 run; ✳ title static; ctrl-b Stop fires; s3 shows no dialog under a permissive policy
+cursor-agent 2026.09.02 2026-09-07 tests/live_lab/run_cursor.sh c1-c7 agree; Ready/Working/Waiting title suffixes; tasks footer after "Add a follow-up"; resume fires no hook until the next prompt (title layer covers it)
+pi 0.84.2 2026-09-07 tests/live_lab/run_pi.sh p1, p2, p4 agree (session_start/agent_start/agent_settled, death -> idle); p3 long-quiet not verifiable: pi's Anthropic OAuth refresh token had expired, every prompt errored instantly
