@@ -595,6 +595,13 @@ test_registry_gc_go_path() {
     mkdir -p "$state_dir"
     : > "$state_dir/test-am-stale-go"
 
+    # agent_launch backgrounds a sidebar refresh whose status-bar tick runs the
+    # Go GC once (default grace spares the stale row) and stamps .gc_last. Let
+    # it land before we drop the marker, or its stamp races our run and the
+    # binary's own GC is throttled away (observed as a 1-in-3 flake).
+    local _i=0
+    while [[ ! -f "$AM_DIR/.gc_last" && $_i -lt 100 ]]; do sleep 0.1; _i=$(( _i + 1 )); done
+
     # Ensure throttle does not skip, and drop the create-grace window (the
     # stale row was registered a moment ago).
     rm -f "$AM_DIR/.gc_last"
