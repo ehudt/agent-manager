@@ -116,6 +116,7 @@ Run the tests, reproduce, fix, and commit. Use superpowers:systematic-debugging.
 | `am done "<summary>"` | Worker side, from inside its session: record a result for the dispatcher (stdin works too) |
 | `am result [--wait] [--clear] <session>` | Dispatcher side: print what the worker recorded; exit 1 when nothing yet |
 | `am status --json <session>` | State for one session |
+| `am doctor <session>` | Why the state is what it is: registry row, pane titles, hook file and sidecars, process tree, which resolver layer answered. Use when a worker sits in `unknown` or a state that contradicts `am peek` |
 | `am list --json [--state s1,s2]` | All sessions as JSON (includes `state`), optionally filtered |
 | `am kill --state idle,dead -y` | Sweep finished workers |
 | `am peek [--pane shell] [--follow] <session>` | Pane snapshot or stream |
@@ -197,6 +198,7 @@ Each session streams pane output to `/tmp/am-logs/<session>/agent.log` (panes ex
 | Forgetting `--detach` | Without it your terminal attaches to the new session |
 | `am send` exits 4 (agent mid-turn) | Use `am send --wait` or `--queue`; never reach for `--force` to get past it |
 | `am send` exits 2 (agent exited) | The session is idle/dead; restart or `am kill` it instead of typing into its shell |
+| State stuck at `unknown` or contradicting the pane | `am doctor <session>` shows the inputs; do not guess from `am peek` alone |
 | Polling in a tight loop | `am wait` (several sessions: `--all`/`--any`) + one `am result`/`am peek` |
 | Assuming dispatch worked (esp. Codex: stdin launch and `send --wait` can silently fail) | Verify with `am status --json` + `am peek` after dispatch |
 | Not telling the user | Report session ID and the attach command |
