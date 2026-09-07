@@ -564,19 +564,19 @@ test_install_pi_extension() {
     _ensure_install_lib_sourced
 
     # --- _install_pi_extension ---
-    local pi_ext_dir
-    pi_ext_dir=$(mktemp -d)/extensions
+    local pi_tmp pi_ext_dir
+    pi_tmp=$(mktemp -d)
+    pi_ext_dir="$pi_tmp/extensions"
     _install_pi_extension "$pi_ext_dir" "$PROJECT_DIR/lib/hooks/am-state.ts"
-    [[ -L "$pi_ext_dir/am-state.ts" ]] \
-        && pass "_install_pi_extension: symlink created" \
-        || fail "_install_pi_extension: symlink created"
+    assert_cmd_succeeds "_install_pi_extension: symlink created" test -L "$pi_ext_dir/am-state.ts"
     assert_eq "$PROJECT_DIR/lib/hooks/am-state.ts" "$(readlink "$pi_ext_dir/am-state.ts")" \
         "_install_pi_extension: symlink target"
     # idempotent re-run
     _install_pi_extension "$pi_ext_dir" "$PROJECT_DIR/lib/hooks/am-state.ts"
-    [[ -L "$pi_ext_dir/am-state.ts" ]] \
-        && pass "_install_pi_extension: idempotent" \
-        || fail "_install_pi_extension: idempotent"
+    assert_cmd_succeeds "_install_pi_extension: idempotent" test -L "$pi_ext_dir/am-state.ts"
+    assert_eq "$PROJECT_DIR/lib/hooks/am-state.ts" "$(readlink "$pi_ext_dir/am-state.ts")" \
+        "_install_pi_extension: idempotent re-run keeps the target"
+    rm -rf "$pi_tmp"
 }
 
 # Stale-install detection: `am install --refresh` links skills, regenerates
