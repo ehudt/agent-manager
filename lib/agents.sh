@@ -305,35 +305,67 @@ agent_pane_env() {
     fi
 }
 
-# Allocate an isolated working directory for `am new -W` through the user's
-# configured workspace command (`am config set workspace_cmd '...'`). The
-# command runs via bash -c with AM_BRANCH exported (empty when no branch was
-# requested) and must print the directory on stdout; its stderr passes
-# through so progress output (fetching, cloning) reaches the user.
-# Usage: agent_workspace_allocate [branch]
-agent_workspace_allocate() {
-    local branch="${1:-}"
-    local cmd
-    cmd=$(am_workspace_cmd)
-    if [[ -z "$cmd" ]]; then
-        log_error "No workspace command configured for -W"
-        echo "Set one with, e.g.: am config set workspace_cmd 'wp allocate \${AM_BRANCH:+--branch \"\$AM_BRANCH\"}'" >&2
+# Run the configured directory provider (`am config set dir_provider <cmd>`)
+# with a verb and one argument: `bash -c '<provider> "$@"' _ <verb> <arg>`.
+# AM_SESSION_NAME is blanked: when a dispatching agent runs `am new @spec`
+# from inside its own am session, a provider that relabels the calling session
+# (wp → `am cd`) must not retag the dispatcher with the worker's directory.
+# Usage: _agent_dir_provider_run <verb> <arg>
+_agent_dir_provider_run() {
+    local provider
+    provider=$(am_dir_provider)
+    [[ -n "$provider" ]] || return 127
+    AM_SESSION_NAME= "${BASH:-bash}" -c "$provider \"\$@\"" _ "$1" "$2"
+}
+
+# Resolve a `@spec` directory through the provider's `resolve` verb. The
+# provider prints the directory on stdout; its stderr passes through so
+# progress output (fetching, cloning) reaches the user.
+# Usage: agent_dir_resolve <spec-with-@>
+agent_dir_resolve() {
+    local spec="${1#@}"
+    if [[ -z "$(am_dir_provider)" ]]; then
+        log_error "No directory provider configured for @$spec"
+        echo "Set one with, e.g.: am config set dir_provider wp" >&2
         return 1
     fi
-    # AM_SESSION_NAME is blanked: when a dispatching agent runs `am new -W`
-    # from inside its own am session, a workspace tool that relabels the
-    # calling session (wp allocate → `am cd`) must not retag the dispatcher
-    # with the worker's directory.
     local dir
-    if ! dir=$(AM_BRANCH="$branch" AM_SESSION_NAME= "${BASH:-bash}" -c "$cmd"); then
-        log_error "Workspace command failed: $cmd"
+    if ! dir=$(_agent_dir_provider_run resolve "$spec"); then
+        log_error "Directory provider could not resolve @$spec"
         return 1
     fi
     if [[ -z "$dir" || ! -d "$dir" ]]; then
-        log_error "Workspace command did not print an existing directory: ${dir:-<empty>}"
+        log_error "Directory provider did not print an existing directory for @$spec: ${dir:-<empty>}"
         return 1
     fi
     echo "$dir"
+}
+
+# Candidates for a partial `@spec`, one "<spec>\t<label>" line each (the spec
+# without its @). Bounded by am_dir_suggest_timeout so a slow provider cannot
+# stall the form. The provider runs in its own process group and the whole
+# group is killed on timeout — killing only the top process leaves its
+# children (a `sleep`, a `gh`) holding the pipe open, and the read still
+# blocks until they exit. Empty output (no provider, no match, timeout) is
+# not an error; a timeout is one line under AM_HOOK_DEBUG-style silence.
+# Usage: agent_dir_suggest <partial>
+agent_dir_suggest() {
+    local partial="${1#@}"
+    [[ -n "$(am_dir_provider)" ]] || return 0
+    local provider timeout
+    provider=$(am_dir_provider)
+    timeout=$(am_dir_suggest_timeout)
+    AM_SESSION_NAME= perl -MTime::HiRes=alarm -e '
+        my $t = shift;
+        my $pid = fork;
+        die "fork: $!" unless defined $pid;
+        if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+        $SIG{ALRM} = sub { kill "TERM", -$pid; kill "KILL", -$pid; exit 124 };
+        alarm $t;
+        waitpid $pid, 0;
+        exit($? >> 8);
+    ' "$timeout" "${BASH:-bash}" -c "$provider \"\$@\"" _ suggest "$partial" \
+        </dev/null 2>/dev/null | grep -v '^[[:space:]]*$' || true
 }
 
 # Record where a session's agent is working now. Writes the .cwd sidecar (the

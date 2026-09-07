@@ -12,9 +12,8 @@ test_form_core() {
     source "$LIB_DIR/agents.sh"
     source "$LIB_DIR/form.sh"
     set -u
-    # The user's real config may define workspace_cmd, which adds fields and
-    # shifts every index below; run against a fresh, empty config.
-    unset AM_WORKSPACE_CMD
+    # Run against a fresh, empty config (no presets, no provider).
+    unset AM_DIR_PROVIDER
     setup_isolated_am_dir
     am_config_init
 
@@ -24,8 +23,7 @@ test_form_core() {
     assert_not_contains "${FORM_OPTIONS[agent]}" "cursor-agent" \
         "form input: cursor alias is not duplicated"
 
-    # The form is just Directory / Agent / Task (plus Workspace fields when
-    # a workspace_cmd is configured — see test_form_workspace)
+    # The form is just Directory / Agent / Task (plus Preset when any exist)
     assert_eq "directory agent task" "${FORM_FIELDS[*]}" "form input: fields are directory, agent, task"
     assert_eq "" "${FORM_TYPES[mode]:-}${FORM_TYPES[yolo]:-}${FORM_TYPES[sandbox]:-}${FORM_TYPES[worktree_enabled]:-}" \
         "form input: no mode/yolo/sandbox/worktree fields"
@@ -103,9 +101,8 @@ test_form_loop() {
     source "$LIB_DIR/agents.sh"
     source "$LIB_DIR/form.sh"
     set -u
-    # The user's real config may define workspace_cmd, which adds fields and
-    # shifts every index below; run against a fresh, empty config.
-    unset AM_WORKSPACE_CMD
+    # Run against a fresh, empty config (no presets, no provider).
+    unset AM_DIR_PROVIDER
     setup_isolated_am_dir
     am_config_init
 
@@ -271,9 +268,8 @@ test_form_modes() {
     source "$LIB_DIR/agents.sh"
     source "$LIB_DIR/form.sh"
     set -u
-    # The user's real config may define workspace_cmd, which adds fields and
-    # shifts every index below; run against a fresh, empty config.
-    unset AM_WORKSPACE_CMD
+    # Run against a fresh, empty config (no presets, no provider).
+    unset AM_DIR_PROVIDER
     setup_isolated_am_dir
     am_config_init
 
@@ -517,8 +513,8 @@ test_form_modes() {
     $SUMMARY_MODE || echo ""
 }
 
-test_form_workspace() {
-    $SUMMARY_MODE || echo "=== Testing form workspace fields ==="
+test_form_provider() {
+    $SUMMARY_MODE || echo "=== Testing form @spec directories (dir_provider) ==="
 
     source "$LIB_DIR/utils.sh"
     set +u
@@ -529,77 +525,106 @@ test_form_workspace() {
     source "$LIB_DIR/form.sh"
     set -u
 
-    # Without a workspace_cmd the fields are absent and the order is unchanged
-    unset AM_WORKSPACE_CMD
+    unset AM_DIR_PROVIDER
     setup_isolated_am_dir
     am_config_init
     _form_init "/tmp" "claude" ""
-    assert_eq "agent" "${FORM_FIELDS[1]}" "form workspace: fields hidden when workspace_cmd unset"
-    assert_eq "" "${FORM_TYPES[workspace_enabled]:-}" "form workspace: no workspace field when unset"
+    assert_eq "directory agent task" "${FORM_FIELDS[*]}" "form provider: no extra fields, with or without a provider"
 
-    export AM_WORKSPACE_CMD="echo /tmp"
+    # Without a provider a @spec is rejected at output with guidance
+    FORM_VALUES[directory]="@48351"
+    local rc=0 err
+    err=$(_form_output 2>&1 >/dev/null) || rc=$?
+    assert_eq "1" "$rc" "form provider: @spec rejected without a provider"
+    assert_contains "$err" "dir_provider" "form provider: rejection names the config key"
+    _form_filter_dir_suggestions "@48" 5
+    assert_eq "1" "${#_FORM_DIR_FILTERED[@]}" "form provider: no provider → only the typed spec is offered"
+    assert_eq "@48" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: the typed spec is the fallback entry"
+
+    # Fake provider: suggestions are provider lines shown as @spec + label
+    export FAKE_PROVIDER_DIR
+    FAKE_PROVIDER_DIR=$(mktemp -d)
+    export AM_DIR_PROVIDER="$TEST_DIR/fake_dir_provider"
     _form_init "/tmp" "claude" ""
-    assert_eq "workspace_enabled" "${FORM_FIELDS[1]}" "form workspace: Workspace follows Directory"
-    assert_eq "workspace_branch" "${FORM_FIELDS[2]}" "form workspace: Branch follows Workspace"
-    assert_eq "false" "${FORM_VALUES[workspace_enabled]}" "form workspace: starts off"
-    assert_eq "true" "${FORM_DISABLED[workspace_branch]}" "form workspace: branch disabled while off"
-    assert_eq "" "${FORM_DISABLED[directory]:-}" "form workspace: directory enabled while off"
+    _form_filter_dir_suggestions "@48" 5
+    assert_eq "2" "${#_FORM_DIR_FILTERED[@]}" "form provider: provider candidates listed"
+    assert_eq "@48351" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: candidate spec carries the @"
+    assert_eq "PR #48351 fix bbr" "${_FORM_DIR_FILTERED[0]#*$'\t'}" "form provider: provider label is the annotation"
+    assert_eq "@48372" "${_FORM_DIR_FILTERED[1]%%$'\t'*}" "form provider: second candidate"
 
-    # Toggle on: branch editable, directory out of play
-    FORM_CURSOR=1
-    _form_handle_space
-    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: space toggles on"
-    assert_eq "" "${FORM_DISABLED[workspace_branch]}" "form workspace: branch enabled when on"
-    assert_eq "true" "${FORM_DISABLED[directory]}" "form workspace: directory disabled when on"
+    # Bare @ asks the provider for its defaults
+    _form_filter_dir_suggestions "@" 5
+    assert_eq "@trunk" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: bare @ lists the provider defaults"
 
-    # Checkbox key dispatch in navigate mode: arrows toggle, Enter submits without toggling
-    _FORM_OPTIONS_OPEN=true
-    _FORM_MODE="navigate"
-    _form_process_key $'\x1b' "[D"
-    assert_eq "false" "${FORM_VALUES[workspace_enabled]}" "form workspace: left arrow toggles checkbox off"
-    _form_process_key $'\x1b' "[C"
-    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: right arrow toggles checkbox on"
+    # No match → the typed spec itself so Enter still resolves it
+    _form_filter_dir_suggestions "@brand-new-branch" 5
+    assert_eq "1" "${#_FORM_DIR_FILTERED[@]}" "form provider: no match → one fallback entry"
+    assert_eq "@brand-new-branch" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: fallback keeps the typed spec"
+
+    # Bare `@` (empty partial) asks the provider for its defaults
+    _form_filter_dir_suggestions "@" 5
+    assert_eq "true" "$([[ ${#_FORM_DIR_FILTERED[@]} -ge 1 ]] && echo true || echo false)" \
+        "form provider: bare @ lists the provider's default candidates"
+    assert_eq "@trunk" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: bare @ offers the provider default first"
+    _form_filter_dir_suggestions "@" 5
+    assert_eq "1" "$(grep -c "^suggest $" "$FAKE_PROVIDER_DIR/calls.log")" "form provider: bare @ cached too"
+
+    # Cached per partial: a redraw with the same text does not re-run the provider
+    local calls_before calls_after
+    calls_before=$(grep -c "^suggest 48$" "$FAKE_PROVIDER_DIR/calls.log")
+    _form_filter_dir_suggestions "@48" 5
+    _form_filter_dir_suggestions "@48" 5
+    calls_after=$(grep -c "^suggest 48$" "$FAKE_PROVIDER_DIR/calls.log")
+    assert_eq "$calls_before" "$calls_after" "form provider: suggestions cached per partial"
+    assert_eq "1" "$calls_before" "form provider: one provider run per distinct partial"
+
+    # A slow provider is cut off at the suggest timeout instead of stalling the form
+    local t0 t1 elapsed
+    t0=$(perl -MTime::HiRes=time -e 'printf "%.2f\n", time')
+    AM_DIR_SUGGEST_TIMEOUT=0.3 _form_filter_dir_suggestions "@slow" 5
+    t1=$(perl -MTime::HiRes=time -e 'printf "%.2f\n", time')
+    elapsed=$(perl -e 'printf "%d\n", ($ARGV[1] - $ARGV[0]) * 1000' "$t0" "$t1")
+    assert_eq "true" "$([[ $elapsed -lt 1500 ]] && echo true || echo false)" \
+        "form provider: slow suggest cut off (took ${elapsed}ms, provider sleeps 3s)"
+    assert_eq "@slow" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: timeout falls back to the typed spec"
+
+    # Tab / Enter accept the highlighted candidate into the field
+    FORM_VALUES[directory]="@48"
+    FORM_CURSOR=0
+    _FORM_DIR_HIGHLIGHT=1
+    _form_handle_tab
+    assert_eq "@48372" "${FORM_VALUES[directory]}" "form provider: tab accepts the highlighted @spec"
+    FORM_VALUES[directory]="@48"
+    _FORM_MODE="edit"
     _form_process_key $'\n'
-    assert_eq "submit" "$FORM_KEY_RESULT" "form workspace: enter on checkbox submits"
-    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: enter does not toggle"
+    assert_eq "submit" "$FORM_KEY_RESULT" "form provider: enter on a @spec submits"
+    assert_eq "@48351" "${FORM_VALUES[directory]}" "form provider: enter accepts the top candidate"
 
-    # A disabled checkbox ignores space
-    FORM_DISABLED[workspace_enabled]="true"
-    _form_handle_space
-    assert_eq "true" "${FORM_VALUES[workspace_enabled]}" "form workspace: disabled checkbox ignores space"
-    FORM_DISABLED[workspace_enabled]=""
+    # Output passes the @spec through unvalidated (cmd_new resolves it)
+    local out dir_out flags
+    out=$(_form_output 2>/dev/null)
+    IFS=$'\x1f' read -r dir_out _ _ flags <<< "$out"
+    assert_eq "@48351" "$dir_out" "form provider: @spec reaches the output untouched"
+    assert_eq "" "$flags" "form provider: no flags for a @spec"
 
-    # Output carries --workspace=<branch> and skips directory validation
-    FORM_VALUES[workspace_branch]="review-48351"
+    # A plain path is still validated
     FORM_VALUES[directory]="/definitely/not/a/dir"
-    local out flags agent_out task_out
-    out=$(_form_output 2>/dev/null)
-    IFS=$'\x1f' read -r _ _ _ flags <<< "$out"
-    assert_contains "$flags" "--workspace=review-48351" "form workspace: output flags carry the branch"
-
-    FORM_VALUES[workspace_branch]=""
-    out=$(_form_output 2>/dev/null)
-    IFS=$'\x1f' read -r _ _ _ flags <<< "$out"
-    assert_contains "$flags" "--workspace" "form workspace: output flags carry bare --workspace without branch"
-    assert_not_contains "$flags" "--workspace=" "form workspace: no empty branch suffix"
-
-    # Toggle off: directory validated again
-    _form_handle_space
-    assert_eq "" "${FORM_DISABLED[directory]:-}" "form workspace: directory re-enabled when off"
-    local rc=0
+    rc=0
     _form_output >/dev/null 2>&1 || rc=$?
-    assert_eq "1" "$rc" "form workspace: off → missing directory rejected again"
+    assert_eq "1" "$rc" "form provider: missing plain directory still rejected"
 
     # Entry point: prefill reaches the fields and the output contract holds
+    local agent_out task_out
     _form_run() { _form_output; }
-    out=$(am_new_session_form "/tmp" "codex" "prefilled task")
-    IFS=$'\x1f' read -r _ agent_out task_out flags <<< "$out"
+    out=$(am_new_session_form "@48351" "codex" "prefilled task")
+    IFS=$'\x1f' read -r dir_out agent_out task_out flags <<< "$out"
+    assert_eq "@48351" "$dir_out" "am_new_session_form: @spec prefill survives"
     assert_eq "codex" "$agent_out" "am_new_session_form: prefilled agent"
     assert_eq "prefilled task" "$task_out" "am_new_session_form: prefilled task"
-    assert_eq "" "$flags" "am_new_session_form: no flags while workspace is off"
     unset -f _form_run
 
-    unset AM_WORKSPACE_CMD
+    rm -rf "$FAKE_PROVIDER_DIR"
+    unset AM_DIR_PROVIDER FAKE_PROVIDER_DIR
     teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
@@ -607,7 +632,7 @@ test_form_workspace() {
 
 run_form_tests() {
     _run_test test_form_core
-    _run_test test_form_workspace
+    _run_test test_form_provider
     _run_test test_form_loop
     _run_test test_form_modes
 }

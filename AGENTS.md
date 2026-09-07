@@ -38,7 +38,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
 - The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
 - Pane environment (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR`) is seeded at pane creation via tmux `-e` (`agent_pane_env` → `tmux_create_session` env args / `split-window -e`) plus the session environment. Never `send-keys` an `export` into a pane: even a space-prefixed one lingers as zsh's most recent history entry, and the vars must exist before the agent command runs. Requires tmux ≥ 3.2 (`display-popup` already did)
-- `am new -W [branch]` never takes a directory: `agent_workspace_allocate` runs the user's `workspace_cmd` (bash -c, `AM_BRANCH` exported, may be empty) and uses its stdout. The form emits `--workspace[=branch]` in its flags field and `cmd_new` strips it before the flags reach `agent_launch`
+- A directory argument starting with `@` is a provider spec, not a path: `cmd_new` hands it to `agent_dir_resolve`, which runs the configured `dir_provider` as `<provider> resolve <spec>` (bash -c, `AM_SESSION_NAME` blanked) and uses its stdout. The form passes `@spec` through unvalidated in the directory field; provider suggestions come from `<provider> suggest <partial>` under `agent_dir_suggest`'s perl-alarm timeout (`AM_DIR_SUGGEST_TIMEOUT`, 0.3s) and are cached per typed partial for the life of the form. am never interprets a spec (PR number, branch, ...) — that is the provider's business
 - jq's `//` treats `false` as missing: `(.notify // true)` is `true` for `"notify": false`. Read boolean config keys with `if has("k") then .k else default end` (see `_notify_maybe`, `am_auto_restore_enabled`)
 - The test stub agent is a bash script, so the shell-pane check resolves stub sessions as `idle`. Tests that send to a stub pass `am send --force`; the plain form is exercised once to prove the refusal
 - Registry `directory` is the *launch* cwd and must never be rewritten: it keys the Claude/Cursor/pi transcript store (`~/.claude/projects/<encoded-dir>/`), the title fallback, session-id detection, and `am restore`. Where the agent works *now* lives in the separate `workdir` field (empty = same as `directory`), fed by the state hook's `/tmp/am-state/<session>.cwd` sidecar (Claude stamps hook payloads with the Bash tool's tracked cwd — the process cwd and tmux `pane_current_path` never move) or by `am cd`. Labels and the branch refresh read `workdir` first; state detection and restore read `directory`
@@ -84,7 +84,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 ```
 am → fzf_main() → am-browse (Go TUI) → stdout protocol → tmux_attach()
 am new ~/project → agent_launch() → tmux_create_session(name, dir, VAR=VAL...) → registry_add() → tmux_send_keys()
-am new -W branch → agent_workspace_allocate(branch) → $workspace_cmd (AM_BRANCH=branch) → agent_launch(dir, ...)
+am new @spec → agent_dir_resolve(@spec) → $dir_provider resolve spec → agent_launch(dir, ...)
+form Directory "@par" → _form_filter_dir_suggestions → agent_dir_suggest(par) → $dir_provider suggest par (≤0.3s) → "@spec\tlabel" rows
 am id → current_session() → $AM_SESSION_NAME, else attached session on the am tmux server
 am cd [dir] → current_session() → agent_set_workdir() → .cwd sidecar + registry workdir/branch → am_refresh_sidebar_cache()
 agent cd's (Bash tool) → Claude hook payload cwd → state-hook.sh writes /tmp/am-state/<session>.cwd → am-core tick (RefreshTitles) → registry workdir + branch (from .git/HEAD) → tab label
@@ -454,7 +455,8 @@ am restore
 
 **Pane environment / workspaces:**
 - `agent_pane_env(session_name, agent_type)` - Print the `VAR=VALUE` lines every am pane starts with (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR` when streaming); consumed by `tmux_create_session` and the shell-panel `split-window -e`
-- `agent_workspace_allocate([branch])` - Run the configured workspace_cmd (config key) with AM_BRANCH exported (and AM_SESSION_NAME blanked, so a dispatcher is not relabelled by the worker's `wp allocate`) and return the directory it prints; errors with setup guidance when unset or when the output is not an existing directory
+- `agent_dir_resolve(@spec)` - Run the configured dir_provider's resolve verb (via `_agent_dir_provider_run`, which blanks AM_SESSION_NAME so a dispatcher is not relabelled by the worker's provider call) and return the directory it prints; errors with setup guidance when no provider is configured, when it fails, or when the output is not an existing directory
+- `agent_dir_suggest(partial)` - The provider's suggest verb, run in its own process group under a perl alarm (`am_dir_suggest_timeout`) that kills the whole group on timeout (killing only the top process leaves its children holding the pipe open); prints spec-TAB-label lines, empty on no provider / no match / timeout (never an error)
 - `agent_set_workdir(session_name, dir)` - Record where the agent works now: write the .cwd sidecar and apply the registry workdir (empty when equal to the launch directory) + branch refresh immediately, then redraw. Backs the cd command; never touches the directory field
 - `current_session()` (in the am entry point) - Name of the am session the caller runs inside; backs the id command (aliases current, whoami) and the no-arg defaults of the shell and info commands
 
@@ -480,12 +482,12 @@ am restore
 - `normalizeTitle` - Strip Claude's transient decorations (a trailing ` - 🔄 Reconnecting…` segment, a trailing ` - <dirname>`); `piTitleExtract` / `cursorTitleExtract` handle pi's `pi - <name> - <dir>` shape and Cursor's status suffixes. The scan applies hysteresis: an invalid pane title never replaces an existing task (the first-message fallback only fills an empty one)
 
 **Presets (lib/presets.sh):**
-- `am_preset_names()` / `am_preset_get(name)` / `am_preset_field(name, field)` - Read presets from config.json (the args field prints one per line; workspace and shell print true/false)
+- `am_preset_names()` / `am_preset_get(name)` / `am_preset_field(name, field)` - Read presets from config.json (the args field prints one per line; shell prints true/false; directory may be a `@spec`, and a pre-0.24 workspace+branch pair reads back as `@branch`)
 - `am_preset_save(name, json)` / `am_preset_rm(name)` - Write / delete under the presets key of config.json; the key is dropped when empty
-- `_preset_from_flags(flags...)` - Build the JSON object from `am new`-style flags (`-t -d -n -W [branch] --shell -- args`)
+- `_preset_from_flags(flags...)` - Build the JSON object from `am new`-style flags (`-t -d -n --shell -- args`; the positional directory may be a `@spec`)
 - `_preset_render(name)` - Equivalent `am new` command line, shell-quoted
 - `preset_main(sub, ...)` - Entry for `am preset save|list|show|rm|help`
-- `_cmd_new_apply_preset(name, fill)` (in the am entry point) - Merge a preset into cmd_new's locals; fill=true also supplies directory/agent/task/workspace where the flags left gaps
+- `_cmd_new_apply_preset(name, fill)` (in the am entry point) - Merge a preset into cmd_new's locals; fill=true also supplies directory (path or `@spec`)/agent/task where the flags left gaps
 
 **Dispatch (in the am entry point):**
 - `_wait_many(mode, states, timeout, json, sessions...)` - Multi-session wait behind `am wait --all|--any`; one background `agent_wait_state` per session, results in a private tmpdir, exit 3 when any timed out
@@ -568,13 +570,13 @@ am restore
 
 **Form (lib/form.sh):**
 - `am_new_session_form(...)` - Entry point: parses prefill values, then runs the tput form
-- `_form_init(directory, agent, task, [workspace_enabled], [workspace_branch])` - Initialize form state and fields: Directory, Agent, Task, plus Workspace/Branch when a workspace_cmd is configured
+- `_form_init(directory, agent, task)` - Initialize form state and fields: Directory (a path or `@spec`), Agent, Task, plus Preset first when any preset exists
 - `_form_run()` - Main loop: draw → read key → dispatch (navigate/edit) → repeat. Returns tab-delimited output on stdout
 - `_form_process_key(key, [extra_seq])` - Route to `_form_process_key_navigate` or `_form_process_key_edit` based on `_FORM_MODE`
 - `_form_draw()` - Buffer all fields + directory suggestions into `_FORM_BUF`, single write to `/dev/tty`
-- `_form_filter_dir_suggestions(query, max)` - Filter cached zoxide/frecent list into `_FORM_DIR_FILTERED` array (no subshell)
+- `_form_filter_dir_suggestions(query, max)` - Filter cached zoxide/frecent list into `_FORM_DIR_FILTERED` array (no subshell); a `@` query instead fills it from `agent_dir_suggest` (one provider call per distinct partial, memoized in `_FORM_PROVIDER_CACHE`), as `@spec<TAB>label` rows, or the typed spec alone when the provider returns nothing
 - `_form_size_to_terminal()` - Grow `_FORM_DIR_SUGGESTION_LINES` (default 7) to fill the terminal height; called once by `_form_run`
-- `_form_output()` - Format form values as `directory<US>agent<US>task<US>flags` (US = \x1f); flags carries only `--workspace[=branch]`
+- `_form_output()` - Format form values as `directory<US>agent<US>task<US>flags` (US = \x1f); flags carries only `--preset=<name>`; a `@spec` directory skips path validation (rejected only when no dir_provider is configured)
 
 **Session browser (Go TUI — `cmd/am-browse`):**
 - Compiled bubbletea binary; primary UI for the interactive session browser
@@ -596,7 +598,7 @@ am restore
 - `am_default_agent()` - Get default agent type
 - `am_stream_logs_enabled()` - Check if log streaming is enabled
 - `am_shell_pane_enabled()` - Whether new sessions open with the shell panel visible (shell_pane key, default false)
-- `am_workspace_cmd()` - Shell snippet behind -W on new (workspace_cmd key, env override AM_WORKSPACE_CMD; empty disables -W and hides the form's Workspace fields). Stored case-preserving — the config set path skips its lowercase normalization for this key
+- `am_dir_provider()` / `am_dir_is_spec(dir)` / `am_dir_suggest_timeout()` - The command behind `@spec` directories (dir_provider key, env override AM_DIR_PROVIDER; empty disables specs), the `@` test, and the suggest cut-off in seconds (AM_DIR_SUGGEST_TIMEOUT, default 0.3). Stored case-preserving — the config set path skips its lowercase normalization for this key
 - `am_config_key_alias()` / `am_config_key_type()` / `am_config_value_is_valid()` - Normalize and validate config keys and values
 
 ## Session Naming
@@ -618,7 +620,8 @@ Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir`
 | Change title source | `internal/sessions/titles.go` → `refreshedTitle` (the bash `auto_title_scan` only execs `am-core titles`) |
 | Add periodic maintenance or a store query | `internal/sessions/maintenance.go` (+ `identity.go` / `slog.go`), a subcommand in `cmd/am-core/main.go`, a bash wrapper via `am_core` in `lib/registry.sh` or `lib/utils.sh`; Go parity test in `maintenance_test.go` (fake tmux: `fakeTmux`; bash: `setup_fake_tmux`) |
 | Add tmux helper | `bin/` directory (sourced by tmux keybindings) |
-| Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch (Workspace/Branch are conditional on `am_workspace_cmd`, so field indices only shift when it is configured) |
+| Add form field | `lib/form.sh` → `_form_init()`, add `_form_add_field` call + handle in render/dispatch (Preset is conditional on saved presets, so field indices only shift when any exist) |
+| Write a directory provider | Any command answering `suggest <partial>` (lines `spec<TAB>label`, local state only, well under 0.3s) and `resolve <spec>` (prints an existing directory; stderr passes through). Register with `am config set dir_provider <cmd>`. Reference implementation: `wp suggest` / `wp resolve` in `~/code/tools/wp`; test double: `tests/fake_dir_provider` |
 | Change form keybindings | `lib/form.sh` → `_form_process_key_navigate()` / `_form_process_key_edit()` |
 | Add config option | `lib/config.sh` → `am_config_init()` defaults, `am_config_key_alias/type/value_is_valid`, `am_config_print`; `am` → `cmd_config` get case + help |
 | Add a preset field | `lib/presets.sh` → `_preset_from_flags` + `_preset_render`; `am` → `_cmd_new_apply_preset`; `lib/form.sh` → `_form_apply_preset` |

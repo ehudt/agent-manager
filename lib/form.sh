@@ -47,14 +47,16 @@ _FORM_DIR_SUGGESTIONS_LOADED=false
 # Filtered results cache (avoids subshell)
 declare -ga _FORM_DIR_FILTERED=()
 
+# Provider suggestions per typed partial (`@...` queries): one provider call
+# per distinct text, so redraws and cursor moves never re-run it.
+declare -gA _FORM_PROVIDER_CACHE=()
+
 # Initialize form state
-# Usage: _form_init <directory> <agent> <task> [workspace_enabled] [workspace_branch]
+# Usage: _form_init <directory> <agent> <task>
 _form_init() {
     local directory="$1"
     local agent="$2"
     local task="$3"
-    local workspace_enabled="${4:-false}"
-    local workspace_branch="${5:-}"
 
     FORM_FIELDS=()
     FORM_VALUES=()
@@ -66,6 +68,7 @@ _form_init() {
     _FORM_DIR_SUGGESTIONS=()
     _FORM_DIR_SUGGESTIONS_LOADED=false
     _FORM_DIR_FILTERED=()
+    _FORM_PROVIDER_CACHE=()
     _FORM_MODE="edit"
     _FORM_OPTIONS_OPEN=false
     _FORM_DIR_HIGHLIGHT=0
@@ -83,19 +86,9 @@ _form_init() {
         FORM_OPTIONS[preset]="-,${_FORM_PRESET_NAMES}"
     fi
 
+    # The Directory field also takes `@spec` (resolved by the dir_provider);
+    # see _form_filter_dir_suggestions for the provider-backed suggestions.
     _form_add_field "directory"         "Directory"      "directory"  "$directory"
-    # Workspace allocation (am new -W) replaces the directory; only offered
-    # when a workspace_cmd is configured, so the field order is unchanged for
-    # everyone else.
-    if [[ -n "$(am_workspace_cmd)" ]]; then
-        _form_add_field "workspace_enabled" "Workspace" "checkbox" "$workspace_enabled"
-        _form_add_field "workspace_branch"  "Branch"    "text"     "$workspace_branch"
-        if [[ "$workspace_enabled" == "true" ]]; then
-            FORM_DISABLED[directory]="true"
-        else
-            FORM_DISABLED[workspace_branch]="true"
-        fi
-    fi
     _form_add_field "agent"             "Agent"          "select"     "$agent"
     _form_add_field "task"              "Task"           "text"       "$task"
 
@@ -137,8 +130,6 @@ _form_render_field() {
                 display="${_FORM_DIM}--${_FORM_RESET}"
             elif [[ "$focused" == "true" && "$_FORM_MODE" == "edit" ]]; then
                 display="${value}${_FORM_INVERSE} ${_FORM_RESET}"
-            elif [[ -z "$value" && "$name" == "workspace_branch" ]]; then
-                display="${_FORM_DIM}(default)${_FORM_RESET}"
             else
                 display="$value"
             fi
@@ -198,6 +189,10 @@ _form_load_dir_suggestions() {
 }
 
 # Filter directory suggestions into _FORM_DIR_FILTERED array (no subshell).
+# A query starting with `@` is a provider spec: the candidates come from
+# `<dir_provider> suggest <partial>` instead (cached per partial), each shown
+# as `@spec` with the provider's label as annotation; with no candidates the
+# typed spec itself is offered so Enter still resolves it.
 # Usage: _form_filter_dir_suggestions <query> <max>
 _form_filter_dir_suggestions() {
     local query="$1"
@@ -205,8 +200,31 @@ _form_filter_dir_suggestions() {
     local count=0
     local entry path
 
-    _form_load_dir_suggestions
     _FORM_DIR_FILTERED=()
+
+    if [[ "$query" == @* ]]; then
+        # Cache key keeps the `@`: bash rejects an empty associative-array
+        # subscript, and bare `@` (the provider's default) is the common case.
+        local partial="${query#@}" lines
+        if [[ -z "${_FORM_PROVIDER_CACHE[$query]+set}" ]]; then
+            lines=$(agent_dir_suggest "$partial")
+            _FORM_PROVIDER_CACHE[$query]="$lines"
+        fi
+        lines="${_FORM_PROVIDER_CACHE[$query]}"
+        if [[ -z "$lines" ]]; then
+            _FORM_DIR_FILTERED+=("@${partial}"$'\t'"resolve with dir_provider")
+            return
+        fi
+        while IFS= read -r entry; do
+            [[ -n "$entry" ]] || continue
+            _FORM_DIR_FILTERED+=("@${entry}")
+            ((count++))
+            [[ $count -ge $max ]] && break
+        done <<< "$lines"
+        return
+    fi
+
+    _form_load_dir_suggestions
 
     for entry in "${_FORM_DIR_SUGGESTIONS[@]}"; do
         path="${entry%%$'\t'*}"
@@ -245,9 +263,10 @@ _form_after_select_change() {
     _form_apply_preset "${FORM_VALUES[preset]}"
 }
 
-# Copy a preset's directory/agent/task/workspace into the form fields. The
-# preset's agent args and shell flag travel to cmd_new via --preset=<name> in
-# the flags output (see _form_output), so they are applied there.
+# Copy a preset's directory (path or @spec), agent, and task into the form
+# fields. The preset's agent args and shell flag travel to cmd_new via
+# --preset=<name> in the flags output (see _form_output), so they are applied
+# there.
 # Usage: _form_apply_preset <name>
 _form_apply_preset() {
     local name="$1"
@@ -256,16 +275,6 @@ _form_apply_preset() {
     v=$(am_preset_field "$name" directory); [[ -n "$v" ]] && FORM_VALUES[directory]="$v"
     v=$(am_preset_field "$name" agent);     [[ -n "$v" ]] && FORM_VALUES[agent]="$v"
     v=$(am_preset_field "$name" task);      [[ -n "$v" ]] && FORM_VALUES[task]="$v"
-    if [[ -n "${FORM_TYPES[workspace_enabled]:-}" ]]; then
-        v=$(am_preset_field "$name" workspace)
-        if [[ "$v" == "true" ]]; then
-            FORM_VALUES[workspace_enabled]="true"
-            FORM_DISABLED[workspace_branch]=""
-            FORM_DISABLED[directory]="true"
-            v=$(am_preset_field "$name" branch)
-            FORM_VALUES[workspace_branch]="$v"
-        fi
-    fi
     return 0
 }
 
@@ -283,16 +292,6 @@ _form_handle_space() {
                 FORM_VALUES[$name]="false"
             else
                 FORM_VALUES[$name]="true"
-            fi
-            # Workspace ON: the workspace command picks the directory
-            if [[ "$name" == "workspace_enabled" ]]; then
-                if [[ "${FORM_VALUES[$name]}" == "true" ]]; then
-                    FORM_DISABLED[workspace_branch]=""
-                    FORM_DISABLED[directory]="true"
-                else
-                    FORM_DISABLED[workspace_branch]="true"
-                    FORM_DISABLED[directory]=""
-                fi
             fi
             ;;
         select)
@@ -706,8 +705,7 @@ _form_draw() {
         rendered_lines=$((rendered_lines + 1))
 
         # Suggestions belong to the fast launcher; options use the selected path.
-        # A disabled directory (Workspace on) shows no suggestions.
-        if [[ "$name" == "directory" && "$_FORM_OPTIONS_OPEN" == "false" && "${FORM_DISABLED[directory]:-}" != "true" ]]; then
+        if [[ "$name" == "directory" && "$_FORM_OPTIONS_OPEN" == "false" ]]; then
             local dir_focused="false"
             [[ "$focused" == "true" ]] && dir_focused="true"
             _form_filter_dir_suggestions "${FORM_VALUES[directory]}" "$_FORM_DIR_FILTER_MAX"
@@ -842,20 +840,22 @@ _form_cleanup() {
 
 # Format form values as tab-free \x1f-separated output:
 # directory<US>agent<US>task<US>flags  (US = \x1f unit separator)
-# flags carries --workspace[=branch] when Workspace is on; cmd_new consumes it
-# rather than passing it to the agent.
+# flags carries --preset=<name> when a preset was picked; cmd_new consumes it
+# rather than passing it to the agent. A `@spec` directory is passed through
+# unvalidated (cmd_new resolves it) once a dir_provider is configured.
 _form_output() {
     local directory="${FORM_VALUES[directory]}"
     local agent="${FORM_VALUES[agent]}"
     local task="${FORM_VALUES[task]}"
-    local workspace_enabled="${FORM_VALUES[workspace_enabled]:-false}"
-    local workspace_branch="${FORM_VALUES[workspace_branch]:-}"
 
     directory="${directory/#\~/$HOME}"
 
-    # With Workspace on, the workspace command supplies the directory (cmd_new
-    # allocates it after the form returns), so the field is not validated.
-    if [[ "$workspace_enabled" != "true" && ( -z "$directory" || ! -d "$directory" ) ]]; then
+    if [[ "$directory" == @* ]]; then
+        if [[ -z "$(am_dir_provider)" ]]; then
+            log_error "No directory provider configured for $directory (am config set dir_provider <cmd>)"
+            return 1
+        fi
+    elif [[ -z "$directory" || ! -d "$directory" ]]; then
         log_error "Directory does not exist: ${directory:-<empty>}"
         return 1
     fi
@@ -866,13 +866,6 @@ _form_output() {
     fi
 
     local flags=""
-    if [[ "$workspace_enabled" == "true" ]]; then
-        if [[ -n "$workspace_branch" ]]; then
-            flags+=" --workspace=$workspace_branch"
-        else
-            flags+=" --workspace"
-        fi
-    fi
     # The picked preset's agent args and shell flag are applied by cmd_new.
     local preset="${FORM_VALUES[preset]:-}"
     if [[ -n "$preset" && "$preset" != "-" ]]; then

@@ -13,7 +13,7 @@ test_presets() {
     source "$LIB_DIR/presets.sh"
     source "$LIB_DIR/form.sh"
     set -u
-    unset AM_WORKSPACE_CMD
+    unset AM_DIR_PROVIDER
     setup_isolated_am_dir
     am_config_init
 
@@ -24,12 +24,11 @@ test_presets() {
 
     # Save from flags, including agent args after --
     local out
-    out=$(preset_main save review -t claude -W -- --model opus --effort high 2>&1)
+    out=$(preset_main save review -t claude @ -- --model opus --effort high 2>&1)
     assert_contains "$out" "Saved preset review" "presets: save reports"
     assert_eq "review" "$(am_preset_names)" "presets: name listed after save"
     assert_eq "claude" "$(am_preset_field review agent)" "presets: agent field"
-    assert_eq "true" "$(am_preset_field review workspace)" "presets: workspace flag"
-    assert_eq "" "$(am_preset_field review branch)" "presets: empty branch omitted"
+    assert_eq "@" "$(am_preset_field review directory)" "presets: a @spec is stored as the directory"
     assert_eq "--model
 opus
 --effort
@@ -50,7 +49,15 @@ scratch" "$(am_preset_names)" "presets: names sorted"
     # list renders an equivalent am new line
     out=$(preset_main list)
     assert_contains "$out" "review" "presets: list shows names"
-    assert_contains "$out" "-W" "presets: list renders workspace flag"
+    assert_contains "$out" "review           am new -t claude @ --" "presets: list renders the @spec directory"
+
+    # A preset saved before 0.24 (workspace + branch) reads back as @<branch>
+    am_preset_save legacy '{"agent":"claude","workspace":true,"branch":"review-48351"}'
+    assert_eq "@review-48351" "$(am_preset_field legacy directory)" "presets: legacy workspace+branch → @branch"
+    assert_contains "$(_preset_render legacy)" "@review-48351" "presets: legacy preset renders as a @spec"
+    am_preset_save legacy2 '{"workspace":true}'
+    assert_eq "@" "$(am_preset_field legacy2 directory)" "presets: legacy bare workspace → @"
+    am_preset_rm legacy; am_preset_rm legacy2
     assert_contains "$out" "-- --model opus --effort high" "presets: list renders agent args"
     assert_contains "$out" "'poke around'" "presets: list quotes task with spaces"
 

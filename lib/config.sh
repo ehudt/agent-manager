@@ -118,17 +118,31 @@ am_shell_pane_enabled() {
     am_bool_is_true "${configured,,}"
 }
 
-# Shell command that allocates an isolated workspace for `am new -W`. It runs
-# via bash -c with AM_BRANCH exported (empty when no branch was requested) and
-# prints the directory on stdout. Empty (the default) disables -W and hides
-# the form's Workspace fields.
-# Example: am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
-am_workspace_cmd() {
-    if [[ -n "${AM_WORKSPACE_CMD:-}" ]]; then
-        echo "$AM_WORKSPACE_CMD"
+# Directory provider: the command behind `@spec` directories (`am new @48351`,
+# `@` in the form's Directory field). am runs it two ways, both via bash -c
+# with the arguments appended:
+#   <provider> suggest <partial>   one "<spec>\t<label>" line per candidate
+#   <provider> resolve <spec>      prints an existing directory
+# Empty (the default) disables `@` specs. Example: am config set dir_provider wp
+am_dir_provider() {
+    if [[ -n "${AM_DIR_PROVIDER:-}" ]]; then
+        echo "$AM_DIR_PROVIDER"
         return
     fi
-    am_config_get "workspace_cmd"
+    am_config_get "dir_provider"
+}
+
+# Whether a directory argument is a provider spec rather than a path.
+# Usage: am_dir_is_spec <directory>
+am_dir_is_spec() {
+    [[ "${1:-}" == @* ]]
+}
+
+# Suggest timeout for the provider, in seconds (fractional allowed). The form
+# calls suggest on keystrokes, so a slow provider must be cut off rather than
+# stall the picker.
+am_dir_suggest_timeout() {
+    printf '%s\n' "${AM_DIR_SUGGEST_TIMEOUT:-0.3}"
 }
 
 am_auto_restore_enabled() {
@@ -170,7 +184,7 @@ am_config_key_alias() {
         auto-restore|auto_restore|restore-on-startup) echo "auto_restore" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         shell|shell-pane|shell_pane) echo "shell_pane" ;;
-        workspace|workspace-cmd|workspace_cmd) echo "workspace_cmd" ;;
+        provider|dir-provider|dir_provider) echo "dir_provider" ;;
         notify|notifications) echo "notify" ;;
         notify-states|notify_states) echo "notify_states" ;;
         notify-cmd|notify_cmd) echo "notify_cmd" ;;
@@ -180,7 +194,7 @@ am_config_key_alias() {
 
 am_config_key_type() {
     case "$1" in
-        default_agent|workspace_cmd|notify_states|notify_cmd) echo "string" ;;
+        default_agent|dir_provider|notify_states|notify_cmd) echo "string" ;;
         auto_restore|stream_logs|shell_pane|notify) echo "boolean" ;;
         *) return 1 ;;
     esac
@@ -206,7 +220,7 @@ am_config_value_is_valid() {
             done
             [[ -n "$value" ]] && $ok
             ;;
-        workspace_cmd|notify_cmd)
+        dir_provider|notify_cmd)
             return 0
             ;;
         *)
@@ -233,8 +247,8 @@ am_config_print() {
     else
         auto_restore_value=false
     fi
-    local workspace_cmd_value notify_value notify_states_value notify_cmd_value
-    workspace_cmd_value=$(am_workspace_cmd)
+    local dir_provider_value notify_value notify_states_value notify_cmd_value
+    dir_provider_value=$(am_dir_provider)
     if am_notify_enabled; then notify_value=true; else notify_value=false; fi
     notify_states_value=$(am_notify_states)
     notify_cmd_value=$(am_config_get "notify_cmd")
@@ -244,7 +258,7 @@ default_agent=$default_agent_value
 auto_restore=$auto_restore_value
 stream_logs=$stream_logs_value
 shell_pane=$shell_pane_value
-workspace_cmd=$workspace_cmd_value
+dir_provider=$dir_provider_value
 notify=$notify_value
 notify_states=$notify_states_value
 notify_cmd=$notify_cmd_value

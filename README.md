@@ -121,23 +121,31 @@ am new -t codex ~/code/project       # Use Codex instead
 am new -t cursor ~/code/project      # Use Cursor Agent
 am new -n "fix auth bug" .           # Session with a task description
 am new ~/code/proj -- --resume       # Anything after -- goes to the agent verbatim
-am new -W review-48351               # Fresh workspace on a branch via workspace_cmd (below)
+am new @48351                        # Directory from a provider you configure (below)
 ```
 
-`-W`/`--workspace` hands directory selection to a command you configure once,
-for tools that manage a pool of checkouts (a clone-pool manager, `git worktree`
-wrapper, `jj workspace`, ...). The command runs with `AM_BRANCH` set to the
-optional branch (empty when none was given) and prints the directory to use:
+A directory that starts with `@` is a **spec** for a *directory provider*: a
+command you configure once, for tools that manage a pool of checkouts (a
+clone-pool manager, `git worktree` wrapper, `jj workspace`, ...). am knows
+nothing about what a spec means; the provider does. It is called two ways:
+
+```
+<provider> suggest <partial>    # one "<spec>\t<label>" line per candidate (fast, local)
+<provider> resolve <spec>       # print an existing directory (may fetch / clone)
+```
 
 ```bash
-am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
-am new -W                            # workspace on the default branch
-am new -W review-48351 -n "review"   # workspace on a branch, with a task
-printf 'Review PR 48351\n' | am new --detach --print-session -W review-48351
+am config set dir_provider wp
+am new @                             # the provider's default (e.g. a fresh copy on trunk)
+am new @48351 -n "review"            # a PR number, a branch, whatever the provider accepts
+printf 'Review PR 48351\n' | am new --detach --print-session @48351
 ```
 
-Once configured, the interactive form also offers **Workspace** / **Branch**
-fields right after Directory (toggling Workspace on takes Directory out of play).
+In the interactive form, typing `@` into Directory switches the suggestion
+list to the provider's candidates (`@483` lists everything the provider
+matches on `483`; Enter or Tab takes the highlighted one). Suggestions are
+cut off after `AM_DIR_SUGGEST_TIMEOUT` seconds (default 0.3), so a slow
+provider degrades to "resolve what you typed" instead of stalling the form.
 
 Running `am new` with no arguments opens an interactive form where you pick a directory, agent type, and task:
 
@@ -345,9 +353,9 @@ am kill --state idle -y            # sweep finished workers
 Save a launch shape once and reuse it from the CLI or the new-session form:
 
 ```bash
-am preset save review -W -- --model opus --effort high   # workspace copy + agent flags
+am preset save review @ -- --model opus --effort high    # provider default dir + agent flags
 am preset save scratch -t pi ~/code/tools
-am new -p review pr-48351                                 # explicit flags still win
+am new -p review @48351                                   # explicit flags still win
 am preset list
 ```
 
@@ -402,7 +410,7 @@ am config                          # Show current defaults
 am config set agent codex          # Default to Codex
 am config set logs true            # Enable pane log streaming
 am config set shell true           # Open the shell panel at launch
-am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'  # Backs `am new -W`
+am config set dir_provider wp      # Backs `am new @spec` (suggest/resolve verbs)
 am config set notify false         # No desktop notifications
 am config set notify_states waiting_user,ready   # Also announce finished turns
 am config get agent                # Read a single value
@@ -457,7 +465,7 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 
 ```
 ~/.agent-manager/
-├── config.json         # Saved defaults (agent, logs, shell panel, workspace_cmd, notify*) and presets
+├── config.json         # Saved defaults (agent, logs, shell panel, dir_provider, notify*) and presets
 ├── sessions.json       # Live session metadata registry
 ├── sessions_log.jsonl  # Session restore log (Claude session IDs + metadata)
 ├── snapshots/          # Pane text snapshots for closed session preview

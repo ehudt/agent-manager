@@ -90,23 +90,27 @@ test_config() {
     unset AM_SHELL_PANE
     am_config_set "shell_pane" "false" "boolean"
 
-    # Workspace command (am new -W)
-    unset AM_WORKSPACE_CMD
-    assert_eq "" "$(am_workspace_cmd)" "config: workspace_cmd defaults empty"
-    assert_eq "workspace_cmd" "$(am_config_key_alias workspace)" "config: workspace alias maps to workspace_cmd"
-    assert_eq "string" "$(am_config_key_type workspace_cmd)" "config: workspace_cmd is a string"
-    assert_eq "true" "$(am_config_value_is_valid workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' && echo true || echo false)" \
-        "config: workspace_cmd accepts a shell snippet"
-    am_config_set "workspace_cmd" 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' "string"
-    assert_eq 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' "$(am_workspace_cmd)" \
-        "config: saved workspace_cmd keeps its case and quoting"
-    assert_contains "$(am_config_print)" 'workspace_cmd=wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}' \
-        "config: print shows workspace_cmd"
-    export AM_WORKSPACE_CMD="echo /tmp"
-    assert_eq "echo /tmp" "$(am_workspace_cmd)" "config: env overrides saved workspace_cmd"
-    unset AM_WORKSPACE_CMD
-    am_config_unset "workspace_cmd"
-    assert_eq "" "$(am_workspace_cmd)" "config: unset workspace_cmd is empty again"
+    # Directory provider (am new @spec)
+    unset AM_DIR_PROVIDER
+    assert_eq "" "$(am_dir_provider)" "config: dir_provider defaults empty"
+    assert_eq "dir_provider" "$(am_config_key_alias provider)" "config: provider alias maps to dir_provider"
+    assert_eq "dir_provider" "$(am_config_key_alias dir-provider)" "config: dir-provider alias maps to dir_provider"
+    assert_eq "string" "$(am_config_key_type dir_provider)" "config: dir_provider is a string"
+    assert_eq "true" "$(am_config_value_is_valid dir_provider 'MyTool --Flag' && echo true || echo false)" \
+        "config: dir_provider accepts a command prefix"
+    am_config_set "dir_provider" 'MyTool --Flag' "string"
+    assert_eq 'MyTool --Flag' "$(am_dir_provider)" "config: saved dir_provider keeps its case"
+    assert_contains "$(am_config_print)" 'dir_provider=MyTool --Flag' "config: print shows dir_provider"
+    export AM_DIR_PROVIDER="wp"
+    assert_eq "wp" "$(am_dir_provider)" "config: env overrides saved dir_provider"
+    unset AM_DIR_PROVIDER
+    am_config_unset "dir_provider"
+    assert_eq "" "$(am_dir_provider)" "config: unset dir_provider is empty again"
+    assert_eq "true" "$(am_dir_is_spec '@48351' && echo true || echo false)" "config: @48351 is a spec"
+    assert_eq "true" "$(am_dir_is_spec '@' && echo true || echo false)" "config: bare @ is a spec"
+    assert_eq "false" "$(am_dir_is_spec '/tmp' && echo true || echo false)" "config: a path is not a spec"
+    assert_eq "0.3" "$(am_dir_suggest_timeout)" "config: suggest timeout defaults to 0.3s"
+    assert_eq "1" "$(AM_DIR_SUGGEST_TIMEOUT=1 am_dir_suggest_timeout)" "config: env overrides suggest timeout"
 
     am_config_unset "default_agent"
     unset AM_DEFAULT_AGENT AM_STREAM_LOGS

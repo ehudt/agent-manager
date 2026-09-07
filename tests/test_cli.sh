@@ -15,7 +15,8 @@ test_cli() {
     new_help=$("$PROJECT_DIR/am" new --help)
     assert_contains "$new_help" "-t, --type" "am new --help: shows flags"
     assert_contains "$new_help" "cursor" "am new --help: lists Cursor agent"
-    assert_contains "$new_help" "-W, --workspace" "am new --help: shows workspace flag"
+    assert_contains "$new_help" "dir_provider" "am new --help: explains @spec directories"
+    assert_not_contains "$new_help" "--workspace" "am new --help: the -W flag is gone"
     assert_not_contains "$new_help" "--yolo" "am new --help: no yolo flag"
     assert_not_contains "$new_help" "--sandbox" "am new --help: no sandbox flag"
     assert_not_contains "$new_help" "--worktree" "am new --help: no worktree flag"
@@ -365,7 +366,7 @@ test_cli_extended() {
 }
 
 test_cli_workspace_and_id() {
-    $SUMMARY_MODE || echo "=== Testing am new -W and am id ==="
+    $SUMMARY_MODE || echo "=== Testing am new @spec and am id ==="
 
     source "$LIB_DIR/utils.sh"
     source "$LIB_DIR/config.sh"
@@ -393,48 +394,64 @@ test_cli_workspace_and_id() {
     env "${am_env[@]}" AM_SESSION_NAME=other-prefix-1 "$PROJECT_DIR/am" id >/dev/null 2>&1 || rc=$?
     assert_eq "1" "$rc" "am id: rejects a name outside the am prefix"
 
-    # --- am new -W without workspace_cmd: fails with guidance ---
+    # --- am new @spec without a dir_provider: fails with guidance ---
     rc=0
     local err
-    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD= "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
-    assert_eq "1" "$rc" "am new -W: fails when workspace_cmd is unset"
-    assert_contains "$err" "workspace_cmd" "am new -W: error names the config key"
+    err=$(env "${am_env[@]}" AM_DIR_PROVIDER= "$PROJECT_DIR/am" new @48351 --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new @spec: fails when dir_provider is unset"
+    assert_contains "$err" "dir_provider" "am new @spec: error names the config key"
 
-    # --- am new -W plus a directory: rejected ---
+    # --- -W is gone ---
     rc=0
-    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo $test_dir" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" "$test_dir" 2>&1 </dev/null) || rc=$?
-    assert_eq "1" "$rc" "am new -W <dir>: rejected"
-    assert_contains "$err" "drop the directory" "am new -W <dir>: explains the conflict"
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" new -W feature-x --detach 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new -W: no longer accepted"
+    assert_contains "$err" "Unknown option: -W" "am new -W: reported as an unknown option"
 
-    # --- am new -W <branch>: the command sees AM_BRANCH and supplies the directory ---
-    local ws_cmd="mkdir -p '$test_dir/ws-'\"\${AM_BRANCH:-trunk}\" && echo '$test_dir/ws-'\"\${AM_BRANCH:-trunk}\""
+    # --- am new @spec: the provider's resolve verb supplies the directory ---
+    local prov_env=(FAKE_PROVIDER_DIR="$test_dir" AM_DIR_PROVIDER="$TEST_STUB_DIR/fake_dir_provider")
     local session_name
-    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W feature-x --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "am new -W <branch>: session created"
+    session_name=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new @feature-x --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "am new @spec: session created"
     assert_eq "$test_dir/ws-feature-x" "$(registry_get_field "$session_name" directory)" \
-        "am new -W <branch>: session runs in the allocated directory"
+        "am new @spec: session runs in the resolved directory"
+    assert_contains "$(cat "$test_dir/calls.log")" "resolve feature-x" "am new @spec: provider called with resolve <spec>"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
-    # --- args after -- reach the agent untouched ---
-    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" -- --stub-extra </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "am new -- extra: session created"
+    # --- -d @spec works too, and args after -- reach the agent untouched ---
+    session_name=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new -d @feature-y --detach --print-session -t "$TEST_STUB_DIR/stub_agent" -- --stub-extra </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "am new -d @spec -- extra: session created"
+    assert_eq "$test_dir/ws-feature-y" "$(registry_get_field "$session_name" directory)" \
+        "am new -d @spec: resolved through the provider"
     local extra_pane
     extra_pane=$(wait_for_text "stub-extra" am_tmux capture-pane -pt "$session_name:.{top}" -S -)
     assert_contains "$extra_pane" "stub-extra" "am new -- extra: agent receives the extra arg"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
-    # --- am new -W with no branch: AM_BRANCH is empty ---
-    session_name=$(env "${am_env[@]}" AM_WORKSPACE_CMD="$ws_cmd" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
-    assert_not_empty "$session_name" "am new -W: session created without a branch"
+    # --- bare @: the provider sees an empty spec ---
+    session_name=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new @ --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "am new @: session created from the provider default"
     assert_eq "$test_dir/ws-trunk" "$(registry_get_field "$session_name" directory)" \
-        "am new -W: empty AM_BRANCH reaches the command"
+        "am new @: empty spec reaches the provider"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
-    # --- a command that prints no directory fails cleanly ---
+    # --- a preset whose directory is a @spec resolves the same way ---
+    env "${am_env[@]}" "$PROJECT_DIR/am" preset save wsx -n "preset task" @feature-z >/dev/null 2>&1 </dev/null || true
+    session_name=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new -p wsx --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    assert_not_empty "$session_name" "am new -p <@spec preset>: session created"
+    assert_eq "$test_dir/ws-feature-z" "$(registry_get_field "$session_name" directory)" \
+        "am new -p <@spec preset>: preset directory resolved through the provider"
+    [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- provider failures are reported, not launched ---
     rc=0
-    err=$(env "${am_env[@]}" AM_WORKSPACE_CMD="echo /nonexistent/$$" "$PROJECT_DIR/am" new -W --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
-    assert_eq "1" "$rc" "am new -W: bad command output fails"
-    assert_contains "$err" "did not print an existing directory" "am new -W: reports the bad output"
+    err=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new @nowhere --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new @spec: bad provider output fails"
+    assert_contains "$err" "did not print an existing directory" "am new @spec: reports the bad output"
+    rc=0
+    err=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new @fail --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new @spec: provider exit status fails the launch"
+    assert_contains "$err" "could not resolve @fail" "am new @spec: reports the provider failure"
+    assert_contains "$err" "cannot resolve fail" "am new @spec: provider stderr reaches the user"
 
     rm -rf "$test_dir"
     teardown_integration_env

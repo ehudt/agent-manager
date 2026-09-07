@@ -45,34 +45,28 @@ am attach "$session"             # give to user
 am kill "$session"               # terminate when no longer needed
 ```
 
-## Choosing the Directory — wekapp work
+## Choosing the Directory — `@spec` and the directory provider
 
-Never launch a wekapp-work session in `~/code` or the daily-driver checkout
-(`~/code/green-wekapp`). Allocate an isolated pool copy and launch directly
-into it. `am new -W [branch]` does the allocation through the configured
-`workspace_cmd` (check with `am config get workspace_cmd`):
-
-```bash
-session=$(printf 'Task...\n' | am new --detach --print-session -W)
-session=$(printf 'Task...\n' | am new --detach --print-session -W <branch>)
-```
-
-If `workspace_cmd` is not configured on this machine, call `wp` directly —
-`wp allocate` prints a ready, fetched checkout path to stdout:
+A directory argument that starts with `@` is not a path: am hands it to the
+configured *directory provider* (`am config get dir_provider`), a tool that
+manages a pool of checkouts and turns a short spec (a PR number, a branch, a
+ticket) into an existing directory:
 
 ```bash
-session=$(printf 'Task...\n' | am new --detach --print-session $(wp allocate --branch <name>))
+session=$(printf 'Task...\n' | am new --detach --print-session @)          # provider default (fresh copy on trunk)
+session=$(printf 'Task...\n' | am new --detach --print-session @<branch>)  # a branch
+session=$(printf 'Task...\n' | am new --detach --print-session @48351)     # a PR number
 ```
 
-This lands the agent in a real wekapp checkout (CLAUDE.md, teka, venvs all in
-place) with zero bootstrap turns and no branch-switch collisions. See the
-`wp` skill for pool management (status/clear/find).
+What a spec means is the provider's business. When no provider is configured,
+`@…` errors and a plain path is the only option. Repo-specific rules for where
+to launch (for example, which checkouts are off limits) live in the provider's
+own skill, not here.
 
-If a running agent moves anyway — `wp allocate` / `wp checkout` mid-session,
-or a `cd` into another checkout — its am tab keeps up: `wp` calls `am cd` for
-the calling session, Claude sessions are tracked through the state hooks, and
-the branch is re-read from `.git/HEAD` on the next title scan. Agents without
-hooks run `am cd <dir>` after moving.
+If a running agent moves — a `cd` into another checkout, or a provider call
+mid-session — its am tab keeps up: Claude sessions are tracked through the
+state hooks, the branch is re-read from `.git/HEAD` on the next title scan,
+and agents without hooks run `am cd <dir>` after moving.
 
 ## Choosing the Agent
 
@@ -130,7 +124,7 @@ Run the tests, reproduce, fix, and commit. Use superpowers:systematic-debugging.
 | `am kill --state idle,dead -y` | Sweep finished workers |
 | `am peek [--pane shell] [--follow] <session>` | Pane snapshot or stream |
 | `am interrupt <session>` | Send Ctrl-C to agent pane |
-| `am cd [dir]` | From inside a session: record that it now works in `dir` (tab label + branch follow). Claude sessions and `wp allocate`/`checkout` do this on their own |
+| `am cd [dir]` | From inside a session: record that it now works in `dir` (tab label + branch follow). Claude sessions do this on their own through the hooks |
 | `am info` / `am kill` / `am attach <session>` | Metadata / terminate / hand to user |
 
 ## Session States

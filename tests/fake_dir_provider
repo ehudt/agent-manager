@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Fake directory provider for the tests (the `dir_provider` contract):
+#   fake_dir_provider suggest <partial>   -> "<spec>\t<label>" lines
+#   fake_dir_provider resolve <spec>      -> an existing directory
+# FAKE_PROVIDER_DIR is where resolved directories are created and where
+# every invocation is logged (calls.log), so tests can count provider runs.
+set -euo pipefail
+root="${FAKE_PROVIDER_DIR:?FAKE_PROVIDER_DIR must be set}"
+printf '%s %s\n' "${1:-}" "${2:-}" >> "$root/calls.log"
+case "${1:-}" in
+    suggest)
+        case "${2:-}" in
+            "")     printf 'trunk\tdefault branch\n' ;;
+            48*)    printf '48351\tPR #48351 fix bbr\n48372\tPR #48372 gw retry\n' ;;
+            slow*)  sleep 3; printf 'late\tshould have been cut off\n' ;;
+            *)      : ;;
+        esac
+        ;;
+    resolve)
+        spec="${2:-}"
+        [[ "$spec" == fail ]] && { echo "cannot resolve $spec" >&2; exit 1; }
+        [[ "$spec" == nowhere ]] && { echo "/definitely/missing/$$"; exit 0; }
+        dir="$root/ws-${spec:-trunk}"
+        mkdir -p "$dir"
+        # Progress chatter belongs on stderr, like a real allocator's.
+        echo "allocated $dir" >&2
+        printf '%s\n' "$dir"
+        ;;
+    *)
+        echo "unknown verb: ${1:-}" >&2
+        exit 3
+        ;;
+esac

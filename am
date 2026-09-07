@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.23.0"
+AM_VERSION="0.24.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -69,8 +69,8 @@ OPTIONS FOR 'new':
     -p, --preset    Apply a saved preset; explicit flags win (see 'am preset')
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
-    -W, --workspace Allocate the directory with the configured workspace_cmd
-                    Optional: -W <branch> to allocate on a branch
+    @spec           Directory from the configured dir_provider (am new @48351;
+                    bare @ for the provider's default)
     --shell         Open the shell panel at launch (default: agent-only)
     --no-shell      Start agent-only even if shell_pane is enabled by default
     --detach        Create the session without attaching
@@ -136,10 +136,10 @@ EXAMPLES:
     am new -t codex ~/code/proj     # New codex session
     am new -t cursor ~/code/proj    # New Cursor Agent session
     am new -n "fix auth" .          # Session with task description
-    am new -W review-48351          # Fresh workspace on a branch (needs workspace_cmd)
+    am new @48351                   # Directory from the provider (needs dir_provider)
     printf 'Fix auth bug\n' | am new --detach ~/code/proj
     printf 'Run the test suite\n' | am send am-abc123
-    am new -p review pr-48351       # Saved preset (am preset save review -W -- --model opus)
+    am new -p review @48351         # Saved preset (am preset save review @ -- --model opus)
     am wait --any am-abc123 am-def456   # First worker to pause
     am doctor am-abc123             # Why does the tab show that state?
     am peek am-abc123
@@ -383,9 +383,10 @@ read_prompt_input() {
 
 # Command: new
 # Apply a saved preset to cmd_new's locals (dynamic scope). With fill=true the
-# preset supplies directory/agent/task/workspace where the CLI gave none; the
-# form path passes fill=false because it already copied those fields. Agent
-# args and the shell flag are always merged: preset args first, CLI args after.
+# preset supplies directory/agent/task where the CLI gave none (the directory
+# may be a `@spec`); the form path passes fill=false because it already copied
+# those fields. Agent args and the shell flag are always merged: preset args
+# first, CLI args after.
 # Usage: _cmd_new_apply_preset <name> <fill:true|false>
 _cmd_new_apply_preset() {
     local pname="$1" fill="$2" v
@@ -398,13 +399,10 @@ _cmd_new_apply_preset() {
         [[ -n "$v" && -z "$agent_type" ]] && agent_type="$v"
         v=$(am_preset_field "$pname" task)
         [[ -n "$v" && -z "$task" ]] && task="$v"
-        if [[ "$dir_given" == false && "$workspace_enabled" == false ]]; then
+        if [[ "$dir_given" == false ]]; then
             v=$(am_preset_field "$pname" directory)
             if [[ -n "$v" ]]; then
                 directory="$v"; dir_given=true
-            elif [[ "$(am_preset_field "$pname" workspace)" == "true" ]]; then
-                workspace_enabled=true
-                workspace_branch=$(am_preset_field "$pname" branch)
             fi
         fi
     fi
@@ -430,8 +428,6 @@ cmd_new() {
     local attach_session=true
     local print_session=false
     local initial_prompt=""
-    local workspace_enabled=false
-    local workspace_branch=""
     local preset_name=""
 
     while [[ $# -gt 0 ]]; do
@@ -457,15 +453,6 @@ cmd_new() {
                 dir_given=true
                 shift 2
                 ;;
-            -W|--workspace)
-                workspace_enabled=true
-                shift
-                # Optional branch — skipped when the next arg is a flag or an existing directory
-                if [[ $# -gt 0 && "$1" != -* && ! -d "$1" ]]; then
-                    workspace_branch="$1"
-                    shift
-                fi
-                ;;
             --shell)
                 agent_args+=("--shell")
                 shift
@@ -488,16 +475,16 @@ cmd_new() {
                 break
                 ;;
             -h|--help)
-                echo "Usage: am new [options] <directory> [-- extra-args...]"
+                echo "Usage: am new [options] <directory|@spec> [-- extra-args...]"
                 echo ""
                 echo "If no directory specified, opens interactive picker."
+                echo "A directory starting with @ is resolved by the configured dir_provider"
+                echo "(am config set dir_provider wp): @48351, @my-branch, or bare @."
                 echo ""
                 echo "Options:"
                 echo "  -t, --type      Agent type (claude, codex, cursor, pi)"
                 echo "  -p, --preset    Apply a saved preset (am preset list); explicit flags win"
                 echo "  -n, --name      Task description"
-                echo "  -W, --workspace Allocate the directory with the configured workspace_cmd"
-                echo "                  Optional: -W <branch> to allocate on a branch"
                 echo "  --shell         Open the shell panel at launch (default: agent-only)"
                 echo "  --no-shell      Start agent-only even if shell_pane is enabled by default"
                 echo "  --detach        Create the session without attaching"
@@ -507,7 +494,7 @@ cmd_new() {
                 echo "Examples:"
                 echo "  am new                          # Interactive directory-first launcher"
                 echo "  am new ~/project                # Specific directory"
-                echo "  am new -W review-48351          # Fresh workspace on a branch (workspace_cmd)"
+                echo "  am new @48351                   # Directory from the provider (dir_provider)"
                 echo "  printf 'Fix bug\n' | am new --detach ~/project"
                 echo "  am new ~/project -- --resume    # With agent args"
                 return 0
@@ -524,18 +511,13 @@ cmd_new() {
         esac
     done
 
-    if $workspace_enabled && $dir_given; then
-        log_error "-W/--workspace allocates the directory itself; drop the directory argument"
-        return 1
-    fi
-
     # -p on the command line: the preset fills whatever the flags left unset.
     if [[ -n "$preset_name" ]]; then
         _cmd_new_apply_preset "$preset_name" true || return 1
     fi
 
     # Directory-first launcher for fully interactive new-session creation
-    if [[ -t 0 && "$dir_given" == false && "$workspace_enabled" == false && -z "$agent_type" && -z "$task" && ${#agent_args[@]} -eq 0 ]]; then
+    if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && ${#agent_args[@]} -eq 0 ]]; then
         _ensure_form
         local form_values flags
         if ! form_values=$(am_new_session_form "$directory" "$(am_default_agent)" "$task"); then
@@ -546,13 +528,11 @@ cmd_new() {
         IFS=$'\x1f' read -r directory agent_type task flags <<< "$form_values"
         # shellcheck disable=SC2206
         agent_args=($flags)
-        # The form's Workspace fields arrive as --workspace[=branch]; they are
-        # for us, not the agent.
+        # The form's preset choice arrives as --preset=<name>; it is for us,
+        # not the agent.
         local _flag _kept=() _form_preset=""
         for _flag in "${agent_args[@]}"; do
             case "$_flag" in
-                --workspace) workspace_enabled=true ;;
-                --workspace=*) workspace_enabled=true; workspace_branch="${_flag#--workspace=}" ;;
                 --preset=*) _form_preset="${_flag#--preset=}" ;;
                 *) _kept+=("$_flag") ;;
             esac
@@ -564,9 +544,7 @@ cmd_new() {
             _cmd_new_apply_preset "$_form_preset" false || return 1
         fi
     else
-        if $workspace_enabled; then
-            : # directory comes from the workspace command below
-        elif [[ "$dir_given" == false && -t 0 ]]; then
+        if [[ "$dir_given" == false && -t 0 ]]; then
             local picked
             picked=$(fzf_pick_directory)
             if [[ -n "$picked" ]]; then
@@ -582,8 +560,11 @@ cmd_new() {
         agent_type="${agent_type:-$(am_default_agent)}"
     fi
 
-    if $workspace_enabled; then
-        directory=$(agent_workspace_allocate "$workspace_branch") || return 1
+    # `@spec` directories are resolved by the configured provider (the form
+    # skips path validation for them, so this is the one place they turn into
+    # a real directory).
+    if am_dir_is_spec "$directory"; then
+        directory=$(agent_dir_resolve "$directory") || return 1
     fi
 
     initial_prompt=$(read_prompt_input)
@@ -1172,7 +1153,7 @@ cmd_config() {
         get)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config get <agent|logs|shell|auto-restore|workspace_cmd|notify|notify_states|notify_cmd>"
+                log_error "Usage: am config get <agent|logs|shell|auto-restore|dir_provider|notify|notify_states|notify_cmd>"
                 return 1
             fi
             local key
@@ -1193,8 +1174,8 @@ cmd_config() {
                 auto_restore)
                     am_auto_restore_enabled && echo true || echo false
                     ;;
-                workspace_cmd)
-                    am_workspace_cmd
+                dir_provider)
+                    am_dir_provider
                     ;;
                 notify)
                     am_notify_enabled && echo true || echo false
@@ -1211,7 +1192,7 @@ cmd_config() {
             local raw_key="${1:-}"
             local value="${2:-}"
             if [[ -z "$raw_key" || -z "$value" ]]; then
-                log_error "Usage: am config set <agent|logs|shell|auto-restore|workspace_cmd> <value>"
+                log_error "Usage: am config set <agent|logs|shell|auto-restore|dir_provider> <value>"
                 return 1
             fi
             local key key_type
@@ -1223,9 +1204,9 @@ cmd_config() {
             if [[ "$key" == "default_agent" ]]; then
                 value=$(agent_normalize_type "${value,,}")
             fi
-            # A shell command is case-sensitive ($AM_BRANCH); everything else is
-            # normalized to lowercase.
-            [[ "$key" == "workspace_cmd" || "$key" == "notify_cmd" ]] || value="${value,,}"
+            # A shell command is case-sensitive; everything else is normalized
+            # to lowercase.
+            [[ "$key" == "dir_provider" || "$key" == "notify_cmd" ]] || value="${value,,}"
             if ! am_config_value_is_valid "$key" "$value"; then
                 log_error "Invalid value for $raw_key: $value"
                 return 1
@@ -1236,7 +1217,7 @@ cmd_config() {
         unset|rm)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config unset <agent|logs|shell|auto-restore|workspace_cmd>"
+                log_error "Usage: am config unset <agent|logs|shell|auto-restore|dir_provider>"
                 return 1
             fi
             local key
@@ -1260,9 +1241,10 @@ Keys:
   logs            Default pane log streaming (true/false)
   shell           New sessions open with the shell panel visible (true/false)
   auto-restore    Recreate open sessions after a reboot (true/false)
-  workspace_cmd   Shell command behind `am new -W`: runs with $AM_BRANCH set (may be
-                  empty) and prints the allocated directory, e.g.
-                  am config set workspace_cmd 'wp allocate ${AM_BRANCH:+--branch "$AM_BRANCH"}'
+  dir_provider    Command behind `@spec` directories (am new @48351, `@` in the form).
+                  Called as `<cmd> suggest <partial>` (lines: spec<TAB>label) and
+                  `<cmd> resolve <spec>` (prints a directory), e.g.
+                  am config set dir_provider wp
   notify          Desktop notification when a session needs you (true/false)
   notify_states   States that notify, comma-separated (default waiting_user;
                   add ready to hear about finished turns)
