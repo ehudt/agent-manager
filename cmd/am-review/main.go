@@ -804,7 +804,7 @@ func (m model) headerView() string {
 		if m.moved != "" && m.moved != "-" {
 			rest += styleDim.Render("; HEAD moved: " + m.moved)
 		}
-		if m.from != "" {
+		if m.from != "" && m.base.ID == m.from { // only once the pick is what is measured
 			rest += styleKey.Render(" [picked base — s to change]")
 		}
 	}
