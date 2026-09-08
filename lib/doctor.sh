@@ -381,7 +381,11 @@ _doc_hook_files() {
         IFS= read -r v < "$state_dir/$name" || true
         _doc_kv "state file" "$v (entered $(_doc_age "$(_doc_mtime "$state_dir/$name")" "$now"))"
     else
-        _doc_kv "state file" "missing (no hook event yet, or not a hook-driven agent)"
+        if _state_has_identity "$name"; then
+            _doc_kv "state file" "missing, but identity exists: removed under a live session (grep gc.log); unknown until the next hook event"
+        else
+            _doc_kv "state file" "missing (no hook event yet, or not a hook-driven agent)"
+        fi
     fi
     for f in sid transcript cwd bg; do
         if [[ -f "$state_dir/$name.$f" ]]; then

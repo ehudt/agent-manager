@@ -185,6 +185,17 @@ _state_cursor_tasks_probe() {
 # Hook state file
 # ---------------------------------------------------------------------------
 
+# Whether the session's hooks have ever fired: the first hook event writes
+# the .sid identity sidecar (ephemeral under AM_STATE_DIR, durable under
+# AM_IDENTITY_DIR), and both outlive the state file. Distinguishes "no hook
+# yet" (fresh session) from "state file removed under a live session".
+# Fork-free (status-bar hot path).
+# Usage: _state_has_identity <session>
+_state_has_identity() {
+    [[ -f "${AM_STATE_DIR:-/tmp/am-state}/$1.sid" \
+        || -f "${AM_IDENTITY_DIR:-${AM_DIR:-$HOME/.agent-manager}/identities}/$1.sid" ]]
+}
+
 # Read the raw hook state (ungated) into a caller-supplied var. Empty when
 # the file is missing/unreadable or holds an unrecognized value.
 # Usage: _state_hook_raw <session> <out_var>
@@ -400,9 +411,17 @@ _state_resolve() {
             # a fresh session idle at its first prompt (the first
             # UserPromptSubmit would have created the file). Everything else
             # falls through to the hook read below.
+            # "Never fired" is proven by the identity sidecars: the first
+            # hook event writes .sid (ephemeral, and durable under
+            # AM_IDENTITY_DIR), and they outlive the state file. A missing
+            # state file next to an existing identity means the file was
+            # removed under a live session (2026-09-08: a test run's GC
+            # sweep) — then nothing is known, and claiming ready hid a
+            # session that was waiting on background work. Fall through to
+            # the hook read, which reports unknown.
             local raw=""
             _state_hook_raw "$session" raw
-            if [[ -z "$raw" ]]; then
+            if [[ -z "$raw" ]] && ! _state_has_identity "$session"; then
                 _state_debug "$_dbg_session" "$_dbg_agent" title ready
                 echo "ready"
                 return

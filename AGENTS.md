@@ -164,7 +164,8 @@ Glyph × hook decision table (`_state_resolve`, Claude sessions):
 |---|---|---|
 | busy (braille / circle-phase; ≤2.1.233 only) | `waiting_user` | pass through — a pending dialog needs the user; answering it fires `PreToolUse` which moves the file forward |
 | busy | anything else | `running` — trust the legacy indicator |
-| `✳` | missing | `ready` — fresh session idle at its first prompt |
+| `✳` | missing, no identity sidecar | `ready` — fresh session idle at its first prompt (no hook has ever fired) |
+| `✳` | missing, `.sid` sidecar exists (ephemeral or durable) | `unknown` — the hooks did fire, so the state file was removed under a live session (see `gc.log`); the next hook event restores it |
 | `✳` | any state | hook state, ungated — `✳` carries no busy/waiting information on ≥2.1.234; resurrecting the old attention rows flips every running turn to `ready` within one status-bar tick |
 | none (hostname / booting / titles unavailable) | any state | hook state, ungated; `unknown` when no file |
 | — (non-Claude, non-pi, non-Cursor agents) | — | hook state with the 180s running-staleness gate, else `unknown` |
@@ -572,6 +573,7 @@ am restore
 - `agent_wait_state(session, [states], [timeout])` - Block until target state reached
 - `agent_classify_exit(session)` - Classify shell exit as idle or dead
 - `_state_hook_raw(session, out_var)` - Read the hook file ungated and canonicalize pre-0.12 aliases; used by title/status layers even when the file is stale
+- `_state_has_identity(session)` - True when an identity sidecar exists (`$AM_STATE_DIR/<s>.sid` or `$AM_IDENTITY_DIR/<s>.sid`): proof that the session's hooks have fired. Fork-free; gates the fresh-session `✳`+no-file → ready branch, so a state file removed under a live session reads as unknown rather than ready
 - `_state_hook_read(session, out_var [, now_epoch [, activity_epoch]])` - Gated hook-file read for agents without reliable turn-boundary events. Ready, waiting_user, and background persist; running gets a 180s staleness gate measured against max(file mtime, tmux session_activity), so a wedged agent falls to unknown. Claude, Cursor, and pi bypass this gate because long live turns routinely outlast it.
 - `_state_pane_is_shell_bulk(session, top_pid_map, comm_map, children_map)` - Detect whether top pane is a plain shell (vs an agent process) from nameref bulk maps
 

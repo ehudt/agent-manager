@@ -395,6 +395,25 @@ test_state_title_glyph() {
     assert_eq "false" "$([[ -f "$tmp_state_dir/am-g" ]] && echo true || echo false)" \
         "resolve: no-hook case does not fabricate a state file"
 
+    # Same picture, but the session has an identity: its hooks HAVE fired
+    # (the .sid sidecar outlives the state file), so the missing state file
+    # was removed under a live session (a mis-pointed GC sweep, 2026-09-08).
+    # Nothing is known then — claiming ready hid sessions waiting on
+    # background work until their next hook event. Ephemeral and durable
+    # sidecars both count.
+    printf 'uuid-g' > "$tmp_state_dir/am-g.sid"
+    assert_eq "unknown" "$(_resolve am-g claude)" \
+        "resolve: ✳ + no hook file + ephemeral .sid -> unknown (file removed, not fresh)"
+    rm -f "$tmp_state_dir/am-g.sid"
+    local tmp_identity_dir
+    tmp_identity_dir=$(mktemp -d)
+    printf 'uuid-g' > "$tmp_identity_dir/am-g.sid"
+    assert_eq "unknown" "$(AM_IDENTITY_DIR="$tmp_identity_dir" _resolve am-g claude)" \
+        "resolve: ✳ + no hook file + durable .sid -> unknown (file removed, not fresh)"
+    rm -rf "$tmp_identity_dir"
+    assert_eq "ready" "$(_resolve am-g claude)" \
+        "resolve: ✳ + no hook file + no identity -> ready (fresh session again)"
+
     # no glyph signal (claude still booting / titles unavailable): same
     # ungated hook read; without even a hook file there is nothing -> unknown
     _T_TITLE[am-g]="myhost.local"
