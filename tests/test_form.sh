@@ -552,22 +552,32 @@ test_form_provider() {
     assert_eq "PR #48351 fix bbr" "${_FORM_DIR_FILTERED[0]#*$'\t'}" "form provider: provider label is the annotation"
     assert_eq "@48372" "${_FORM_DIR_FILTERED[1]%%$'\t'*}" "form provider: second candidate"
 
-    # Bare @ asks the provider for its defaults
+    # Bare @ asks the provider for its defaults; an empty-spec row renders as
+    # bare `@` (the provider's default) and stays first so Enter resolves it
     _form_filter_dir_suggestions "@" 5
-    assert_eq "@trunk" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: bare @ lists the provider defaults"
+    assert_eq "@" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: bare @ offers the empty spec first"
+    assert_eq "new copy on trunk" "${_FORM_DIR_FILTERED[0]#*$'\t'}" "form provider: empty spec keeps its label"
+    assert_eq "@trunk" "${_FORM_DIR_FILTERED[1]%%$'\t'*}" "form provider: bare @ lists the provider defaults"
 
     # No match → the typed spec itself so Enter still resolves it
     _form_filter_dir_suggestions "@brand-new-branch" 5
     assert_eq "1" "${#_FORM_DIR_FILTERED[@]}" "form provider: no match → one fallback entry"
     assert_eq "@brand-new-branch" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: fallback keeps the typed spec"
 
-    # Bare `@` (empty partial) asks the provider for its defaults
+    # Bare `@` (empty partial) is cached like any other partial
     _form_filter_dir_suggestions "@" 5
-    assert_eq "true" "$([[ ${#_FORM_DIR_FILTERED[@]} -ge 1 ]] && echo true || echo false)" \
-        "form provider: bare @ lists the provider's default candidates"
-    assert_eq "@trunk" "${_FORM_DIR_FILTERED[0]%%$'\t'*}" "form provider: bare @ offers the provider default first"
-    _form_filter_dir_suggestions "@" 5
+    assert_eq "2" "${#_FORM_DIR_FILTERED[@]}" "form provider: bare @ lists the provider's default candidates"
     assert_eq "1" "$(grep -c "^suggest $" "$FAKE_PROVIDER_DIR/calls.log")" "form provider: bare @ cached too"
+
+    # Enter on bare `@` keeps `@` (cmd_new resolves the empty spec), never the
+    # first branch the provider happens to list
+    FORM_VALUES[directory]="@"
+    FORM_CURSOR=0
+    _FORM_DIR_HIGHLIGHT=0
+    _FORM_MODE="edit"
+    _form_process_key $'\n'
+    assert_eq "submit" "$FORM_KEY_RESULT" "form provider: enter on bare @ submits"
+    assert_eq "@" "${FORM_VALUES[directory]}" "form provider: enter on bare @ keeps the empty spec"
 
     # Cached per partial: a redraw with the same text does not re-run the provider
     local calls_before calls_after

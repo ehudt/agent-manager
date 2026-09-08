@@ -10,7 +10,8 @@ printf '%s %s\n' "${1:-}" "${2:-}" >> "$root/calls.log"
 case "${1:-}" in
     suggest)
         case "${2:-}" in
-            "")     printf 'trunk\tdefault branch\n' ;;
+            # Empty spec first: the provider's default (resolve "" → trunk copy)
+            "")     printf '\tnew copy on trunk\ntrunk\tdefault branch\n' ;;
             48*)    printf '48351\tPR #48351 fix bbr\n48372\tPR #48372 gw retry\n' ;;
             slow*)  sleep 3; printf 'late\tshould have been cut off\n' ;;
             *)      : ;;
