@@ -469,6 +469,23 @@ test_review_pane() {
     assert_contains "$shown" "b.txt" "review pane: lists the untracked file"
     assert_contains "$shown" "@@" "review pane: shows the diff of the selected file"
 
+    # --- hunk-to-prompt: c opens a note on the hunk under the cursor; Enter
+    # hands it to `am send`. The stub agent resolves as idle, so am refuses
+    # (exit 2) and the pane reports it — the whole path minus a live agent.
+    am_tmux send-keys -t "$review_pane" 'c'
+    shown=$(wait_for_text "note on" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "note on a.txt L1 → agent:" \
+        "review pane: c opens a note on the selected file's current hunk"
+    am_tmux send-keys -t "$review_pane" 'keep the old value' Enter
+    shown=$(wait_for_text "not sent" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "no running agent" \
+        "review pane: the note goes through am send, which refuses the idle stub"
+    am_tmux send-keys -t "$review_pane" 'c'
+    wait_for_text "note on" am_tmux capture-pane -t "$review_pane" -p >/dev/null
+    am_tmux send-keys -t "$review_pane" Escape
+    shown=$(wait_for_text "cancelled" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "note cancelled" "review pane: esc cancels the note"
+
     # Live refresh: a tool event touches .dirty, the pane re-measures.
     echo three > "$repo/c.txt"
     touch "$state_dir/$session_name.dirty"

@@ -284,9 +284,11 @@ For a live view, open the **review pane** beside the agent (``Prefix + v``,
 or `am review [session]`): the changed files with their line counts, the diff
 of the selected file, hunk navigation (`]` / `[`), and `a` to mark the working
 copy reviewed. It re-measures on every tool event, so it follows the agent as
-it works. Like the shell panel it is collapsible: the first toggle opens it,
-later ones hide and show the same pane in place. `?` inside the pane lists
-the keys.
+it works. Press `c` on a hunk to send it back with a note: the file, the line
+range, the hunk, and your text go to the agent through `am send`, or are
+queued for it when it is busy. Like the shell panel it is collapsible: the
+first toggle opens it, later ones hide and show the same pane in place. `?`
+inside the pane lists the keys.
 
 ```bash
 am review                                # inside a session: toggle its review pane

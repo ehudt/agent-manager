@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -76,6 +77,27 @@ type model struct {
 	err       string
 	msg       string
 	msgAt     time.Time
+
+	// Hunk-to-prompt (`c`): the note being typed for noteTarget.
+	noting     bool
+	note       textinput.Model
+	noteTarget noteTarget
+	sending    bool
+}
+
+// noteTarget pins what a note is about while the user types: the file, the
+// hunk's new-side range, and the hunk text as shown (the diff may reload
+// under the note when the agent keeps editing).
+type noteTarget struct {
+	path      string
+	lineRange string
+	hunkText  string
+}
+
+type sentMsg struct {
+	target noteTarget
+	res    sendResult
+	err    error
 }
 
 type tickMsg time.Time
@@ -119,6 +141,9 @@ func main() {
 	}
 	m := model{env: env, session: *session, dir: *dir, amPath: *amPath, poll: *poll, hunk: -1}
 	m.vp = viewport.New(80, 20)
+	m.note = textinput.New()
+	m.note.Prompt = ""
+	m.note.CharLimit = 2000
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "am-review:", err)
 		os.Exit(1)
@@ -181,6 +206,30 @@ func (m model) ack() tea.Cmd {
 		env.ReviewRecord(session, sessions.ReviewStat{}, time.Now())
 		return ackMsg{}
 	}
+}
+
+// send delivers the note for target through am (see note.go).
+func (m model) send(target noteTarget, note string) tea.Cmd {
+	amPath, session := m.amPath, m.session
+	text := noteMessage(target.path, target.lineRange, target.hunkText, note)
+	return func() tea.Msg {
+		res, err := sendNote(amPath, session, text)
+		return sentMsg{target: target, res: res, err: err}
+	}
+}
+
+// currentNoteTarget is the hunk under the cursor, or the selected file alone
+// when it has no hunks (binary, or the diff is still loading).
+func (m model) currentNoteTarget() (noteTarget, bool) {
+	if len(m.files) == 0 {
+		return noteTarget{}, false
+	}
+	t := noteTarget{path: m.files[m.sel].Path}
+	if m.doc.Path == t.path && m.hunk >= 0 && m.hunk < len(m.doc.Hunks) {
+		t.lineRange = m.doc.Hunks[m.hunk].lineRange()
+		t.hunkText = m.doc.hunkText(m.hunk, noteHunkLimit)
+	}
+	return t, true
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -264,10 +313,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.measuring = true
 		return m, m.measure()
 
+	case sentMsg:
+		m.sending = false
+		where := msg.target.path
+		if msg.target.lineRange != "" {
+			where += " " + msg.target.lineRange
+		}
+		switch {
+		case msg.err != nil:
+			m.flash(styleErr.Render("not sent: " + msg.err.Error()))
+		case msg.res.queued:
+			m.flash(styleOK.Render("agent busy — note on " + where + " queued, sent when it is ready"))
+		default:
+			m.flash(styleOK.Render("note on " + where + " sent to the agent"))
+		}
+		return m, nil
+
 	case tea.KeyMsg:
+		if m.noting {
+			return m.handleNoteKey(msg)
+		}
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// handleNoteKey drives the note line: Enter sends, Esc cancels, everything
+// else edits the text.
+func (m model) handleNoteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.noting = false
+		m.note.Blur()
+		m.flash(styleDim.Render("note cancelled"))
+		return m, nil
+	case "enter":
+		note := strings.TrimSpace(m.note.Value())
+		if note == "" {
+			m.flash(styleDim.Render("type a note first (esc cancels)"))
+			return m, nil
+		}
+		m.noting = false
+		m.note.Blur()
+		m.sending = true
+		m.flash(styleDim.Render("sending…"))
+		return m, m.send(m.noteTarget, note)
+	}
+	var cmd tea.Cmd
+	m.note, cmd = m.note.Update(msg)
+	return m, cmd
 }
 
 func (m *model) flash(s string) {
@@ -307,6 +403,21 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.ack()
+	case "c":
+		if m.sending {
+			m.flash(styleDim.Render("still sending the previous note"))
+			return m, nil
+		}
+		target, ok := m.currentNoteTarget()
+		if !ok {
+			m.flash(styleDim.Render("no change to comment on"))
+			return m, nil
+		}
+		m.noteTarget = target
+		m.noting = true
+		m.msg = ""
+		m.note.Reset()
+		return m, m.note.Focus()
 	case "J", "n":
 		return m.selectFile(m.sel + 1)
 	case "K", "p":
@@ -624,6 +735,21 @@ func (m model) fileRows(w, h int) []string {
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
 func (m model) footerView() string {
+	if m.noting {
+		where := m.noteTarget.path
+		if m.noteTarget.lineRange != "" {
+			where += " " + m.noteTarget.lineRange
+		}
+		label := styleKey.Render("note") + styleDim.Render(" on "+where+" → agent: ")
+		labelW := lipgloss.Width(label)
+		m.note.Width = m.width - labelW - 1
+		if m.note.Width < 10 {
+			// Too narrow for the location: keep the input usable.
+			label = styleKey.Render("note: ")
+			m.note.Width = m.width - lipgloss.Width(label) - 1
+		}
+		return label + m.note.View()
+	}
 	if m.msg != "" {
 		return truncRunes(m.msg, m.width)
 	}
@@ -632,6 +758,7 @@ func (m model) footerView() string {
 		hint("j/k", "file"),
 		hint("]/[", "hunk"),
 		hint("tab", "focus"),
+		hint("c", "note→agent"),
 		hint("a", "reviewed"),
 		hint("r", "refresh"),
 		hint("q", "close"),
@@ -652,6 +779,8 @@ func (m model) helpView() string {
 		"  ] / [            next / previous hunk",
 		"  tab, enter       move focus between the file list and the diff",
 		"  space, b, g, G   page down / page up / top / bottom of the diff",
+		"  c                note on the hunk under the cursor → the agent (am send: file, lines,",
+		"                   hunk, your note; queued with am send --queue while the agent is busy)",
 		"  a                mark the working copy reviewed (am diff --ack): new baseline",
 		"  r                re-measure now (the pane also refreshes on every tool event)",
 		"  q                close the pane (prefix+v or `am review` reopens it)",
