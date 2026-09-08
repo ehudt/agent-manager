@@ -469,6 +469,16 @@ test_review_pane() {
     assert_contains "$shown" "b.txt" "review pane: lists the untracked file"
     assert_contains "$shown" "@@" "review pane: shows the diff of the selected file"
 
+    # j/k walk the files from either pane: focus the diff, j selects b.txt,
+    # k returns to a.txt (the note test below expects a.txt).
+    am_tmux send-keys -t "$review_pane" Tab j
+    shown=$(wait_for_text "b/b.txt" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "+++ b/b.txt" "review pane: j selects the next file while the diff has focus"
+    am_tmux send-keys -t "$review_pane" k
+    shown=$(wait_for_text "b/a.txt" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "+++ b/a.txt" "review pane: k selects the previous file while the diff has focus"
+    am_tmux send-keys -t "$review_pane" Tab
+
     # --- hunk-to-prompt: c opens a note on the hunk under the cursor; Enter
     # hands it to `am send`. The stub agent resolves as idle, so am refuses
     # (exit 2) and the pane reports it — the whole path minus a live agent.

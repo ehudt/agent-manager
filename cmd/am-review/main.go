@@ -576,19 +576,24 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.vp.PageUp()
 		m.syncHunk()
 		return m, nil
-	case "j", "down":
+	// j/k always walk the files and ]/[ always walk the hunks, whichever pane
+	// has focus; the arrows follow the focused pane (files, or hunks in the
+	// diff). Line scrolling is space/b, ctrl+d/u, g/G.
+	case "j":
+		return m.selectFile(m.sel + 1)
+	case "k":
+		return m.selectFile(m.sel - 1)
+	case "down":
 		if m.focus == focusFiles {
 			return m.selectFile(m.sel + 1)
 		}
-		m.vp.ScrollDown(1)
-		m.syncHunk()
+		m.gotoHunk(m.hunk + 1)
 		return m, nil
-	case "k", "up":
+	case "up":
 		if m.focus == focusFiles {
 			return m.selectFile(m.sel - 1)
 		}
-		m.vp.ScrollUp(1)
-		m.syncHunk()
+		m.gotoHunk(m.hunk - 1)
 		return m, nil
 	}
 	return m, nil
@@ -611,7 +616,8 @@ func (m model) selectFile(i int) (tea.Model, tea.Cmd) {
 	return m, m.loadDiff(m.files[m.sel].Path)
 }
 
-// gotoHunk scrolls the viewport so hunk i's header is the top line.
+// gotoHunk scrolls the viewport so hunk i's header is the top line. Focus
+// stays where it is: hunk keys work from the file list too.
 func (m *model) gotoHunk(i int) {
 	if len(m.doc.Hunks) == 0 {
 		return
@@ -623,7 +629,6 @@ func (m *model) gotoHunk(i int) {
 		i = len(m.doc.Hunks) - 1
 	}
 	m.hunk = i
-	m.focus = focusDiff
 	m.renderDiff()
 	m.vp.SetYOffset(m.doc.Hunks[i].Start)
 }
@@ -913,11 +918,11 @@ func (m model) helpView() string {
 	lines := []string{
 		styleTitle.Render("am review — what the agent changed since you last looked"),
 		"",
-		"  j / k, ↑ / ↓     next / previous file (in the file list); scroll the diff otherwise",
-		"  J / K, n / p     next / previous file from anywhere",
-		"  ] / [            next / previous hunk",
+		"  j / k            next / previous file (from either pane; also J / K, n / p)",
+		"  ] / [            next / previous hunk (from either pane)",
+		"  ↑ / ↓            in the focused pane: files in the file list, hunks in the diff",
 		"  tab, enter       move focus between the file list and the diff",
-		"  space, b, g, G   page down / page up / top / bottom of the diff",
+		"  space, b, g, G   page down / page up / top / bottom of the diff (ctrl+d / ctrl+u too)",
 		"  c                note on the hunk under the cursor → the agent (am send: file, lines,",
 		"                   hunk, your note; queued with am send --queue while the agent is busy)",
 		"  a                mark the working copy reviewed (am diff --ack): new baseline",

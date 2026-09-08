@@ -286,7 +286,8 @@ am diff am-abc123 --checkpoint 3f2a1c0   # one-off diff from an older checkpoint
 
 For a live view, open the **review pane** beside the agent (``Prefix + v``,
 or `am review [session]`): the changed files with their line counts, the diff
-of the selected file, hunk navigation (`]` / `[`), and `a` to mark the working
+of the selected file, file and hunk navigation from either pane (`j` / `k`
+files, `]` / `[` hunks, the arrows in the focused pane), and `a` to mark the working
 copy reviewed. It re-measures on every tool event, so it follows the agent as
 it works. Press `c` on a hunk to send it back with a note: the file, the line
 range, the hunk, and your text go to the agent through `am send`, or are
