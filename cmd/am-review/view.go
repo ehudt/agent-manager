@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/ehud-tamir/agent-manager/internal/sessions"
 )
 
@@ -114,6 +116,44 @@ func truncRunes(s string, w int) string {
 		return "…"
 	}
 	return string(r[:w-1]) + "…"
+}
+
+// truncStyled truncates a string that carries ANSI styling to w columns with
+// a 1-col `…`. truncRunes counts escape bytes as columns, so on styled text
+// it cut early (the footer lost its hunk position on a 95-col pane) and could
+// split an escape sequence.
+func truncStyled(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= w {
+		return s
+	}
+	return ansi.Truncate(s, w, "…")
+}
+
+// fitHints lays out the footer: key hints joined by two spaces, dropping
+// trailing (least important) hints until the line fits in w columns, with
+// pos (the hunk position) right-aligned when there is room. A hint is never
+// cut mid-word. With pos and few hints competing for a narrow pane, pos wins
+// once at least the three navigation hints are shown.
+func fitHints(parts []string, pos string, w int) string {
+	pw := ansi.StringWidth(pos)
+	if pos != "" {
+		for n := len(parts); n >= 3 && n <= len(parts); n-- {
+			line := strings.Join(parts[:n], "  ")
+			if lw := ansi.StringWidth(line); lw+2+pw <= w {
+				return line + strings.Repeat(" ", w-lw-pw) + pos
+			}
+		}
+	}
+	for n := len(parts); n >= 0; n-- {
+		line := strings.Join(parts[:n], "  ")
+		if ansi.StringWidth(line) <= w {
+			return line
+		}
+	}
+	return ""
 }
 
 // checkpointHeader / checkpointRow render the picker's table, the same

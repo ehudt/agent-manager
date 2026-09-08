@@ -1,7 +1,10 @@
 package main
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ehud-tamir/agent-manager/internal/sessions"
 )
@@ -93,6 +96,34 @@ func TestTextHelpers(t *testing.T) {
 	}
 	if got := ago(0, 7200); got != "2h ago" {
 		t.Errorf("ago h = %q", got)
+	}
+}
+
+func TestFitHints(t *testing.T) {
+	parts := []string{"j/k file", "]/[ hunk", "↑↓ hunk", "c note", "q close"}
+	// Everything fits: hints left, position right-aligned.
+	got := fitHints(parts, "hunk 1/3", 60)
+	if !strings.HasPrefix(got, "j/k file  ]/[ hunk  ↑↓ hunk  c note  q close") || !strings.HasSuffix(got, "hunk 1/3") || ansi.StringWidth(got) != 60 {
+		t.Errorf("wide = %q (width %d)", got, ansi.StringWidth(got))
+	}
+	// Too narrow for all hints plus the position: trailing hints go, whole.
+	got = fitHints(parts, "hunk 1/3", 40)
+	if got != "j/k file  ]/[ hunk  ↑↓ hunk     hunk 1/3" {
+		t.Errorf("narrow = %q", got)
+	}
+	// Narrower than the three navigation hints plus position: position goes.
+	got = fitHints(parts, "hunk 1/3", 20)
+	if got != "j/k file  ]/[ hunk" {
+		t.Errorf("tight = %q", got)
+	}
+	// Styled input is measured by columns, not bytes.
+	styled := []string{styleKey.Render("j/k") + styleDim.Render(" file"), styleKey.Render("q") + styleDim.Render(" close")}
+	got = fitHints(styled, "", 17) // "j/k file  q close" is exactly 17 columns
+	if ansi.StringWidth(got) != 17 {
+		t.Errorf("styled = %q (width %d)", got, ansi.StringWidth(got))
+	}
+	if got := truncStyled(styleKey.Render("abcdef"), 4); ansi.StringWidth(got) != 4 || !strings.HasSuffix(ansi.Strip(got), "…") {
+		t.Errorf("truncStyled = %q", got)
 	}
 }
 

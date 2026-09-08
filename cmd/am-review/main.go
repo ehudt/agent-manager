@@ -816,7 +816,7 @@ func (m model) headerView() string {
 	if m.measuring {
 		rest += styleDim.Render(" ⟳")
 	}
-	return truncRunes(left+rest, m.width)
+	return truncStyled(left+rest, m.width)
 }
 
 func shortID(id string) string {
@@ -894,24 +894,32 @@ func (m model) footerView() string {
 		return label + m.note.View()
 	}
 	if m.msg != "" {
-		return truncRunes(m.msg, m.width)
+		return truncStyled(m.msg, m.width)
 	}
+	// Focus-aware: the arrows and tab hints name what they act on now. Order
+	// is importance — fitHints drops from the end on narrow panes.
 	hint := func(k, what string) string { return styleKey.Render(k) + styleDim.Render(" "+what) }
+	arrows, other := "file", "diff"
+	if m.focus == focusDiff {
+		arrows, other = "hunk", "files"
+	}
 	parts := []string{
 		hint("j/k", "file"),
 		hint("]/[", "hunk"),
-		hint("tab", "focus"),
+		hint("↑↓", arrows),
 		hint("c", "note→agent"),
 		hint("a", "reviewed"),
 		hint("s", "since…"),
+		hint("tab", other),
 		hint("r", "refresh"),
 		hint("q", "close"),
 		hint("?", "help"),
 	}
+	pos := ""
 	if m.hunk >= 0 && m.hunk < len(m.doc.Hunks) {
-		parts = append(parts, styleDim.Render(fmt.Sprintf("hunk %d/%d %s", m.hunk+1, len(m.doc.Hunks), m.doc.Hunks[m.hunk].lineRange())))
+		pos = styleDim.Render(fmt.Sprintf("hunk %d/%d %s", m.hunk+1, len(m.doc.Hunks), m.doc.Hunks[m.hunk].lineRange()))
 	}
-	return truncRunes(strings.Join(parts, "  "), m.width)
+	return fitHints(parts, pos, m.width)
 }
 
 func (m model) helpView() string {
@@ -944,7 +952,7 @@ func (m model) helpView() string {
 func (m model) pickView() string {
 	now := time.Now().Unix()
 	lines := []string{
-		truncRunes(styleTitle.Render("since which checkpoint? ")+styleDim.Render("Enter view from it · b make it the baseline · esc back"), m.width),
+		truncStyled(styleTitle.Render("since which checkpoint? ")+styleDim.Render("j/k move · Enter view from it · b make it the baseline · esc back"), m.width),
 		styleDim.Render(truncRunes(checkpointHeader(), m.width)),
 	}
 	rows := m.height - len(lines)
