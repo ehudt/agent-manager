@@ -256,7 +256,11 @@ When a session needs you (a permission or question dialog) and you are not
 looking at it, am posts a desktop notification (`osascript` on macOS,
 `notify-send` on Linux). `am config set notify false` turns it off,
 `am config set notify_states waiting_user,ready` also announces finished
-turns, and `notify_cmd` swaps in your own notifier.
+turns, and `notify_cmd` swaps in your own notifier. On macOS the banners
+are attributed to Script Editor, and how long they stay on screen is that
+app's Notification Center style: Banners fade after a few seconds, Alerts
+stay until dismissed. Switch it under System Settings › Notifications ›
+Script Editor; `am doctor` reports the current style.
 
 `--pane shell` works while the panel is open *or* hidden (the parked pane
 keeps running); on a session whose panel was never opened it explains how to

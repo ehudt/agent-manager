@@ -573,12 +573,69 @@ _doc_session() {
     _doc_recent_debug "$name"
 }
 
+# Notification Center style bits of an app's `flags` value in com.apple.ncprefs
+# (bit 3 = Banners, bit 4 = Alerts; neither = None). Banners disappear after a
+# few seconds, Alerts stay until dismissed. Prints banners / alerts / none.
+_doc_nc_style() {
+    local flags="${1:-0}"
+    [[ "$flags" =~ ^[0-9]+$ ]] || flags=0
+    if (( (flags / 16) % 2 == 1 )); then printf 'alerts\n'
+    elif (( (flags / 8) % 2 == 1 )); then printf 'banners\n'
+    else printf 'none\n'; fi
+}
+
+# The app-level `flags` of one bundle id from `defaults read com.apple.ncprefs
+# apps` text on stdin (first flags after the bundle-id line; the nested `src`
+# entries carry their own flags and are skipped). Empty when the bundle is not
+# registered, i.e. it has never posted a notification.
+_doc_nc_flags_parse() {
+    local bundle="$1"
+    awk -v want="$bundle" '
+        /"bundle-id" = / { bid=$3; gsub(/[";]/, "", bid); pending=(bid==want) }
+        pending && /^ *flags = / { v=$3; gsub(/;/, "", v); print v; exit }'
+}
+
+_doc_nc_flags() {
+    [[ "$OSTYPE" == darwin* ]] || return 0
+    defaults read com.apple.ncprefs apps 2>/dev/null | _doc_nc_flags_parse "$1"
+}
+
+# Desktop notifications: config, and on macOS the Notification Center style of
+# Script Editor, which is the app osascript's banners are attributed to. The
+# style is the only thing that controls how long a banner stays on screen, and
+# only the user can change it (System Settings › Notifications).
+_doc_notify() {
+    _doc_h2 "notifications"
+    local enabled states cmd
+    enabled=$(am_notify_enabled && echo true || echo false)
+    states=$(am_notify_states)
+    cmd=$(am_config_get notify_cmd 2>/dev/null || true)
+    _doc_kv "notify" "$enabled"
+    _doc_kv "notify_states" "$states"
+    _doc_kv "notify_cmd" "${cmd:-<none: osascript on macOS, notify-send on Linux>}"
+    [[ "$enabled" == true && -z "$cmd" && "$OSTYPE" == darwin* ]] || return 0
+    local flags style
+    flags=$(_doc_nc_flags com.apple.ScriptEditor2)
+    if [[ -z "$flags" ]]; then
+        _doc_kv "Script Editor style" "not registered in Notification Center yet (no banner posted so far)"
+        return 0
+    fi
+    style=$(_doc_nc_style "$flags")
+    _doc_kv "Script Editor style" "$style (ncprefs flags $flags)"
+    case "$style" in
+        alerts) _doc_ok "banners stay until dismissed" ;;
+        banners) _doc_warn "banners disappear after a few seconds; set System Settings › Notifications › Script Editor to Alerts to keep them until dismissed (open 'x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.apple.ScriptEditor2')" ;;
+        none) _doc_warn "Script Editor notifications are set to None; nothing am posts through osascript is shown" ;;
+    esac
+}
+
 _doc_global() {
     _doc_h1 "am doctor"
     _doc_versions
     _doc_dirs
     _doc_markers
     _doc_hooks_installed
+    _doc_notify
     _doc_drift
     _doc_h2 "registry vs tmux"
     local -A live=() reg=()

@@ -33,6 +33,51 @@ test_doctor_version_compare() {
     assert_cmd_succeeds "ver_newer: leading zeros are decimal" _doc_ver_newer "1.09" "1.8"
 }
 
+# Notification Center style decode and the ncprefs text parse behind the
+# "notifications" section (Banners fade after seconds, Alerts persist).
+test_doctor_notify_style() {
+    $SUMMARY_MODE || echo "=== Testing doctor notification style ==="
+    _doctor_source_libs
+
+    assert_eq "banners" "$(_doc_nc_style 8206)" "nc_style: bit 3 is Banners"
+    assert_eq "alerts" "$(_doc_nc_style 8214)" "nc_style: bit 4 is Alerts"
+    assert_eq "alerts" "$(_doc_nc_style 16)" "nc_style: Alerts alone"
+    assert_eq "none" "$(_doc_nc_style 6)" "nc_style: neither bit is None"
+    assert_eq "none" "$(_doc_nc_style garbage)" "nc_style: non-numeric is None"
+
+    local sample='(
+        {
+        auth = 6;
+        "bundle-id" = "com.googlecode.iterm2";
+        flags = 276832270;
+        src =         (
+                        {
+                flags = 0;
+                path = "/Applications/iTerm.app";
+            }
+        );
+    },
+        {
+        "bundle-id" = "com.apple.ScriptEditor2";
+        "content_visibility" = 0;
+        flags = 8206;
+        grouping = 0;
+        src =         (
+                        {
+                flags = 6;
+                path = "/System/Applications/Utilities/Script Editor.app";
+            }
+        );
+    }
+)'
+    assert_eq "8206" "$(printf '%s\n' "$sample" | _doc_nc_flags_parse com.apple.ScriptEditor2)" \
+        "nc_flags: app-level flags, nested src flags skipped"
+    assert_eq "276832270" "$(printf '%s\n' "$sample" | _doc_nc_flags_parse com.googlecode.iterm2)" \
+        "nc_flags: first app in the list"
+    assert_eq "" "$(printf '%s\n' "$sample" | _doc_nc_flags_parse com.example.missing)" \
+        "nc_flags: unregistered bundle is empty"
+}
+
 test_doctor_drift() {
     $SUMMARY_MODE || echo "=== Testing doctor drift section ==="
     _doctor_source_libs
@@ -220,6 +265,7 @@ test_doctor_hooks_installed() {
 
 run_doctor_tests() {
     _run_test test_doctor_version_compare
+    _run_test test_doctor_notify_style
     _run_test test_doctor_drift
     _run_test test_doctor_hook_schema_recording
     _run_test test_doctor_hooks_installed
