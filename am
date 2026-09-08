@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.25.0"
+AM_VERSION="0.26.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -47,6 +47,7 @@ COMMANDS:
     id                  Print the name of the am session you are inside
     cd                  Record where the current session works now (label + branch follow)
     diff                Show what a session changed since you last reviewed it (--ack, --list)
+    review              Toggle the live review pane beside the agent (prefix+v)
     kill                Kill a session (--all, --state <list>)
     config              Show or change saved defaults
     preset              Save and list launch presets for 'new -p'
@@ -784,6 +785,38 @@ EOF
     fi
 
     agent_shell_pane_toggle "$resolved"
+}
+
+cmd_review() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        cat <<'EOF'
+Usage: am review [session-name]
+
+Toggle the session's review pane: a live view of what the agent changed since
+the review baseline (see 'am diff'), beside the agent — changed files with
+their line counts, the diff of the selected file, hunk navigation, and 'a' to
+mark the working copy reviewed. It refreshes on every tool event. First use
+opens the pane; after that it hides/shows the same pane, keeping its place.
+Defaults to the current session when run inside one. Also bound to prefix+v
+inside am sessions. Exit 3 when the session's directory is not a repository.
+EOF
+        return 0
+    fi
+
+    local name="${1:-}"
+    local resolved=""
+    if [[ -n "$name" ]]; then
+        if ! resolved=$(resolve_session_fuzzy "$name"); then
+            log_error "Session not found: $name"
+            return 1
+        fi
+    elif ! resolved=$(current_session); then
+        log_error "Session name required (not inside an am session)"
+        echo "Usage: am review [session-name]" >&2
+        return 1
+    fi
+
+    agent_review_pane_toggle "$resolved"
 }
 
 cmd_send() {
@@ -1839,7 +1872,7 @@ _install_refresh() {
 
     # Go binaries: rebuild only when a source is newer than a binary (or one is missing)
     local need_build=false bin
-    for bin in am-list-internal am-browse am-core; do
+    for bin in am-list-internal am-browse am-core am-review; do
         [[ -s "$AM_SCRIPT_DIR/bin/$bin" ]] || need_build=true
     done
     if ! $need_build; then
@@ -1853,7 +1886,8 @@ _install_refresh() {
             [[ -n "$quiet" ]] || echo "am: rebuilding Go helpers..." >&2
             if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ \
                     && go build -o bin/am-browse ./cmd/am-browse/ \
-                    && go build -o bin/am-core ./cmd/am-core/ ) >/dev/null 2>&1; then
+                    && go build -o bin/am-core ./cmd/am-core/ \
+                    && go build -o bin/am-review ./cmd/am-review/ ) >/dev/null 2>&1; then
                 done_parts+=("go binaries")
             else
                 log_warn "am: go build failed; run 'make build' to see why"
@@ -2041,6 +2075,12 @@ EOF
             log_warn "  go build failed for am-core"
             go_ok=false
         fi
+        if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-review ./cmd/am-review/ ) 2>&1; then
+            log_success "  Built bin/am-review"
+        else
+            log_warn "  go build failed for am-review"
+            go_ok=false
+        fi
         if $go_ok; then
             steps_done+=("Go binaries built")
         else
@@ -2118,6 +2158,9 @@ main() {
             ;;
         shell)
             cmd_shell "$@"
+            ;;
+        review)
+            cmd_review "$@"
             ;;
         id|current|whoami)
             cmd_id "$@"

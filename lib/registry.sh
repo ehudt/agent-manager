@@ -308,7 +308,7 @@ sessions_log_snapshot() {
     mkdir -p "$AM_SNAPSHOTS_DIR"
 
     local pane_target content
-    pane_target=$(tmux_session_pane_target "$session_name" "agent" 2>/dev/null) || pane_target="${session_name}:.{top}"
+    pane_target=$(tmux_session_pane_target "$session_name" "agent" 2>/dev/null) || pane_target="${session_name}:.{top-left}"
     content=$(tmux_capture_pane "$pane_target" 50 2>/dev/null || true)
 
     [[ -z "$content" ]] && return 0

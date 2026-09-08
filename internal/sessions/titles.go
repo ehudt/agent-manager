@@ -215,7 +215,7 @@ func (e Env) refreshedReview(name string, meta Session, u metaUpdate) (ReviewSta
 // Cursor) the first user message of this session's transcript.
 func (e Env) refreshedTitle(name string, meta Session) (string, bool) {
 	spec := agentSpec(meta.AgentType)
-	title := readPaneTitle(e.Socket, name+":.{top}")
+	title := readPaneTitle(e.Socket, name+":.{top-left}")
 	title = leadingNonAlnum.ReplaceAllString(title, "")
 	switch spec.Title {
 	case "pi":

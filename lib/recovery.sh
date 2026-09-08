@@ -531,7 +531,7 @@ recovery_revoke_identity_rebind() {
 recovery_agent_started() {
     local session_name="$1" waited=0 stable=0 pane_info pane_pid pane_command active
     while (( waited < 30 )); do
-        pane_info=$(am_tmux display-message -p -t "$session_name:.{top}" \
+        pane_info=$(am_tmux display-message -p -t "$session_name:.{top-left}" \
             '#{pane_pid}|#{pane_current_command}' 2>/dev/null || true)
         IFS='|' read -r pane_pid pane_command <<< "$pane_info"
         active=false

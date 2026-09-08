@@ -135,7 +135,7 @@ func TestRestoreScanBindsIDFromSidecarOnly(t *testing.T) {
 	writeRegistryAtomic(env.RegistryPath(), reg)
 	for _, n := range []string{"am-stale", "am-sidecar", "am-pending", "am-wrong", "am-shared", "am-bash"} {
 		slogAppend(t, env.SessionsLog, map[string]any{"session_name": n, "directory": proj, "agent_type": reg.Sessions[n].AgentType})
-		setPane(n+":.{top}", "snapshot for "+n+"\n")
+		setPane(n+":.{top-left}", "snapshot for "+n+"\n")
 	}
 
 	// Transcripts sitting in the shared per-directory store.
@@ -232,7 +232,7 @@ func TestRestoreScanCursorTranscriptSidecar(t *testing.T) {
 	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-cur", "directory": proj, "agent_type": "cursor"})
 	writeFile(t, filepath.Join(env.StateDir, "am-cur.sid"), "cursor-sid")
 	writeFile(t, filepath.Join(env.StateDir, "am-cur.transcript"), transcript)
-	setPane("am-cur:.{top}", "cursor pane\n")
+	setPane("am-cur:.{top-left}", "cursor pane\n")
 
 	env.TitleScan(true)
 
@@ -258,8 +258,8 @@ func TestRestoreScanThrottleIndependentOfTitleMarker(t *testing.T) {
 		"am-13": {Name: "am-13", Directory: "/tmp/project13", AgentType: "claude", Task: "task 13"},
 	}})
 	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-13", "directory": "/tmp/project13", "agent_type": "claude"})
-	setTitle("am-13:.{top}", "Title that must not land\n")
-	setPane("am-13:.{top}", "snapshot for am-13\n")
+	setTitle("am-13:.{top-left}", "Title that must not land\n")
+	setPane("am-13:.{top-left}", "snapshot for am-13\n")
 
 	now := strconv.FormatInt(time.Now().Unix(), 10)
 	writeFile(t, filepath.Join(amDir, ".title_scan_last"), now)
@@ -313,12 +313,12 @@ func TestRefreshTitlesTitleSources(t *testing.T) {
 		"am-9": {Name: "am-9", Directory: proj9, AgentType: "codex"},
 		"am-h": {Name: "am-h", Directory: "/tmp/project", AgentType: "claude", Task: "Keep me"},
 	}})
-	setTitle("am-1:.{top}", "Fix the login bug in auth\n")
-	setTitle("am-3:.{top}", "\n")
-	setTitle("am-5:.{top}", "First scanned title\n")
-	setTitle("am-6:.{top}", "Existing Title\n")
-	setTitle("am-7:.{top}", ">>> Clean up the mess\n")
-	setTitle("am-h:.{top}", "Claude Code\n")
+	setTitle("am-1:.{top-left}", "Fix the login bug in auth\n")
+	setTitle("am-3:.{top-left}", "\n")
+	setTitle("am-5:.{top-left}", "First scanned title\n")
+	setTitle("am-6:.{top-left}", "Existing Title\n")
+	setTitle("am-7:.{top-left}", ">>> Clean up the mess\n")
+	setTitle("am-h:.{top-left}", "Claude Code\n")
 
 	RefreshTitles(env, true)
 	reg := ReadRegistry(env.RegistryPath())
@@ -339,7 +339,7 @@ func TestRefreshTitlesTitleSources(t *testing.T) {
 	}
 
 	// Throttled: a new title does not land; forced: it does.
-	setTitle("am-3:.{top}", "Throttle test title\n")
+	setTitle("am-3:.{top-left}", "Throttle test title\n")
 	RefreshTitles(env, false)
 	if got := ReadRegistry(env.RegistryPath()).Sessions["am-3"].Task; got != "" {
 		t.Errorf("throttled scan applied a title: %q", got)

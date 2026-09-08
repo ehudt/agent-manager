@@ -391,6 +391,169 @@ test_launch_review_checkpoint() {
     teardown_integration_env
 }
 
+# The review pane (bin/am-review beside the agent): open/hide/show through
+# role-tagged panes, coexistence with the shell panel, live refresh on the
+# .dirty sidecar, and the status bar still reading the agent pane.
+test_review_pane() {
+    $SUMMARY_MODE || echo "=== Testing Review Pane (open/hide/show) ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    if [[ ! -x "$PROJECT_DIR/bin/am-review" ]]; then
+        skip_test "review pane (bin/am-review not built — run 'make build')"
+        return 0
+    fi
+
+    setup_integration_env
+    local old_state_dir="${AM_STATE_DIR:-}"
+    local state_dir repo plain
+    state_dir=$(mktemp -d)
+    export AM_STATE_DIR="$state_dir"
+    repo=$(mktemp -d)
+    plain=$(mktemp -d)
+    repo=$(cd "$repo" && pwd -P)
+    local g=(git -C "$repo" -c user.name=am-test -c user.email=am@test -c commit.gpgsign=false -c init.defaultBranch=main)
+    "${g[@]}" init -q "$repo"
+    echo one > "$repo/a.txt"
+    "${g[@]}" add a.txt
+    "${g[@]}" commit -q -m first
+
+    local session_name
+    session_name=$(set +u; agent_launch "$repo" "claude" "review pane test" 2>/dev/null)
+    assert_not_empty "$session_name" "review pane: session launched"
+    assert_eq "absent" "$(tmux_review_pane_state "$session_name")" "review pane: absent on launch"
+    assert_cmd_succeeds "review pane: launch checkpoint recorded before the edits" \
+        git -C "$repo" show-ref --verify --quiet "refs/am/$session_name/baseline"
+
+    # --- open: tagged pane beside the agent, shell panel still absent ---
+    echo two > "$repo/a.txt"
+    echo new > "$repo/b.txt"
+    agent_review_pane_toggle "$session_name"
+    assert_eq "open" "$(tmux_review_pane_state "$session_name")" "review pane: toggle opens it"
+    local review_pane
+    review_pane=$(tmux_session_pane_by_role "$session_name" review)
+    assert_not_empty "$review_pane" "review pane: tagged @am_role=review"
+    assert_eq "$review_pane" "$(tmux_session_pane_target "$session_name" review)" \
+        "review pane: resolver targets the tagged pane"
+    assert_eq "absent" "$(tmux_shell_pane_state "$session_name")" \
+        "review pane: does not count as a shell panel"
+    assert_cmd_fails "review pane: shell target still refused without a panel" \
+        tmux_session_pane_target "$session_name" shell
+    local pane_count
+    pane_count=$(am_tmux list-panes -t "$(tmux_main_window_id "$session_name")" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "2" "$pane_count" "review pane: agent + review in the main window"
+    assert_eq "1" "$(am_tmux display-message -p -t "$review_pane" '#{pane_at_top}')" \
+        "review pane: sits beside the agent (at top)"
+    assert_eq "$review_pane" "$(am_tmux display-message -p -t "${session_name}" '#{pane_id}')" \
+        "review pane: gets focus when opened"
+    # The agent pane is addressed by position ({top-left}); it must not move
+    # to the focused review pane. Pane indices depend on pane-base-index, so
+    # compare pane ids.
+    local top_left_pane
+    top_left_pane=$(am_tmux display-message -p -t "${session_name}:.{top-left}" '#{pane_id}')
+    [[ -n "$top_left_pane" && "$top_left_pane" != "$review_pane" ]]
+    assert_eq "0" "$?" "review pane: {top-left} still resolves to the agent pane while the review pane is active"
+    assert_eq "" "$(am_tmux show-options -p -t "$top_left_pane" -qv @am_role)" \
+        "review pane: the {top-left} pane carries no role tag (it is the agent)"
+
+    # The TUI renders the changed files and counts.
+    local shown
+    # The diff loads after the measurement, so wait for a hunk header.
+    shown=$(wait_for_text "@@" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "$session_name" "review pane: header names the session"
+    assert_contains "$shown" "2 files +2 −1" "review pane: header counts the change"
+    assert_contains "$shown" "a.txt" "review pane: lists the modified file"
+    assert_contains "$shown" "b.txt" "review pane: lists the untracked file"
+    assert_contains "$shown" "@@" "review pane: shows the diff of the selected file"
+
+    # Live refresh: a tool event touches .dirty, the pane re-measures.
+    echo three > "$repo/c.txt"
+    touch "$state_dir/$session_name.dirty"
+    shown=$(wait_for_text "c.txt" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "c.txt" "review pane: refreshes when .dirty moves"
+    assert_contains "$shown" "3 files" "review pane: recount after refresh"
+    # …and records the count on the registry row for the tab.
+    assert_eq "3" "$(registry_get_field "$session_name" review_files)" \
+        "review pane: measurement lands in the registry"
+
+    # --- shell panel alongside: roles keep the targets straight ---
+    agent_shell_pane_toggle "$session_name"
+    assert_eq "open" "$(tmux_shell_pane_state "$session_name")" "review pane: shell panel opens alongside"
+    local shell_pane
+    shell_pane=$(tmux_session_pane_by_role "$session_name" shell)
+    assert_not_empty "$shell_pane" "review pane: shell pane tagged @am_role=shell"
+    assert_eq "$shell_pane" "$(tmux_session_pane_target "$session_name" shell)" \
+        "review pane: shell resolver targets the tagged shell pane"
+    [[ "$shell_pane" != "$review_pane" ]]
+    assert_eq "0" "$?" "review pane: shell and review are different panes"
+    pane_count=$(am_tmux list-panes -t "$(tmux_main_window_id "$session_name")" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "3" "$pane_count" "review pane: three panes with the shell open"
+
+    # Status bar: the agent pane's pid still drives the state (a stub agent
+    # is a shell → idle); the review pane must not be taken for the agent.
+    local raw out
+    raw=$(AM_STATUS_WIDTH=300 "$LIB_DIR/status-bar" --print "$session_name" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "review pane test" "review pane: status bar still renders the session tab"
+
+    # Hide the shell first: break-pane must take the shell, not the review pane.
+    agent_shell_pane_toggle "$session_name"
+    assert_eq "hidden" "$(tmux_shell_pane_state "$session_name")" "review pane: shell hides"
+    assert_eq "open" "$(tmux_review_pane_state "$session_name")" "review pane: review stays open when the shell hides"
+    assert_eq "$review_pane" "$(tmux_session_pane_by_role "$session_name" review)" \
+        "review pane: same review pane after the shell hid"
+    agent_shell_pane_toggle "$session_name"
+    assert_eq "open" "$(tmux_shell_pane_state "$session_name")" "review pane: shell shows again"
+
+    # --- hide / show the review pane: same pane, TUI keeps running ---
+    agent_review_pane_toggle "$session_name"
+    assert_eq "hidden" "$(tmux_review_pane_state "$session_name")" "review pane: toggle parks it"
+    assert_eq "${session_name}:${AM_REVIEW_WINDOW}" "$(tmux_session_pane_target "$session_name" review)" \
+        "review pane: resolver follows it into the hidden window"
+    assert_eq "open" "$(tmux_shell_pane_state "$session_name")" \
+        "review pane: shell panel unaffected by review hide"
+    pane_count=$(am_tmux list-panes -t "$(tmux_main_window_id "$session_name")" 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "2" "$pane_count" "review pane: agent + shell after review hide"
+    agent_review_pane_toggle "$session_name"
+    assert_eq "open" "$(tmux_review_pane_state "$session_name")" "review pane: toggle rejoins it"
+    assert_eq "$review_pane" "$(tmux_session_pane_by_role "$session_name" review)" \
+        "review pane: the same pane comes back"
+    assert_eq "" "$(am_tmux list-windows -t "$session_name" -F '#{window_name}' | grep -x "$AM_REVIEW_WINDOW" || true)" \
+        "review pane: hidden window gone after show"
+
+    # q closes the TUI and with it the pane.
+    am_tmux send-keys -t "$review_pane" q
+    local i
+    for i in $(seq 1 30); do
+        [[ "$(tmux_review_pane_state "$session_name")" == "absent" ]] && break
+        sleep 0.1
+    done
+    assert_eq "absent" "$(tmux_review_pane_state "$session_name")" "review pane: q closes the pane"
+
+    agent_kill "$session_name" 2>/dev/null || true
+
+    # --- outside a repository: refused with exit 3 ---
+    local plain_session rc=0
+    plain_session=$(set +u; agent_launch "$plain" "claude" "no repo" 2>/dev/null)
+    agent_review_pane_add "$plain_session" 2>/dev/null || rc=$?
+    assert_eq "3" "$rc" "review pane: exit 3 outside a repository"
+    assert_eq "absent" "$(tmux_review_pane_state "$plain_session")" "review pane: nothing opened outside a repository"
+    agent_kill "$plain_session" 2>/dev/null || true
+
+    rm -rf "$state_dir" "$repo" "$plain"
+    if [[ -n "$old_state_dir" ]]; then
+        export AM_STATE_DIR="$old_state_dir"
+    else
+        unset AM_STATE_DIR
+    fi
+    teardown_integration_env
+
+    $SUMMARY_MODE || echo ""
+}
+
 test_shell_panel() {
     $SUMMARY_MODE || echo "=== Testing Shell Panel (open/hide/show) ==="
 
@@ -627,6 +790,7 @@ run_agents_tests() {
     _run_test test_integration_lifecycle
     _run_test test_shell_panel
     _run_test test_launch_review_checkpoint
+    _run_test test_review_pane
     _run_test test_resolve_session
     _run_test test_prompt_injection
     _run_test test_send_prompt_delay

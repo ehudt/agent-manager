@@ -76,7 +76,7 @@ fi
 echo ""
 
 # Capture terminal output from the agent pane (top pane)
-output=$(tmux_capture_pane "$session_name:.{top}" 50 || tmux_capture_pane "$session_name" 50)
+output=$(tmux_capture_pane "$session_name:.{top-left}" 50 || tmux_capture_pane "$session_name" 50)
 
 if [[ -n "$output" ]]; then
     # Strip trailing blank lines (capture-pane pads with empties)

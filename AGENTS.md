@@ -9,7 +9,7 @@ Architecture reference for AI agents working with this codebase.
 - Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
 - Run live state-detection labs: `tests/live_lab/run.sh` (Claude), `run_cursor.sh` (Cursor), and `run_pi.sh` (pi). They record hook payloads, pane titles, and transitions; they are opt-in and spend tokens.
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
-- Build the Go binaries: `make -s build` → `bin/am-list-internal`, `bin/am-browse`, `bin/am-core`; `go vet ./... && go test ./...` for the Go side. `tests/test_all.sh` builds them first, because the bash maintenance wrappers exec `bin/am-core`
+- Build the Go binaries: `make -s build` → `bin/am-list-internal`, `bin/am-browse`, `bin/am-core`, `bin/am-review`; `go vet ./... && go test ./...` for the Go side. `tests/test_all.sh` builds them first, because the bash maintenance wrappers exec `bin/am-core`
 
 ## Versioning
 
@@ -36,7 +36,9 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - Periodic maintenance and store queries run in `bin/am-core`; the bash names (`auto_title_scan`, `registry_gc`, `sessions_log_scan`, `sessions_log_gc`, `sessions_log_restorable`, `_sessions_log_detect_id_for_session`, `_sessions_log_jsonl_exists`, `*_first_user_message`) are one-line wrappers. Consequences: a bash function stub for `tmux_pane_title` / `tmux_capture_pane` no longer reaches the scan (tests put a fake `tmux` on PATH via `setup_fake_tmux`); `am_core` passes `AM_DIR`, `AM_SESSIONS_LOG`, the socket, the prefix, and `AM_STATE_DIR` / `AM_IDENTITY_DIR` explicitly, so anything else the Go side reads (`AM_GC_GRACE_SECS`, `AM_TITLER_DEBUG`, `AM_PI_SESSIONS_DIR`, `AM_CURSOR_PROJECTS_DIR`, `HOME`) must be exported; a missing binary is one stderr line, and the periodic wrappers return 0 so the status-bar tick never fails
 - Sourced libs derive their own dir as `_<MODULE>_LIB_DIR` from `AM_LIB_DIR` (exported by the `am` entry point); standalone scripts like `lib/status-bar` set their own `SCRIPT_DIR`
 - Tests source libs directly — test helpers like `registry_exists` live in `test_helpers.sh`, not in production code
-- The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
+- The shell panel is optional and collapsible: sessions launch agent-only (override: `--shell` / `am config set shell true`), and hiding the panel parks its pane in the hidden `_amshell` window. Session-keyed pane enumeration (e.g. status-bar's bulk `list-panes -a`) must skip that window or the parked shell's pid clobbers the agent pid and flips running sessions to idle. Non-bulk `.{top-left}` targets resolve against the session's *current* window — briefly wrong only if a user manually navigates into `_amshell` (self-heals on toggle)
+- Auxiliary panes carry a tmux pane option `@am_role` (`shell` / `review`); the agent pane is the untagged one. The review pane (`am review`, prefix+v) splits to the agent's *right*, so "at top" no longer identifies the agent: address it as `.{top-left}` (never `.{top}`, which tmux resolves in the *active* pane's column — with the review pane focused it names the review pane), enumerate with `#{@am_role}` and take the first untagged top pane (status-bar bulk path), and resolve shell/review targets through `tmux_session_pane_by_role`. Its hidden window is `_amreview`; skip it wherever `_amshell` is skipped
+- Never overwrite a live Go binary in place (`cp` onto `bin/am-core`, `: > bin/…`): macOS invalidates the code signature of the mapped file and every process running it dies with SIGKILL (rc=137, "Taskgated Invalid Signature" in `~/Library/Logs/DiagnosticReports`). `go build -o` is safe (it unlinks and recreates); a copy must go to a sibling temp file and `mv` into place. The install test's binary restore did this and intermittently killed other workers' `am-core review-init` / title scans
 - Pane environment (`AM_SESSION_NAME`, `AM_AGENT_TYPE`, `AM_IDENTITY_DIR`, `AM_LOG_DIR`) is seeded at pane creation via tmux `-e` (`agent_pane_env` → `tmux_create_session` env args / `split-window -e`) plus the session environment. Never `send-keys` an `export` into a pane: even a space-prefixed one lingers as zsh's most recent history entry, and the vars must exist before the agent command runs. Requires tmux ≥ 3.2 (`display-popup` already did)
 - A directory argument starting with `@` is a provider spec, not a path: `cmd_new` hands it to `agent_dir_resolve`, which runs the configured `dir_provider` as `<provider> resolve <spec>` (bash -c, `AM_SESSION_NAME` blanked) and uses its stdout. The form passes `@spec` through unvalidated in the directory field; provider suggestions come from `<provider> suggest <partial>` under `agent_dir_suggest`'s perl-alarm timeout (`AM_DIR_SUGGEST_TIMEOUT`, 0.3s) and are cached per typed partial for the life of the form. am never interprets a spec (PR number, branch, ...) — that is the provider's business
 - jq's `//` treats `false` as missing: `(.notify // true)` is `true` for `"notify": false`. Read boolean config keys with `if has("k") then .k else default end` (see `_notify_maybe`, `am_auto_restore_enabled`)
@@ -76,6 +78,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `skills/agent-manager-dispatch/SKILL.md` | Claude/Cursor skill: teaches agents to use am for multi-session dispatch/orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `bin/toggle-shell` | tmux helper (prefix+\`): toggle the collapsible shell panel — create on first use via `am shell`, then hide/show by parking the pane in the hidden `_amshell` window |
+| `bin/toggle-review` | tmux helper (prefix+v): toggle the review pane via `am review` — create on first use, then park in / rejoin from the hidden `_amreview` window |
+| `cmd/am-review/main.go`, `view.go` | Compiled Go TUI (bubbletea) for the review pane: `--session`, `--dir`, `--am` (for `a` → `am diff --ack`), `--am-dir`, `--state-dir`, `--poll` (1s). Measures in-process (`ReviewMeasure` with record, `ReviewFileStats`, `ReviewFileDiff`), re-measures when the `.dirty` sidecar's mtime moves (and fully every few ticks), renders the file list (stacked above the diff on narrow panes, beside it when wide) and the selected file's parsed diff with hunk navigation |
 | `bin/switch-last` | tmux helper: switch to most recently active am-* session |
 | `bin/switch-cycle` | tmux helper: cycle next/prev in canonical sidebar order |
 | `bin/switch-index` | tmux helper: jump to Nth slot in canonical sidebar order |
@@ -109,6 +113,8 @@ hook state transition → waiting_user (or notify_states) → _notify_maybe() in
 bare `am` → _install_refresh_if_stale() → fingerprint of install inputs vs $AM_DIR/.install_stamp → _install_refresh() (skills, Go build if sources newer, tmux.conf)
 Ctrl-N in browser → am_new_session_form() → _form_run()
 prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
+prefix+v / am review [s] → bin/toggle-review → agent_review_pane_toggle() → agent_review_pane_add() (split-window -h at the agent's right, @am_role=review, runs bin/am-review) | tmux_review_pane_hide/show() (park in / rejoin from hidden _amreview window)
+am-review tick (1s) → .dirty mtime moved? → ReviewMeasure(record) + ReviewFileStats → ReviewFileDiff(selected) ; 'a' → am diff <s> --ack → re-measure
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → tmux_kill_session() → registry_remove()
 am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session, codex → resume)
 bare `am` → recovery_start_for_browser() → migrate live intent → prior-boot candidates queued → am-browse shows restoring rows while recovery_run() recreates sessions detached
@@ -473,7 +479,13 @@ am restore
 - `agent_shell_pane_toggle(session_name)` - absent → add, open → hide, hidden → show; backs `am shell` and prefix+\` (via bin/toggle-shell)
 - `tmux_shell_pane_state(session)` - Print absent/open/hidden from live tmux (no persisted layout state)
 - `tmux_shell_pane_hide(session)` / `tmux_shell_pane_show(session)` - Park the panel in the hidden _amshell window / rejoin it below the agent (tmux break-pane/join-pane; the pane keeps running, so cwd, history, jobs, and pipe-pane streaming survive). Hide/show also toggle the window's pane-border-status so a lone agent pane wastes no row
-- `tmux_main_window_id(session)` - @id of the session's non-_amshell window; unambiguous even when the current window is the hidden one
+- `tmux_main_window_id(session)` - @id of the session's non-_amshell/_amreview window; unambiguous even when the current window is a hidden one
+
+**Review pane (collapsible, at the agent's right):**
+- `agent_review_pane_add(session_name)` - Split the main window horizontally (`AM_REVIEW_WIDTH`, default 45%) in the session's effective directory, tag the pane `@am_role=review`, run `bin/am-review --session --dir --am [--am-dir --state-dir]`, give it focus. Errors outside a repository (exit 3) or when the binary is not built
+- `agent_review_pane_toggle(session_name)` - absent → add, open → hide, hidden → show; backs `am review` and prefix+v (via bin/toggle-review)
+- `tmux_pane_role_set(pane_id, role)` / `tmux_session_pane_by_role(session, role)` - Write / find the @am_role pane option across the session's windows (hidden ones included); the shell helpers (`tmux_shell_pane_id`) and `tmux_session_pane_target` (role agent → the top-left pane, roles shell / review → the tagged pane) resolve through it
+- `tmux_review_pane_state(session)` / `tmux_review_pane_hide(session)` / `tmux_review_pane_show(session)` - absent/open/hidden from live tmux; park in / rejoin from the hidden _amreview window (break-pane / join-pane -h at the agent's right). `_tmux_border_status_sync(session)` turns pane-border-status on only while an auxiliary pane is visible
 
 **Reboot recovery (`lib/recovery.sh`):**
 - `recovery_desired_upsert/remove/identity()` - Maintain `desired_sessions.json`, the durable set of sessions the user still considers open
@@ -630,6 +642,7 @@ Display: `dirname/branch [agent] task Δ<files> +<add> −<del> (Xm ago)` — di
 | Add agent type | `lib/agents.manifest` → one block of `<type>.<field>` lines (fields documented in the file header); a new transcript layout or title parser also needs its code in `internal/sessions/` (`storeJSONLExists`, `FirstMessage`, `refreshedTitle`) and `lib/doctor.sh` `_doc_transcript`; add a live lab and a `tests/live_lab/VERIFIED` pin |
 | Add CLI command | `am` → `case "$cmd"` in `main()` |
 | Change browser keybindings | `cmd/am-browse/main.go` |
+| Change review pane keybindings or layout | `cmd/am-review/main.go` → `handleKey` / `layout`; diff parsing and rendering in `view.go` |
 | Modify session display | `internal/sessions/sessions.go` → `FormatDisplayBase()` |
 | Add metadata field | `lib/registry.sh` → `registry_add()` |
 | Change preview content | `lib/preview` (session), `lib/dir-preview` (directory picker) |

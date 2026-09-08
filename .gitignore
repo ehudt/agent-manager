@@ -19,6 +19,7 @@ __pycache__/
 bin/am-list-internal
 bin/am-browse
 bin/am-core
+bin/am-review
 
 .evolver/
 

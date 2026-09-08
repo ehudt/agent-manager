@@ -246,7 +246,7 @@ func orEmpty(s string) string {
 // agent pane, written to snapshots/<key>.txt. Returns the log-relative path,
 // or "" when the pane yields nothing (session gone).
 func (e Env) writeSnapshot(session, key string) string {
-	out, err := exec.Command("tmux", "-L", e.Socket, "capture-pane", "-t", session+":.{top}",
+	out, err := exec.Command("tmux", "-L", e.Socket, "capture-pane", "-t", session+":.{top-left}",
 		"-p", "-e", "-S", "-"+strconv.Itoa(snapshotLines), "-E", "-").Output()
 	if err != nil {
 		return ""

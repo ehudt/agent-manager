@@ -180,7 +180,7 @@ _state_pane_is_shell() {
     local session="$1"
     local -A __ps_top=() __ps_comm=() __ps_child=()
     local pane_pid
-    pane_pid=$(am_tmux display-message -p -t "${session}:.{top}" '#{pane_pid}' 2>/dev/null || true)
+    pane_pid=$(am_tmux display-message -p -t "${session}:.{top-left}" '#{pane_pid}' 2>/dev/null || true)
     [[ -z "$pane_pid" ]] && return 1
     __ps_top[$session]=$pane_pid
     local _p _pp _c
@@ -304,7 +304,7 @@ teardown_isolated_am_dir() {
 # function stubs do not survive the exec, so the fake answers display-message
 # (pane title) and capture-pane (pane text) per target from files, and fails
 # every other subcommand (no sessions are listed). Targets are the
-# '<session>:.{top}' form the scanners use.
+# '<session>:.{top-left}' form the scanners use.
 # Usage: setup_fake_tmux; fake_tmux_title <session> <text>;
 #        fake_tmux_pane <session> <text>; ...; teardown_fake_tmux
 setup_fake_tmux() {
@@ -330,8 +330,8 @@ setup_fake_tmux() {
     export PATH="$TEST_FAKE_TMUX_DIR/bin:$PATH"
 }
 
-fake_tmux_title() { printf '%s\n' "$2" > "$TEST_FAKE_TMUX_DIR/titles/$1:.{top}"; }
-fake_tmux_pane() { printf '%s\n' "$2" > "$TEST_FAKE_TMUX_DIR/panes/$1:.{top}"; }
+fake_tmux_title() { printf '%s\n' "$2" > "$TEST_FAKE_TMUX_DIR/titles/$1:.{top-left}"; }
+fake_tmux_pane() { printf '%s\n' "$2" > "$TEST_FAKE_TMUX_DIR/panes/$1:.{top-left}"; }
 
 teardown_fake_tmux() {
     export PATH="$TEST_FAKE_TMUX_OLD_PATH"

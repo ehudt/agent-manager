@@ -302,7 +302,7 @@ _doc_summary_rows() {
             IFS= read -r hook_state < "$state_dir/$name" || true
             hook_age=$(_doc_age "$(_doc_mtime "$state_dir/$name")" "$now")
         fi
-        title=$(tmux_pane_title "${name}:.{top}" 2>/dev/null || true)
+        title=$(tmux_pane_title "${name}:.{top-left}" 2>/dev/null || true)
         _state_title_signal "$title" sig
         printf '  %-10s %-13s %-9s %-14s %-9s %s\n' "$name" "$state" "$layer" "$hook_state" "$hook_age" "${sig}:${title:0:40}"
     done < <(tmux_list_am_sessions)
@@ -360,7 +360,7 @@ _doc_tmux() {
             printf '  %-6s %-8s %-7s %-16s %s\n' "$win" "$pane" "$pid" "$cmd" "$title"
         done
     local title sig csig
-    title=$(tmux_pane_title "${name}:.{top}" 2>/dev/null || true)
+    title=$(tmux_pane_title "${name}:.{top-left}" 2>/dev/null || true)
     _state_title_signal "$title" sig
     _state_cursor_title_signal "$title" csig
     _doc_kv "top pane title" "${title:-<empty>}"
@@ -477,7 +477,7 @@ _doc_processes() {
     local name="$1"
     _doc_h2 "process tree (top pane)"
     local pane_pid
-    pane_pid=$(am_tmux display-message -p -t "${name}:.{top}" '#{pane_pid}' 2>/dev/null || true)
+    pane_pid=$(am_tmux display-message -p -t "${name}:.{top-left}" '#{pane_pid}' 2>/dev/null || true)
     [[ -n "$pane_pid" ]] || { _doc_kv "pane pid" "unknown"; return 0; }
     local -A children=() comm=() etime=()
     local p pp e c
@@ -617,7 +617,7 @@ _doc_capture() {
     local n
     for n in $(tmux_list_am_sessions); do
         [[ -n "$session" && "$n" != "$session" ]] && continue
-        tmux_capture_pane "${n}:.{top}" 200 > "$dir/pane-$n.txt" 2>/dev/null || true
+        tmux_capture_pane "${n}:.{top-left}" 200 > "$dir/pane-$n.txt" 2>/dev/null || true
     done
     tar -czf "$out" -C "$dir" . 2>/dev/null
     rm -rf "$dir"

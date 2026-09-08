@@ -140,6 +140,49 @@ func WorktreeTree(dir string) (string, error) {
 	return gitOut(root, env, "", "write-tree")
 }
 
+// FileStat is one file's share of the unreviewed change. Binary files carry
+// Binary=true and zero counts.
+type FileStat struct {
+	Path           string
+	Added, Deleted int
+	Binary         bool
+}
+
+// ReviewFileStats lists the files that differ between two trees with their
+// line counts (`git diff --numstat -z`, renames reported as delete + add so a
+// path is always one file).
+func ReviewFileStats(dir, baseTree, curTree string) ([]FileStat, error) {
+	out, err := gitOut(dir, nil, "", "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", baseTree, curTree)
+	if err != nil {
+		return nil, err
+	}
+	var files []FileStat
+	for _, rec := range strings.Split(out, "\x00") {
+		if rec == "" {
+			continue
+		}
+		parts := strings.SplitN(rec, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		fs := FileStat{Path: parts[2]}
+		if parts[0] == "-" || parts[1] == "-" {
+			fs.Binary = true
+		} else {
+			fs.Added, _ = strconv.Atoi(parts[0])
+			fs.Deleted, _ = strconv.Atoi(parts[1])
+		}
+		files = append(files, fs)
+	}
+	return files, nil
+}
+
+// ReviewFileDiff is the unified diff of one path between two trees, without
+// colour or external diff drivers so callers can parse and style it.
+func ReviewFileDiff(dir, baseTree, curTree, path string) (string, error) {
+	return gitOut(dir, nil, "", "diff", "--no-color", "--no-renames", "--no-ext-diff", baseTree, curTree, "--", path)
+}
+
 // HeadInfo returns the current branch name ("" when detached or unborn) and
 // HEAD's sha ("" when unborn).
 func HeadInfo(dir string) (branch, sha string, err error) {

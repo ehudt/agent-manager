@@ -174,7 +174,7 @@ _state_cursor_tasks_probe() {
     __out="unknown"
 
     local pane_text="" parsed=""
-    if ! pane_text=$(am_tmux capture-pane -p -t "${session}:.{top}" 2>/dev/null); then
+    if ! pane_text=$(am_tmux capture-pane -p -t "${session}:.{top-left}" 2>/dev/null); then
         return
     fi
     _state_cursor_tasks_signal "$pane_text" parsed
@@ -318,7 +318,7 @@ _state_resolve() {
     else
         local pane_pid
         read -r pane_pid activity_val title_val <<< "$(am_tmux display-message -p \
-            -t "${session}:.{top}" '#{pane_pid} #{session_activity} #{pane_title}' 2>/dev/null || true)"
+            -t "${session}:.{top-left}" '#{pane_pid} #{session_activity} #{pane_title}' 2>/dev/null || true)"
         [[ -n "$pane_pid" ]] && __auto_top[$session]=$pane_pid
         local _p _pp _c
         while read -r _p _pp _c; do

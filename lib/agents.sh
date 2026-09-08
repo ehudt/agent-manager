@@ -75,7 +75,7 @@ agent_type_supported() {
 # Usage: agent_target_pane <session_name>
 agent_target_pane() {
     local session_name="$1"
-    echo "${session_name}:.{top}"
+    echo "${session_name}:.{top-left}"
 }
 
 
@@ -207,7 +207,7 @@ agent_launch() {
     # when --shell / the shell_pane config default asks for it.
     local _pane_title="${task:-$(dir_basename "$directory")}"
     _pane_title=$(truncate "$_pane_title" 60)
-    am_tmux select-pane -t "$session_name:.{top}" -T "$_pane_title"
+    am_tmux select-pane -t "$session_name:.{top-left}" -T "$_pane_title"
 
     # Set up log streaming if enabled (AM_LOG_DIR is already in the pane env).
     # Both /tmp trees am owns are user-only: the logs hold full pane
@@ -217,7 +217,7 @@ agent_launch() {
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
         am_mkdir_private /tmp/am-logs "$log_dir"
-        tmux_enable_pipe_pane "$session_name" ".{top}" "$log_dir/agent.log"
+        tmux_enable_pipe_pane "$session_name" ".{top-left}" "$log_dir/agent.log"
     fi
     am_mkdir_private "${AM_STATE_DIR:-/tmp/am-state}"
 
@@ -253,7 +253,7 @@ agent_launch() {
         fi
     fi
 
-    tmux_send_keys "$session_name:.{top}" "$full_cmd" Enter
+    tmux_send_keys "$session_name:.{top-left}" "$full_cmd" Enter
 
     # Clean up prompt temp file after agent starts (for stdin-piped agents).
     if [[ -n "$prompt_file" ]]; then
@@ -265,7 +265,7 @@ agent_launch() {
     # window height (prefix+` / `am shell` opens the panel on demand).
     if $wants_shell; then
         agent_shell_pane_add "$session_name"
-        am_tmux select-pane -t "$session_name:.{top}"
+        am_tmux select-pane -t "$session_name:.{top-left}"
     else
         am_tmux set-option -w -t "$session_name:" pane-border-status off
     fi
@@ -431,10 +431,10 @@ agent_shell_pane_add() {
         env_flags+=(-e "$kv")
     done
     local shell_pane
-    shell_pane=$(am_tmux split-window -t "$main_id" -v -c "$directory" "${env_flags[@]}" -P -F '#{pane_id}') || return 1
+    shell_pane=$(am_tmux split-window -t "${main_id}.{top-left}" -v -c "$directory" "${env_flags[@]}" -P -F '#{pane_id}') || return 1
+    tmux_pane_role_set "$shell_pane" shell
     am_tmux resize-pane -t "$shell_pane" -y 15
-    # Two panes again: restore the pane-border sidebar divider.
-    am_tmux set-option -w -u -t "$main_id" pane-border-status
+    _tmux_border_status_sync "$main_id"
 
     if am_stream_logs_enabled; then
         local log_dir="/tmp/am-logs/${session_name}"
@@ -452,6 +452,77 @@ agent_shell_pane_toggle() {
         open) tmux_shell_pane_hide "$session_name" ;;
         hidden) tmux_shell_pane_show "$session_name" ;;
         *) agent_shell_pane_add "$session_name" ;;
+    esac
+}
+
+# Open the review pane (bin/am-review) at the agent's right: the changed
+# files and diff since the session's review baseline, refreshing on every
+# tool event. Runs in the session's effective directory (workdir, else the
+# launch directory) and is tagged @am_role=review so the shell-panel helpers
+# and the status bar never mistake it for the shell or the agent. The pane
+# closes when the TUI quits (q).
+# Usage: agent_review_pane_add <session_name>
+agent_review_pane_add() {
+    local session_name="$1"
+
+    local fields directory workdir agent_type
+    fields=$(registry_get_fields "$session_name" directory workdir agent_type)
+    IFS='|' read -r directory workdir agent_type <<< "$fields"
+    if [[ -z "$directory" ]]; then
+        log_error "Session not in registry: $session_name"
+        return 1
+    fi
+    local dir="${workdir:-$directory}"
+    if [[ ! -d "$dir" ]]; then
+        log_error "Directory no longer exists: $dir"
+        return 1
+    fi
+    if ! git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1; then
+        log_error "Not a git repository: nothing to review in $dir"
+        return 3
+    fi
+    local review_bin="$AM_ROOT_DIR/bin/am-review"
+    if [[ ! -x "$review_bin" ]]; then
+        log_error "bin/am-review is not built (run 'make build' or 'am install --refresh')"
+        return 1
+    fi
+
+    local main_id
+    main_id=$(tmux_main_window_id "$session_name")
+    if [[ -z "$main_id" ]]; then
+        log_error "Session not found: $session_name"
+        return 1
+    fi
+
+    local -a pane_env=() env_flags=()
+    local kv
+    mapfile -t pane_env < <(agent_pane_env "$session_name" "$agent_type")
+    for kv in "${pane_env[@]}"; do
+        env_flags+=(-e "$kv")
+    done
+    local -a review_cmd=("$review_bin" --session "$session_name" --dir "$dir" --am "$AM_ROOT_DIR/am")
+    [[ -n "${AM_DIR:-}" ]] && review_cmd+=(--am-dir "$AM_DIR")
+    [[ -n "${AM_STATE_DIR:-}" ]] && review_cmd+=(--state-dir "$AM_STATE_DIR")
+    local quoted="" part
+    for part in "${review_cmd[@]}"; do
+        quoted+=" $(printf '%q' "$part")"
+    done
+
+    local review_pane
+    review_pane=$(am_tmux split-window -t "${main_id}.{top-left}" -h -l "$AM_REVIEW_WIDTH" -c "$dir" \
+        "${env_flags[@]}" -P -F '#{pane_id}' "${quoted# }") || return 1
+    tmux_pane_role_set "$review_pane" review
+    _tmux_border_status_sync "$main_id"
+}
+
+# Toggle the review pane: create it on first use, park it when open, rejoin
+# it when hidden. Usage: agent_review_pane_toggle <session_name>
+agent_review_pane_toggle() {
+    local session_name="$1"
+    case "$(tmux_review_pane_state "$session_name")" in
+        open) tmux_review_pane_hide "$session_name" ;;
+        hidden) tmux_review_pane_show "$session_name" ;;
+        *) agent_review_pane_add "$session_name" ;;
     esac
 }
 

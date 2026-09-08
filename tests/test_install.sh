@@ -180,7 +180,7 @@ EOF
     local _saved_bin="$temp_root/saved-bin"
     mkdir -p "$_saved_bin"
     local _bin
-    for _bin in am-list-internal am-browse am-core; do
+    for _bin in am-list-internal am-browse am-core am-review; do
         if [[ -f "$PROJECT_DIR/bin/$_bin" ]]; then
             cp -p "$PROJECT_DIR/bin/$_bin" "$_saved_bin/$_bin"
         fi
@@ -272,10 +272,17 @@ EOF
 
     # Restore the real binaries that the fake-go stub clobbered, or remove the
     # stubs so other workers fall back to the bash path instead of exec'ing a
-    # 0-byte file.
-    for _bin in am-list-internal am-browse am-core; do
+    # 0-byte file. Never write over the live file in place: on macOS that
+    # invalidates the code signature of the mapped binary and every am-core /
+    # am-browse another worker is running at that instant dies with SIGKILL
+    # (seen as rc=137 and "Taskgated Invalid Signature" crash reports). The
+    # stub leaves a non-empty binary alone, so usually nothing changed; when
+    # it did, copy to a sibling temp file and rename it into place.
+    for _bin in am-list-internal am-browse am-core am-review; do
         if [[ -f "$_saved_bin/$_bin" ]]; then
-            cp -p "$_saved_bin/$_bin" "$PROJECT_DIR/bin/$_bin"
+            cmp -s "$_saved_bin/$_bin" "$PROJECT_DIR/bin/$_bin" 2>/dev/null && continue
+            cp -p "$_saved_bin/$_bin" "$PROJECT_DIR/bin/.$_bin.restore.$$" \
+                && mv -f "$PROJECT_DIR/bin/.$_bin.restore.$$" "$PROJECT_DIR/bin/$_bin"
         else
             rm -f "$PROJECT_DIR/bin/$_bin"
         fi

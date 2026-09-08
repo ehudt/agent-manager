@@ -214,6 +214,7 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
 | ``Prefix + ` `` | Toggle the shell panel (open on first use, then hide/show) |
+| `Prefix + v` | Toggle the review pane: what the agent changed since you last looked |
 | `Prefix ↑/↓` | Switch between agent and shell panes (panel open) |
 | `Prefix + [` / `]` | Copy mode / paste (tmux defaults) |
 | mouse click | Click a tab in the bottom bar to switch to it |
@@ -277,6 +278,19 @@ am diff am-abc123 --ack                  # reviewed: the working copy becomes th
 am diff am-abc123 --reset                # back to the launch checkpoint
 am diff am-abc123 --list                 # every checkpoint: id, kind, branch, HEAD, age (* = baseline)
 am diff am-abc123 --checkpoint 3f2a1c0   # one-off diff from an older checkpoint
+```
+
+For a live view, open the **review pane** beside the agent (``Prefix + v``,
+or `am review [session]`): the changed files with their line counts, the diff
+of the selected file, hunk navigation (`]` / `[`), and `a` to mark the working
+copy reviewed. It re-measures on every tool event, so it follows the agent as
+it works. Like the shell panel it is collapsible: the first toggle opens it,
+later ones hide and show the same pane in place. `?` inside the pane lists
+the keys.
+
+```bash
+am review                                # inside a session: toggle its review pane
+am review am-abc123                      # from anywhere
 ```
 
 The diff runs through your own `git diff`, so your pager and diff tools
@@ -478,6 +492,7 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 | `am send [--wait\|--queue\|--force] <session> [prompt]` | Send a prompt once the agent is ready |
 | `am peek <session>` | Snapshot or follow a session's pane output |
 | `am diff [session] [--ack\|--reset\|--list\|--checkpoint id]` | What the agent changed since the review baseline; `--ack` marks it reviewed |
+| `am review [session]` | Toggle the live review pane beside the agent (also `Prefix + v`) |
 | `am wait [--any\|--all] <session>...` | Block until one or every session reaches a target state |
 | `am done [summary]` | (inside a session) Record a result for the dispatcher |
 | `am result <session>` | Read the summary a session recorded with `am done` |
