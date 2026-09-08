@@ -337,6 +337,60 @@ test_send_prompt_delay() {
     $SUMMARY_MODE || echo ""
 }
 
+# Launching in a repository records the launch review checkpoint before the
+# agent runs; killing the session keeps the refs (restore adopts them) but
+# removes the .dirty/.head sidecars. Outside a repository nothing is written.
+test_launch_review_checkpoint() {
+    $SUMMARY_MODE || echo "=== Testing launch review checkpoint ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+    local old_state_dir="${AM_STATE_DIR:-}"
+    local state_dir repo plain
+    state_dir=$(mktemp -d)
+    export AM_STATE_DIR="$state_dir"
+    repo=$(mktemp -d)
+    plain=$(mktemp -d)
+    local g=(git -C "$repo" -c user.name=am-test -c user.email=am@test -c commit.gpgsign=false -c init.defaultBranch=main)
+    "${g[@]}" init -q "$repo"
+    echo one > "$repo/a.txt"
+    "${g[@]}" add a.txt
+    "${g[@]}" commit -q -m first
+
+    local session_name
+    session_name=$(set +u; agent_launch "$repo" "claude" "review test" 2>/dev/null)
+    assert_not_empty "$session_name" "launch checkpoint: session launched in a repo"
+    assert_cmd_succeeds "launch checkpoint: baseline ref exists after launch" \
+        git -C "$repo" show-ref --verify --quiet "refs/am/$session_name/baseline"
+    local listing
+    listing=$(AM_DIR="$AM_DIR" AM_STATE_DIR="$state_dir" "$PROJECT_DIR/bin/am-core" review-list "$session_name" "$repo" 2>/dev/null || true)
+    assert_contains "$listing" " launch main " "launch checkpoint: kind launch on the launch branch"
+
+    touch "$state_dir/$session_name.dirty" "$state_dir/$session_name.head"
+    agent_kill "$session_name" 2>/dev/null || true
+    assert_cmd_succeeds "launch checkpoint: refs survive agent_kill" \
+        git -C "$repo" show-ref --verify --quiet "refs/am/$session_name/baseline"
+    assert_cmd_fails "launch checkpoint: .dirty sidecar removed on kill" test -f "$state_dir/$session_name.dirty"
+    assert_cmd_fails "launch checkpoint: .head sidecar removed on kill" test -f "$state_dir/$session_name.head"
+
+    local plain_session
+    plain_session=$(set +u; agent_launch "$plain" "claude" "no repo" 2>/dev/null)
+    assert_not_empty "$plain_session" "launch checkpoint: launch outside a repo still succeeds"
+    agent_kill "$plain_session" 2>/dev/null || true
+
+    rm -rf "$state_dir" "$repo" "$plain"
+    if [[ -n "$old_state_dir" ]]; then
+        export AM_STATE_DIR="$old_state_dir"
+    else
+        unset AM_STATE_DIR
+    fi
+    teardown_integration_env
+}
+
 test_shell_panel() {
     $SUMMARY_MODE || echo "=== Testing Shell Panel (open/hide/show) ==="
 
@@ -572,6 +626,7 @@ run_agents_tests() {
     _run_test test_agent_manifest
     _run_test test_integration_lifecycle
     _run_test test_shell_panel
+    _run_test test_launch_review_checkpoint
     _run_test test_resolve_session
     _run_test test_prompt_injection
     _run_test test_send_prompt_delay

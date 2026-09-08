@@ -123,6 +123,7 @@ Run the tests, reproduce, fix, and commit. Use superpowers:systematic-debugging.
 | `am list --json [--state s1,s2]` | All sessions as JSON (includes `state`), optionally filtered |
 | `am kill --state idle,dead -y` | Sweep finished workers |
 | `am peek [--pane shell] [--follow] <session>` | Pane snapshot or stream |
+| `am diff [--stat] <session>` | What the worker changed in its repository since its review baseline (launch, or the last `--ack`); untracked files included, commits do not hide changes. `--ack` marks the current tree reviewed |
 | `am interrupt <session>` | Send Ctrl-C to agent pane |
 | `am cd [dir]` | From inside a session: record that it now works in `dir` (tab label + branch follow). Claude sessions do this on their own through the hooks |
 | `am info` / `am kill` / `am attach <session>` | Metadata / terminate / hand to user |
@@ -161,6 +162,7 @@ s2=$(printf 'Run frontend tests. When finished run: am done "<one-line summary>"
 am wait --all "$s1" "$s2"            # or: am wait --any ... to react to the first one
 am result "$s1" || am peek "$s1" | tail -n 5
 am result "$s2" || am peek "$s2" | tail -n 5
+am diff --stat "$s1"             # which files the worker touched, before reading its summary
 ```
 
 **User interactions** — hand control to a human; `waiting_user` intentionally

@@ -324,7 +324,7 @@ func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 			continue
 		}
 		session := name
-		for _, suffix := range []string{".sid", ".transcript", ".cwd", ".bg"} {
+		for _, suffix := range []string{".sid", ".transcript", ".cwd", ".bg", ".dirty", ".head"} {
 			session = strings.TrimSuffix(session, suffix)
 		}
 		if _, ok := live[session]; ok {
@@ -367,6 +367,11 @@ func (e Env) SessionsLogGC() int {
 		}
 		if snap := l.get("snapshot_file"); snap != "" {
 			_ = os.Remove(filepath.Join(e.AmDir, snap))
+		}
+		// The conversation is gone for good, so its review checkpoints
+		// (refs/am/<session>/* in the repo) will never be diffed again.
+		if name := l.get("session_name"); name != "" && dir != "" {
+			ReviewDrop(dir, name)
 		}
 		removed++
 	}

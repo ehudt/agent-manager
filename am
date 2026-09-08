@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.24.1"
+AM_VERSION="0.25.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -46,6 +46,7 @@ COMMANDS:
     shell               Toggle a session's shell panel (open on first use, then hide/show)
     id                  Print the name of the am session you are inside
     cd                  Record where the current session works now (label + branch follow)
+    diff                Show what a session changed since you last reviewed it (--ack, --list)
     kill                Kill a session (--all, --state <list>)
     config              Show or change saved defaults
     preset              Save and list launch presets for 'new -p'
@@ -92,6 +93,17 @@ OPTIONS FOR 'peek':
     --lines N       Lines of pane content to include, from the end (default: 50)
     --history       Read the streamed shell.log scrollback instead of the viewport
     --grep <re>     With --history: filter lines (grep -E) before --lines
+
+OPTIONS FOR 'diff':
+    Diff from the session's review baseline (a checkpoint kept in its repo:
+    the working copy at launch, then whatever you acknowledged) to the
+    working copy now, through your git pager. Session defaults to the one
+    you are inside. The tab shows the pending size as Δ<files> +<add> −<del>.
+    --ack               Mark the working copy as reviewed (new baseline)
+    --reset             Baseline back to the launch checkpoint
+    --checkpoint <id>   One-off diff from that checkpoint
+    --list, -l          List checkpoints (launch / ack / branch / head)
+    --stat, -- <args>   Forwarded to git diff
 
 OPTIONS FOR 'wait':
     --state <list>  Comma-separated target states (default: ready,waiting_user,idle,dead)
@@ -200,6 +212,14 @@ source "$AM_LIB_DIR/presets.sh"
 _ensure_state() { [[ "$(type -t agent_get_state)" == "function" ]] || source "$AM_LIB_DIR/state.sh"; }
 _ensure_form() { [[ "$(type -t _form_run)" == "function" ]] || source "$AM_LIB_DIR/form.sh"; }
 _ensure_doctor() { _ensure_state; [[ "$(type -t doctor_main)" == "function" ]] || source "$AM_LIB_DIR/doctor.sh"; }
+_ensure_review() { [[ "$(type -t review_diff_main)" == "function" ]] || source "$AM_LIB_DIR/review.sh"; }
+
+# Command: diff — what the agent changed since the review baseline
+# (lib/review.sh). Session from the argument, else the pane the caller is in.
+cmd_diff() {
+    _ensure_review
+    review_diff_main "$@"
+}
 
 # Command: list (plain text or JSON)
 cmd_list() {
@@ -339,6 +359,14 @@ cmd_restore_internal() {
         # the agent forks the resume to a new id.
         sessions_log_update "$session_name" "session_id" "$session_id"
         recovery_desired_identity "$session_name" "$session_id" "" "resume"
+        # The closed session's review checkpoints continue under the new name.
+        local previous
+        previous=$(jq -rs --arg sid "$session_id" --arg me "$session_name" \
+            '[.[] | select(.session_id == $sid and .session_name != $me)] | last | .session_name // empty' \
+            "$AM_SESSIONS_LOG" 2>/dev/null || true)
+        if [[ -n "$previous" ]]; then
+            am_core review-adopt "$previous" "$session_name" "$directory" >/dev/null 2>&1 || true
+        fi
         tmux_attach "$session_name"
     fi
 }
@@ -2105,6 +2133,9 @@ main() {
             ;;
         info|i)
             cmd_info "$@"
+            ;;
+        diff)
+            cmd_diff "$@"
             ;;
         status|s)
             cmd_status "$@"

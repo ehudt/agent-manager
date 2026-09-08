@@ -259,15 +259,18 @@ _fzf_session_rows() {
 
     # Bulk-read all registry fields in one jq call.
     local -A reg_dir reg_branch reg_agent reg_task reg_workdir
-    local _rname _rdir _rbranch _ragent _rtask _rworkdir
-    while IFS=$'\x1f' read -r _rname _rdir _rbranch _ragent _rtask _rworkdir; do
+    local -A reg_review
+    local _rname _rdir _rbranch _ragent _rtask _rworkdir _rfiles _radd _rdel
+    while IFS=$'\x1f' read -r _rname _rdir _rbranch _ragent _rtask _rworkdir _rfiles _radd _rdel; do
         [[ -z "$_rname" ]] && continue
         reg_dir[$_rname]=$_rdir
         reg_branch[$_rname]=$_rbranch
         reg_agent[$_rname]=$_ragent
         reg_task[$_rname]=$_rtask
         reg_workdir[$_rname]=$_rworkdir
-    done < <(jq -r --arg sep "$sep" '.sessions | to_entries[] | [.key, .value.directory // "", .value.branch // "", .value.agent_type // "", .value.task // "", .value.workdir // ""] | join($sep)' "$AM_REGISTRY" 2>/dev/null || true)
+        # Unreviewed change since the review baseline: "files added deleted".
+        reg_review[$_rname]="${_rfiles:-0} ${_radd:-0} ${_rdel:-0}"
+    done < <(jq -r --arg sep "$sep" '.sessions | to_entries[] | [.key, .value.directory // "", .value.branch // "", .value.agent_type // "", .value.task // "", .value.workdir // "", (.value.review_files // 0 | tostring), (.value.review_added // 0 | tostring), (.value.review_deleted // 0 | tostring)] | join($sep)' "$AM_REGISTRY" 2>/dev/null || true)
 
     # Parallel state detection. _state_resolve in non-bulk mode handles its
     # own per-session tmux/ps lookups; running each session in its own
@@ -287,7 +290,7 @@ _fzf_session_rows() {
     rm -rf "$state_tmpdir"
 
     for session in "${session_names[@]}"; do
-        printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+        printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
             "$session" "$sep" \
             "${session_states[$session]:-}" "$sep" \
             "${reg_dir[$session]:-}" "$sep" \
@@ -296,7 +299,8 @@ _fzf_session_rows() {
             "${reg_task[$session]:-}" "$sep" \
             "${tmux_activity[$session]:-0}" "$sep" \
             "${tmux_created[$session]:-0}" "$sep" \
-            "${reg_workdir[$session]:-}"
+            "${reg_workdir[$session]:-}" "$sep" \
+            "${reg_review[$session]:-0 0 0}"
     done
 }
 
@@ -307,6 +311,7 @@ _fzf_format_plain_row() {
     local agent_type="$4"
     local task="$5"
     local activity="$6"
+    local review="${7:-}"
 
     local now idle
     now=$(date +%s)
@@ -318,6 +323,12 @@ _fzf_format_plain_row() {
     [[ -n "$branch" ]] && display="$display/$branch"
     display="$display [${agent_type:-unknown}]"
     [[ -n "$task" ]] && display="$display $task"
+    # Unreviewed change ("files added deleted") → " Δ7 +212 −48"; hidden at zero.
+    local _rf _ra _rd
+    read -r _rf _ra _rd <<< "$review"
+    if [[ "${_rf:-0}" =~ ^[0-9]+$ ]] && (( _rf > 0 )); then
+        display="$display Δ${_rf} +${_ra:-0} −${_rd:-0}"
+    fi
     display="$display ($(format_time_ago "$idle"))"
 
     echo "$display"
@@ -330,10 +341,10 @@ fzf_list_simple() {
     rows=$(_fzf_session_rows)
     [[ -z "$rows" ]] && return
 
-    while IFS=$'\x1f' read -r session _state directory branch agent_type task activity _created workdir; do
+    while IFS=$'\x1f' read -r session _state directory branch agent_type task activity _created workdir review; do
         [[ -z "$session" ]] && continue
         _fzf_state_selected "$_state" || continue
-        _fzf_format_plain_row "$session" "${workdir:-$directory}" "$branch" "$agent_type" "$task" "$activity"
+        _fzf_format_plain_row "$session" "${workdir:-$directory}" "$branch" "$agent_type" "$task" "$activity" "$review"
     done <<< "$rows"
 }
 
@@ -358,7 +369,9 @@ fzf_list_json() {
          {name: .[0], state: .[1], directory: .[2], branch: .[3],
           agent_type: .[4], task: .[5],
           activity: (.[6] | tonumber), created: (.[7] | tonumber),
-          workdir: (.[8] // "")})
+          workdir: (.[8] // "")}
+         + ((.[9] // "0 0 0") | split(" ") | map(tonumber? // 0)
+            | {review_files: .[0], review_added: .[1], review_deleted: .[2]}))
         | if $states == "" then . else
             ($states | split(",")) as $want | map(select(.state as $s | $want | index($s)))
           end'

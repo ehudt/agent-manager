@@ -150,8 +150,8 @@ test_cli_extended() {
     row_line=$(printf '%s\n' "$row_output" | head -n1)
     assert_not_empty "$row_line" "list row collector: emits a row"
 
-    local row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir
-    IFS=$'\x1f' read -r row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir <<< "$row_line"
+    local row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir row_review
+    IFS=$'\x1f' read -r row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir row_review <<< "$row_line"
     assert_eq "$session_name" "$row_name" "list row collector: name field"
     assert_not_empty "$row_state" "list row collector: state field"
     assert_eq "$test_dir" "$row_dir" "list row collector: directory field"
@@ -161,6 +161,7 @@ test_cli_extended() {
     assert_not_empty "$row_activity" "list row collector: activity field"
     assert_not_empty "$row_created" "list row collector: created field"
     assert_eq "" "$row_workdir" "list row collector: workdir empty until the agent moves"
+    assert_eq "0 0 0" "$row_review" "list row collector: review counts zero for a non-repo session"
 
     # --- Test: am list-internal returns session list for the browser ---
     if [[ -x "$PROJECT_DIR/bin/am-list-internal" && -s "$PROJECT_DIR/bin/am-list-internal" ]]; then
@@ -653,12 +654,153 @@ test_cli_dispatch() {
     $SUMMARY_MODE || echo ""
 }
 
+# Review checkpoints: `am diff` and its --ack / --reset / --list /
+# --checkpoint forms against a real git repository.
+test_cli_diff() {
+    $SUMMARY_MODE || echo "=== Testing am diff ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+    local state_dir repo plain
+    state_dir=$(mktemp -d)
+    repo=$(mktemp -d)
+    plain=$(mktemp -d)
+    repo=$(cd "$repo" && pwd -P)
+    local am_env=(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_STATE_DIR="$state_dir" TMUX= AM_SESSION_NAME= GIT_PAGER=cat)
+    local g=(git -C "$repo" -c user.name=am-test -c user.email=am@test -c commit.gpgsign=false -c init.defaultBranch=main)
+
+    "${g[@]}" init -q "$repo"
+    echo one > "$repo/a.txt"
+    "${g[@]}" add a.txt
+    "${g[@]}" commit -q -m first
+
+    # Session resolution goes through tmux, so the sessions must exist there.
+    tmux_create_session "test-am-diff1" "$repo" 2>/dev/null
+    tmux_create_session "test-am-diff2" "$plain" 2>/dev/null
+    registry_add "test-am-diff1" "$repo" "main" "claude" "diff test"
+    registry_add "test-am-diff2" "$plain" "" "claude" "not a repo"
+
+    local rc=0 out err
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 2>&1 >/dev/null </dev/null) || rc=$?
+    assert_eq "0" "$rc" "am diff: clean session exits 0"
+    assert_contains "$err" "no changes" "am diff: clean session reports no changes"
+    assert_contains "$err" "launch checkpoint" "am diff: baseline is the launch checkpoint (created on demand)"
+
+    echo two > "$repo/a.txt"
+    echo new > "$repo/b.txt"
+    rc=0
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --stat 2>"$state_dir/err" </dev/null) || rc=$?
+    err=$(cat "$state_dir/err")
+    assert_eq "0" "$rc" "am diff: dirty session exits 0"
+    assert_contains "$out" "a.txt" "am diff --stat: modified tracked file listed"
+    assert_contains "$out" "b.txt" "am diff --stat: untracked file listed"
+    assert_contains "$err" "2 files +2 −1" "am diff: header counts files and lines"
+    assert_eq "2" "$(registry_get_field test-am-diff1 review_files)" "am diff: records review_files in the registry"
+    assert_eq "2" "$(registry_get_field test-am-diff1 review_added)" "am diff: records review_added"
+    assert_eq "1" "$(registry_get_field test-am-diff1 review_deleted)" "am diff: records review_deleted"
+
+    # Committing does not hide the change: trees are compared, not HEAD.
+    "${g[@]}" add -A
+    "${g[@]}" commit -q -m second
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --stat 2>"$state_dir/err" </dev/null || true)
+    err=$(cat "$state_dir/err")
+    assert_contains "$out" "b.txt" "am diff: committed changes stay unreviewed"
+    assert_contains "$err" "HEAD moved" "am diff: header notes that HEAD moved"
+
+    # --ack: the working copy becomes the baseline.
+    rc=0
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --ack 2>&1 </dev/null) || rc=$?
+    assert_eq "0" "$rc" "am diff --ack: exits 0"
+    assert_contains "$err" "marked reviewed" "am diff --ack: confirms"
+    local ack_files
+    ack_files=$(registry_get_field test-am-diff1 review_files)
+    assert_eq "0" "${ack_files:-0}" "am diff --ack: zeroes the registry count"
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 2>&1 >/dev/null </dev/null || true)
+    assert_contains "$err" "no changes since the ack checkpoint" "am diff: nothing unreviewed after --ack"
+
+    # --list: launch + head + ack, ack starred as the baseline.
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --list 2>/dev/null </dev/null || true)
+    assert_contains "$out" "launch" "am diff --list: launch checkpoint listed"
+    assert_contains "$out" "head" "am diff --list: head checkpoint recorded for the commit"
+    assert_contains "$out" "ack" "am diff --list: ack checkpoint listed"
+    local ack_line ack_id
+    ack_line=$(printf '%s\n' "$out" | grep -E '^\* ' | head -n1)
+    assert_contains "$ack_line" "ack" "am diff --list: the ack checkpoint is the baseline"
+    ack_id=$(printf '%s' "$ack_line" | awk '{print $2}')
+    assert_not_empty "$ack_id" "am diff --list: baseline row carries an id"
+
+    # --reset: back to the launch tree, both files unreviewed again.
+    rc=0
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --reset 2>&1 </dev/null) || rc=$?
+    assert_eq "0" "$rc" "am diff --reset: exits 0"
+    assert_contains "$err" "launch checkpoint" "am diff --reset: names the launch checkpoint"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --stat 2>/dev/null </dev/null || true)
+    assert_contains "$out" "b.txt" "am diff --reset: changes since launch visible again"
+
+    # --checkpoint: one-off diff from the ack checkpoint, baseline untouched.
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --checkpoint "$ack_id" 2>&1 >/dev/null </dev/null || true)
+    assert_contains "$err" "no changes since the ack checkpoint" "am diff --checkpoint: diffs from the named checkpoint"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --list 2>/dev/null </dev/null || true)
+    assert_contains "$(printf '%s\n' "$out" | grep -E '^\* ')" "launch" "am diff --checkpoint: baseline stays where --reset put it"
+
+    # Branch switch: a branch checkpoint at the new HEAD's tree moves the
+    # baseline, so the switch itself is not "unreviewed".
+    "${g[@]}" checkout -q -b feature
+    echo three > "$repo/c.txt"
+    "${g[@]}" add -A
+    "${g[@]}" commit -q -m third
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 2>&1 >/dev/null </dev/null || true)
+    assert_contains "$err" "no changes since the branch checkpoint" "am diff: branch switch moves the baseline"
+    echo four > "$repo/c.txt"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --stat 2>/dev/null </dev/null || true)
+    assert_contains "$out" "c.txt" "am diff: edits after the switch are unreviewed"
+    assert_not_contains "$out" "b.txt" "am diff: files unchanged since the switch are not"
+
+    # Session from the pane environment.
+    rc=0
+    env "${am_env[@]}" AM_SESSION_NAME=test-am-diff1 "$PROJECT_DIR/am" diff >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "0" "$rc" "am diff: resolves the session from AM_SESSION_NAME"
+
+    # Errors.
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" diff >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "2" "$rc" "am diff: exits 2 outside a session with no name"
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-nope >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "2" "$rc" "am diff: exits 2 for an unknown session"
+    rc=0
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff2 2>&1 >/dev/null </dev/null) || rc=$?
+    assert_eq "3" "$rc" "am diff: exits 3 outside a git repository"
+    assert_contains "$err" "Not a git repository" "am diff: names the problem outside a repository"
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" diff test-am-diff1 --bogus >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am diff: rejects unknown options"
+    assert_contains "$(env "${am_env[@]}" "$PROJECT_DIR/am" diff --help 2>&1)" "Usage: am diff" "am diff --help: prints usage"
+
+    # Refs survive removal from the registry (restore needs them).
+    registry_remove "test-am-diff1"
+    assert_cmd_succeeds "am diff: checkpoint refs survive registry removal" \
+        git -C "$repo" show-ref --verify --quiet refs/am/test-am-diff1/baseline
+
+    am_tmux kill-session -t test-am-diff1 2>/dev/null || true
+    am_tmux kill-session -t test-am-diff2 2>/dev/null || true
+    registry_remove "test-am-diff2" 2>/dev/null || true
+    teardown_integration_env
+    rm -rf "$state_dir" "$repo" "$plain"
+}
+
 run_cli_tests() {
     _run_test test_cli
     _run_test test_cli_workspace_and_id
     _run_test test_cli_extended
     _run_test test_cli_cd
     _run_test test_cli_dispatch
+    _run_test test_cli_diff
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

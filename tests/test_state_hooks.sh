@@ -1015,6 +1015,106 @@ test_state_hook_notify() {
     rm -rf "$tmp_dir"
 }
 
+# Review signals from the hook's detached tail: tool events touch the .dirty
+# sidecar (the title scan re-measures unreviewed change when it moves) and
+# record HEAD movement, running am-core review-sync when it changed.
+test_state_hook_review_signals() {
+    $SUMMARY_MODE || echo "=== Testing state-hook .dirty/.head review signals ==="
+
+    local hook_script="$PROJECT_DIR/lib/hooks/state-hook.sh"
+    local tmp_dir registry state_dir am_dir repo
+    tmp_dir=$(mktemp -d)
+    registry="$tmp_dir/sessions.json"
+    state_dir="$tmp_dir/state"
+    am_dir="$tmp_dir/am"
+    mkdir -p "$state_dir" "$am_dir" "$tmp_dir/repo"
+    repo=$(cd "$tmp_dir/repo" && pwd -P)
+    local g=(git -C "$repo" -c user.name=am-test -c user.email=am@test -c commit.gpgsign=false -c init.defaultBranch=main)
+    "${g[@]}" init -q "$repo"
+    echo one > "$repo/a.txt"
+    "${g[@]}" add a.txt
+    "${g[@]}" commit -q -m first
+    local sha_main
+    sha_main=$("${g[@]}" rev-parse HEAD)
+    jq -n --arg dir "$repo" \
+        '{sessions: {"am-rev1": {name: "am-rev1", directory: $dir, branch: "main", agent_type: "claude", task: ""}}}' \
+        > "$registry"
+
+    run_hook() {
+        AM_DIR="$am_dir" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="am-rev1" "$hook_script" <<< "$1"
+    }
+    # The review signals are written from the hook's detached tail: poll
+    # (≤3s) for the condition instead of asserting immediately.
+    settle() { local i; for i in $(seq 1 30); do "$@" 2>/dev/null && return 0; sleep 0.1; done; return 0; }
+    head_is() { [[ "$(cat "$state_dir/am-rev1.head" 2>/dev/null)" == "$1" ]]; }
+
+    # A prompt submit is not a tool event: nothing review-related is written.
+    run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$repo\"}"
+    sleep 0.3
+    assert_cmd_fails "hook: UserPromptSubmit does not touch .dirty" test -f "$state_dir/am-rev1.dirty"
+    assert_cmd_fails "hook: UserPromptSubmit does not record HEAD" test -f "$state_dir/am-rev1.head"
+
+    # A tool event touches .dirty and records HEAD (branch ref + sha).
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$repo\"}"
+    settle head_is "ref: refs/heads/main $sha_main"
+    settle git -C "$repo" show-ref --verify --quiet refs/am/am-rev1/baseline
+    assert_cmd_succeeds "hook: PostToolUse touches the .dirty sidecar" test -f "$state_dir/am-rev1.dirty"
+    assert_eq "ref: refs/heads/main $sha_main" "$(cat "$state_dir/am-rev1.head" 2>/dev/null)" \
+        "hook: .head sidecar records the symbolic ref and its sha"
+    # First sighting creates the chain (launch checkpoint) when am-core is built.
+    if [[ -x "$PROJECT_DIR/bin/am-core" ]]; then
+        assert_cmd_succeeds "hook: first HEAD sighting creates the review chain" \
+            git -C "$repo" show-ref --verify --quiet refs/am/am-rev1/baseline
+    fi
+
+    # Same HEAD again: the marker is left alone (no am-core run).
+    touch "$am_dir/.title_scan_last"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$repo\"}"
+    sleep 0.3
+    assert_cmd_succeeds "hook: unchanged HEAD leaves the title-scan throttle alone" \
+        test -f "$am_dir/.title_scan_last"
+
+    # Branch switch: .head follows, the throttle drops so the tab relabels,
+    # and a branch checkpoint moves the baseline to the new HEAD's tree.
+    "${g[@]}" checkout -q -b feature
+    echo two > "$repo/b.txt"
+    "${g[@]}" add -A
+    "${g[@]}" commit -q -m second
+    local sha_feature
+    sha_feature=$("${g[@]}" rev-parse HEAD)
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$repo\"}"
+    settle head_is "ref: refs/heads/feature $sha_feature"
+    settle test ! -f "$am_dir/.title_scan_last"
+    assert_eq "ref: refs/heads/feature $sha_feature" "$(cat "$state_dir/am-rev1.head" 2>/dev/null)" \
+        "hook: .head sidecar follows a branch switch"
+    assert_cmd_fails "hook: HEAD change invalidates the title-scan throttle" \
+        test -f "$am_dir/.title_scan_last"
+    if [[ -x "$PROJECT_DIR/bin/am-core" ]]; then
+        local listing
+        listing=$(AM_DIR="$am_dir" AM_STATE_DIR="$state_dir" "$PROJECT_DIR/bin/am-core" review-list am-rev1 "$repo" 2>/dev/null || true)
+        assert_contains "$listing" " branch feature " "hook: branch switch records a branch checkpoint"
+        assert_contains "$(printf '%s\n' "$listing" | grep ' \*$')" " branch " \
+            "hook: the branch checkpoint becomes the baseline"
+    fi
+
+    # A cwd in a subdirectory still finds the repository.
+    mkdir -p "$repo/sub"
+    printf '%s\n' "ref: refs/heads/main $sha_main" > "$state_dir/am-rev1.head"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$repo/sub\"}"
+    settle head_is "ref: refs/heads/feature $sha_feature"
+    assert_eq "ref: refs/heads/feature $sha_feature" "$(cat "$state_dir/am-rev1.head" 2>/dev/null)" \
+        "hook: HEAD is found from a subdirectory cwd"
+
+    # Outside any repository nothing is recorded.
+    rm -f "$state_dir/am-rev1.head"
+    run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$tmp_dir\"}"
+    sleep 0.3
+    assert_cmd_fails "hook: no .head sidecar outside a repository" test -f "$state_dir/am-rev1.head"
+
+    rm -rf "$tmp_dir"
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_from_hook_reads_file
@@ -1023,6 +1123,7 @@ run_state_hooks_tests() {
     _run_test test_state_from_hook_invalid_state
     _run_test test_pi_durable_identity_guard
     _run_test test_state_hook_cwd_sidecar
+    _run_test test_state_hook_review_signals
     _run_test test_state_hook_notify
 }
 

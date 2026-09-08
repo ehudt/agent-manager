@@ -13,6 +13,15 @@
 
 - **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model. The vision for the web UI is a full AM implementation on the web. with session switching, creating sessions, chatting with the agent and integrated shell. etc etc. State detection is the non-portable part (pane title + local process tree); see the architecture notes in the follow-ups plan.
 
+- **Review panel: attribute hunks to turns** — follow-up to the review
+  checkpoints feature (`am diff`, per-session `refs/am/<session>/reviewed`,
+  change count on the tab). The transcript records which turn made each Edit /
+  Write / Bash call, so the review panel could annotate a changed region with
+  the prompt that caused it ("changed in turn 14, after 'fix the race'").
+  Answers "why did it change this", which no git tool can. Needs the transcript
+  readers in `internal/sessions/identity.go`; do not build before the panel
+  itself exists.
+
 ## Known Issues
 
 - **State detection edge transitions** — `_state_resolve` combines the shell

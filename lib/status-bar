@@ -141,19 +141,27 @@ am_tick >/dev/null 2>&1 || true
 # Bulk registry read — one jq invocation for all sessions' fields, indexed by
 # name into associative arrays. Replaces N separate `registry_get_fields`
 # calls (each forking jq) with a single fork.
-declare -A REG_DIR=() REG_BRANCH=() REG_AGENT=() REG_TASK=() REG_WORKDIR=()
+declare -A REG_DIR=() REG_BRANCH=() REG_AGENT=() REG_TASK=() REG_WORKDIR=() REG_CHG_LONG=() REG_CHG_SHORT=()
 if [[ -r "${AM_REGISTRY:-}" ]]; then
-    while IFS=$'\x1f' read -r _reg_name _reg_dir _reg_branch _reg_agent _reg_task _reg_workdir; do
+    while IFS=$'\x1f' read -r _reg_name _reg_dir _reg_branch _reg_agent _reg_task _reg_workdir _reg_files _reg_add _reg_del; do
         [[ -n "$_reg_name" ]] || continue
         REG_DIR[$_reg_name]=$_reg_dir
         REG_BRANCH[$_reg_name]=$_reg_branch
         REG_AGENT[$_reg_name]=$_reg_agent
         REG_TASK[$_reg_name]=$_reg_task
         REG_WORKDIR[$_reg_name]=$_reg_workdir
+        # Unreviewed change since the review baseline (`am diff`): long form
+        # "Δ<files> +<added> −<deleted>", short form "Δ<files>"; empty at zero.
+        if [[ "$_reg_files" =~ ^[0-9]+$ ]] && (( _reg_files > 0 )); then
+            REG_CHG_SHORT[$_reg_name]="Δ${_reg_files}"
+            REG_CHG_LONG[$_reg_name]="Δ${_reg_files} +${_reg_add:-0} −${_reg_del:-0}"
+        fi
     done < <(jq -r --arg us $'\x1f' '
         .sessions | to_entries[] |
         [.key, (.value.directory // ""), (.value.branch // ""),
-         (.value.agent_type // ""), (.value.task // ""), (.value.workdir // "")] | join($us)
+         (.value.agent_type // ""), (.value.task // ""), (.value.workdir // ""),
+         (.value.review_files // 0 | tostring), (.value.review_added // 0 | tostring),
+         (.value.review_deleted // 0 | tostring)] | join($us)
     ' "$AM_REGISTRY" 2>/dev/null || true)
 fi
 
@@ -190,7 +198,7 @@ fi
 declare -A SESSION_TOP_PID=() SESSION_TITLE=()
 while IFS='|' read -r _bp_sess _bp_top _bp_win _bp_pid _bp_title; do
     [[ "$_bp_top" == "1" ]] || continue
-    [[ "$_bp_win" == "$AM_SHELL_WINDOW" ]] && continue
+    [[ "$_bp_win" == "$AM_SHELL_WINDOW" || "$_bp_win" == "$AM_REVIEW_WINDOW" ]] && continue
     [[ "$_bp_sess" == "${AM_SESSION_PREFIX}"* ]] || continue
     SESSION_TOP_PID[$_bp_sess]=$_bp_pid
     SESSION_TITLE[$_bp_sess]=$_bp_title
@@ -210,7 +218,7 @@ done < <(ps -eo pid=,ppid=,comm= 2>/dev/null || true)
 # @am_status_left option holds a strip with itself marked as current. tmux
 # then reads the precomputed option on session switch — instant feedback,
 # no async #() job to wait on.
-declare -a S_NAME S_LABEL_FULL S_LABEL_SHORT S_STATE S_GLYPH S_COLOR S_DIM S_TASK S_AGE
+declare -a S_NAME S_LABEL_FULL S_LABEL_SHORT S_STATE S_GLYPH S_COLOR S_DIM S_TASK S_AGE S_CHG_LONG S_CHG_SHORT
 
 # Hook state-file mtimes for every session in one stat call (tab age below).
 # Replaces a per-session `stat -c || stat -f` pair, which on macOS was two
@@ -288,15 +296,18 @@ for i in "${!session_meta[@]}"; do
     S_DIM[i]="${COLOR_DIM[$state]:-colour238}"
     S_TASK[i]=$task
     S_AGE[i]=$age
+    S_CHG_LONG[i]="${REG_CHG_LONG[$session]:-}"
+    S_CHG_SHORT[i]="${REG_CHG_SHORT[$session]:-}"
 done
 
 # --- Layout fitting ---------------------------------------------------------
 #
-# A "fit" is (labels, tasks, ages, cap):
+# A "fit" is (labels, tasks, ages, chg, cap):
 #   labels: full | short        which label variant the tabs use
 #   tasks:  both | only | none  both → "label · title"; only → title (label
 #                               for untitled sessions); none → label
 #   ages:   true | false
+#   chg:    long | short | none unreviewed change: "Δ7 +212 −48" | "Δ7" | —
 #   cap:    max chars per text field before "…" truncation
 # The whole strip shares one fit — the current tab differs only in colour,
 # since the user already knows what they are looking at and the other tabs
@@ -320,7 +331,7 @@ _tab_fields() {
 # spaces, " · " joins, ages, separators); `_WF_LENS` = natural length of every
 # text field. The strip fits unshrunk iff _FIXED + Σ_WF_LENS ≤ avail.
 _measure() {
-    local labels="$1" tasks="$2" ages="$3"
+    local labels="$1" tasks="$2" ages="$3" chg="${4:-none}"
     local i idx
     _FIXED=$(( ${#TAB_SEP} * (${#S_NAME[@]} - 1) ))
     _WF_LENS=()
@@ -333,10 +344,25 @@ _measure() {
             _FIXED=$(( _FIXED + 3 ))                 # " · "
             _WF_LENS+=("${#_F2}")
         fi
+        _chg_part "$i" "$chg"
+        if [[ -n "$_CHG" ]]; then
+            _FIXED=$(( _FIXED + 1 + ${#_CHG} ))      # " Δ…"
+        fi
         if [[ "$ages" == true && -n "${S_AGE[$i]}" ]]; then
             _FIXED=$(( _FIXED + 1 + ${#S_AGE[$i]} )) # " age"
         fi
     done
+}
+
+# Unreviewed-change segment of tab i under chg mode → `_CHG` (empty when the
+# mode is none or the session has nothing unreviewed).
+_chg_part() {
+    local i="$1" chg="$2"
+    case "$chg" in
+        long) _CHG="${S_CHG_LONG[$i]}" ;;
+        short) _CHG="${S_CHG_SHORT[$i]}" ;;
+        *) _CHG="" ;;
+    esac
 }
 
 # Water-fill: the largest per-field cap L such that Σ min(len, L) over
@@ -356,31 +382,32 @@ _waterfill() {
 }
 
 # Pick the richest layout that fits `avail` cols, walking a ladder of rungs
-# `labels:tasks:ages:floor`. A rung is taken outright when it fits unshrunk;
-# otherwise its fields are water-filled and it is taken if the cap reaches
-# the rung's floor (`full` = unshrunk only). The last rung always wins.
-# with_tasks=false is the pane-border sidebar (labels only, no ages).
-# Writes _FIT_LABELS, _FIT_TASKS, _FIT_AGES, _FIT_CAP.
+# `labels:tasks:ages:chg:floor`. A rung is taken outright when it fits
+# unshrunk; otherwise its fields are water-filled and it is taken if the cap
+# reaches the rung's floor (`full` = unshrunk only). The last rung always wins.
+# with_tasks=false is the pane-border sidebar (labels only, no ages, no Δ).
+# Writes _FIT_LABELS, _FIT_TASKS, _FIT_AGES, _FIT_CHG, _FIT_CAP.
 _fit_strip() {
     local avail="$1" with_tasks="$2"
     local -a ladder
     if [[ "$with_tasks" == true ]]; then
         ladder=(
-            "full:both:true:full"           # everything, in full
-            "short:both:true:$BOTH_FLOOR"   # branch-or-dir · title
-            "short:only:true:$AGE_FLOOR"    # title (or label) + age
-            "short:only:false:1"            # title (or label) only
+            "full:both:true:long:full"           # everything, in full
+            "full:both:true:short:full"          # … with the line delta dropped
+            "short:both:true:short:$BOTH_FLOOR"  # branch-or-dir · title
+            "short:only:true:short:$AGE_FLOOR"   # title (or label) + age
+            "short:only:false:none:1"            # title (or label) only
         )
     else
         ladder=(
-            "full:none:false:full"
-            "short:none:false:1"
+            "full:none:false:none:full"
+            "short:none:false:none:1"
         )
     fi
-    local rung labels tasks ages floor sum len
+    local rung labels tasks ages chg floor sum len
     for rung in "${ladder[@]}"; do
-        IFS=: read -r labels tasks ages floor <<< "$rung"
-        _measure "$labels" "$tasks" "$ages"
+        IFS=: read -r labels tasks ages chg floor <<< "$rung"
+        _measure "$labels" "$tasks" "$ages" "$chg"
         sum=0
         for len in "${_WF_LENS[@]}"; do sum=$(( sum + len )); done
         if (( _FIXED + sum <= avail )); then
@@ -395,17 +422,19 @@ _fit_strip() {
     _FIT_LABELS=$labels
     _FIT_TASKS=$tasks
     _FIT_AGES=$ages
+    _FIT_CHG=$chg
     _FIT_CAP=$_WF
 }
 
-# Load a saved fit (4 values in _FIT_* order) into the _FIT_* globals.
+# Load a saved fit (5 values in _FIT_* order) into the _FIT_* globals.
 _use_fit() {
-    _FIT_LABELS=$1; _FIT_TASKS=$2; _FIT_AGES=$3; _FIT_CAP=$4
+    _FIT_LABELS=$1; _FIT_TASKS=$2; _FIT_AGES=$3; _FIT_CHG=$4; _FIT_CAP=$5
 }
 
-# Body of tab i under the loaded fit — "idx glyph text" without pads or
+# Body of tab i under the loaded fit — "idx glyph text [Δ…]" without pads or
 # colours — to `_BODY`; its age (or empty) to `_AGE_PART`, kept separate so
-# the caller can shade it.
+# the caller can shade it. The unreviewed-change segment sits after the text
+# and before the age: what, then how much changed, then for how long.
 _render_tab() {
     local i="$1" idx=$(( i + 1 )) text
     _tab_fields "$i" "$_FIT_LABELS" "$_FIT_TASKS"
@@ -413,6 +442,8 @@ _render_tab() {
     if [[ -n "$_F2" ]]; then
         _trunc "$_F2" "$_FIT_CAP"; text+=" · $_T"
     fi
+    _chg_part "$i" "$_FIT_CHG"
+    [[ -n "$_CHG" ]] && text+=" $_CHG"
     _BODY="${idx}${S_GLYPH[$i]} ${text}"
     _AGE_PART=""
     if [[ "$_FIT_AGES" == true && -n "${S_AGE[$i]}" ]]; then
@@ -456,9 +487,9 @@ _build_strip() {
 # renders " <session id> HH:MM " (see lib/tmux.sh), so reserve exactly that.
 _reserve=$(( ${#S_NAME[0]} + 8 ))
 _fit_strip $(( _AVAIL_WIDTH - _reserve )) true
-LEFT_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CAP")
+LEFT_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CHG" "$_FIT_CAP")
 _fit_strip $(( _AVAIL_WIDTH - 2 )) false
-SIDE_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CAP")
+SIDE_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CHG" "$_FIT_CAP")
 
 # Write per-session options. Each session sees itself as current — switch is
 # instant because tmux reads the precomputed option. set-option calls are

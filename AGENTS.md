@@ -41,6 +41,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 - A directory argument starting with `@` is a provider spec, not a path: `cmd_new` hands it to `agent_dir_resolve`, which runs the configured `dir_provider` as `<provider> resolve <spec>` (bash -c, `AM_SESSION_NAME` blanked) and uses its stdout. The form passes `@spec` through unvalidated in the directory field; provider suggestions come from `<provider> suggest <partial>` under `agent_dir_suggest`'s perl-alarm timeout (`AM_DIR_SUGGEST_TIMEOUT`, 0.3s) and are cached per typed partial for the life of the form. am never interprets a spec (PR number, branch, ...) — that is the provider's business
 - jq's `//` treats `false` as missing: `(.notify // true)` is `true` for `"notify": false`. Read boolean config keys with `if has("k") then .k else default end` (see `_notify_maybe`, `am_auto_restore_enabled`)
 - The test stub agent is a bash script, so the shell-pane check resolves stub sessions as `idle`. Tests that send to a stub pass `am send --force`; the plain form is exercised once to prove the refusal
+- Review checkpoints live in the session's repository (`refs/am/<session>/*`), not under `$AM_DIR`: `agent_kill` and `registry_gc` leave them alone (restore adopts them under the new session name), only `SessionsLogGC` drops them with the log entry. `WorktreeTree` copies the real index to a temp file and must preserve its mtime (`os.Chtimes`) — git only re-hashes entries whose file mtime is not older than the index, so a fresh copy hides a same-size edit made in the second after a commit. Never run `git add`/`stash` against the real index from am; the whole point is that review never touches the user's git state
 - Registry `directory` is the *launch* cwd and must never be rewritten: it keys the Claude/Cursor/pi transcript store (`~/.claude/projects/<encoded-dir>/`), the title fallback, session-id detection, and `am restore`. Where the agent works *now* lives in the separate `workdir` field (empty = same as `directory`), fed by the state hook's `/tmp/am-state/<session>.cwd` sidecar (Claude stamps hook payloads with the Bash tool's tracked cwd — the process cwd and tmux `pane_current_path` never move) or by `am cd`. Labels and the branch refresh read `workdir` first; state detection and restore read `directory`
 
 ## Key Files
@@ -56,6 +57,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/agents.manifest` | Agent adapter table (symlink to `internal/sessions/agents.manifest`, which Go embeds): per agent type, the launch command, aliases, prompt delivery (stdin/argv), resume-args template, transcript store layout, title parser, title→state signal, turn-boundary reliability, hook family, restore preflight, version binary, live lab. Bash reads it through `am_agent_field`; Go through `Agent()` / `AgentSpec`. Libs branch on these fields, not on agent names. The state hook reads it when run from the repo and falls back to an inline table (Cursor's byte copy runs outside the repo; `tests/test_agents.sh` keeps them equal) |
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit); shows a Preset select field first when any preset exists |
 | `lib/presets.sh` | Named launch presets for `am new -p` (stored under `presets` in config.json): `am preset save/list/show/rm` |
+| `lib/review.sh` | `am diff [session] [--ack\|--reset\|--list\|--checkpoint id] [--stat] [-- git args]`: resolves the session (argument, else the caller's pane), asks `am-core review-*` for the baseline/worktree trees and the numstat, prints the header to stderr and runs `git diff <base_tree> <cur_tree>` so the user's pager and diff tools apply. Also `review_init` / `review_adopt` wrappers for the lifecycle |
+| `internal/sessions/review.go` | Review checkpoint store: per session a chain of commit objects under `refs/am/<session>/checkpoints` (kinds launch / ack / branch / head) plus `refs/am/<session>/baseline`, in the session's own repository. `WorktreeTree` (temp index copied from the real one, mtime preserved, `add -A`, `write-tree`), `ReviewInit/Ack/Sync/SetBaseline/ResetBaseline/Adopt/Drop`, `ReviewDiffStat`, `Env.ReviewMeasure` (records the registry `review_*` fields) |
 | `lib/doctor.sh` | `am doctor [session] [--capture]`: one report with every state input (registry row, tmux panes/titles, hook sidecars, identity, transcript, process tree, desired record, resolver layer via `AM_STATE_DEBUG_SINK`) plus the version-drift canary (installed agents vs `tests/live_lab/VERIFIED`, observed hook payload keys vs the fields the hook reads) |
 | `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
 | `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
@@ -92,6 +95,11 @@ agent cd's (Bash tool) → Claude hook payload cwd → state-hook.sh writes /tmp
 status-bar tick / am list → am_tick() → am-core tick → RefreshTitles (.title_scan_last) → RestoreScan (.restore_scan_last) → GC rows (.gc_last) + extras (.gc_extras_last)
 auto_title_scan / registry_gc / sessions_log_scan / sessions_log_gc / sessions_log_restorable / _sessions_log_detect_id_for_session / _sessions_log_jsonl_exists / *_first_user_message → am_core <sub> → bin/am-core (env: AM_DIR, AM_SESSIONS_LOG, AM_STATE_DIR, AM_IDENTITY_DIR, socket, prefix)
 am list-internal → am-list-internal (Go binary) → stdout
+agent_launch() → am-core review-init → launch checkpoint (refs/am/<session>/{checkpoints,baseline} in the repo; silent outside one)
+tool hook (PostToolUse family) → detached tail: touch /tmp/am-state/<session>.dirty; HEAD ≠ .head sidecar → am-core review-sync (branch checkpoint moves the baseline, head checkpoint does not) → rm .title_scan_last
+am-core tick → RefreshTitles → refreshedReview (only when .dirty is newer than review_at, or the branch changed) → ReviewMeasure → registry review_files/added/deleted/at → tab "Δ<files> +<add> −<del>"
+am diff [s] → review_diff_main → am-core review-stat --record → git -C dir diff <base_tree> <cur_tree>; --ack → review-ack (worktree tree becomes the baseline, count zeroed); --reset → review-baseline --reset
+am restore → cmd_restore_internal → am-core review-adopt <old> <new> (refs follow the resumed conversation); sessions_log_gc → ReviewDrop when the entry is dropped
 am new -p name → _cmd_new_apply_preset(name, fill=true) → preset fields where flags left gaps, preset args first → agent_launch()
 form Preset field → --preset=name in the flags field → _cmd_new_apply_preset(name, fill=false) (args + shell only)
 am send s "..." → agent_get_state → refuse running/starting/waiting_user (exit 4) or idle/dead (exit 2) unless --wait/--queue/--force
@@ -494,6 +502,13 @@ am restore
 - `cmd_done` / `cmd_result` - Worker-recorded summary in `$AM_DIR/results/<session>.txt` (mode 700 dir); `result --wait` polls until the file exists or the session ends (exit 2)
 - `_fzf_state_selected(state)` (lib/fzf.sh) - `am list --state` filter, driven by `AM_LIST_STATE_FILTER`
 
+**Review checkpoints (lib/review.sh, Go `internal/sessions/review.go`):**
+- `review_diff_main(args...)` - `am diff` entry: flags (`--ack`, `--reset`, `--list`/`-l`, `--checkpoint`/`-c id`, pass-through `--stat`/`--name-only`/`--numstat`/`-w`/`-U`, `--` for raw git diff args), session from the argument or `current_session`, directory from `review_session_dir` (workdir, else directory). Exit 2 unknown session, 3 not a repository
+- `review_session_dir(session)` / `review_init(session, dir)` / `review_adopt(old, new, dir)` - Registry lookup and the two lifecycle wrappers over `am_core review-init` / `review-adopt`
+- `_review_show(session, dir, from, git_args...)` - `am-core review-stat` (`--record` updates the registry count unless `--checkpoint` was given), header line on stderr (`<session>: 7 files +212 −48 since the ack checkpoint 3f2a1c0 (5m ago); HEAD moved: …`), then `git -C dir diff base_tree cur_tree`
+- Go: `ReviewInit` (launch checkpoint of the worktree, idempotent), `ReviewAck` (worktree → new baseline), `ReviewSync` (HEAD vs newest checkpoint: branch name changed → a branch-kind checkpoint of `HEAD^{tree}` and baseline move; same branch, new sha → a head-kind checkpoint, baseline stays), `ReviewSetBaseline` / `ReviewResetBaseline` (to launch), `ReviewDiffStat(dir, base_tree)` (`git diff --numstat base_tree <worktree tree>`), `HeadMoved`, `ReviewAdopt` (rename refs), `ReviewDrop`. Chain writes are CAS `update-ref` on the checkpoints ref, so concurrent writers (hook tail, tick, `am diff`) cannot lose a checkpoint. `Env.ReviewMeasure(session, dir, from, record)` syncs first and creates the launch checkpoint on demand for pre-0.25 sessions; `Env.ReviewRecord` writes the registry fields review_files / review_added / review_deleted / review_at under the registry lock
+- Sidecars: `$AM_STATE_DIR/<session>.dirty` (touched by the hook on every tool event; the scan re-measures when it is newer than the row's review_at), `<session>.head` (the hook's fork-free HEAD snapshot: `ref: refs/heads/x <sha>` or a bare sha). Both removed by `agent_kill` and GC
+
 **Doctor (lib/doctor.sh):**
 - `doctor_main([--capture] [session])` - Global report (versions, dirs, markers, hooks installed, version drift, hook payload schema, per-session summary) or one session in depth; `--capture` writes a tarball under `$AM_DIR/doctor/` (includes `hook-schema/`)
 - `_doc_resolve_state(session, state_var, layer_var)` - Runs `agent_get_state` with `AM_STATE_DEBUG=1 AM_STATE_DEBUG_SINK=<tmp>` to learn which resolver layer answered
@@ -606,7 +621,7 @@ am restore
 
 Format: `am-XXXXXX` where XXXXXX = md5(directory + timestamp)[:6]
 
-Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir` when the agent moved, else `directory`
+Display: `dirname/branch [agent] task Δ<files> +<add> −<del> (Xm ago)` — dirname comes from `workdir` when the agent moved, else `directory`; the Δ segment appears only when the session has unreviewed change (registry `review_files` > 0). The status bar fits it after the title and before the age, dropping the line delta first (`Δ7`) and the whole segment together with the ages
 
 ## Extension Points
 
@@ -627,6 +642,7 @@ Display: `dirname/branch [agent] task (Xm ago)` — dirname comes from `workdir`
 | Add config option | `lib/config.sh` → `am_config_init()` defaults, `am_config_key_alias/type/value_is_valid`, `am_config_print`; `am` → `cmd_config` get case + help |
 | Add a preset field | `lib/presets.sh` → `_preset_from_flags` + `_preset_render`; `am` → `_cmd_new_apply_preset`; `lib/form.sh` → `_form_apply_preset` |
 | Add a doctor section | `lib/doctor.sh` → new `_doc_*` function, called from `_doc_session` / `_doc_global` |
+| Add a review checkpoint kind or `am diff` flag | `internal/sessions/review.go` → `ReviewSync` (when to record) + `reviewAdd` (whether the baseline moves); `lib/review.sh` → `review_diff_main` flag parsing; `lib/hooks/state-hook.sh` → `_review_head_check` if a new HEAD signal is needed |
 | Change notification text/targets | `lib/hooks/state-hook.sh` → `_notify_maybe` |
 | Add an install-derived artifact | `am` → `_install_inputs` (fingerprint) + `_install_refresh` (quiet rebuild) |
 | Add state detection signal | `lib/state.sh` → extend `_state_resolve()` ordering |

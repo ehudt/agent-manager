@@ -37,6 +37,16 @@ type Session struct {
 	LogicalID string `json:"logical_id"`
 	OrderKey  string `json:"order_key"`
 
+	// Unreviewed change since the review baseline (review.go): files touched,
+	// lines added/deleted, and when it was measured (unix seconds). Written by
+	// the title scan when the hook's .dirty sidecar moved and by `am diff`;
+	// rendered on the status-bar tab and by `am list`. Zero means "nothing
+	// unreviewed" and is omitted.
+	ReviewFiles   int   `json:"review_files,omitempty"`
+	ReviewAdded   int   `json:"review_added,omitempty"`
+	ReviewDeleted int   `json:"review_deleted,omitempty"`
+	ReviewAt      int64 `json:"review_at,omitempty"`
+
 	// ExtraFields keeps registry metadata added by Bash, a newer Go binary,
 	// or an older release (e.g. the pre-0.18 yolo/sandbox/worktree fields)
 	// intact across read-modify-write cycles.

@@ -73,6 +73,8 @@ func reapOrphans(amDir, stateDir string, listLive func() []TmuxSession, now time
 			_ = os.Remove(filepath.Join(stateDir, name+".transcript"))
 			_ = os.Remove(filepath.Join(stateDir, name+".cwd"))
 			_ = os.Remove(filepath.Join(stateDir, name+".bg"))
+			_ = os.Remove(filepath.Join(stateDir, name+".dirty"))
+			_ = os.Remove(filepath.Join(stateDir, name+".head"))
 		}
 		removed++
 	}

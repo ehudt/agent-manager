@@ -195,6 +195,13 @@ agent_launch() {
         sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
     fi
 
+    # Review baseline: snapshot the working copy as the launch checkpoint
+    # (refs/am/<session>/* in the repo; see lib/review.sh, `am diff`). Before
+    # the agent runs, so its first edit is already "unreviewed". A recovered
+    # session keeps its name and therefore its chain (no-op). Silent outside
+    # a repository.
+    am_core review-init "$session_name" "$directory" >/dev/null 2>&1 || true
+
     # The session starts agent-only: the shell panel is a collapsible pane
     # added on demand (prefix+` / `am shell`), or at the end of this launch
     # when --shell / the shell_pane config default asks for it.
@@ -582,6 +589,8 @@ agent_kill() {
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.cwd" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.bg" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.dirty" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.head" \
           "$(_recovery_identity_dir)/$session_name.sid" \
           "$(_recovery_identity_dir)/$session_name.transcript" \
           "$(_recovery_identity_dir)/$session_name.rebind" \

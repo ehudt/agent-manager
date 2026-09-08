@@ -261,6 +261,36 @@ turns, and `notify_cmd` swaps in your own notifier.
 keeps running); on a session whose panel was never opened it explains how to
 open one (`am shell <session>`).
 
+### Reviewing what the agent changed
+
+Every session in a git repository keeps a **review checkpoint**: the working
+copy as it was at launch, then whatever you last acknowledged. The tab shows
+how much has changed since (`Δ7 +212 −48`: files, lines added, lines removed;
+the line delta is dropped first when the bar is tight), and `am diff` shows
+the changes themselves:
+
+```bash
+am diff                                  # inside a session: what changed since you last looked
+am diff am-abc123 --stat                 # from anywhere; git diff flags pass through
+am diff am-abc123 -- -- lib/             # everything after -- goes to git diff
+am diff am-abc123 --ack                  # reviewed: the working copy becomes the new baseline
+am diff am-abc123 --reset                # back to the launch checkpoint
+am diff am-abc123 --list                 # every checkpoint: id, kind, branch, HEAD, age (* = baseline)
+am diff am-abc123 --checkpoint 3f2a1c0   # one-off diff from an older checkpoint
+```
+
+The diff runs through your own `git diff`, so your pager and diff tools
+(delta, difftastic, …) apply. Untracked files count; ignored ones do not.
+Committing does not hide anything: trees are compared, not `HEAD`, so a
+`git commit` mid-review leaves the change unreviewed until you `--ack`. When
+the agent switches branches, am records a *branch* checkpoint at the new
+branch's committed tree and moves the baseline there, so the switch itself is
+not a wall of unrelated diff; a commit or pull on the same branch records a
+*head* checkpoint without moving the baseline. Checkpoints are commit objects
+under `refs/am/<session>/` in the repository itself. They survive `am kill`
+and follow the session through `am restore`, and disappear when the session
+can no longer be restored.
+
 ### Restoring closed sessions
 
 Closed a session and want to pick it back up? Recently closed Claude, Codex,
@@ -447,6 +477,7 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 | `am preset save\|list\|show\|rm` | Manage launch presets for `am new -p` |
 | `am send [--wait\|--queue\|--force] <session> [prompt]` | Send a prompt once the agent is ready |
 | `am peek <session>` | Snapshot or follow a session's pane output |
+| `am diff [session] [--ack\|--reset\|--list\|--checkpoint id]` | What the agent changed since the review baseline; `--ack` marks it reviewed |
 | `am wait [--any\|--all] <session>...` | Block until one or every session reaches a target state |
 | `am done [summary]` | (inside a session) Record a result for the dispatcher |
 | `am result <session>` | Read the summary a session recorded with `am done` |

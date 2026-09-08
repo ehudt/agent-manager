@@ -23,9 +23,14 @@ var leadingNonAlnum = regexp.MustCompile(`^[^[:alnum:]]+`)
 type metaUpdate struct {
 	task, workdir, branch          string
 	setTask, setWorkdir, setBranch bool
+	review                         ReviewStat
+	reviewAt                       int64
+	setReview                      bool
 }
 
-func (u metaUpdate) empty() bool { return !u.setTask && !u.setWorkdir && !u.setBranch }
+func (u metaUpdate) empty() bool {
+	return !u.setTask && !u.setWorkdir && !u.setBranch && !u.setReview
+}
 
 // RefreshTitles refreshes the per-session registry metadata that drifts while
 // a session runs: the task (pane title, else the transcript's first user
@@ -76,6 +81,10 @@ func RefreshTitles(e Env, force bool) {
 			u.task, u.setTask = title, true
 			e.titlerLog("  %s: title=%q", name, title)
 		}
+		if rs, at, ok := e.refreshedReview(name, meta, u); ok {
+			u.review, u.reviewAt, u.setReview = rs, at, true
+			e.titlerLog("  %s: review=%d files +%d -%d", name, rs.Files, rs.Added, rs.Deleted)
+		}
 		if !u.empty() {
 			updates[name] = u
 		}
@@ -110,6 +119,12 @@ func RefreshTitles(e Env, force bool) {
 		}
 		if u.setBranch && meta.Branch != u.branch {
 			meta.Branch = u.branch
+			updated = true
+		}
+		if u.setReview && (meta.ReviewFiles != u.review.Files || meta.ReviewAdded != u.review.Added ||
+			meta.ReviewDeleted != u.review.Deleted || meta.ReviewAt != u.reviewAt) {
+			meta.ReviewFiles, meta.ReviewAdded, meta.ReviewDeleted = u.review.Files, u.review.Added, u.review.Deleted
+			meta.ReviewAt = u.reviewAt
 			updated = true
 		}
 		fresh.Sessions[name] = meta
@@ -151,6 +166,48 @@ func refreshedWorkdir(stateDir, name string, meta Session) (workdir string, setW
 	branch = GitHeadBranch(effective)
 	setBranch = branch != meta.Branch
 	return
+}
+
+// refreshedReview is the change-count half of the title scan. It runs git
+// (forks) and so is gated: only when the state hook's .dirty sidecar — touched
+// on every tool event — is newer than the last measurement, or when the
+// branch just changed (the branch checkpoint moves the baseline, so the count
+// must follow). Agents without hooks never touch .dirty; their count is
+// measured by `am diff` itself. The .dirty mtime, not "now", becomes
+// review_at, so a tool event racing the measurement is caught by the next
+// scan instead of being lost.
+func (e Env) refreshedReview(name string, meta Session, u metaUpdate) (ReviewStat, int64, bool) {
+	dir := meta.Directory
+	if u.setWorkdir {
+		if u.workdir != "" {
+			dir = u.workdir
+		}
+	} else if meta.Workdir != "" {
+		dir = meta.Workdir
+	}
+	if dir == "" {
+		return ReviewStat{}, 0, false
+	}
+	var dirtyAt int64
+	if fi, err := os.Stat(filepath.Join(e.StateDir, name+".dirty")); err == nil {
+		dirtyAt = fi.ModTime().Unix()
+	}
+	branchChanged := u.setBranch && meta.Branch != u.branch
+	if !branchChanged && (dirtyAt == 0 || dirtyAt <= meta.ReviewAt) {
+		return ReviewStat{}, 0, false
+	}
+	at := dirtyAt
+	if at == 0 || branchChanged {
+		at = time.Now().Unix()
+	}
+	_, rs, _, err := e.ReviewMeasure(name, dir, "", false)
+	if err != nil {
+		if !ErrNoRepo(err) {
+			e.titlerLog("  %s: review: %v", name, err)
+		}
+		return ReviewStat{}, 0, false
+	}
+	return rs, at, true
 }
 
 // refreshedTitle returns the session's current title when it is valid and

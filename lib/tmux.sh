@@ -7,6 +7,8 @@
 # Window name used to park a hidden shell panel (break-pane target). Pane
 # enumeration that assumes "one window per session" must skip this window.
 AM_SHELL_WINDOW="_amshell"
+# Hidden window the collapsible review pane is parked in (lib/review.sh).
+AM_REVIEW_WINDOW="_amreview"
 
 am_tmux_config_path() {
     # Cache: only generate config once per process

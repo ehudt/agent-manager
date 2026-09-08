@@ -550,6 +550,45 @@ test_standalone_status_bar_layout() {
     assert_contains "$out" "…" \
         "status-bar layout: tiny → title truncated, not dropped"
 
+    # Unreviewed change (registry review_* fields, `am diff`): the Δ segment
+    # sits between the text and the age. Wide → files + line delta; when
+    # only the delta overflows → files alone; the single-field rungs keep the
+    # short form; the tiny rung drops it with the ages.
+    registry_update "$n1" review_files 7
+    registry_update "$n1" review_added 212
+    registry_update "$n1" review_deleted 48
+    raw=$(AM_STATUS_WIDTH=400 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "Investigate the flaky integration test Δ7 +212 −48 " \
+        "status-bar Δ: wide → files and line delta after the title"
+    assert_not_contains "$out" "Δ0" \
+        "status-bar Δ: sessions without unreviewed change show no segment"
+    # Shrink the width one column at a time: the first layout without the
+    # line delta must still carry everything else in full (the delta is the
+    # first thing the ladder gives up).
+    local full_len w
+    full_len=$(printf '%s' "$out" | awk '{print length($0)}')
+    for (( w = full_len + 30; w > 60; w-- )); do
+        raw=$(AM_STATUS_WIDTH=$w "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+        out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+        [[ "$out" == *"+212"* ]] || break
+    done
+    assert_not_contains "$out" "+212" \
+        "status-bar Δ: short form carries no line delta"
+    assert_contains "$out" "alpha-repo/feature-branch-one · Investigate the flaky integration test Δ7 " \
+        "status-bar Δ: line delta dropped first, everything else still in full"
+    raw=$(AM_STATUS_WIDTH=100 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" " Δ7 " \
+        "status-bar Δ: narrow → file count kept"
+    raw=$(AM_STATUS_WIDTH=60 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_not_contains "$out" "Δ" \
+        "status-bar Δ: tiny → segment dropped with the ages"
+    sidebar=$(am_tmux show-option -t "$n1" -qv @am_sidebar 2>/dev/null || true)
+    assert_not_contains "$(printf '%s' "$sidebar" | sed -E 's/#\[[^]]*\]//g')" "Δ" \
+        "status-bar Δ: sidebar labels never carry the segment"
+
     local name
     for name in "$n1" "$n2" "$n3"; do
         am_tmux kill-session -t "$name" 2>/dev/null || true
