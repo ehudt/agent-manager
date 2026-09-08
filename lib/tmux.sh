@@ -545,6 +545,10 @@ tmux_main_window_id() {
 # pane-border-status for the main window: off when the agent is alone (no
 # row wasted), tmux.conf's default otherwise.
 # Usage: _tmux_border_status_sync <window_id>
+_tmux_border_status_on() {
+    am_tmux set-option -w -u -t "$1" pane-border-status
+}
+
 _tmux_border_status_sync() {
     local main_id="$1" count
     count=$(am_tmux list-panes -t "$main_id" 2>/dev/null | wc -l | tr -d ' ')
@@ -609,6 +613,8 @@ tmux_review_pane_show() {
     main_id=$(tmux_main_window_id "$session")
     [[ -n "$main_id" ]] || return 1
 
+    # Border row first, so the rejoined TUI is resized once, to its final size.
+    _tmux_border_status_on "$main_id"
     am_tmux join-pane -h -l "$AM_REVIEW_WIDTH" -s "${session}:${AM_REVIEW_WINDOW}" -t "${main_id}.{top-left}" || return 1
     _tmux_border_status_sync "$main_id"
     am_tmux select-window -t "$main_id" 2>/dev/null || true

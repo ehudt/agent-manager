@@ -508,6 +508,10 @@ agent_review_pane_add() {
         quoted+=" $(printf '%q' "$part")"
     done
 
+    # Turn the pane-border-status row on before the split: it costs every pane
+    # a row, and a TUI that boots at the tall size and is shrunk a moment later
+    # can leave a stale line behind (the header vanished under CI's tmux).
+    _tmux_border_status_on "$main_id"
     local review_pane
     review_pane=$(am_tmux split-window -t "${main_id}.{top-left}" -h -l "$AM_REVIEW_WIDTH" -c "$dir" \
         "${env_flags[@]}" -P -F '#{pane_id}' "${quoted# }") || return 1

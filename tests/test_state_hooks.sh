@@ -916,10 +916,13 @@ test_state_hook_cwd_sidecar() {
     # Same cwd again: no rewrite, throttle marker left alone.
     touch "$am_dir/.title_scan_last"
     touch -t 200001010000 "$state_dir/am-cwd1.cwd"
+    # am_file_mtime, not `stat -f … || stat -c …`: on GNU coreutils `stat -f`
+    # is filesystem status and succeeds with a blob, so the fallback never runs.
+    source "$LIB_DIR/utils.sh"
     local before after
-    before=$(stat -f %m "$state_dir/am-cwd1.cwd" 2>/dev/null || stat -c %Y "$state_dir/am-cwd1.cwd")
+    before=$(am_file_mtime "$state_dir/am-cwd1.cwd")
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$away\"}"
-    after=$(stat -f %m "$state_dir/am-cwd1.cwd" 2>/dev/null || stat -c %Y "$state_dir/am-cwd1.cwd")
+    after=$(am_file_mtime "$state_dir/am-cwd1.cwd")
     assert_eq "$before" "$after" "hook: unchanged cwd does not rewrite the sidecar"
     assert_cmd_succeeds "hook: unchanged cwd leaves the throttle marker alone" \
         test -f "$am_dir/.title_scan_last"
