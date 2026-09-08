@@ -36,9 +36,15 @@ run_worker() {
         _worker_results_file="$_WORK_DIR/results-$worker_id"
         _worker_tmux_socket="$socket_name"
 
-        # Isolated environment for this worker
+        # Isolated environment for this worker. AM_STATE_DIR too: the
+        # default /tmp/am-state is shared with the user's live sessions, and
+        # a test that re-points AM_DIR but not the state dir lets am-core's
+        # orphan sweep (live set from the empty test socket) delete every
+        # real hook state file (2026-09-08, via tests/test_bin_helpers.sh).
         export _AM_PARALLEL_WORKER=1
         export AM_TMUX_SOCKET="$socket_name"
+        export AM_STATE_DIR="$_WORK_DIR/state-$worker_id"
+        mkdir -p "$AM_STATE_DIR"
         export SUMMARY_MODE
 
         # Reset counters for this worker

@@ -9,6 +9,32 @@
 
 ## Up Next
 
+- **Desktop notifications: find out what is off (reported 2026-09-08)** —
+  Ehud: "something's off about them", no specific symptom yet. They are fired
+  from `_notify_maybe` in `lib/hooks/state-hook.sh`, in the hook's detached
+  tail, only on a transition into a `notify_states` state (default
+  `waiting_user`), and skipped when a tmux client is attached to that session.
+  Nothing records whether a notification was sent or why it was skipped, so
+  start there: add a `notify` line to the hook debug log (`AM_HOOK_DEBUG=1`) or
+  a small `$AM_DIR/notify.log` (session, state, sent/skipped + reason, command
+  rc). Then check the likely faults against it: (1) the attached-client
+  suppression matches `client_session`, so a session shown in another
+  client's *previous* window or in a zoomed/hidden pane still counts as "on
+  screen", while a session visible in an iTerm tab that is not the tmux
+  client's current session is *not* suppressed — the rule may be the wrong
+  way round for how Ehud actually works; (2) the `.bg`-snapshot path turns a
+  field-less `idle_prompt` into `ready` and the completion re-fires `Stop`,
+  which could produce duplicate `ready` notifications when `notify_states`
+  includes `ready`; (3) a state file deleted under a live session (see the GC
+  audit log, `gc.log`, added 2026-09-08) makes the next hook event look like
+  a transition and re-notify; (4) macOS: `osascript display notification`
+  attributes the banner to Script Editor, is rate-limited by Notification
+  Center, and silently drops when Focus is on — confirm with `AM_NOTIFY_CMD`
+  set to a logging stub; (5) the title/body come from the registry `task`,
+  which lags the title scan by up to 60s, so early notifications carry the
+  session name instead of the task. Ask Ehud for the concrete symptom
+  (missing, duplicate, late, wrong text, wrong session) before fixing.
+
 ## Ideas
 
 - **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model. The vision for the web UI is a full AM implementation on the web. with session switching, creating sessions, chatting with the agent and integrated shell. etc etc. State detection is the non-portable part (pane title + local process tree); see the architecture notes in the follow-ups plan.

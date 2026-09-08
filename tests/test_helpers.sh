@@ -20,6 +20,15 @@ LIB_DIR="$PROJECT_DIR/lib"
 # Dedicated tmux socket so tests never touch the user's live sessions
 # Workers in parallel mode override this before sourcing test files
 export AM_TMUX_SOCKET="${AM_TMUX_SOCKET:-am-test-$$}"
+# Dedicated hook state dir, for the same reason: /tmp/am-state is shared with
+# the user's live sessions, and am-core's orphan sweep run against the empty
+# test socket would delete their hook state files (test_all.sh sets a
+# per-worker dir; this covers a test file run directly).
+if [[ -z "${AM_STATE_DIR:-}" ]]; then
+    AM_STATE_DIR=$(mktemp -d)
+    export AM_STATE_DIR
+    _TEST_STATE_DIR_OWNED="$AM_STATE_DIR"
+fi
 
 # Test counters
 TESTS_RUN=0
@@ -211,6 +220,7 @@ check_deps() {
 # In parallel mode (_AM_PARALLEL_WORKER=1), workers manage their own cleanup
 cleanup_test_tmux_server() {
     tmux -L "$AM_TMUX_SOCKET" kill-server 2>/dev/null || true
+    [[ -n "${_TEST_STATE_DIR_OWNED:-}" ]] && rm -rf "$_TEST_STATE_DIR_OWNED"
 }
 if [[ -z "${_AM_PARALLEL_WORKER:-}" ]]; then
     trap cleanup_test_tmux_server EXIT

@@ -67,6 +67,7 @@ func reapOrphans(amDir, stateDir string, listLive func() []TmuxSession, now time
 			continue
 		}
 		delete(registry.Sessions, name)
+		gcLog(amDir, len(liveSet), "registry row removed: %s (created_at=%s state_dir=%s)", name, meta.CreatedAt, stateDir)
 		if stateDir != "" && isSafeSessionName(name) {
 			_ = os.Remove(filepath.Join(stateDir, name))
 			_ = os.Remove(filepath.Join(stateDir, name+".sid"))

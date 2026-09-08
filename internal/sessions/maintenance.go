@@ -77,10 +77,38 @@ func (e Env) titlerLog(format string, args ...any) {
 	fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 }
 
+// gcLog is the GC audit trail: one line per registry row or state file GC
+// removes, in $AM_DIR/gc.log (AM_GC_LOG overrides the path). Always on —
+// it only writes when something is deleted, and a state file that vanishes
+// under a live session is otherwise undiagnosable (observed 2026-09-08: every
+// live session's hook file removed at once, several times a day, flipping
+// background sessions to ready). Each line names the caller (argv[0] and
+// the subcommand), the AM_DIR, socket, prefix, and live-set size.
+func gcLog(amDir string, live int, format string, args ...any) {
+	path := os.Getenv("AM_GC_LOG")
+	if path == "" {
+		path = filepath.Join(amDir, "gc.log")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	cmd := filepath.Base(os.Args[0])
+	if len(os.Args) > 1 {
+		cmd += " " + os.Args[1]
+	}
+	cwd, _ := os.Getwd()
+	fmt.Fprintf(f, "%s\t%s\tam_dir=%s socket=%s prefix=%s live=%d cwd=%s\t%s\n",
+		time.Now().UTC().Format(time.RFC3339), cmd, amDir,
+		os.Getenv("AM_TMUX_SOCKET"), os.Getenv("AM_SESSION_PREFIX"), live, cwd,
+		fmt.Sprintf(format, args...))
+}
+
 // capDebugLogs keeps the opt-in trace logs bounded (20MB each, newest half
 // kept). Called from the unthrottled title-scan path only.
 func (e Env) capDebugLogs() {
-	for _, name := range []string{"titler.log", ".state-debug.log", ".hook-debug.log"} {
+	for _, name := range []string{"titler.log", ".state-debug.log", ".hook-debug.log", "gc.log"} {
 		capLog(filepath.Join(e.AmDir, name), debugLogCap)
 	}
 }
@@ -309,8 +337,23 @@ func (e Env) GC(force bool) int {
 }
 
 // sweepOrphanStateFiles removes hook state files and sidecars whose session
-// (name with any .sid/.transcript/.cwd/.bg suffix stripped) is not live.
+// (name with any .sid/.transcript/.cwd/.bg/.dirty/.head suffix stripped) is
+// not live.
+//
+// It does nothing when tmux lists no session at all. The state dir is shared
+// (the default /tmp/am-state serves every AM_DIR, socket, and prefix), so an
+// am-core run with an empty live set is far more likely to be looking at the
+// wrong server than at a machine with no sessions: a test with a temp AM_DIR
+// and its own socket, or `AM_TMUX_SOCKET=x am list` by hand. Observed
+// 2026-09-08: tests/test_bin_helpers.sh ticked with a stub tmux and wiped
+// every live session's hook file several times a day, so background sessions
+// (no tool events while they wait) showed as ready until their next hook
+// event. With no live session nothing reads these files; the next GC with
+// sessions present sweeps them.
 func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
+	if len(live) == 0 {
+		return
+	}
 	entries, err := os.ReadDir(e.StateDir)
 	if err != nil {
 		return
@@ -330,7 +373,9 @@ func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 		if _, ok := live[session]; ok {
 			continue
 		}
-		_ = os.Remove(filepath.Join(e.StateDir, name))
+		if os.Remove(filepath.Join(e.StateDir, name)) == nil {
+			gcLog(e.AmDir, len(live), "orphan state file removed: %s", filepath.Join(e.StateDir, name))
+		}
 	}
 }
 

@@ -317,13 +317,24 @@ test_registry_gc() {
     # Simulate the Go twin (ReapOrphans) having just stamped .gc_last
     date +%s > "$AM_DIR/.gc_last"
     rm -f "$AM_DIR/.gc_extras_last"
-    removed=$(AM_STATE_DIR="$extras_state_dir" registry_gc)
+    removed=$(AM_STATE_DIR="$extras_state_dir" AM_GC_LOG= registry_gc)
     assert_eq "true" "$(registry_exists test-am-stale-fake-3 && echo true || echo false)" \
         "registry_gc: rows half stays throttled by fresh .gc_last"
     assert_eq "false" "$(test -f "$extras_state_dir/test-am-orphan" && echo true || echo false)" \
         "registry_gc: extras sweep removes orphan state file despite fresh .gc_last"
     assert_eq "false" "$(test -f "$extras_state_dir/test-am-orphan.sid" && echo true || echo false)" \
         "registry_gc: extras sweep removes orphan .sid sidecar despite fresh .gc_last"
+    assert_contains "$(cat "$AM_DIR/gc.log" 2>/dev/null)" "orphan state file removed: $extras_state_dir/test-am-orphan" \
+        "registry_gc: gc.log records the removed state file"
+    # Wrong-server guard: when tmux lists no session at all (a socket with no
+    # server: a mis-pointed AM_TMUX_SOCKET, or a test's stub tmux) the sweep
+    # must leave the shared state dir alone — this wiped every live session's
+    # hook file on 2026-09-08.
+    printf 'background' > "$extras_state_dir/test-am-orphan"
+    rm -f "$AM_DIR/.gc_extras_last"
+    AM_STATE_DIR="$extras_state_dir" AM_TMUX_SOCKET="am-test-no-server-$$" registry_gc >/dev/null
+    assert_eq "true" "$(test -f "$extras_state_dir/test-am-orphan" && echo true || echo false)" \
+        "registry_gc: orphan state file kept when tmux lists no session (wrong-server guard)"
     rm -rf "$extras_state_dir"
     registry_remove "test-am-stale-fake-3"
 

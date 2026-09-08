@@ -34,6 +34,7 @@ done
 case "$cmd" in
   display-message) cat "` + root + `/titles/$target" 2>/dev/null; exit 0 ;;
   capture-pane) cat "` + root + `/panes/$target" 2>/dev/null; exit 0 ;;
+  list-sessions) [ -n "$FAKE_TMUX_SESSIONS" ] || exit 1; printf '%s\n' "$FAKE_TMUX_SESSIONS"; exit 0 ;;
   *) exit 1 ;;
 esac
 `
@@ -549,12 +550,17 @@ func TestGCExtras(t *testing.T) {
 
 // The two halves throttle independently: a fresh .gc_last (stamped by the
 // browser's reaper) must not starve the extras, and the grace window keeps a
-// just-registered row (mirrors test_registry_gc).
+// just-registered row (mirrors test_registry_gc). The orphan state-file sweep
+// runs only when tmux lists at least one session: the state dir is shared
+// across AM_DIRs and sockets, and an empty live set usually means the wrong
+// server (a test's stub tmux wiped every live session's hook file, 2026-09-08).
 func TestGCHalvesAndGrace(t *testing.T) {
 	amDir := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
 	env := testEnv(t, amDir)
-	fakeTmux(t) // list-sessions fails → nothing live
+	fakeTmux(t)                        // list-sessions fails → nothing live
+	t.Setenv("FAKE_TMUX_SESSIONS", "") // (explicit: the fake reads this)
+	t.Setenv("AM_GC_LOG", "")          // audit log at its default $AM_DIR/gc.log
 	if err := os.MkdirAll(env.StateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -576,21 +582,43 @@ func TestGCHalvesAndGrace(t *testing.T) {
 	if n := len(ReadRegistry(env.RegistryPath()).Sessions); n != 3 {
 		t.Errorf("registry rows reaped while throttled: %d left", n)
 	}
-	for _, n := range []string{"am-orphan", "am-orphan.sid", "am-orphan.cwd"} {
-		if fileExists(filepath.Join(env.StateDir, n)) {
-			t.Errorf("extras sweep left %s despite fresh .gc_last", n)
+	for _, n := range []string{"am-orphan", "am-orphan.sid", "am-orphan.cwd", "other-prefix"} {
+		if !fileExists(filepath.Join(env.StateDir, n)) {
+			t.Errorf("extras sweep removed %s although tmux listed no session (wrong-server guard)", n)
 		}
 	}
-	if !fileExists(filepath.Join(env.StateDir, "other-prefix")) {
-		t.Errorf("state file outside the session prefix removed")
+	if fileExists(filepath.Join(amDir, "gc.log")) {
+		t.Errorf("gc.log written although nothing was removed")
 	}
 
+	// One live session (not a registry row): the extras sweep runs, the rows
+	// half reaps the two old orphans and the grace window keeps the young one.
+	t.Setenv("FAKE_TMUX_SESSIONS", "am-live 1700000000")
 	if removed := env.GC(true); removed != 2 {
 		t.Errorf("forced gc removed %d, want 2 (grace keeps the young row)", removed)
 	}
 	reg := ReadRegistry(env.RegistryPath())
 	if _, ok := reg.Sessions["am-young"]; !ok || len(reg.Sessions) != 1 {
 		t.Errorf("after forced gc: %v", reg.Sessions)
+	}
+	for _, n := range []string{"am-orphan", "am-orphan.sid", "am-orphan.cwd"} {
+		if fileExists(filepath.Join(env.StateDir, n)) {
+			t.Errorf("extras sweep left orphan %s with a live session present", n)
+		}
+	}
+	if !fileExists(filepath.Join(env.StateDir, "other-prefix")) {
+		t.Errorf("state file outside the session prefix removed")
+	}
+	// The audit log names every removal with the caller's environment.
+	logb, err := os.ReadFile(filepath.Join(amDir, "gc.log"))
+	if err != nil {
+		t.Fatalf("gc.log: %v", err)
+	}
+	for _, want := range []string{"registry row removed: am-old-1", "registry row removed: am-old-2",
+		"orphan state file removed: " + filepath.Join(env.StateDir, "am-orphan.sid"), "live=1", "am_dir=" + amDir} {
+		if !strings.Contains(string(logb), want) {
+			t.Errorf("gc.log lacks %q:\n%s", want, logb)
+		}
 	}
 	t.Setenv("AM_GC_GRACE_SECS", "0")
 	if removed := env.GC(true); removed != 1 {

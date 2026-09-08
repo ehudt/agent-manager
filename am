@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.27.0"
+AM_VERSION="0.27.1"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
