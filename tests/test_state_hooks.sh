@@ -1015,6 +1015,27 @@ test_state_hook_notify() {
     rm -rf "$tmp_dir"
 }
 
+# The macOS notifier must hand its strings to osascript as script arguments:
+# AppleScript's `system attribute` decodes environment variables as MacRoman,
+# which turned every `·` in the title into `¬∑` and any curly quote or dash in
+# the task into mojibake. The static check runs everywhere; the round trip
+# only where osascript exists.
+test_state_hook_notify_osascript_utf8() {
+    $SUMMARY_MODE || echo "=== Testing state-hook osascript UTF-8 path ==="
+
+    local hook_script="$PROJECT_DIR/lib/hooks/state-hook.sh"
+    assert_cmd_fails "notify: osascript never reads strings via system attribute" \
+        grep -q 'system attribute "' "$hook_script"
+    assert_cmd_succeeds "notify: osascript receives title and body as argv" \
+        grep -q 'item 2 of argv) with title (item 1 of argv)' "$hook_script"
+
+    if command -v osascript >/dev/null 2>&1; then
+        local input="am · agent-manager/feat · needs you — ‘Fix’ ✓" out
+        out=$(osascript -e 'on run argv' -e 'return item 1 of argv' -e 'end run' "$input" 2>/dev/null || true)
+        assert_eq "$input" "$out" "notify: osascript argv round-trips UTF-8"
+    fi
+}
+
 # Review signals from the hook's detached tail: tool events touch the .dirty
 # sidecar (the title scan re-measures unreviewed change when it moves) and
 # record HEAD movement, running am-core review-sync when it changed.
@@ -1125,6 +1146,7 @@ run_state_hooks_tests() {
     _run_test test_state_hook_cwd_sidecar
     _run_test test_state_hook_review_signals
     _run_test test_state_hook_notify
+    _run_test test_state_hook_notify_osascript_utf8
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

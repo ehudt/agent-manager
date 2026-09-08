@@ -169,8 +169,14 @@ _notify_maybe() {
     if [[ -n "$cmd" ]]; then
         bash -c "$cmd" >/dev/null 2>&1 || true
     elif command -v osascript >/dev/null 2>&1; then
-        osascript -e 'display notification (system attribute "AM_NOTIFY_BODY") with title (system attribute "AM_NOTIFY_TITLE")' \
-            >/dev/null 2>&1 || true
+        # The strings go in as script arguments, never via `system attribute`:
+        # AppleScript decodes environment variables as MacRoman, so the UTF-8
+        # `·` separators rendered as `¬∑` and any curly quote, dash, or check
+        # mark in the task came out as mojibake (every banner looked like
+        # gibberish until 0.27.3). argv is decoded as UTF-8.
+        osascript -e 'on run argv' \
+            -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+            -e 'end run' "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >/dev/null 2>&1 || true
     elif command -v notify-send >/dev/null 2>&1; then
         notify-send -- "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >/dev/null 2>&1 || true
     fi

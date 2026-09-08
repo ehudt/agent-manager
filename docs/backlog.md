@@ -9,31 +9,36 @@
 
 ## Up Next
 
-- **Desktop notifications: find out what is off (reported 2026-09-08)** —
-  Ehud: "something's off about them", no specific symptom yet. They are fired
-  from `_notify_maybe` in `lib/hooks/state-hook.sh`, in the hook's detached
-  tail, only on a transition into a `notify_states` state (default
-  `waiting_user`), and skipped when a tmux client is attached to that session.
-  Nothing records whether a notification was sent or why it was skipped, so
-  start there: add a `notify` line to the hook debug log (`AM_HOOK_DEBUG=1`) or
-  a small `$AM_DIR/notify.log` (session, state, sent/skipped + reason, command
-  rc). Then check the likely faults against it: (1) the attached-client
-  suppression matches `client_session`, so a session shown in another
-  client's *previous* window or in a zoomed/hidden pane still counts as "on
-  screen", while a session visible in an iTerm tab that is not the tmux
-  client's current session is *not* suppressed — the rule may be the wrong
-  way round for how Ehud actually works; (2) the `.bg`-snapshot path turns a
-  field-less `idle_prompt` into `ready` and the completion re-fires `Stop`,
-  which could produce duplicate `ready` notifications when `notify_states`
-  includes `ready`; (3) a state file deleted under a live session (see the GC
-  audit log, `gc.log`, added 2026-09-08) makes the next hook event look like
-  a transition and re-notify; (4) macOS: `osascript display notification`
-  attributes the banner to Script Editor, is rate-limited by Notification
-  Center, and silently drops when Focus is on — confirm with `AM_NOTIFY_CMD`
-  set to a logging stub; (5) the title/body come from the registry `task`,
-  which lags the title scan by up to 60s, so early notifications carry the
-  session name instead of the task. Ask Ehud for the concrete symptom
-  (missing, duplicate, late, wrong text, wrong session) before fixing.
+- **Desktop notifications: remaining rough edges (2026-09-08)** — The
+  reported symptom ("most of the notifications look like gibberish or partial
+  gibberish") was the macOS notifier reading its strings through
+  AppleScript's `system attribute`, which decodes environment variables as
+  MacRoman: every `·` in the title rendered as `¬∑` and curly quotes, dashes,
+  and check marks in the task came out as mojibake. Fixed in 0.27.3 by
+  passing title and body as osascript arguments (`tests/test_state_hooks.sh`
+  guards the round trip). Notifications are fired from `_notify_maybe` in
+  `lib/hooks/state-hook.sh`, in the hook's detached tail, only on a
+  transition into a `notify_states` state (default `waiting_user`), and
+  skipped when a tmux client is attached to that session. Still open, none
+  confirmed as a problem yet: (1) the banner is attributed to Script Editor
+  (its icon, its name; clicking opens Script Editor, not the session) — a
+  `terminal-notifier`/`alerter` path with `-activate` on the terminal's
+  bundle id would fix both, when installed; (2) the attached-client
+  suppression matches `client_session` only, so the session on screen is
+  never announced even when the terminal is behind another app, while a
+  session in another tmux window of the same client is; (3) only permission
+  and question dialogs notify by default — finished turns need
+  `notify_states waiting_user,ready`, which may be the more useful default;
+  (4) nothing records whether a notification was sent or why it was skipped:
+  a `notify` line under `AM_HOOK_DEBUG=1` (session, state, sent/skipped +
+  reason, command rc) would make the next report checkable — Notification
+  Center's own database needs Full Disk Access and is not readable from the
+  hook's user; (5) the body is the registry `task`, which can lag the title
+  scan by up to 60s, so an early notification carries the session name.
+  Ghostty is the terminal in use (`bell-features = system,...` posts a system
+  notification on bell), tmux has `allow-passthrough off` and `bell-action
+  any`; whether Claude Code's own notification channel produces a second
+  banner through that path is unverified.
 
 ## Ideas
 
