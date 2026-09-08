@@ -472,6 +472,12 @@ test_review_pane() {
     # --- hunk-to-prompt: c opens a note on the hunk under the cursor; Enter
     # hands it to `am send`. The stub agent resolves as idle, so am refuses
     # (exit 2) and the pane reports it — the whole path minus a live agent.
+    # A shell in the agent pane reads as `starting` for the session's first
+    # 5s (am send would then queue, exit 4): wait the age out first. CI got
+    # here in under 5s; a laptop does not.
+    local created
+    created=$(tmux_get_created "$session_name")
+    while (( $(date +%s) - ${created:-0} < 6 )); do sleep 0.5; done
     am_tmux send-keys -t "$review_pane" 'c'
     shown=$(wait_for_text "note on" am_tmux capture-pane -t "$review_pane" -p)
     assert_contains "$shown" "note on a.txt L1 → agent:" \
@@ -495,6 +501,40 @@ test_review_pane() {
     # …and records the count on the registry row for the tab.
     assert_eq "3" "$(registry_get_field "$session_name" review_files)" \
         "review pane: measurement lands in the registry"
+
+    # --- base picker (s): a commit gives the chain a head checkpoint; Enter on
+    # it views the diff since there (baseline untouched), b makes it the baseline.
+    "${g[@]}" add -A
+    "${g[@]}" commit -q -m second
+    am_tmux send-keys -t "$review_pane" 's'
+    shown=$(wait_for_text "since which checkpoint" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "launch" "review pane: picker lists the launch checkpoint"
+    assert_contains "$shown" "head" "review pane: picker lists the head checkpoint the commit created"
+    assert_contains "$shown" "* " "review pane: picker stars the baseline"
+    am_tmux send-keys -t "$review_pane" 'k' Enter   # newest first: up from launch to head
+    shown=$(wait_for_text "picked base" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "since the head checkpoint" "review pane: Enter measures since the picked checkpoint"
+    assert_contains "$shown" "no changes" "review pane: worktree equals HEAD, nothing since the head checkpoint"
+    assert_eq "3" "$(registry_get_field "$session_name" review_files)" \
+        "review pane: a picked base records nothing (tab keeps the baseline count)"
+    am_tmux send-keys -t "$review_pane" 's'
+    wait_for_text "since which checkpoint" am_tmux capture-pane -t "$review_pane" -p >/dev/null
+    am_tmux send-keys -t "$review_pane" 'b'   # cursor starts on the base shown (head)
+    shown=$(wait_for_text "baseline moved" am_tmux capture-pane -t "$review_pane" -p)
+    assert_contains "$shown" "baseline moved to the head checkpoint" "review pane: b moves the baseline"
+    shown=$(wait_for_text "checkpoint" am_tmux capture-pane -t "$review_pane" -p)
+    assert_not_contains "$shown" "picked base" "review pane: the new baseline is no longer a one-off pick"
+    # A zero count is written as an absent key (omitempty), read back as ''.
+    local _i files_now
+    for _i in $(seq 1 20); do
+        files_now=$(registry_get_field "$session_name" review_files)
+        [[ "${files_now:-0}" == "0" ]] && break
+        sleep 0.2
+    done
+    assert_eq "0" "${files_now:-0}" \
+        "review pane: the moved baseline is recorded on the registry row"
+    assert_contains "$(am_core review-list "$session_name" "$repo")" " head " \
+        "review pane: the head checkpoint is in the chain"
 
     # --- shell panel alongside: roles keep the targets straight ---
     agent_shell_pane_toggle "$session_name"

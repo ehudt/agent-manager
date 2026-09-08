@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/ehud-tamir/agent-manager/internal/sessions"
 )
 
 // hunk is one @@ block of a unified diff: where it starts in the parsed line
@@ -111,6 +114,33 @@ func truncRunes(s string, w int) string {
 		return "…"
 	}
 	return string(r[:w-1]) + "…"
+}
+
+// checkpointHeader / checkpointRow render the picker's table, the same
+// columns as `am diff --list`: mark, id, kind, branch, HEAD, age. The mark is
+// `*` for the baseline and `>` for the base the pane shows now (when it is
+// not the baseline).
+func checkpointHeader() string {
+	return fmt.Sprintf("  %-8s %-7s %-24s %-8s %s", "ID", "KIND", "BRANCH", "HEAD", "WHEN")
+}
+
+func checkpointRow(cp sessions.Checkpoint, baselineID, shownID string, now int64) string {
+	mark := " "
+	switch {
+	case cp.ID == baselineID:
+		mark = "*"
+	case cp.ID == shownID:
+		mark = ">"
+	}
+	branch := cp.Branch
+	if branch == "" {
+		branch = "(detached)"
+	}
+	head := "-"
+	if cp.Head != "" {
+		head = shortID(cp.Head)
+	}
+	return fmt.Sprintf("%s %-8s %-7s %-24s %-8s %s", mark, shortID(cp.ID), cp.Kind, tailPath(branch, 24), head, ago(cp.Time, now))
 }
 
 // padRight pads s with spaces to w runes (never truncates).

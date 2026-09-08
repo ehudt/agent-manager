@@ -59,12 +59,21 @@ type model struct {
 	focus         int
 	showHelp      bool
 
-	base  sessions.Checkpoint
-	stat  sessions.ReviewStat
-	moved string
-	files []sessions.FileStat
-	sel   int
+	base    sessions.Checkpoint
+	stat    sessions.ReviewStat
+	moved   string
+	files   []sessions.FileStat
+	sel     int
 	fileTop int // first visible file row
+
+	// Base checkpoint picker (`s`): from pins the checkpoint the diff is
+	// measured since ("" = the baseline, like `am diff`; an id = a one-off
+	// view like `am diff --checkpoint`, nothing recorded).
+	from     string
+	picking  bool
+	picks    []sessions.Checkpoint // newest first
+	pickBase string                // baseline id at load time
+	pickSel  int
 
 	doc  diffDoc
 	vp   viewport.Model
@@ -118,6 +127,16 @@ type diffMsg struct {
 
 type ackMsg struct{ err error }
 
+type checkpointsMsg struct {
+	st  sessions.ReviewState
+	err error
+}
+
+type baselineMsg struct {
+	cp  sessions.Checkpoint
+	err error
+}
+
 func main() {
 	var (
 		session  = flag.String("session", os.Getenv("AM_SESSION_NAME"), "am session name")
@@ -164,10 +183,12 @@ func (m model) dirtyPath() string {
 
 // measure re-syncs checkpoints, measures the unreviewed change (recording it
 // on the registry row so the tab agrees with the pane), and lists the files.
+// With a picked base (m.from) it measures since that checkpoint instead and
+// records nothing: the tab keeps tracking the real baseline.
 func (m model) measure() tea.Cmd {
-	env, session, dir := m.env, m.session, m.dir
+	env, session, dir, from := m.env, m.session, m.dir, m.from
 	return func() tea.Msg {
-		cp, rs, moved, err := env.ReviewMeasure(session, dir, "", true)
+		cp, rs, moved, err := env.ReviewMeasure(session, dir, from, from == "")
 		if err != nil {
 			return measuredMsg{err: err}
 		}
@@ -205,6 +226,26 @@ func (m model) ack() tea.Cmd {
 		}
 		env.ReviewRecord(session, sessions.ReviewStat{}, time.Now())
 		return ackMsg{}
+	}
+}
+
+// loadCheckpoints reads the session's checkpoint chain for the picker.
+func (m model) loadCheckpoints() tea.Cmd {
+	session, dir := m.session, m.dir
+	return func() tea.Msg {
+		_, _, _ = sessions.ReviewSync(dir, session) // record a HEAD move first, so the list is current
+		st, err := sessions.ReviewRead(dir, session)
+		return checkpointsMsg{st: st, err: err}
+	}
+}
+
+// setBaseline moves the baseline ref to checkpoint id; the following measure
+// (from == "") records the new count on the registry row.
+func (m model) setBaseline(id string) tea.Cmd {
+	session, dir := m.session, m.dir
+	return func() tea.Msg {
+		cp, err := sessions.ReviewSetBaseline(dir, session, id)
+		return baselineMsg{cp: cp, err: err}
 	}
 }
 
@@ -310,6 +351,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.flash(styleOK.Render("reviewed — baseline moved to the working copy"))
+		m.from = "" // the new baseline is what to look at now
+		m.measuring = true
+		return m, m.measure()
+
+	case checkpointsMsg:
+		if msg.err != nil {
+			m.flash(styleErr.Render("checkpoints: " + msg.err.Error()))
+			return m, nil
+		}
+		if len(msg.st.Checkpoints) == 0 {
+			m.flash(styleDim.Render("no checkpoints yet"))
+			return m, nil
+		}
+		m.picks, m.pickBase = msg.st.Checkpoints, msg.st.BaselineID()
+		m.pickSel = 0
+		for i, cp := range m.picks { // start on the base shown now
+			if cp.ID == m.base.ID {
+				m.pickSel = i
+				break
+			}
+		}
+		m.picking = true
+		m.msg = ""
+		return m, nil
+
+	case baselineMsg:
+		if msg.err != nil {
+			m.flash(styleErr.Render("baseline: " + msg.err.Error()))
+			return m, nil
+		}
+		m.flash(styleOK.Render("baseline moved to the " + msg.cp.Kind + " checkpoint " + shortID(msg.cp.ID)))
+		m.from = ""
 		m.measuring = true
 		return m, m.measure()
 
@@ -333,7 +406,63 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.noting {
 			return m.handleNoteKey(msg)
 		}
+		if m.picking {
+			return m.handlePickKey(msg)
+		}
 		return m.handleKey(msg)
+	}
+	return m, nil
+}
+
+// handlePickKey drives the base checkpoint picker: Enter measures since the
+// highlighted checkpoint (a one-off view; the baseline row returns to the
+// default), b makes it the baseline, Esc goes back.
+func (m model) handlePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q", "s":
+		m.picking = false
+		return m, nil
+	case "j", "down":
+		if m.pickSel < len(m.picks)-1 {
+			m.pickSel++
+		}
+		return m, nil
+	case "k", "up":
+		if m.pickSel > 0 {
+			m.pickSel--
+		}
+		return m, nil
+	case "g", "home":
+		m.pickSel = 0
+		return m, nil
+	case "G", "end":
+		m.pickSel = len(m.picks) - 1
+		return m, nil
+	case "enter":
+		cp := m.picks[m.pickSel]
+		m.picking = false
+		if cp.ID == m.pickBase {
+			m.from = ""
+			m.flash(styleDim.Render("measuring since the baseline"))
+		} else {
+			m.from = cp.ID
+			m.flash(styleDim.Render("measuring since the " + cp.Kind + " checkpoint " + shortID(cp.ID) + " (baseline unchanged)"))
+		}
+		m.measuring = true
+		return m, m.measure()
+	case "b":
+		cp := m.picks[m.pickSel]
+		m.picking = false
+		if cp.ID == m.pickBase {
+			m.from = ""
+			m.flash(styleDim.Render("already the baseline"))
+			m.measuring = true
+			return m, m.measure()
+		}
+		m.flash(styleDim.Render("moving the baseline…"))
+		return m, m.setBaseline(cp.ID)
 	}
 	return m, nil
 }
@@ -397,6 +526,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.measuring = true
 		m.flash(styleDim.Render("refreshing…"))
 		return m, m.measure()
+	case "s":
+		m.flash(styleDim.Render("loading checkpoints…"))
+		return m, m.loadCheckpoints()
 	case "a":
 		if m.stat.Files == 0 {
 			m.flash(styleDim.Render("nothing to acknowledge"))
@@ -603,7 +735,7 @@ func (m model) emptyDiffText() string {
 		if m.base.ID == "" {
 			return styleDim.Render("measuring…")
 		}
-		return styleDim.Render("No unreviewed changes since the " + m.base.Kind + " checkpoint.") +
+		return styleDim.Render("No unreviewed changes since the "+m.base.Kind+" checkpoint.") +
 			"\n" + styleDim.Render("This pane refreshes when the agent edits a file.")
 	}
 	if m.files[m.sel].Binary {
@@ -620,6 +752,9 @@ func (m model) View() string {
 	}
 	if m.showHelp {
 		return m.helpView()
+	}
+	if m.picking {
+		return m.pickView()
 	}
 	var b strings.Builder
 	b.WriteString(m.headerView())
@@ -668,6 +803,9 @@ func (m model) headerView() string {
 			styleDim.Render(" since the "+m.base.Kind+" checkpoint "+shortID(m.base.ID)+" ("+ago(m.base.Time, now)+")")
 		if m.moved != "" && m.moved != "-" {
 			rest += styleDim.Render("; HEAD moved: " + m.moved)
+		}
+		if m.from != "" {
+			rest += styleKey.Render(" [picked base — s to change]")
 		}
 	}
 	if m.measuring {
@@ -760,6 +898,7 @@ func (m model) footerView() string {
 		hint("tab", "focus"),
 		hint("c", "note→agent"),
 		hint("a", "reviewed"),
+		hint("s", "since…"),
 		hint("r", "refresh"),
 		hint("q", "close"),
 		hint("?", "help"),
@@ -782,6 +921,8 @@ func (m model) helpView() string {
 		"  c                note on the hunk under the cursor → the agent (am send: file, lines,",
 		"                   hunk, your note; queued with am send --queue while the agent is busy)",
 		"  a                mark the working copy reviewed (am diff --ack): new baseline",
+		"  s                pick the checkpoint the diff is measured since (the chain of",
+		"                   `am diff --list`): Enter views from it, b makes it the baseline",
 		"  r                re-measure now (the pane also refreshes on every tool event)",
 		"  q                close the pane (prefix+v or `am review` reopens it)",
 		"",
@@ -789,6 +930,32 @@ func (m model) helpView() string {
 		styleDim.Render("switch moves it to the new branch as checked out. `am diff --list` shows the chain."),
 		"",
 		styleDim.Render("any key to return"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// pickView lists the checkpoint chain, newest first: * marks the baseline,
+// the highlighted row is the one Enter / b act on.
+func (m model) pickView() string {
+	now := time.Now().Unix()
+	lines := []string{
+		truncRunes(styleTitle.Render("since which checkpoint? ")+styleDim.Render("Enter view from it · b make it the baseline · esc back"), m.width),
+		styleDim.Render(truncRunes(checkpointHeader(), m.width)),
+	}
+	rows := m.height - len(lines)
+	if rows < 1 {
+		rows = 1
+	}
+	top := 0
+	if m.pickSel >= rows {
+		top = m.pickSel - rows + 1
+	}
+	for i := top; i < len(m.picks) && i < top+rows; i++ {
+		row := truncRunes(checkpointRow(m.picks[i], m.pickBase, m.base.ID, now), m.width)
+		if i == m.pickSel {
+			row = styleSel.Render(padRight(row, m.width))
+		}
+		lines = append(lines, row)
 	}
 	return strings.Join(lines, "\n")
 }

@@ -290,9 +290,12 @@ of the selected file, hunk navigation (`]` / `[`), and `a` to mark the working
 copy reviewed. It re-measures on every tool event, so it follows the agent as
 it works. Press `c` on a hunk to send it back with a note: the file, the line
 range, the hunk, and your text go to the agent through `am send`, or are
-queued for it when it is busy. Like the shell panel it is collapsible: the
-first toggle opens it, later ones hide and show the same pane in place. `?`
-inside the pane lists the keys.
+queued for it when it is busy. `s` picks the checkpoint the diff is measured
+since (the chain `am diff --list` shows: launch, acks, branch switches, HEAD
+moves): Enter views the change from there without touching the baseline, `b`
+makes it the baseline so the tab count follows. Like the shell panel it is
+collapsible: the first toggle opens it, later ones hide and show the same
+pane in place. `?` inside the pane lists the keys.
 
 ```bash
 am review                                # inside a session: toggle its review pane

@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ehud-tamir/agent-manager/internal/sessions"
+)
 
 const sampleDiff = `diff --git a/lib/x.sh b/lib/x.sh
 index 1111111..2222222 100644
@@ -89,5 +93,23 @@ func TestTextHelpers(t *testing.T) {
 	}
 	if got := ago(0, 7200); got != "2h ago" {
 		t.Errorf("ago h = %q", got)
+	}
+}
+
+func TestCheckpointRows(t *testing.T) {
+	launch := sessions.Checkpoint{ID: "aaaaaaa1111", Kind: "launch", Branch: "main", Head: "bbbbbbb2222", Time: 1000}
+	head := sessions.Checkpoint{ID: "ccccccc3333", Kind: "head", Branch: "", Head: "", Time: 1300}
+	// The baseline row is starred; the picked (shown) base gets >; others a blank.
+	if got := checkpointRow(launch, launch.ID, head.ID, 1360); got != "* aaaaaaa  launch  main                     bbbbbbb  6m ago" {
+		t.Errorf("baseline row = %q", got)
+	}
+	if got := checkpointRow(head, launch.ID, head.ID, 1360); got != "> ccccccc  head    (detached)               -        1m ago" {
+		t.Errorf("shown row = %q", got)
+	}
+	if got := checkpointRow(head, launch.ID, "", 1360); got[0] != ' ' {
+		t.Errorf("plain row mark = %q", got[:1])
+	}
+	if h := checkpointHeader(); len([]rune(h)) != len([]rune(checkpointRow(launch, "", "", 1360)))-len("6m ago")+len("WHEN") {
+		t.Errorf("header does not line up with rows: %q", h)
 	}
 }
