@@ -40,7 +40,7 @@ func noteMessage(path, lineRange, hunkText, note string) string {
 
 // sendResult is what happened to a note.
 type sendResult struct {
-	queued bool // the agent was busy; a helper delivers when it is ready
+	queued bool // a dialog was up (or the agent starting); a helper delivers when it is ready
 }
 
 // sendNote delivers text to session through am. The prompt travels on stdin

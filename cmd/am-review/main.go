@@ -464,7 +464,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.err != nil:
 			m.flash(styleErr.Render("not sent: " + msg.err.Error()))
 		case msg.res.queued:
-			m.flash(styleOK.Render("agent busy — note on " + where + " queued, sent when it is ready"))
+			m.flash(styleOK.Render("agent in a dialog — note on " + where + " queued, sent when it is ready"))
 		default:
 			m.flash(styleOK.Render("note on " + where + " sent to the agent"))
 		}
@@ -1030,7 +1030,7 @@ func (m model) helpView() string {
 		"  tab, enter       move focus between the file list and the diff",
 		"  space, b, g, G   page down / page up / top / bottom of the diff (ctrl+d / ctrl+u too)",
 		"  c                note on the hunk under the cursor → the agent (am send: file, lines,",
-		"                   hunk, your note; queued with am send --queue while the agent is busy)",
+		"                   hunk, your note; queued with am send --queue while a dialog is up)",
 		"  a                mark the working copy reviewed (am diff --ack): new baseline",
 		"  s                pick the base the diff is measured since: the checkpoint chain of",
 		"                   `am diff --list`, each row with the change it would show; Enter views",
