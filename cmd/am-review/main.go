@@ -255,6 +255,18 @@ func (m model) loadCheckpoints() tea.Cmd {
 		if err != nil {
 			return checkpointsMsg{st: st, err: err}
 		}
+		// A rewrite the chain never re-anchored for (recorded before rebase
+		// checkpoints existed): offer the base it would have had, in time order.
+		if sug, ok := sessions.ReviewRebaseSuggestion(dir, st); ok {
+			at := len(st.Checkpoints)
+			for i, cp := range st.Checkpoints {
+				if cp.Time <= sug.Time {
+					at = i
+					break
+				}
+			}
+			st.Checkpoints = append(st.Checkpoints[:at], append([]sessions.Checkpoint{sug}, st.Checkpoints[at:]...)...)
+		}
 		stats := map[string]sessions.ReviewStat{}
 		if cur, err := sessions.WorktreeTree(dir); err == nil {
 			for _, cp := range st.Checkpoints {

@@ -39,7 +39,8 @@ review checkpoints (refs/am/<session>/{checkpoints,baseline} in <dir>'s repo):
   review-ack <session> <dir>          record the worktree as reviewed (new baseline); prints its id
   review-baseline <session> <dir> [--reset | <id>]   id: a checkpoint, or any commit (recorded as a pick checkpoint)
                                       print the baseline (id kind branch head time), or move it
-  review-list <session> <dir>         checkpoints newest first: id kind branch head time baseline(*|-)
+  review-list <session> <dir>         checkpoints newest first: id kind branch head time baseline(*|-); a trailing
+                                      ~ row is the suggested rebase base for a rewrite the chain never re-anchored
   review-stat <session> <dir> [--from <id>] [--record]
                                       files added deleted base_id base_kind base_time base_tree cur_tree head_moved
                                       (--record also stores the count on the registry row)
@@ -194,6 +195,11 @@ func reviewCmd(env sessions.Env, cmd string, args []string) error {
 				mark = "*"
 			}
 			fmt.Printf("%s %s %s %s %d %s\n", cp.ID, cp.Kind, orDash(cp.Branch), orDash(cp.AnchorCommit()), cp.Time, mark)
+		}
+		// A rewrite the chain never re-anchored for: the base it would have had,
+		// marked ~ (not recorded; `am diff --checkpoint <id>` views from it).
+		if sug, ok := sessions.ReviewRebaseSuggestion(dir, st); ok {
+			fmt.Printf("%s %s %s %s %d %s\n", sug.ID, sug.Kind, orDash(sug.Branch), orDash(sug.AnchorCommit()), sug.Time, "~")
 		}
 	case "review-stat":
 		from, record := "", false

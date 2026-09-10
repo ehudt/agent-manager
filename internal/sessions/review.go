@@ -637,6 +637,66 @@ func CommitCheckpoint(dir, rev string) (Checkpoint, bool) {
 	return cp, true
 }
 
+// ReviewRebaseSuggestion finds a history rewrite the chain never re-anchored
+// for (checkpoints recorded before rebase checkpoints existed, or a rewrite
+// the hook missed) and returns the base a rebase checkpoint would have
+// carried, as a virtual checkpoint of kind "rebase" (its id is the anchor
+// commit, so Enter / `b` in the picker resolve it as a commit). ok is false
+// when every recorded commit still descends into HEAD, when a rebase
+// checkpoint already covers the rewrite, or when the computed tree is one
+// the chain already has.
+func ReviewRebaseSuggestion(dir string, st ReviewState) (Checkpoint, bool) {
+	n := len(st.Checkpoints)
+	if n < 2 {
+		return Checkpoint{}, false
+	}
+	_, head, err := HeadInfo(dir)
+	if err != nil || head == "" {
+		return Checkpoint{}, false
+	}
+	// prev: the newest checkpoint whose commit was rewritten away.
+	prevIdx := -1
+	for i, cp := range st.Checkpoints {
+		if cp.Kind == "rebase" {
+			return Checkpoint{}, false
+		}
+		if c := cp.AnchorCommit(); c != "" && !isAncestor(dir, c, head) {
+			prevIdx = i
+			break
+		}
+	}
+	if prevIdx < 0 {
+		return Checkpoint{}, false
+	}
+	// base: the newest "since" point older than prev (launch, or a branch /
+	// pick checkpoint that reset the range the agent's commits are counted in).
+	base := st.Checkpoints[n-1]
+	for _, cp := range st.Checkpoints[prevIdx+1:] {
+		if cp.Kind == "launch" || cp.Kind == "branch" || cp.Kind == "pick" {
+			base = cp
+			break
+		}
+	}
+	if base.AnchorCommit() == "" {
+		return Checkpoint{}, false
+	}
+	anchor, _, err := rebasedBaseline(dir, base, st.Checkpoints[prevIdx].AnchorCommit(), head)
+	if err != nil || anchor == "" {
+		return Checkpoint{}, false
+	}
+	cp, ok := CommitCheckpoint(dir, anchor)
+	if !ok {
+		return Checkpoint{}, false
+	}
+	for _, have := range st.Checkpoints {
+		if have.Tree == cp.Tree {
+			return Checkpoint{}, false
+		}
+	}
+	cp.Kind = "rebase"
+	return cp, true
+}
+
 // Resolve finds id in the chain (full or abbreviated checkpoint id), else as
 // a commit-ish of the repository (a virtual "commit" checkpoint).
 func (st ReviewState) Resolve(dir, id string) (Checkpoint, bool) {

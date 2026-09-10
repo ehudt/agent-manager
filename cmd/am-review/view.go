@@ -175,7 +175,7 @@ func checkpointRow(cp sessions.Checkpoint, rs sessions.ReviewStat, baselineID, s
 	}
 	branch := cp.Branch
 	if branch == "" {
-		if cp.Kind == "commit" || cp.Kind == "pick" {
+		if cp.Anchor != "" { // a commit, not a checkout: nothing to be detached from
 			branch = "-"
 		} else {
 			branch = "(detached)"

@@ -303,6 +303,79 @@ func TestReviewSyncRebaseNoOwnCommits(t *testing.T) {
 	}
 }
 
+// A chain recorded before rebase checkpoints existed (a head checkpoint after
+// the rebase, baseline still at launch) gets the re-anchored base offered as
+// a virtual row; a chain that already has a rebase checkpoint does not.
+func TestReviewRebaseSuggestion(t *testing.T) {
+	dir := gitRepo(t)
+	git(t, dir, "checkout", "-q", "-b", "feature")
+	if _, _, err := ReviewInit(dir, "am-old"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "feat.txt"), "f1\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "agent work")
+	if kind, _, _ := ReviewSync(dir, "am-old"); kind != "head" {
+		t.Fatalf("kind %q", kind)
+	}
+	git(t, dir, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(dir, "up.txt"), "u\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "upstream")
+	mainSHA := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", "feature")
+	git(t, dir, "rebase", "-q", "main")
+	// What a pre-0.33 sync recorded: a head checkpoint of the rebased HEAD.
+	tree, _ := headTree(dir)
+	if _, err := reviewAdd(dir, "am-old", "head", tree, false); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _, _ := ReviewSync(dir, "am-old"); kind != "" {
+		t.Fatalf("sync on a chain already at HEAD recorded %q", kind)
+	}
+	st, _ := ReviewRead(dir, "am-old")
+	sug, ok := ReviewRebaseSuggestion(dir, st)
+	if !ok || sug.Kind != "rebase" || sug.ID != mainSHA || sug.Anchor != mainSHA {
+		t.Fatalf("suggestion: ok=%v %+v want anchor %s", ok, sug, mainSHA)
+	}
+	if rs, _ := ReviewDiffStat(dir, sug.Tree); rs.Files != 1 {
+		t.Fatalf("since the suggested base: %+v", rs)
+	}
+	// Making it the baseline records a pick; the suggestion then disappears
+	// (its tree is in the chain).
+	if _, err := ReviewSetBaseline(dir, "am-old", sug.ID); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = ReviewRead(dir, "am-old")
+	if _, ok := ReviewRebaseSuggestion(dir, st); ok {
+		t.Fatalf("suggestion repeated after it was picked")
+	}
+
+	// A chain whose rewrite was re-anchored by ReviewSync offers nothing.
+	dir2 := gitRepo(t)
+	git(t, dir2, "checkout", "-q", "-b", "feature")
+	if _, _, err := ReviewInit(dir2, "am-new"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir2, "feat.txt"), "f1\n")
+	git(t, dir2, "add", "-A")
+	git(t, dir2, "commit", "-q", "-m", "agent work")
+	ReviewSync(dir2, "am-new")
+	git(t, dir2, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(dir2, "up.txt"), "u\n")
+	git(t, dir2, "add", "-A")
+	git(t, dir2, "commit", "-q", "-m", "upstream")
+	git(t, dir2, "checkout", "-q", "feature")
+	git(t, dir2, "rebase", "-q", "main")
+	if kind, _, _ := ReviewSync(dir2, "am-new"); kind != "rebase" {
+		t.Fatalf("kind %q", kind)
+	}
+	st2, _ := ReviewRead(dir2, "am-new")
+	if _, ok := ReviewRebaseSuggestion(dir2, st2); ok {
+		t.Fatalf("suggestion on a chain with a rebase checkpoint")
+	}
+}
+
 // Any commit of the repository can serve as a one-off base, and `b` on it
 // records a pick checkpoint anchored on that commit.
 func TestReviewCommitBase(t *testing.T) {

@@ -40,6 +40,25 @@
   any`; whether Claude Code's own notification channel produces a second
   banner through that path is unverified.
 
+- **Review pane keeps running a stale binary across upgrades (2026-09-10)** —
+  prefix+v / `am review` hide and show park the pane in `_amreview` and
+  rejoin it, so the am-review process started at pane creation survives
+  every toggle; a rebuilt `bin/am-review` is not picked up until the pane is
+  killed (`tmux kill-pane`) and re-created. Seen when 0.33.0's picker
+  changes did not appear after a double toggle. Options: `am review
+  --restart`, or `agent_review_pane_toggle` comparing the binary's mtime
+  with the pane process's start time and restarting instead of showing.
+
+- **State hook `.head` sidecar is empty for packed refs (2026-09-10)** —
+  `_review_head_check` reads the branch sha from the loose ref file
+  (`$gitdir/refs/heads/<branch>`, or the linked worktree's common dir); when
+  git has packed the ref (`packed-refs` only, common after `git gc` / fetch),
+  the sidecar carries `ref: refs/heads/<branch>` with no sha, and a
+  same-branch commit is only noticed once git writes a loose ref again or
+  the 60s tick's `ReviewSync` sees it. Delay only, no wrong data. Fix: fall
+  back to a `packed-refs` lookup (one `grep -m1 " <ref>$"` in the detached
+  tail) when the loose file is missing.
+
 ## Ideas
 
 - **Web dashboard** — `am peek --follow` already has the snapshot/stream contract; a web UI could share the same model. The vision for the web UI is a full AM implementation on the web. with session switching, creating sessions, chatting with the agent and integrated shell. etc etc. State detection is the non-portable part (pane title + local process tree); see the architecture notes in the follow-ups plan.

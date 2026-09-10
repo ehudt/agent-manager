@@ -121,7 +121,9 @@ Without a session name the command applies to the am session you are inside
   --checkpoint <id>   one-off diff from that checkpoint, or from any commit of the
                       repository (sha, branch, HEAD~3, ...); baseline unchanged
   --list, -l          list checkpoints: id, kind, branch, HEAD (the anchor commit
-                      for rebase / pick checkpoints), age; * = baseline
+                      for rebase / pick checkpoints), age; * = baseline, ~ = the
+                      suggested base after a rebase the chain never re-anchored
+                      for (not recorded; use it with --checkpoint)
   --stat              pass --stat to git diff (also: --name-only, --numstat, -w)
   -- <args>           remaining arguments go to git diff (e.g. -- -- lib/)
 
@@ -211,8 +213,13 @@ _review_list() {
     local id kind branch head when mark
     while read -r id kind branch head when mark; do
         [[ -n "$id" ]] || continue
-        [[ "$mark" == "*" ]] || mark=" "
-        [[ "$branch" == "-" ]] && branch="(detached)"
+        [[ "$mark" == "*" || "$mark" == "~" ]] || mark=" "
+        # Anchored rows (a suggested rebase base, a pick) name a commit, not a
+        # checkout, so an empty branch is not "detached" there.
+        case "$kind" in
+            rebase|pick|commit) ;;
+            *) [[ "$branch" == "-" ]] && branch="(detached)" ;;
+        esac
         [[ "$head" == "-" ]] && head="-" || head="${head:0:7}"
         printf '%s %-8s %-7s %-24s %-8s %s\n' "$mark" "${id:0:7}" "$kind" "$branch" "$head" "$(_review_age "$when")"
     done <<< "$out"
