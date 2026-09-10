@@ -635,6 +635,58 @@ test_agent_wait_state_stable_idle() {
     [[ -n "$saved_date" ]] && eval "$saved_date" || unset -f date
 }
 
+# A timeout of 0 means no deadline: the wait ends only when the session
+# reaches a target state (or dies). `am send --queue` relies on this — its
+# detached helper has nobody to report a timeout to, and the 600s default
+# used to drop the prompt silently once a worker's turn outlived it.
+test_agent_wait_state_no_timeout() {
+    local saved_get_state saved_tmux_exists saved_get_activity saved_sleep saved_date
+    saved_get_state="$(declare -f agent_get_state)"
+    saved_tmux_exists="$(declare -f tmux_session_exists)"
+    saved_get_activity="$(declare -f tmux_get_activity)"
+    saved_sleep="$(declare -f sleep 2>/dev/null || true)"
+    saved_date="$(declare -f date 2>/dev/null || true)"
+
+    # 30 mocked seconds of running (each poll advances the clock 1s), then
+    # ready for good.
+    local mock_idx=0
+    local mock_now=1000
+
+    agent_get_state() {
+        if (( mock_idx < 30 )); then printf 'running\n'; else printf 'background\n'; fi
+    }
+    tmux_get_activity() { printf '900\n'; }
+    tmux_session_exists() { return 0; }
+    sleep() {
+        mock_idx=$((mock_idx + 1))
+        mock_now=$((mock_now + 1))
+    }
+    date() {
+        if [[ "${1:-}" == "+%s" ]]; then
+            printf '%s\n' "$mock_now"
+        else
+            command date "$@"
+        fi
+    }
+
+    local state rc
+    mock_idx=0; mock_now=1000
+    rc=0; state=$(agent_wait_state "fake-session" "ready,background" 5) || rc=$?
+    assert_eq "timeout" "$state" "agent_wait_state: a positive timeout still gives up"
+    assert_eq "3" "$rc" "agent_wait_state: timeout exits 3"
+
+    mock_idx=0; mock_now=1000
+    rc=0; state=$(agent_wait_state "fake-session" "ready,background" 0) || rc=$?
+    assert_eq "background" "$state" "agent_wait_state: timeout 0 waits past any deadline for the target"
+    assert_eq "0" "$rc" "agent_wait_state: timeout 0 exits 0 on the target"
+
+    eval "$saved_get_state"
+    eval "$saved_tmux_exists"
+    eval "$saved_get_activity"
+    [[ -n "$saved_sleep" ]] && eval "$saved_sleep" || unset -f sleep
+    [[ -n "$saved_date" ]] && eval "$saved_date" || unset -f date
+}
+
 # tmux session_created timestamps have 1-second resolution and
 # am_session_order sorts by them, so consecutive launches must land in
 # distinct seconds. Wait until the wall clock has moved past the given
@@ -701,6 +753,7 @@ run_state_tests() {
     _run_test test_state_integration
     _run_test test_state_title_glyph
     _run_test test_agent_wait_state_stable_idle
+    _run_test test_agent_wait_state_no_timeout
     _run_test test_am_session_order
 }
 

@@ -347,7 +347,65 @@ test_cli_extended() {
     assert_contains "$pane_output" "stub-agent-input:ctl[31ma" "am send: ESC and BEL stripped from the prompt"
     assert_eq "true" "$([[ "$pane_output" =~ ctl\[31ma[[:space:]]+bend ]] && echo true || echo false)" \
         "am send: ^C stripped, tab kept (stub survived and echoed the rest)"
+    # --- Test: am send --queue records its outcome and never loses the prompt ---
+    # The stub resolves as idle, so the detached helper's wait ends with
+    # "session exited" (exit 2). On 2026-09-10 two queued prompts vanished this
+    # way: the helper's stderr went to /dev/null and nothing else recorded it.
+    # Now every helper outcome is one line in $AM_DIR/queue.log and an
+    # undelivered prompt is kept as <qfile>.failed.
+    send_rc=0
+    send_err=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send --queue "$session_name" "queued for a dead agent" 2>&1) || send_rc=$?
+    assert_eq "0" "$send_rc" "am send --queue: returns at once (exit 0)"
+    assert_contains "$send_err" "queue.log" "am send --queue: names the outcome log"
+    assert_eq "true" "$(wait_for_cmd grep -q "$session_name.*failed" "$TEST_AM_DIR/queue.log" && echo true || echo false)" \
+        "am send --queue: helper failure is logged"
+    local qlog
+    qlog=$(grep "$session_name" "$TEST_AM_DIR/queue.log")
+    assert_contains "$qlog" "queued" "am send --queue: the queue event is logged"
+    assert_contains "$qlog" "no timeout" "am send --queue: helper waits without a deadline by default"
+    assert_contains "$qlog" "exited" "am send --queue: failure line carries the helper's reason"
+    local failed_files
+    failed_files=$(ls "$TEST_AM_DIR/queue/$session_name."*.failed 2>/dev/null | wc -l | tr -d ' ')
+    assert_eq "1" "$failed_files" "am send --queue: undelivered prompt kept as .failed"
+    assert_eq "queued for a dead agent" "$(cat "$TEST_AM_DIR/queue/$session_name."*.failed)" \
+        "am send --queue: .failed holds the prompt text"
+    local pending_files
+    pending_files=$(ls "$TEST_AM_DIR/queue/" | grep -c "^$session_name\.[A-Za-z0-9]*$" || true)
+    assert_eq "0" "$pending_files" "am send --queue: no bare queue file lingers after failure"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+
+    # --- Test: am send --queue / --wait deliver to a `background` agent ---
+    # A non-shell pane process makes the resolver read the hook file; perl
+    # stands in for the agent. `background` (Claude's main turn ended, a task
+    # of its own still runs) is sendable like the direct path already treats
+    # it; before 0.31 the helper waited for `ready` only and timed out.
+    local bg_session
+    bg_session=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" new --detach --print-session -t perl "$test_dir" -- \
+        -e '$|=1; print "perl-agent-ready\n"; while (<STDIN>) { print "perl-agent-input:$_" }' 2>/dev/null)
+    assert_not_empty "$bg_session" "am send --queue (background): perl agent launched"
+    wait_for_text "perl-agent-ready" am_tmux capture-pane -pt "$bg_session:.{top}" >/dev/null
+    printf 'background' > "$AM_STATE_DIR/$bg_session"
+    assert_eq "background" "$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" wait --state background --timeout 10 "$bg_session" 2>/dev/null)" \
+        "am send --queue (background): fixture resolves as background"
+    send_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send --queue "$bg_session" "queued while background" >/dev/null 2>&1 || send_rc=$?
+    assert_eq "0" "$send_rc" "am send --queue (background): exit 0"
+    pane_output=$(wait_for_text "perl-agent-input:queued while background" \
+        am_tmux capture-pane -pt "$bg_session:.{top}")
+    assert_contains "$pane_output" "perl-agent-input:queued while background" \
+        "am send --queue (background): prompt delivered"
+    assert_eq "true" "$(wait_for_cmd grep -q "$bg_session.*delivered" "$TEST_AM_DIR/queue.log" && echo true || echo false)" \
+        "am send --queue (background): delivery logged"
+    pending_files=$(ls "$TEST_AM_DIR/queue/" | grep -c "^$bg_session\." || true)
+    assert_eq "0" "$pending_files" "am send --queue (background): queue file removed after delivery"
+    send_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send --wait --timeout 10 "$bg_session" "waited while background" >/dev/null 2>&1 || send_rc=$?
+    assert_eq "0" "$send_rc" "am send --wait (background): exit 0"
+    pane_output=$(wait_for_text "perl-agent-input:waited while background" \
+        am_tmux capture-pane -pt "$bg_session:.{top}")
+    assert_contains "$pane_output" "perl-agent-input:waited while background" \
+        "am send --wait (background): prompt delivered"
+    [[ -n "$bg_session" ]] && agent_kill "$bg_session" 2>/dev/null
 
     # --- Test: am new --detach can pass initial prompt from stdin (piped to agent) ---
     local detached_session

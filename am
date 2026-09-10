@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.30.1"
+AM_VERSION="0.31.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -83,10 +83,11 @@ OPTIONS FOR 'send':
     Read prompt text from argv or stdin and inject it into the agent pane.
     Refused while the agent is running/starting/waiting on a dialog (exit 4)
     or has exited (exit 2) unless one of:
-    --wait          Block until the agent is ready, then send
-    --queue         Return now; a background helper sends when ready
+    --wait          Block until the agent is ready (or background), then send
+    --queue         Return now; a detached helper sends when ready; outcome in
+                    $AM_DIR/queue.log, undelivered prompt kept as queue/<file>.failed
     --force, -f     Send regardless of state
-    --timeout N     Seconds for --wait/--queue (default: 600)
+    --timeout N     Seconds before giving up; 0 = none (--wait: 600, --queue: 0)
 
 OPTIONS FOR 'peek':
     --pane <name>   Pane to inspect: agent|shell (default: agent)
@@ -819,9 +820,40 @@ EOF
     agent_review_pane_toggle "$resolved"
 }
 
+# Append one line to $AM_DIR/queue.log for `am send --queue`: the queue
+# event, then the detached helper's outcome (delivered / failed + reason).
+# The helper has no terminal to report to, so this log is the only place a
+# lost prompt shows up — before 0.31 its stderr went to /dev/null and two
+# prompts vanished on 2026-09-10 when their workers' turns outlived the
+# 600s default deadline.
+# Usage: _send_queue_log <session> <event> <detail>
+_send_queue_log() {
+    printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >> "$AM_DIR/queue.log" 2>/dev/null || true
+}
+
+# The detached half of `am send --queue`: wait for the agent, send the
+# prompt held in qfile, record the outcome. On success the qfile goes; on
+# failure it is kept as <qfile>.failed (the prompt is the user's, not ours to
+# drop) and the log names it. Runs in a backgrounded subshell that inherits
+# set -e, hence the `|| rc=$?` guards.
+# Usage: _send_queue_helper <session> <qfile> <timeout_s>
+_send_queue_helper() {
+    local session="$1" qfile="$2" timeout_s="$3"
+    local rc=0 err
+    err=$("$AM_SCRIPT_DIR/am" send --wait --timeout "$timeout_s" "$session" < "$qfile" 2>&1 >/dev/null) || rc=$?
+    if (( rc == 0 )); then
+        rm -f "$qfile"
+        _send_queue_log "$session" delivered "$(basename "$qfile")"
+    else
+        mv -f "$qfile" "$qfile.failed" 2>/dev/null || true
+        err=${err//$'\n'/ }
+        _send_queue_log "$session" failed "exit $rc: ${err:-no output}; prompt kept in $qfile.failed"
+    fi
+}
+
 cmd_send() {
     local do_wait=false
-    local timeout_s=600
+    local timeout_s=""
     local force=false
     local queue=false
     local usage_line="Usage: am send [--wait|--queue|--force] [--timeout N] <session-name> [prompt]"
@@ -841,7 +873,7 @@ cmd_send() {
                 shift
                 ;;
             --timeout)
-                timeout_s="${2:-600}"
+                timeout_s="${2:-}"
                 shift 2
                 ;;
             -h|--help)
@@ -854,10 +886,13 @@ cmd_send() {
                 echo "run in its shell (exit 2)."
                 echo ""
                 echo "Options:"
-                echo "  --wait       Block until the agent reaches ready, then send; abort if it exits"
-                echo "  --queue      Return immediately; a background helper sends when ready"
+                echo "  --wait       Block until the agent is ready or background, then send; abort if it exits"
+                echo "  --queue      Return immediately; a detached helper sends when the agent is ready"
+                echo "               or background. Outcome (delivered / failed) is one line in"
+                echo "               \$AM_DIR/queue.log; an undelivered prompt is kept as queue/<file>.failed"
                 echo "  --force, -f  Send regardless of state (can corrupt a running turn)"
-                echo "  --timeout N  Seconds for --wait/--queue before giving up (default: 600)"
+                echo "  --timeout N  Seconds before giving up (exit 3); 0 = no deadline. --wait default: 600;"
+                echo "               --queue default: 0 — the helper waits until the agent is ready or exits"
                 return 0
                 ;;
             -*)
@@ -897,17 +932,22 @@ cmd_send() {
     if $queue; then
         # Hand the prompt to a detached helper that waits for ready. The
         # prompt travels through a private file so its length and content
-        # never hit an argv limit or a shell.
+        # never hit an argv limit or a shell. No deadline unless asked: the
+        # helper has nobody to tell about a timeout, and a worker's turn
+        # routinely outlives any fixed number.
         am_mkdir_private "$AM_DIR/queue"
         local qfile
         qfile=$(mktemp "$AM_DIR/queue/$resolved.XXXXXX")
         printf '%s' "$prompt" > "$qfile"
-        ( "$AM_SCRIPT_DIR/am" send --wait --timeout "$timeout_s" "$resolved" < "$qfile"
-          rm -f "$qfile" ) </dev/null >/dev/null 2>&1 &
+        local deadline="no timeout"
+        [[ -n "$timeout_s" && "$timeout_s" != 0 ]] && deadline="timeout ${timeout_s}s"
+        ( _send_queue_helper "$resolved" "$qfile" "${timeout_s:-0}" ) </dev/null >/dev/null 2>&1 &
         disown
-        log_info "Queued for $resolved; it is sent when the agent is ready (helper pid $!)"
+        _send_queue_log "$resolved" queued "$(basename "$qfile") helper pid $! $deadline"
+        log_info "Queued for $resolved; sent when the agent is ready ($deadline, helper pid $!; outcome in $AM_DIR/queue.log)"
         return 0
     fi
+    [[ -z "$timeout_s" ]] && timeout_s=600
 
     if ! $do_wait && ! $force; then
         _ensure_state
@@ -927,7 +967,9 @@ cmd_send() {
 
     if $do_wait; then
         _ensure_state
-        local ready_states="ready,idle,dead"
+        # background = Claude's main turn ended, a task of its own still runs;
+        # the prompt is idle and takes input, as the direct path above allows.
+        local ready_states="ready,background,idle,dead"
         local reached
         reached=$(agent_wait_state "$resolved" "$ready_states" "$timeout_s")
         local wait_exit=$?

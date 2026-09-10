@@ -542,7 +542,7 @@ agent_get_state() {
 # Block until a session reaches one of the target states.
 # Usage: agent_wait_state <session> [states] [timeout_seconds]
 #   states: comma-separated, default: ready,waiting_user,idle,dead
-#   timeout_seconds: default 600
+#   timeout_seconds: default 600; 0 = no deadline
 # Outputs: matched state, or "timeout"
 # Exit: 0=matched, 1=session not found, 3=timeout
 agent_wait_state() {
@@ -614,10 +614,13 @@ agent_wait_state() {
             stable_polls=0
         fi
 
-        elapsed=$(( $(date +%s) - start ))
-        if (( elapsed >= timeout_s )); then
-            echo "timeout"
-            return 3
+        # timeout 0: no deadline (am send --queue's detached helper).
+        if (( timeout_s > 0 )); then
+            elapsed=$(( $(date +%s) - start ))
+            if (( elapsed >= timeout_s )); then
+                echo "timeout"
+                return 3
+            fi
         fi
 
         sleep 0.5

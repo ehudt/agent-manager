@@ -109,6 +109,7 @@ am restore → cmd_restore_internal → am-core review-adopt <old> <new> (refs f
 am new -p name → _cmd_new_apply_preset(name, fill=true) → preset fields where flags left gaps, preset args first → agent_launch()
 form Preset field → --preset=name in the flags field → _cmd_new_apply_preset(name, fill=false) (args + shell only)
 am send s "..." → agent_get_state → refuse running/starting/waiting_user (exit 4) or idle/dead (exit 2) unless --wait/--queue/--force
+am send --queue s "..." → $AM_DIR/queue/<s>.XXXXXX (prompt) → detached _send_queue_helper → am send --wait --timeout 0 (ready|background|idle|dead, no deadline) → delivered: rm qfile | failed: mv qfile .failed ; both → one line in $AM_DIR/queue.log
 am wait --all|--any s1 s2 → _wait_many() → one agent_wait_state per session in the background → '<session> <state>' lines
 am done "..." (in a worker) → $AM_DIR/results/<session>.txt → am result <session> (dispatcher); removed by agent_kill
 hook state transition → waiting_user (or notify_states) → _notify_maybe() in the detached tail → notify_cmd | osascript | notify-send, skipped when a client shows the session
@@ -520,6 +521,7 @@ am restore
 
 **Dispatch (in the am entry point):**
 - `_wait_many(mode, states, timeout, json, sessions...)` - Multi-session wait behind `am wait --all|--any`; one background `agent_wait_state` per session, results in a private tmpdir, exit 3 when any timed out
+- `_send_queue_helper(session, qfile, timeout_s)` / `_send_queue_log(session, event, detail)` - The detached half of `am send --queue`: `am send --wait` on the prompt file (timeout 0 = no deadline, the default for --queue; the wait set is ready/background/idle/dead, the same states the direct path sends into), then the prompt file is removed on delivery or renamed to `<qfile>.failed` on failure, and one line (event queued / delivered / failed with exit code and reason) goes to `$AM_DIR/queue.log` (capped with the debug logs). Before 0.31 the helper had a 600s deadline, stderr to /dev/null, and the inherited errexit skipped its cleanup: a worker turn longer than 10 min dropped the prompt with no trace but the orphan queue file (2026-09-10, two HOLD/ADDITION prompts to backport workers)
 - `cmd_done` / `cmd_result` - Worker-recorded summary in `$AM_DIR/results/<session>.txt` (mode 700 dir); `result --wait` polls until the file exists or the session ends (exit 2)
 - `_fzf_state_selected(state)` (lib/fzf.sh) - `am list --state` filter, driven by `AM_LIST_STATE_FILTER`
 
