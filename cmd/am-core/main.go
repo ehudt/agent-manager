@@ -35,9 +35,9 @@ queries:
 
 review checkpoints (refs/am/<session>/{checkpoints,baseline} in <dir>'s repo):
   review-init <session> <dir>         record the launch checkpoint unless one exists; prints its id
-  review-sync <session> <dir>         record a branch/head checkpoint when HEAD moved; prints "<kind> <id>"
+  review-sync <session> <dir>         record a branch/head/rebase checkpoint when HEAD moved; prints "<kind> <id>"
   review-ack <session> <dir>          record the worktree as reviewed (new baseline); prints its id
-  review-baseline <session> <dir> [--reset | <id>]
+  review-baseline <session> <dir> [--reset | <id>]   id: a checkpoint, or any commit (recorded as a pick checkpoint)
                                       print the baseline (id kind branch head time), or move it
   review-list <session> <dir>         checkpoints newest first: id kind branch head time baseline(*|-)
   review-stat <session> <dir> [--from <id>] [--record]
@@ -193,7 +193,7 @@ func reviewCmd(env sessions.Env, cmd string, args []string) error {
 			if cp.ID == base {
 				mark = "*"
 			}
-			fmt.Printf("%s %s %s %s %d %s\n", cp.ID, cp.Kind, orDash(cp.Branch), orDash(cp.Head), cp.Time, mark)
+			fmt.Printf("%s %s %s %s %d %s\n", cp.ID, cp.Kind, orDash(cp.Branch), orDash(cp.AnchorCommit()), cp.Time, mark)
 		}
 	case "review-stat":
 		from, record := "", false

@@ -107,7 +107,9 @@ Usage: am diff [session] [--ack|--reset|--list|--checkpoint <id>] [--stat] [-- <
 Show what the agent changed since you last looked. The baseline is a review
 checkpoint kept in the session's repository: the working copy at launch, then
 whatever you acknowledged. Commits do not hide changes (trees are compared, not
-HEAD); a branch switch moves the baseline to the new branch as checked out.
+HEAD); a branch switch moves the baseline to the new branch as checked out, and
+a rebase re-anchors it below the agent's rewritten commits, so upstream commits
+pulled in by the rebase do not show as the agent's work.
 
 Without a session name the command applies to the am session you are inside
 (agent pane or shell panel).
@@ -116,8 +118,10 @@ Without a session name the command applies to the am session you are inside
                       files included), through your git pager and diff tools
   --ack               mark the working copy as reviewed: new baseline
   --reset             baseline back to the launch checkpoint
-  --checkpoint <id>   one-off diff from that checkpoint (baseline unchanged)
-  --list, -l          list checkpoints: id, kind, branch, HEAD, age; * = baseline
+  --checkpoint <id>   one-off diff from that checkpoint, or from any commit of the
+                      repository (sha, branch, HEAD~3, ...); baseline unchanged
+  --list, -l          list checkpoints: id, kind, branch, HEAD (the anchor commit
+                      for rebase / pick checkpoints), age; * = baseline
   --stat              pass --stat to git diff (also: --name-only, --numstat, -w)
   -- <args>           remaining arguments go to git diff (e.g. -- -- lib/)
 

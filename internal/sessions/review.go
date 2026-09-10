@@ -28,18 +28,43 @@ import (
 //	ack     worktree tree at `am diff --ack`; the baseline moves here
 //	branch  HEAD's committed tree when the branch name changed; baseline moves
 //	head    HEAD's committed tree when HEAD moved on the same branch; no move
+//	rebase  the baseline re-anchored after the branch's history was rewritten
+//	        (rebase / reset: the previous checkpoint's HEAD is no longer an
+//	        ancestor of HEAD); its anchor is the commit the new baseline sits
+//	        on; moves
+//	pick    the committed tree of a commit the user named (`am diff --checkpoint`
+//	        / the review pane's `/` prompt, then `b`); its anchor is that
+//	        commit; moves
 //
 // A branch checkpoint records the committed tree, not the worktree, so it
 // does not matter when the change is noticed (the hook's next PostToolUse or
 // the 60s title scan): "feature-x as checked out" is the same tree either
 // way, and `am diff` then shows only the agent's work on the new branch.
+//
+// A rebase checkpoint keeps "what did the agent do" true across a rebase onto
+// a newer upstream: without it the launch snapshot would sit on the old base
+// and every upstream commit the rebase pulled in would show as the agent's
+// work (observed: 579 files after a rebase whose own work was 16). The
+// re-anchoring finds the agent's pre-rebase commits again by patch-id in the
+// rewritten history and puts the baseline just below the earliest of them.
 type Checkpoint struct {
 	ID     string // commit sha
-	Kind   string // launch | ack | branch | head
+	Kind   string // launch | ack | branch | head | rebase | pick | commit (virtual, not in the chain)
 	Tree   string // snapshot tree sha
 	Branch string // branch name at record time ("" when detached / unborn)
 	Head   string // HEAD sha at record time ("" when unborn)
+	Anchor string // rebase / pick / commit: the commit the tree sits on (else "")
 	Time   int64  // unix seconds
+}
+
+// AnchorCommit is the commit the checkpoint's tree is based on: the anchor
+// for rebase / pick / commit checkpoints, HEAD at record time otherwise. It
+// is what HeadMoved and rebase re-anchoring measure from.
+func (cp Checkpoint) AnchorCommit() string {
+	if cp.Anchor != "" {
+		return cp.Anchor
+	}
+	return cp.Head
 }
 
 // ReviewState is one session's checkpoint chain, newest first, plus the
@@ -239,6 +264,8 @@ func ReviewRead(dir, session string) (ReviewState, error) {
 				cp.Branch = v
 			case "head":
 				cp.Head = v
+			case "anchor":
+				cp.Anchor = v
 			case "time":
 				cp.Time, _ = strconv.ParseInt(v, 10, 64)
 			}
@@ -313,6 +340,12 @@ var checkpointEnv = []string{
 // tail and the title scan) cannot both append for the same event: the loser
 // fails and its caller re-reads.
 func reviewAdd(dir, session, kind, tree string, moveBaseline bool) (Checkpoint, error) {
+	return reviewAddAnchored(dir, session, kind, tree, "", moveBaseline)
+}
+
+// reviewAddAnchored is reviewAdd with an anchor: rebase and pick checkpoints
+// carry the tree of a commit that is not HEAD, and record which.
+func reviewAddAnchored(dir, session, kind, tree, anchor string, moveBaseline bool) (Checkpoint, error) {
 	if !isSafeSessionName(session) {
 		return Checkpoint{}, fmt.Errorf("unsafe session name %q", session)
 	}
@@ -323,7 +356,11 @@ func reviewAdd(dir, session, kind, tree string, moveBaseline bool) (Checkpoint, 
 	cpRef, baseRef := reviewRefs(session)
 	parent, _ := gitOut(dir, nil, "", "rev-parse", "-q", "--verify", cpRef)
 	now := time.Now().Unix()
-	msg := fmt.Sprintf("am checkpoint\n\nkind=%s\nbranch=%s\nhead=%s\ntime=%d\n", kind, branch, head, now)
+	msg := fmt.Sprintf("am checkpoint\n\nkind=%s\nbranch=%s\nhead=%s\n", kind, branch, head)
+	if anchor != "" {
+		msg += "anchor=" + anchor + "\n"
+	}
+	msg += fmt.Sprintf("time=%d\n", now)
 	args := []string{"commit-tree", tree}
 	if parent != "" {
 		args = append(args, "-p", parent)
@@ -347,7 +384,7 @@ func reviewAdd(dir, session, kind, tree string, moveBaseline bool) (Checkpoint, 
 			return Checkpoint{}, err
 		}
 	}
-	return Checkpoint{ID: id, Kind: kind, Tree: tree, Branch: branch, Head: head, Time: now}, nil
+	return Checkpoint{ID: id, Kind: kind, Tree: tree, Branch: branch, Head: head, Anchor: anchor, Time: now}, nil
 }
 
 // ReviewInit records the launch checkpoint (the worktree as it is now, the
@@ -390,10 +427,12 @@ func ReviewAck(dir, session string) (Checkpoint, error) {
 }
 
 // ReviewSync records HEAD movement since the newest checkpoint: a branch
-// checkpoint (baseline moves) when the branch name changed, a head
-// checkpoint (baseline stays) when HEAD moved on the same branch. Returns
-// the kind recorded ("launch" when the chain had to be created, "" when
-// nothing changed). Idempotent; safe to call from several writers.
+// checkpoint (baseline moves) when the branch name changed, a rebase
+// checkpoint (baseline re-anchored) when the HEAD the newest checkpoint saw
+// is no longer an ancestor of HEAD, a head checkpoint (baseline stays) when
+// HEAD moved forward on the same branch. Returns the kind recorded ("launch"
+// when the chain had to be created, "" when nothing changed). Idempotent;
+// safe to call from several writers.
 func ReviewSync(dir, session string) (string, Checkpoint, error) {
 	cp, created, err := ReviewInit(dir, session)
 	if err != nil {
@@ -412,20 +451,34 @@ func ReviewSync(dir, session string) (string, Checkpoint, error) {
 			return "", Checkpoint{}, err
 		}
 		newest := st.Checkpoints[0]
-		kind := ""
+		base, _ := st.Baseline()
+		kind, anchor := "", ""
 		switch {
 		case branch != "" && branch != st.lastBranch():
 			kind = "branch"
-		case head != newest.Head:
-			kind = "head"
-		default:
+		case head == newest.Head:
 			return "", newest, nil
+		case newest.Head != "" && head != "" && !isAncestor(dir, newest.Head, head):
+			kind = "rebase"
+		default:
+			kind = "head"
 		}
-		tree, err := headTree(dir)
-		if err != nil {
-			return "", Checkpoint{}, err
+		var tree string
+		if kind == "rebase" {
+			// A failure here (patch-id, apply) is not worth losing the event:
+			// fall back to a plain head checkpoint and let the user pick. The
+			// same when the re-anchored baseline is the one we have (a reset
+			// that only dropped the agent's own commits): nothing to move.
+			if anchor, tree, err = rebasedBaseline(dir, base, newest.Head, head); err != nil || tree == base.Tree {
+				kind, anchor, tree = "head", "", ""
+			}
 		}
-		cp, err := reviewAdd(dir, session, kind, tree, kind == "branch")
+		if tree == "" {
+			if tree, err = headTree(dir); err != nil {
+				return "", Checkpoint{}, err
+			}
+		}
+		cp, err := reviewAddAnchored(dir, session, kind, tree, anchor, kind == "branch" || kind == "rebase")
 		if err == nil {
 			return kind, cp, nil
 		}
@@ -436,8 +489,166 @@ func ReviewSync(dir, session string) (string, Checkpoint, error) {
 	return "", Checkpoint{}, nil
 }
 
+// isAncestor reports whether commit a is an ancestor of (or equal to) b.
+func isAncestor(dir, a, b string) bool {
+	_, err := gitOut(dir, nil, "", "merge-base", "--is-ancestor", a, b)
+	return err == nil
+}
+
+// patchIDs maps commit sha → stable patch-id for the commits of a `git log`
+// range. Commits without a diff of their own (merges, empty commits) are
+// absent.
+func patchIDs(dir, rng string) (map[string]string, error) {
+	ids := map[string]string{}
+	log, err := gitOut(dir, nil, "", "log", "-p", "--no-color", "--no-ext-diff", "--no-renames", rng)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(log) == "" {
+		return ids, nil
+	}
+	out, err := gitOut(dir, nil, log+"\n", "patch-id", "--stable")
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			ids[f[1]] = f[0]
+		}
+	}
+	return ids, nil
+}
+
+// rebasedBaseline re-anchors baseline base after HEAD moved from prevHead to
+// head by a history rewrite (prevHead is not an ancestor of head). It
+// returns the anchor commit and the tree the new baseline should carry.
+//
+// The agent's own commits are the ones between the baseline's anchor and the
+// pre-rewrite head; a rebase keeps their patch-ids, so they are found again
+// in the new history and the anchor is the parent of the earliest one —
+// everything below it (the new upstream base, pre-existing branch commits)
+// is not the agent's work. No commits of its own → the anchor is head (the
+// rewrite brought only upstream). Patch-ids that no longer match (amend or
+// squash during the rebase) fall back to counting the same number of commits
+// down from head, and to the merge base when that leaves the range. The
+// baseline's uncommitted delta (its tree vs its head's tree: work that was
+// dirty at launch or ack) is re-applied on the anchor's tree when it still
+// applies, so it does not reappear as unreviewed.
+func rebasedBaseline(dir string, base Checkpoint, prevHead, head string) (anchor, tree string, err error) {
+	anchor = head
+	from := base.AnchorCommit()
+	if from == "" {
+		from = head
+	}
+	if mb, _ := gitOut(dir, nil, "", "merge-base", from, head); mb != "" {
+		mine, err := patchIDs(dir, from+".."+prevHead)
+		if err != nil {
+			return "", "", err
+		}
+		if len(mine) > 0 {
+			want := map[string]bool{}
+			for _, pid := range mine {
+				want[pid] = true
+			}
+			theirs, err := patchIDs(dir, mb+".."+head)
+			if err != nil {
+				return "", "", err
+			}
+			anchor = ""
+			if order, _ := gitOut(dir, nil, "", "rev-list", "--reverse", "--topo-order", mb+".."+head); order != "" {
+				for _, sha := range strings.Fields(order) {
+					if want[theirs[sha]] {
+						anchor, _ = gitOut(dir, nil, "", "rev-parse", "-q", "--verify", sha+"^")
+						break
+					}
+				}
+			}
+			if anchor == "" {
+				n, _ := gitOut(dir, nil, "", "rev-list", "--count", from+".."+prevHead)
+				if t, err := gitOut(dir, nil, "", "rev-parse", "-q", "--verify", head+"~"+n+"^{commit}"); err == nil && t != "" && isAncestor(dir, mb, t) {
+					anchor = t
+				} else {
+					anchor = mb
+				}
+			}
+		}
+	}
+	if tree, err = gitOut(dir, nil, "", "rev-parse", "-q", "--verify", anchor+"^{tree}"); err != nil {
+		return "", "", err
+	}
+	if baseHeadTree, _ := gitOut(dir, nil, "", "rev-parse", "-q", "--verify", from+"^{tree}"); baseHeadTree != "" && baseHeadTree != base.Tree {
+		if t, err := treeWithDelta(dir, tree, baseHeadTree, base.Tree); err == nil {
+			tree = t
+		}
+	}
+	return anchor, tree, nil
+}
+
+// treeWithDelta applies the change fromTree → toTree onto tree base in a
+// temporary index and returns the resulting tree. Errors when the patch does
+// not apply cleanly; the real index and worktree are never touched.
+func treeWithDelta(dir, base, fromTree, toTree string) (string, error) {
+	root, err := gitRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	patch, err := gitOut(root, nil, "", "diff", "--binary", "--no-color", "--no-ext-diff", "--no-renames", fromTree, toTree)
+	if err != nil {
+		return "", err
+	}
+	if patch == "" {
+		return base, nil
+	}
+	tmp, err := os.CreateTemp("", "am-index-")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(tmpPath) // read-tree creates it
+	defer os.Remove(tmpPath)
+	env := []string{"GIT_INDEX_FILE=" + tmpPath}
+	if _, err := gitOut(root, env, "", "read-tree", base); err != nil {
+		return "", err
+	}
+	if _, err := gitOut(root, env, patch+"\n", "apply", "--cached", "--whitespace=nowarn"); err != nil {
+		return "", err
+	}
+	return gitOut(root, env, "", "write-tree")
+}
+
+// CommitCheckpoint is a virtual checkpoint for any commit of the repository
+// (kind "commit", not in the chain): its committed tree, anchored on itself.
+// ok is false when rev does not name a commit.
+func CommitCheckpoint(dir, rev string) (Checkpoint, bool) {
+	if rev == "" || strings.HasPrefix(rev, "-") {
+		return Checkpoint{}, false
+	}
+	out, err := gitOut(dir, nil, "", "log", "-1", "--format=%H%x1f%T%x1f%ct", rev+"^{commit}", "--")
+	if err != nil || out == "" {
+		return Checkpoint{}, false
+	}
+	parts := strings.SplitN(out, "\x1f", 3)
+	if len(parts) != 3 {
+		return Checkpoint{}, false
+	}
+	cp := Checkpoint{ID: parts[0], Kind: "commit", Tree: parts[1], Head: parts[0], Anchor: parts[0]}
+	cp.Time, _ = strconv.ParseInt(parts[2], 10, 64)
+	return cp, true
+}
+
+// Resolve finds id in the chain (full or abbreviated checkpoint id), else as
+// a commit-ish of the repository (a virtual "commit" checkpoint).
+func (st ReviewState) Resolve(dir, id string) (Checkpoint, bool) {
+	if cp, ok := st.Find(id); ok {
+		return cp, true
+	}
+	return CommitCheckpoint(dir, id)
+}
+
 // ReviewSetBaseline points the baseline at checkpoint id (full or
-// abbreviated), which must be in the session's chain.
+// abbreviated). An id that is not in the chain but names a commit of the
+// repository is recorded first as a pick checkpoint of that commit's tree.
 func ReviewSetBaseline(dir, session, id string) (Checkpoint, error) {
 	st, err := ReviewRead(dir, session)
 	if err != nil {
@@ -445,7 +656,16 @@ func ReviewSetBaseline(dir, session, id string) (Checkpoint, error) {
 	}
 	cp, ok := st.Find(id)
 	if !ok {
-		return Checkpoint{}, fmt.Errorf("no checkpoint %q for %s", id, session)
+		commit, isCommit := CommitCheckpoint(dir, id)
+		if !isCommit {
+			return Checkpoint{}, fmt.Errorf("no checkpoint or commit %q for %s", id, session)
+		}
+		if len(st.Checkpoints) == 0 {
+			if _, _, err := ReviewInit(dir, session); err != nil {
+				return Checkpoint{}, err
+			}
+		}
+		return reviewAddAnchored(dir, session, "pick", commit.Tree, commit.ID, true)
 	}
 	_, baseRef := reviewRefs(session)
 	if _, err := gitOut(dir, nil, "", "update-ref", baseRef, cp.ID); err != nil {
@@ -473,6 +693,12 @@ func ReviewDiffStat(dir, baseTree string) (ReviewStat, error) {
 	if err != nil {
 		return ReviewStat{}, err
 	}
+	return ReviewStatTrees(dir, baseTree, cur)
+}
+
+// ReviewStatTrees sizes the change between two trees (the picker measures
+// every checkpoint against one worktree snapshot).
+func ReviewStatTrees(dir, baseTree, cur string) (ReviewStat, error) {
 	rs := ReviewStat{BaseTree: baseTree, CurTree: cur}
 	if baseTree == cur {
 		return rs, nil
@@ -497,20 +723,23 @@ func ReviewDiffStat(dir, baseTree string) (ReviewStat, error) {
 	return rs, nil
 }
 
-// HeadMoved describes how HEAD moved since a checkpoint: "" when it has not,
-// "N commits" when the recorded head is an ancestor, "moved" otherwise.
+// HeadMoved describes how HEAD moved since a checkpoint's anchor commit: ""
+// when it has not, "N commits" when the anchor is an ancestor, "rebased or
+// reset" when the history was rewritten under it, "moved" when the checkpoint
+// recorded no commit to compare with.
 func HeadMoved(dir string, cp Checkpoint) string {
+	from := cp.AnchorCommit()
 	_, head, err := HeadInfo(dir)
-	if err != nil || head == cp.Head {
+	if err != nil || head == from {
 		return ""
 	}
-	if cp.Head == "" {
+	if from == "" {
 		return "moved"
 	}
-	if _, err := gitOut(dir, nil, "", "merge-base", "--is-ancestor", cp.Head, head); err != nil {
-		return "moved"
+	if !isAncestor(dir, from, head) {
+		return "rebased or reset"
 	}
-	n, err := gitOut(dir, nil, "", "rev-list", "--count", cp.Head+".."+head)
+	n, err := gitOut(dir, nil, "", "rev-list", "--count", from+".."+head)
 	if err != nil || n == "" {
 		return "moved"
 	}
@@ -603,8 +832,8 @@ func (e Env) ReviewMeasure(session, dir, fromID string, record bool) (Checkpoint
 	var cp Checkpoint
 	if fromID != "" {
 		var ok bool
-		if cp, ok = st.Find(fromID); !ok {
-			return Checkpoint{}, ReviewStat{}, "", fmt.Errorf("no checkpoint %q for %s", fromID, session)
+		if cp, ok = st.Resolve(dir, fromID); !ok {
+			return Checkpoint{}, ReviewStat{}, "", fmt.Errorf("no checkpoint or commit %q for %s", fromID, session)
 		}
 	} else {
 		var ok bool

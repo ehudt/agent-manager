@@ -130,17 +130,28 @@ func TestFitHints(t *testing.T) {
 func TestCheckpointRows(t *testing.T) {
 	launch := sessions.Checkpoint{ID: "aaaaaaa1111", Kind: "launch", Branch: "main", Head: "bbbbbbb2222", Time: 1000}
 	head := sessions.Checkpoint{ID: "ccccccc3333", Kind: "head", Branch: "", Head: "", Time: 1300}
-	// The baseline row is starred; the picked (shown) base gets >; others a blank.
-	if got := checkpointRow(launch, launch.ID, head.ID, 1360); got != "* aaaaaaa  launch  main                     bbbbbbb  6m ago" {
+	pick := sessions.Checkpoint{ID: "ddddddd4444", Kind: "commit", Branch: "", Head: "ddddddd4444", Anchor: "ddddddd4444", Time: 1200}
+	big := sessions.ReviewStat{Files: 579, Added: 30396, Deleted: 7538, BaseTree: "t1"}
+	same := sessions.ReviewStat{BaseTree: "t2"}
+	// The baseline row is starred; the picked (shown) base gets >; others a
+	// blank. The change column says what each base would show.
+	if got := checkpointRow(launch, big, launch.ID, head.ID, 1360); got != "* aaaaaaa  launch  Δ579 +30396 −7538 bbbbbbb  6m ago   main" {
 		t.Errorf("baseline row = %q", got)
 	}
-	if got := checkpointRow(head, launch.ID, head.ID, 1360); got != "> ccccccc  head    (detached)               -        1m ago" {
+	if got := checkpointRow(head, same, launch.ID, head.ID, 1360); got != "> ccccccc  head    Δ0                -        1m ago   (detached)" {
 		t.Errorf("shown row = %q", got)
 	}
-	if got := checkpointRow(head, launch.ID, "", 1360); got[0] != ' ' {
+	if got := checkpointRow(pick, sessions.ReviewStat{}, launch.ID, "", 1360); got != "  ddddddd  commit  ?                 ddddddd  2m ago   -" {
+		t.Errorf("typed commit row = %q", got)
+	}
+	if got := checkpointRow(head, same, launch.ID, "", 1360); got[0] != ' ' {
 		t.Errorf("plain row mark = %q", got[:1])
 	}
-	if h := checkpointHeader(); len([]rune(h)) != len([]rune(checkpointRow(launch, "", "", 1360)))-len("6m ago")+len("WHEN") {
-		t.Errorf("header does not line up with rows: %q", h)
+	// Header columns line up with a row whose cells fill their widths (column
+	// positions in runes: Δ and − are multi-byte).
+	h, row := checkpointHeader(), checkpointRow(launch, big, "", "", 1360)
+	runeIndex := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
+	if runeIndex(h, "BRANCH") != runeIndex(row, "main") || runeIndex(h, "HEAD") != runeIndex(row, "bbbbbbb") {
+		t.Errorf("header does not line up with rows:\n%q\n%q", h, row)
 	}
 }

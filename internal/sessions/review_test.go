@@ -188,6 +188,163 @@ func TestReviewSyncBranchAndHead(t *testing.T) {
 	}
 }
 
+// A rebase onto a newer upstream must not turn the upstream's commits into
+// the agent's work: the baseline is re-anchored below the agent's rewritten
+// commits, and work that was uncommitted at launch is carried over.
+func TestReviewSyncRebase(t *testing.T) {
+	dir := gitRepo(t)
+	git(t, dir, "checkout", "-q", "-b", "feature")
+	writeFile(t, filepath.Join(dir, "scratch.txt"), "dirty at launch\n") // uncommitted, stays so
+	if _, _, err := ReviewInit(dir, "am-rb"); err != nil {
+		t.Fatal(err)
+	}
+	// The agent commits on feature.
+	writeFile(t, filepath.Join(dir, "feat.txt"), "f1\n")
+	git(t, dir, "add", "feat.txt")
+	git(t, dir, "commit", "-q", "-m", "agent work")
+	if kind, _, err := ReviewSync(dir, "am-rb"); err != nil || kind != "head" {
+		t.Fatalf("sync after commit: kind=%q err=%v", kind, err)
+	}
+	// Upstream moves on: two commits on main touching other files.
+	git(t, dir, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(dir, "up1.txt"), "u1\n")
+	git(t, dir, "add", "up1.txt")
+	git(t, dir, "commit", "-q", "-m", "upstream 1")
+	writeFile(t, filepath.Join(dir, "up2.txt"), "u2\n")
+	git(t, dir, "add", "up2.txt")
+	git(t, dir, "commit", "-q", "-m", "upstream 2")
+	mainSHA := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", "feature")
+	git(t, dir, "rebase", "-q", "main")
+
+	kind, cp, err := ReviewSync(dir, "am-rb")
+	if err != nil || kind != "rebase" {
+		t.Fatalf("sync after rebase: kind=%q err=%v", kind, err)
+	}
+	if cp.Anchor != mainSHA {
+		t.Fatalf("rebase checkpoint anchored on %s, want the new upstream tip %s", cp.Anchor, mainSHA)
+	}
+	if cp.Head == mainSHA || cp.Head == "" {
+		t.Fatalf("rebase checkpoint head should be the rebased HEAD, got %q", cp.Head)
+	}
+	st, _ := ReviewRead(dir, "am-rb")
+	if st.BaselineID() != cp.ID {
+		t.Fatalf("rebase checkpoint did not move the baseline")
+	}
+	base, _ := st.Baseline()
+	rs, err := ReviewDiffStat(dir, base.Tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rs.Files != 1 || rs.Added != 1 {
+		files, _ := ReviewFileStats(dir, base.Tree, rs.CurTree)
+		t.Fatalf("diff since the rebase baseline should be the agent's one file, got %+v: %+v", rs, files)
+	}
+	if moved := HeadMoved(dir, base); moved != "1 commit" {
+		t.Fatalf("HeadMoved since the rebase anchor: %q", moved)
+	}
+	// Launch was at the branch point, which the rebase kept: HEAD is simply
+	// ahead of it (two upstream, one own).
+	launch := st.Checkpoints[len(st.Checkpoints)-1]
+	if moved := HeadMoved(dir, launch); moved != "3 commits" {
+		t.Fatalf("HeadMoved since launch: %q", moved)
+	}
+	if kind, _, _ := ReviewSync(dir, "am-rb"); kind != "" {
+		t.Fatalf("second sync recorded %q", kind)
+	}
+
+	// A second rebase (upstream moved again) anchors on the agent's rewritten
+	// commit again, so the earlier work stays in the diff.
+	git(t, dir, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(dir, "up3.txt"), "u3\n")
+	git(t, dir, "add", "up3.txt")
+	git(t, dir, "commit", "-q", "-m", "upstream 3")
+	main2 := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", "feature")
+	git(t, dir, "rebase", "-q", "main")
+	kind, cp, err = ReviewSync(dir, "am-rb")
+	if err != nil || kind != "rebase" || cp.Anchor != main2 {
+		t.Fatalf("second rebase: kind=%q anchor=%s want %s err=%v", kind, cp.Anchor, main2, err)
+	}
+	if rs, _ := ReviewDiffStat(dir, cp.Tree); rs.Files != 1 {
+		t.Fatalf("after the second rebase: %+v", rs)
+	}
+}
+
+// With no commits of its own, a rebase leaves nothing to show: the baseline
+// becomes the rebased HEAD's tree.
+func TestReviewSyncRebaseNoOwnCommits(t *testing.T) {
+	dir := gitRepo(t)
+	git(t, dir, "checkout", "-q", "-b", "feature")
+	writeFile(t, filepath.Join(dir, "feat.txt"), "f1\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "pre-existing branch commit")
+	if _, _, err := ReviewInit(dir, "am-rb2"); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(dir, "up.txt"), "u\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "upstream")
+	git(t, dir, "checkout", "-q", "feature")
+	git(t, dir, "rebase", "-q", "main")
+	head := git(t, dir, "rev-parse", "HEAD")
+	kind, cp, err := ReviewSync(dir, "am-rb2")
+	if err != nil || kind != "rebase" || cp.Anchor != head {
+		t.Fatalf("kind=%q anchor=%s want %s err=%v", kind, cp.Anchor, head, err)
+	}
+	if rs, _ := ReviewDiffStat(dir, cp.Tree); rs.Files != 0 {
+		t.Fatalf("nothing of the agent's own, yet %+v", rs)
+	}
+	// The launch commit itself was rewritten: HEAD did not move forward from it.
+	st, _ := ReviewRead(dir, "am-rb2")
+	if moved := HeadMoved(dir, st.Checkpoints[len(st.Checkpoints)-1]); moved != "rebased or reset" {
+		t.Fatalf("HeadMoved since the rewritten launch: %q", moved)
+	}
+}
+
+// Any commit of the repository can serve as a one-off base, and `b` on it
+// records a pick checkpoint anchored on that commit.
+func TestReviewCommitBase(t *testing.T) {
+	dir := gitRepo(t)
+	first := git(t, dir, "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "second")
+	env := Env{AmDir: t.TempDir()}
+	if _, _, err := ReviewInit(dir, "am-pick"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "c.txt"), "c\n")
+	cp, rs, moved, err := env.ReviewMeasure("am-pick", dir, first[:10], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cp.Kind != "commit" || cp.ID != first || rs.Files != 2 || moved != "1 commit" {
+		t.Fatalf("measure since a commit: cp=%+v rs=%+v moved=%q", cp, rs, moved)
+	}
+	if _, _, _, err := env.ReviewMeasure("am-pick", dir, "nonexistent-ref", false); err == nil {
+		t.Fatalf("unknown id accepted")
+	}
+	pick, err := ReviewSetBaseline(dir, "am-pick", first[:10])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pick.Kind != "pick" || pick.Anchor != first || pick.Head == first {
+		t.Fatalf("pick checkpoint: %+v", pick)
+	}
+	if moved := HeadMoved(dir, pick); moved != "1 commit" {
+		t.Fatalf("HeadMoved since the pick anchor: %q", moved)
+	}
+	st, _ := ReviewRead(dir, "am-pick")
+	if st.BaselineID() != pick.ID || st.Checkpoints[0].ID != pick.ID {
+		t.Fatalf("pick did not become the baseline: %+v", st)
+	}
+	if rs, _ := ReviewDiffStat(dir, pick.Tree); rs.Files != 2 {
+		t.Fatalf("since the pick: %+v", rs)
+	}
+}
+
 func TestReviewAdoptAndDrop(t *testing.T) {
 	dir := gitRepo(t)
 	if _, _, err := ReviewInit(dir, "am-old"); err != nil {

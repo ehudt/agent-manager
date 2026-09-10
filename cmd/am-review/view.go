@@ -156,15 +156,16 @@ func fitHints(parts []string, pos string, w int) string {
 	return ""
 }
 
-// checkpointHeader / checkpointRow render the picker's table, the same
-// columns as `am diff --list`: mark, id, kind, branch, HEAD, age. The mark is
-// `*` for the baseline and `>` for the base the pane shows now (when it is
-// not the baseline).
+// checkpointHeader / checkpointRow render the picker's table: mark, id, kind,
+// the change the row would show (checkpoint tree → worktree), HEAD, age,
+// branch — the `am diff --list` columns plus the delta, branch last because it
+// is the column a narrow pane can spare. The mark is `*` for the baseline and
+// `>` for the base the pane shows now (when it is not the baseline).
 func checkpointHeader() string {
-	return fmt.Sprintf("  %-8s %-7s %-24s %-8s %s", "ID", "KIND", "BRANCH", "HEAD", "WHEN")
+	return fmt.Sprintf("  %-8s %-7s %-17s %-8s %-8s %s", "ID", "KIND", "CHANGE SINCE", "HEAD", "WHEN", "BRANCH")
 }
 
-func checkpointRow(cp sessions.Checkpoint, baselineID, shownID string, now int64) string {
+func checkpointRow(cp sessions.Checkpoint, rs sessions.ReviewStat, baselineID, shownID string, now int64) string {
 	mark := " "
 	switch {
 	case cp.ID == baselineID:
@@ -174,13 +175,29 @@ func checkpointRow(cp sessions.Checkpoint, baselineID, shownID string, now int64
 	}
 	branch := cp.Branch
 	if branch == "" {
-		branch = "(detached)"
+		if cp.Kind == "commit" || cp.Kind == "pick" {
+			branch = "-"
+		} else {
+			branch = "(detached)"
+		}
 	}
 	head := "-"
-	if cp.Head != "" {
-		head = shortID(cp.Head)
+	if c := cp.AnchorCommit(); c != "" {
+		head = shortID(c)
 	}
-	return fmt.Sprintf("%s %-8s %-7s %-24s %-8s %s", mark, shortID(cp.ID), cp.Kind, tailPath(branch, 24), head, ago(cp.Time, now))
+	return fmt.Sprintf("%s %-8s %-7s %-17s %-8s %-8s %s", mark, shortID(cp.ID), cp.Kind, deltaCell(rs), head, ago(cp.Time, now), tailPath(branch, 24))
+}
+
+// deltaCell is the picker's change column: `Δ7 +212 −48`, `Δ0` for a base
+// equal to the worktree, `?` when the row was not measured.
+func deltaCell(rs sessions.ReviewStat) string {
+	if rs.BaseTree == "" {
+		return "?"
+	}
+	if rs.Files == 0 {
+		return "Δ0"
+	}
+	return fmt.Sprintf("Δ%d +%d −%d", rs.Files, rs.Added, rs.Deleted)
 }
 
 // padRight pads s with spaces to w runes (never truncates).

@@ -69,11 +69,14 @@ type model struct {
 	// Base checkpoint picker (`s`): from pins the checkpoint the diff is
 	// measured since ("" = the baseline, like `am diff`; an id = a one-off
 	// view like `am diff --checkpoint`, nothing recorded).
-	from     string
-	picking  bool
-	picks    []sessions.Checkpoint // newest first
-	pickBase string                // baseline id at load time
-	pickSel  int
+	from       string
+	picking    bool
+	picks      []sessions.Checkpoint          // newest first
+	pickStats  map[string]sessions.ReviewStat // checkpoint id → change from it to the worktree
+	pickBase   string                         // baseline id at load time
+	pickSel    int
+	pickTyping bool // `/`: a commit-ish is being typed
+	pickInput  textinput.Model
 
 	doc  diffDoc
 	vp   viewport.Model
@@ -128,8 +131,17 @@ type diffMsg struct {
 type ackMsg struct{ err error }
 
 type checkpointsMsg struct {
-	st  sessions.ReviewState
-	err error
+	st    sessions.ReviewState
+	stats map[string]sessions.ReviewStat
+	err   error
+}
+
+// commitPickMsg is a commit the user typed in the picker, resolved and sized.
+type commitPickMsg struct {
+	rev  string
+	cp   sessions.Checkpoint
+	stat sessions.ReviewStat
+	ok   bool
 }
 
 type baselineMsg struct {
@@ -163,6 +175,9 @@ func main() {
 	m.note = textinput.New()
 	m.note.Prompt = ""
 	m.note.CharLimit = 2000
+	m.pickInput = textinput.New()
+	m.pickInput.Prompt = ""
+	m.pickInput.CharLimit = 200
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "am-review:", err)
 		os.Exit(1)
@@ -229,13 +244,43 @@ func (m model) ack() tea.Cmd {
 	}
 }
 
-// loadCheckpoints reads the session's checkpoint chain for the picker.
+// loadCheckpoints reads the session's checkpoint chain for the picker and
+// sizes the change from each checkpoint to the worktree (one snapshot, one
+// numstat per row), so a base can be chosen by what it would show.
 func (m model) loadCheckpoints() tea.Cmd {
 	session, dir := m.session, m.dir
 	return func() tea.Msg {
 		_, _, _ = sessions.ReviewSync(dir, session) // record a HEAD move first, so the list is current
 		st, err := sessions.ReviewRead(dir, session)
-		return checkpointsMsg{st: st, err: err}
+		if err != nil {
+			return checkpointsMsg{st: st, err: err}
+		}
+		stats := map[string]sessions.ReviewStat{}
+		if cur, err := sessions.WorktreeTree(dir); err == nil {
+			for _, cp := range st.Checkpoints {
+				if rs, err := sessions.ReviewStatTrees(dir, cp.Tree, cur); err == nil {
+					stats[cp.ID] = rs
+				}
+			}
+		}
+		return checkpointsMsg{st: st, stats: stats}
+	}
+}
+
+// resolveCommit turns a typed commit-ish into a virtual checkpoint row for
+// the picker, sized like the chain rows.
+func (m model) resolveCommit(rev string) tea.Cmd {
+	dir := m.dir
+	return func() tea.Msg {
+		cp, ok := sessions.CommitCheckpoint(dir, rev)
+		if !ok {
+			return commitPickMsg{rev: rev}
+		}
+		var rs sessions.ReviewStat
+		if cur, err := sessions.WorktreeTree(dir); err == nil {
+			rs, _ = sessions.ReviewStatTrees(dir, cp.Tree, cur)
+		}
+		return commitPickMsg{rev: rev, cp: cp, stat: rs, ok: true}
 	}
 }
 
@@ -364,7 +409,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flash(styleDim.Render("no checkpoints yet"))
 			return m, nil
 		}
-		m.picks, m.pickBase = msg.st.Checkpoints, msg.st.BaselineID()
+		m.picks, m.pickStats, m.pickBase = msg.st.Checkpoints, msg.stats, msg.st.BaselineID()
+		if m.pickStats == nil {
+			m.pickStats = map[string]sessions.ReviewStat{}
+		}
 		m.pickSel = 0
 		for i, cp := range m.picks { // start on the base shown now
 			if cp.ID == m.base.ID {
@@ -372,8 +420,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		m.picking = true
+		m.picking, m.pickTyping = true, false
 		m.msg = ""
+		return m, nil
+
+	case commitPickMsg:
+		if !m.picking {
+			return m, nil
+		}
+		if !msg.ok {
+			m.flash(styleErr.Render("no commit " + msg.rev))
+			return m, nil
+		}
+		// One row per commit: re-typing an id re-selects its row.
+		m.pickStats[msg.cp.ID] = msg.stat
+		for i, cp := range m.picks {
+			if cp.ID == msg.cp.ID {
+				m.pickSel = i
+				return m, nil
+			}
+		}
+		m.picks = append([]sessions.Checkpoint{msg.cp}, m.picks...)
+		m.pickSel = 0
 		return m, nil
 
 	case baselineMsg:
@@ -416,14 +484,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handlePickKey drives the base checkpoint picker: Enter measures since the
 // highlighted checkpoint (a one-off view; the baseline row returns to the
-// default), b makes it the baseline, Esc goes back.
+// default), b makes it the baseline, / types a commit to add as a row, Esc
+// goes back.
 func (m model) handlePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pickTyping {
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.pickTyping = false
+			m.pickInput.Blur()
+			return m, nil
+		case "enter":
+			rev := strings.TrimSpace(m.pickInput.Value())
+			if rev == "" {
+				m.pickTyping = false
+				m.pickInput.Blur()
+				return m, nil
+			}
+			m.pickTyping = false
+			m.pickInput.Blur()
+			m.flash(styleDim.Render("resolving " + rev + "…"))
+			return m, m.resolveCommit(rev)
+		}
+		var cmd tea.Cmd
+		m.pickInput, cmd = m.pickInput.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q", "s":
 		m.picking = false
 		return m, nil
+	case "/", ":":
+		m.pickTyping = true
+		m.msg = ""
+		m.pickInput.Reset()
+		return m, m.pickInput.Focus()
 	case "j", "down":
 		if m.pickSel < len(m.picks)-1 {
 			m.pickSel++
@@ -934,13 +1032,15 @@ func (m model) helpView() string {
 		"  c                note on the hunk under the cursor → the agent (am send: file, lines,",
 		"                   hunk, your note; queued with am send --queue while the agent is busy)",
 		"  a                mark the working copy reviewed (am diff --ack): new baseline",
-		"  s                pick the checkpoint the diff is measured since (the chain of",
-		"                   `am diff --list`): Enter views from it, b makes it the baseline",
+		"  s                pick the base the diff is measured since: the checkpoint chain of",
+		"                   `am diff --list`, each row with the change it would show; Enter views",
+		"                   from it, b makes it the baseline, / types any commit to add as a row",
 		"  r                re-measure now (the pane also refreshes on every tool event)",
 		"  q                close the pane (prefix+v or `am review` reopens it)",
 		"",
 		styleDim.Render("Baseline: the working copy at launch, then whatever you acknowledged; a branch"),
-		styleDim.Render("switch moves it to the new branch as checked out. `am diff --list` shows the chain."),
+		styleDim.Render("switch moves it to the new branch as checked out, a rebase re-anchors it below the"),
+		styleDim.Render("agent's rewritten commits. `am diff --list` shows the chain."),
 		"",
 		styleDim.Render("any key to return"),
 	}
@@ -952,10 +1052,26 @@ func (m model) helpView() string {
 func (m model) pickView() string {
 	now := time.Now().Unix()
 	lines := []string{
-		truncStyled(styleTitle.Render("since which checkpoint? ")+styleDim.Render("j/k move · Enter view from it · b make it the baseline · esc back"), m.width),
+		truncStyled(styleTitle.Render("since which checkpoint? ")+styleDim.Render("j/k move · Enter view from it · b make it the baseline · / a commit · esc back"), m.width),
 		styleDim.Render(truncRunes(checkpointHeader(), m.width)),
 	}
+	footer := ""
+	switch {
+	case m.pickTyping:
+		label := styleKey.Render("commit") + styleDim.Render(" (sha, branch, HEAD~3, …): ")
+		m.pickInput.Width = m.width - lipgloss.Width(label) - 1
+		if m.pickInput.Width < 10 {
+			label = styleKey.Render("commit: ")
+			m.pickInput.Width = m.width - lipgloss.Width(label) - 1
+		}
+		footer = label + m.pickInput.View()
+	case m.msg != "":
+		footer = truncStyled(m.msg, m.width)
+	}
 	rows := m.height - len(lines)
+	if footer != "" {
+		rows--
+	}
 	if rows < 1 {
 		rows = 1
 	}
@@ -964,11 +1080,14 @@ func (m model) pickView() string {
 		top = m.pickSel - rows + 1
 	}
 	for i := top; i < len(m.picks) && i < top+rows; i++ {
-		row := truncRunes(checkpointRow(m.picks[i], m.pickBase, m.base.ID, now), m.width)
+		row := truncRunes(checkpointRow(m.picks[i], m.pickStats[m.picks[i].ID], m.pickBase, m.base.ID, now), m.width)
 		if i == m.pickSel {
 			row = styleSel.Render(padRight(row, m.width))
 		}
 		lines = append(lines, row)
+	}
+	if footer != "" {
+		lines = append(lines, footer)
 	}
 	return strings.Join(lines, "\n")
 }
