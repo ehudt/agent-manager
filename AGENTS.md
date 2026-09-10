@@ -108,7 +108,7 @@ am diff [s] → review_diff_main → am-core review-stat --record → git -C dir
 am restore → cmd_restore_internal → am-core review-adopt <old> <new> (refs follow the resumed conversation); sessions_log_gc → ReviewDrop when the entry is dropped
 am new -p name → _cmd_new_apply_preset(name, fill=true) → preset fields where flags left gaps, preset args first → agent_launch()
 form Preset field → --preset=name in the flags field → _cmd_new_apply_preset(name, fill=false) (args + shell only)
-am send s "..." → agent_get_state → refuse running/starting/waiting_user (exit 4) or idle/dead (exit 2) unless --wait/--queue/--force
+am send s "..." → agent_get_state → send now for ready/running/background/unknown (the harness steers on mid-turn input or queues it); refuse waiting_user/starting (exit 4: the text would answer a dialog or miss the TUI) and idle/dead (exit 2: it would run in a shell) unless --wait/--queue/--force
 am send --queue s "..." → $AM_DIR/queue/<s>.XXXXXX (prompt) → detached _send_queue_helper → am send --wait --timeout 0 (ready|background|idle|dead, no deadline) → delivered: rm qfile | failed: mv qfile .failed ; both → one line in $AM_DIR/queue.log
 am wait --all|--any s1 s2 → _wait_many() → one agent_wait_state per session in the background → '<session> <state>' lines
 am done "..." (in a worker) → $AM_DIR/results/<session>.txt → am result <session> (dispatcher); removed by agent_kill
@@ -118,8 +118,9 @@ Ctrl-N in browser → am_new_session_form() → _form_run()
 prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
 prefix+v / am review [s] → bin/toggle-review → agent_review_pane_toggle() → agent_review_pane_add() (split-window -h at the agent's right, @am_role=review, runs bin/am-review) | tmux_review_pane_hide/show() (park in / rejoin from hidden _amreview window)
 am-review tick (1s) → .dirty mtime moved? → ReviewMeasure(record) + ReviewFileStats → ReviewFileDiff(selected) ; 'a' → am diff <s> --ack → re-measure
-am-review 'c' → note line → Enter → noteMessage(file, L<range>, hunk, note) | am send <s> → exit 4 → am send --queue <s> (delivered when ready) ; exit 2 → "no running agent"
-am-review 's' → ReviewSync + ReviewRead → picker (newest first, * baseline) → Enter → ReviewMeasure(from=id, record=false) (one-off view; tab count unchanged) | 'b' → ReviewSetBaseline(id) → ReviewMeasure(from="", record=true) → registry review_* follow
+am-review 'c' → note line → Enter → noteMessage(file, L<range>, hunk, note) | am send <s> → exit 4 (dialog up / starting) → am send --queue <s> (delivered when ready) ; exit 2 → "no running agent"
+am-review 's' → ReviewSync + ReviewRead + WorktreeTree + ReviewStatTrees per checkpoint → picker (newest first, * baseline, Δ per row) → Enter → ReviewMeasure(from=id, record=false) (one-off view; tab count unchanged) | 'b' → ReviewSetBaseline(id) → ReviewMeasure(from="", record=true) → registry review_* follow | '/' <rev> → CommitCheckpoint(rev) → kind-commit row → Enter (view since the commit) | 'b' (pick checkpoint of its tree, baseline moves)
+tool hook → review-sync: HEAD not descended from the newest checkpoint's HEAD (rebase/reset) → rebase checkpoint (anchor = parent of the agent's earliest rewritten commit, found by patch-id; baseline moves there, uncommitted launch delta re-applied) → the tab counts only the agent's work, not the upstream commits the rebase pulled in
 agent_kill() → sessions_log_snapshot() + sessions_log_update(closed_at) → tmux_kill_session() → registry_remove()
 am restore → fzf_restore_picker() → sessions_log_restorable() → agent_launch(dir, agent_type, agent_resume_args...) → tmux_attach() (claude/cursor → --resume, pi → --session, codex → resume)
 bare `am` → recovery_start_for_browser() → migrate live intent → prior-boot candidates queued → am-browse shows restoring rows while recovery_run() recreates sessions detached
@@ -400,7 +401,8 @@ printf 'Run the test suite and summarize failures\n' | am send am-abc123
 
 - Session resolution supports exact names, stripped prefixes, and single fuzzy matches.
 - Prompt text may come from argv or stdin.
-- The prompt is pasted literally into the top agent pane, then Enter is sent.
+- The prompt is pasted literally into the top agent pane, then Enter is sent — now, mid-turn included. Agent harnesses take input while a turn runs and steer on it or queue it for the next turn (their own setting), so `running` is sendable. Refused only when a permission/question dialog is up or the agent is still starting (exit 4: Enter would answer the dialog / the text would miss the TUI), or when the agent exited and the pane is a shell (exit 2).
+- `--wait` / `--queue` deliver at the turn boundary instead (ready or background), for text that must arrive as its own turn. `--queue` is detached with no deadline by default; its outcome is one line in `$AM_DIR/queue.log` and an undelivered prompt is kept as `$AM_DIR/queue/<file>.failed`.
 
 ### Peek at another session
 

@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.31.0"
+AM_VERSION="0.32.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -80,11 +80,12 @@ OPTIONS FOR 'new':
     --              Pass remaining args to agent (e.g., -- --resume)
 
 OPTIONS FOR 'send':
-    Read prompt text from argv or stdin and inject it into the agent pane.
-    Refused while the agent is running/starting/waiting on a dialog (exit 4)
-    or has exited (exit 2) unless one of:
-    --wait          Block until the agent is ready (or background), then send
-    --queue         Return now; a detached helper sends when ready; outcome in
+    Read prompt text from argv or stdin and inject it into the agent pane now;
+    a running agent steers on it or queues it (its own setting). Refused only
+    when a dialog is up or the agent is still starting (exit 4), or it has
+    exited and the text would run in a shell (exit 2), unless one of:
+    --wait          Deliver at the turn boundary: block until ready (or background)
+    --queue         Same, detached: a helper sends when ready; outcome in
                     $AM_DIR/queue.log, undelivered prompt kept as queue/<file>.failed
     --force, -f     Send regardless of state
     --timeout N     Seconds before giving up; 0 = none (--wait: 600, --queue: 0)
@@ -880,17 +881,20 @@ cmd_send() {
                 echo "$usage_line"
                 echo "Read prompt text from argv or stdin and inject it into the running agent pane."
                 echo ""
-                echo "By default the prompt is only sent when the agent is ready (or its state is"
-                echo "unknown/background). A session that is running, starting, or waiting on a"
-                echo "dialog is refused (exit 4); an exited agent is refused because the text would"
-                echo "run in its shell (exit 2)."
+                echo "The prompt is sent now, mid-turn included: the agent harness takes it as"
+                echo "steering or queues it for the next turn, per its own settings. Refused when"
+                echo "the text would not reach the agent's input: a permission/question dialog is"
+                echo "up (waiting_user) or the agent has not taken the terminal yet (starting),"
+                echo "exit 4; the agent exited and the text would run in its shell (idle/dead),"
+                echo "exit 2."
                 echo ""
                 echo "Options:"
-                echo "  --wait       Block until the agent is ready or background, then send; abort if it exits"
-                echo "  --queue      Return immediately; a detached helper sends when the agent is ready"
+                echo "  --wait       Deliver at the turn boundary instead: block until the agent is ready"
+                echo "               (or background), then send; abort if it exits"
+                echo "  --queue      Same, detached: return now, a helper sends when the agent is ready"
                 echo "               or background. Outcome (delivered / failed) is one line in"
                 echo "               \$AM_DIR/queue.log; an undelivered prompt is kept as queue/<file>.failed"
-                echo "  --force, -f  Send regardless of state (can corrupt a running turn)"
+                echo "  --force, -f  Send regardless of state (types into a dialog or a shell)"
                 echo "  --timeout N  Seconds before giving up (exit 3); 0 = no deadline. --wait default: 600;"
                 echo "               --queue default: 0 — the helper waits until the agent is ready or exits"
                 return 0
@@ -953,9 +957,18 @@ cmd_send() {
         _ensure_state
         local cur_state
         cur_state=$(agent_get_state "$resolved")
+        # A running turn is sendable: every supported harness takes input
+        # mid-turn and steers or queues it (its own config decides which).
+        # Refuse only where the text would not reach the agent's input:
+        # a dialog is up (Enter would answer it), the TUI is not up yet, or
+        # the agent exited and the pane is a shell.
         case "$cur_state" in
-            running|starting|waiting_user)
-                log_error "Session $resolved is $cur_state; use --wait or --queue to send when it is ready, or --force"
+            waiting_user)
+                log_error "Session $resolved is waiting_user: a permission/question dialog is up and the text would answer it; use --wait or --queue to send after it, or --force"
+                return 4
+                ;;
+            starting)
+                log_error "Session $resolved is starting: the agent has not taken the terminal yet; use --wait or --queue to send when it has, or --force"
                 return 4
                 ;;
             idle|dead)

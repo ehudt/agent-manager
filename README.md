@@ -378,17 +378,23 @@ am wait "$session"
 # 3. Check results: the worker's own summary (it ran `am done "..."`), or the pane
 am result "$session" || am peek --lines 10 "$session"
 
-# 4. Send a follow-up (refused while the agent is mid-turn; --wait or --queue defer it)
-am send --wait "$session" "Now update the changelog"
+# 4. Send a follow-up. Lands now, mid-turn included (the agent steers on it or
+#    queues it); --wait / --queue deliver at the turn boundary instead
+am send "$session" "Now update the changelog"
 
 # 5. Clean up or hand off
 am kill "$session"              # or: am attach "$session"
 ```
 
-`am send` checks the session first: a running, starting, or dialog-blocked
-agent is refused (exit 4), and an exited agent is refused because the text
-would land in its shell (exit 2). `--wait` blocks until ready, `--queue`
-returns at once and sends when ready, `--force` skips the check.
+`am send` delivers immediately, a running turn included: every supported
+harness takes input mid-turn and either steers on it or queues it for the
+next turn (its own setting). It refuses only where the text would not reach
+the agent's input — a permission or question dialog is up, or the agent has
+not taken the terminal yet (exit 4) — or where it would run in a shell
+because the agent exited (exit 2). `--wait` blocks until the turn boundary
+(ready or background) and sends then; `--queue` does the same detached and
+records the outcome in `$AM_DIR/queue.log` (an undelivered prompt is kept as
+`queue/<file>.failed`); `--force` skips the check.
 
 ### Parallel workers
 
@@ -499,7 +505,7 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 | `am list [--json] [--state s1,s2]` | List sessions, optionally only those in given states |
 | `am new [-p preset] [dir]` | Create new agent session |
 | `am preset save\|list\|show\|rm` | Manage launch presets for `am new -p` |
-| `am send [--wait\|--queue\|--force] <session> [prompt]` | Send a prompt once the agent is ready |
+| `am send [--wait\|--queue\|--force] <session> [prompt]` | Send a prompt now (mid-turn too); `--wait`/`--queue` deliver at the turn boundary |
 | `am peek <session>` | Snapshot or follow a session's pane output |
 | `am diff [session] [--ack\|--reset\|--list\|--checkpoint id]` | What the agent changed since the review baseline; `--ack` marks it reviewed |
 | `am review [session]` | Toggle the live review pane beside the agent (also `Prefix + v`) |

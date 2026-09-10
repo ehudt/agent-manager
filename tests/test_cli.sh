@@ -405,6 +405,28 @@ test_cli_extended() {
         am_tmux capture-pane -pt "$bg_session:.{top}")
     assert_contains "$pane_output" "perl-agent-input:waited while background" \
         "am send --wait (background): prompt delivered"
+
+    # --- Test: plain am send delivers mid-turn; only a dialog refuses ---
+    # Agent harnesses take input while a turn runs (steer or queue, per
+    # their own config), so `running` is sendable. `waiting_user` is not:
+    # a permission / question dialog is up and Enter would answer it.
+    printf 'running' > "$AM_STATE_DIR/$bg_session"
+    assert_eq "running" "$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" wait --state running --timeout 10 "$bg_session" 2>/dev/null)" \
+        "am send (running): fixture resolves as running"
+    send_rc=0
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$bg_session" "steer mid-turn" >/dev/null 2>&1 || send_rc=$?
+    assert_eq "0" "$send_rc" "am send (running): plain send is accepted mid-turn (exit 0)"
+    pane_output=$(wait_for_text "perl-agent-input:steer mid-turn" \
+        am_tmux capture-pane -pt "$bg_session:.{top}")
+    assert_contains "$pane_output" "perl-agent-input:steer mid-turn" "am send (running): prompt delivered"
+
+    printf 'waiting_user' > "$AM_STATE_DIR/$bg_session"
+    send_rc=0
+    send_err=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" send "$bg_session" "into a dialog" 2>&1 >/dev/null) || send_rc=$?
+    assert_eq "4" "$send_rc" "am send (waiting_user): refused (exit 4)"
+    assert_contains "$send_err" "dialog" "am send (waiting_user): explains that a dialog is up"
+    pane_output=$(am_tmux capture-pane -pt "$bg_session:.{top}")
+    assert_not_contains "$pane_output" "perl-agent-input:into a dialog" "am send (waiting_user): refused prompt never reaches the pane"
     [[ -n "$bg_session" ]] && agent_kill "$bg_session" 2>/dev/null
 
     # --- Test: am new --detach can pass initial prompt from stdin (piped to agent) ---

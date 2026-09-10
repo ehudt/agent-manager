@@ -11,9 +11,10 @@ import (
 
 // Hunk-to-prompt: `c` on a hunk opens a one-line note; Enter sends the note
 // with the file, the new-side line range, and the hunk itself to the
-// session's agent through `am send`. am refuses while the agent is busy
-// (exit 4: running / starting / waiting on a dialog); the pane then falls
-// back to `am send --queue`, which delivers when the agent is ready. An idle
+// session's agent through `am send`, mid-turn included (the harness steers
+// on it or queues it). am refuses only while a dialog is up or the agent is
+// still starting (exit 4); the pane then falls back to `am send --queue`,
+// which delivers when the agent is ready. An idle
 // or dead session (exit 2) has no agent to talk to and is reported as such.
 
 // noteHunkLimit caps the hunk lines quoted in the prompt.
