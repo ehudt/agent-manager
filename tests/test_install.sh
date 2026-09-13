@@ -13,7 +13,209 @@ _run_installer_isolated() {
     CODEX_HOME="$temp_root/codex" \
     CURSOR_CONFIG_DIR="$temp_root/cursor" \
     PI_EXT_DIR="$temp_root/pi-extensions" \
+    OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins" \
         "$PROJECT_DIR/scripts/install.sh" "$@"
+}
+
+# Stub the agent CLIs whose presence gates the Cursor / pi / opencode
+# install paths, so every path runs on any machine (against temp targets).
+_install_test_stub_agents() {
+    local dir="$1" name
+    mkdir -p "$dir"
+    for name in agent pi opencode; do
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/$name"
+        chmod +x "$dir/$name"
+    done
+}
+
+# Every mutation the installer makes, as a list a test can check against:
+# nothing under $temp_root except what was seeded.
+_install_test_tree() {
+    ( cd "$1" && find . -mindepth 1 | sort )
+}
+
+test_installer_dry_run_touches_nothing() {
+    $SUMMARY_MODE || echo "=== Testing installer --dry-run ==="
+
+    local temp_root fake_bin shell_rc before after output
+    temp_root=$(mktemp -d)
+    fake_bin="$temp_root/fakebin"
+    _install_test_stub_agents "$fake_bin"
+    shell_rc="$temp_root/.zshrc"
+    printf 'export PATH="/usr/bin:$PATH"\n' > "$shell_rc"
+    printf '{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}\n' \
+        > "$temp_root/claude-settings.json"
+    before=$(_install_test_tree "$temp_root")
+
+    output=$(PATH="$fake_bin:$PATH" _run_installer_isolated "$temp_root" \
+        --prefix "$temp_root/bin" --shell-rc "$shell_rc" \
+        --tmux-conf "$temp_root/.tmux.conf" --dry-run 2>&1 < /dev/null)
+    after=$(_install_test_tree "$temp_root")
+
+    assert_eq "$before" "$after" "installer --dry-run: creates and removes nothing"
+    assert_eq 'export PATH="/usr/bin:$PATH"' "$(cat "$shell_rc")" \
+        "installer --dry-run: shell rc untouched"
+    assert_contains "$output" "$temp_root/bin/am" "installer --dry-run: names the PATH link"
+    assert_contains "$output" "$shell_rc" "installer --dry-run: names the shell rc"
+    assert_contains "$output" "$temp_root/claude-settings.json" \
+        "installer --dry-run: names the Claude settings file"
+    assert_contains "$output" "$temp_root/codex/hooks.json" "installer --dry-run: names the Codex hooks file"
+    assert_contains "$output" "$temp_root/cursor/hooks.json" "installer --dry-run: names the Cursor hooks file"
+    assert_contains "$output" "$temp_root/pi-extensions/am-state.ts" "installer --dry-run: names the pi extension"
+    assert_contains "$output" "$temp_root/opencode-plugins/am-state.js" "installer --dry-run: names the opencode plugin"
+    assert_not_contains "$output" "Installed" "installer --dry-run: reports nothing as done"
+
+    rm -rf "$temp_root"
+    $SUMMARY_MODE || echo ""
+}
+
+test_installer_uninstall_reverses_install() {
+    $SUMMARY_MODE || echo "=== Testing installer --uninstall ==="
+
+    local temp_root fake_bin shell_rc output
+    temp_root=$(mktemp -d)
+    fake_bin="$temp_root/fakebin"
+    _install_test_stub_agents "$fake_bin"
+    shell_rc="$temp_root/.zshrc"
+    printf 'export PATH="/usr/bin:$PATH"\n' > "$shell_rc"
+    # A user's own Claude hook and Cursor hook must survive the uninstall.
+    printf '{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"echo mine"}]}]}}\n' \
+        > "$temp_root/claude-settings.json"
+    mkdir -p "$temp_root/cursor"
+    printf '{"version":1,"hooks":{"stop":[{"command":"echo mine"}]}}\n' > "$temp_root/cursor/hooks.json"
+
+    PATH="$fake_bin:$PATH" _run_installer_isolated "$temp_root" \
+        --prefix "$temp_root/bin" --shell-rc "$shell_rc" \
+        --tmux-conf "$temp_root/.tmux.conf" -y >/dev/null 2>&1
+    assert_cmd_succeeds "uninstall precondition: am linked" test -L "$temp_root/bin/am"
+    assert_cmd_succeeds "uninstall precondition: Claude hook present" \
+        grep -q am-state-hook "$temp_root/claude-settings.json"
+
+    output=$(PATH="$fake_bin:$PATH" _run_installer_isolated "$temp_root" \
+        --prefix "$temp_root/bin" --shell-rc "$shell_rc" --uninstall -y 2>&1)
+
+    assert_cmd_fails "uninstall: am link removed" test -e "$temp_root/bin/am"
+    assert_cmd_fails "uninstall: switch-last link removed" test -e "$temp_root/bin/switch-last"
+    assert_cmd_fails "uninstall: kill-and-switch link removed" test -e "$temp_root/bin/kill-and-switch"
+    assert_cmd_fails "uninstall: shell rc managed block removed" \
+        grep -Fq '# >>> agent-manager >>>' "$shell_rc"
+    assert_contains "$(cat "$shell_rc")" 'export PATH="/usr/bin:$PATH"' \
+        "uninstall: shell rc's own lines kept"
+    assert_cmd_fails "uninstall: Claude hook entries removed" \
+        grep -q am-state-hook "$temp_root/claude-settings.json"
+    assert_eq "echo mine" \
+        "$(jq -r '.hooks.Stop[0].hooks[0].command' "$temp_root/claude-settings.json")" \
+        "uninstall: user's Claude hook kept"
+    assert_eq "null" "$(jq -r '.hooks.PostToolUse' "$temp_root/claude-settings.json")" \
+        "uninstall: an event array am alone filled is dropped"
+    assert_cmd_fails "uninstall: Codex hook entries removed" \
+        grep -q am-state-hook "$temp_root/codex/hooks.json"
+    assert_cmd_fails "uninstall: Cursor hook entries removed" \
+        grep -q am-state-hook "$temp_root/cursor/hooks.json"
+    assert_eq "echo mine" "$(jq -r '.hooks.stop[0].command' "$temp_root/cursor/hooks.json")" \
+        "uninstall: user's Cursor hook kept"
+    assert_cmd_fails "uninstall: Cursor hook helper copy removed" \
+        test -e "$temp_root/cursor/hooks/am-state-hook.sh"
+    assert_cmd_fails "uninstall: pi extension link removed" \
+        test -e "$temp_root/pi-extensions/am-state.ts" -o -L "$temp_root/pi-extensions/am-state.ts"
+    assert_cmd_fails "uninstall: opencode plugin link removed" \
+        test -e "$temp_root/opencode-plugins/am-state.js" -o -L "$temp_root/opencode-plugins/am-state.js"
+    assert_contains "$output" "$temp_root/codex/config.toml" \
+        "uninstall: says the Codex hooks feature flag is left in place"
+
+    # Idempotent: a second uninstall is a no-op that still exits 0.
+    assert_cmd_succeeds "uninstall: second run exits 0" \
+        env PATH="$fake_bin:$PATH" CLAUDE_SETTINGS="$temp_root/claude-settings.json" \
+        CODEX_HOME="$temp_root/codex" CURSOR_CONFIG_DIR="$temp_root/cursor" \
+        PI_EXT_DIR="$temp_root/pi-extensions" OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins" \
+        "$PROJECT_DIR/scripts/install.sh" --prefix "$temp_root/bin" --shell-rc "$shell_rc" --uninstall -y
+
+    rm -rf "$temp_root"
+    $SUMMARY_MODE || echo ""
+}
+
+# `am install --dry-run` must not even create $AM_DIR or the config: a
+# dry run that leaves a directory behind is not one.
+test_am_install_dry_run_creates_nothing() {
+    $SUMMARY_MODE || echo "=== Testing am install --dry-run ==="
+
+    local temp_root output
+    temp_root=$(mktemp -d)
+    printf 'export PATH="/usr/bin:$PATH"\n' > "$temp_root/.zshrc"
+
+    output=$(AM_DIR="$temp_root/am-dir" AM_CONFIG="$temp_root/am-dir/config.json" \
+        AM_CLAUDE_SKILLS_DIR="$temp_root/claude-skills" \
+        AM_CURSOR_SKILLS_DIR="$temp_root/cursor-skills" \
+        CLAUDE_SETTINGS="$temp_root/claude-settings.json" \
+        CODEX_HOME="$temp_root/codex" CURSOR_CONFIG_DIR="$temp_root/cursor" \
+        PI_EXT_DIR="$temp_root/pi-extensions" OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins" \
+        "$PROJECT_DIR/am" install --dry-run \
+        --prefix "$temp_root/bin" --shell-rc "$temp_root/.zshrc" 2>&1 < /dev/null)
+
+    assert_cmd_fails "am install --dry-run: AM_DIR not created" test -e "$temp_root/am-dir"
+    assert_cmd_fails "am install --dry-run: skills dir not created" test -e "$temp_root/claude-skills"
+    assert_cmd_fails "am install --dry-run: nothing linked" test -e "$temp_root/bin"
+    assert_contains "$output" "$temp_root/am-dir/config.json" "am install --dry-run: names the config file"
+    assert_contains "$output" "$temp_root/claude-skills/agent-manager-dispatch" \
+        "am install --dry-run: names a skill link"
+    assert_contains "$output" "$temp_root/bin/am" "am install --dry-run: names the PATH link"
+    assert_contains "$output" "$temp_root/claude-settings.json" \
+        "am install --dry-run: names the Claude settings file"
+    assert_not_contains "$output" "Setup complete" "am install --dry-run: no completion banner"
+
+    rm -rf "$temp_root"
+    $SUMMARY_MODE || echo ""
+}
+
+test_am_uninstall() {
+    $SUMMARY_MODE || echo "=== Testing am uninstall ==="
+
+    local temp_root skills_dir am_dir output
+    temp_root=$(mktemp -d)
+    skills_dir="$temp_root/claude-skills"
+    am_dir="$temp_root/am-dir"
+    mkdir -p "$skills_dir" "$am_dir" "$temp_root/bin"
+    # One managed skill link, one that is the user's own (must stay).
+    ln -s "$PROJECT_DIR/skills/agent-manager-dispatch" "$skills_dir/agent-manager-dispatch"
+    mkdir -p "$temp_root/other-skill"
+    ln -s "$temp_root/other-skill" "$skills_dir/mine"
+    echo '{}' > "$am_dir/config.json"
+    ln -s "$PROJECT_DIR/am" "$temp_root/bin/am"
+    printf 'export PATH="/usr/bin:$PATH"\n' > "$temp_root/.zshrc"
+
+    local -a env_common=(
+        AM_DIR="$am_dir" AM_CONFIG="$am_dir/config.json"
+        AM_CLAUDE_SKILLS_DIR="$skills_dir" AM_CURSOR_SKILLS_DIR="$temp_root/cursor-skills"
+        CLAUDE_SETTINGS="$temp_root/claude-settings.json"
+        CODEX_HOME="$temp_root/codex" CURSOR_CONFIG_DIR="$temp_root/cursor"
+        PI_EXT_DIR="$temp_root/pi-extensions" OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins"
+    )
+
+    # Dry run first: names everything, removes nothing.
+    output=$(env "${env_common[@]}" "$PROJECT_DIR/am" uninstall --dry-run --purge \
+        --prefix "$temp_root/bin" --shell-rc "$temp_root/.zshrc" 2>&1 < /dev/null)
+    assert_contains "$output" "$skills_dir/agent-manager-dispatch" "am uninstall --dry-run: names the skill link"
+    assert_contains "$output" "$am_dir" "am uninstall --dry-run: names AM_DIR under --purge"
+    assert_cmd_succeeds "am uninstall --dry-run: skill link kept" test -L "$skills_dir/agent-manager-dispatch"
+    assert_cmd_succeeds "am uninstall --dry-run: AM_DIR kept" test -d "$am_dir"
+    assert_cmd_succeeds "am uninstall --dry-run: PATH link kept" test -L "$temp_root/bin/am"
+
+    # Without --purge the config survives.
+    output=$(env "${env_common[@]}" "$PROJECT_DIR/am" uninstall -y \
+        --prefix "$temp_root/bin" --shell-rc "$temp_root/.zshrc" 2>&1 < /dev/null)
+    assert_cmd_fails "am uninstall: managed skill link removed" \
+        test -e "$skills_dir/agent-manager-dispatch" -o -L "$skills_dir/agent-manager-dispatch"
+    assert_cmd_succeeds "am uninstall: user's own skill link kept" test -L "$skills_dir/mine"
+    assert_cmd_fails "am uninstall: PATH link removed" test -e "$temp_root/bin/am"
+    assert_cmd_succeeds "am uninstall: AM_DIR kept without --purge" test -f "$am_dir/config.json"
+    assert_contains "$output" "$am_dir" "am uninstall: says how to remove AM_DIR"
+
+    output=$(env "${env_common[@]}" "$PROJECT_DIR/am" uninstall -y --purge \
+        --prefix "$temp_root/bin" --shell-rc "$temp_root/.zshrc" 2>&1 < /dev/null)
+    assert_cmd_fails "am uninstall --purge: AM_DIR removed" test -e "$am_dir"
+
+    rm -rf "$temp_root"
+    $SUMMARY_MODE || echo ""
 }
 
 test_installer_replaces_managed_blocks() {
@@ -225,7 +427,8 @@ EOF
         CLAUDE_SETTINGS="$temp_claude_settings" \
         CODEX_HOME="$temp_codex_home" \
         CURSOR_CONFIG_DIR="$temp_cursor_config" \
-        PI_EXT_DIR="$temp_pi_ext" \
+        PI_EXT_DIR="$temp_pi_ext" OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins" \
+        OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
 
@@ -290,7 +493,8 @@ EOF
         CLAUDE_SETTINGS="$temp_claude_settings" \
         CODEX_HOME="$temp_codex_home" \
         CURSOR_CONFIG_DIR="$temp_cursor_config" \
-        PI_EXT_DIR="$temp_pi_ext" \
+        PI_EXT_DIR="$temp_pi_ext" OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins" \
+        OPENCODE_PLUGINS_DIR="$temp_root/opencode-plugins" \
         "$PROJECT_DIR/am" install \
         --prefix "$temp_prefix" --shell-rc "$temp_shell_rc" --no-tmux -y 2>&1)
     assert_contains "$install_output2" "already exists" "install: skills symlink idempotent"
@@ -680,6 +884,10 @@ run_install_tests() {
     _run_test test_installer_replaces_managed_blocks
     _run_test test_installer_defaults_prompts_to_yes
     _run_test test_installer_points_at_am_install
+    _run_test test_installer_dry_run_touches_nothing
+    _run_test test_installer_uninstall_reverses_install
+    _run_test test_am_install_dry_run_creates_nothing
+    _run_test test_am_uninstall
     _run_test test_install
     _run_test test_install_hooks_into_empty_settings
     _run_test test_install_hooks_preserves_existing

@@ -14,6 +14,8 @@ USE_SYMLINK=true
 UPDATE_SHELL=true
 UPDATE_TMUX=true
 ASSUME_YES=false
+DRY_RUN=false
+MODE=install
 
 usage() {
     cat <<USAGE
@@ -29,12 +31,18 @@ Options:
   --no-shell          Do not modify shell rc file
   --no-tmux           Do not touch tmux config cleanup
   -y, --yes           Non-interactive mode (accept prompts)
+  --dry-run           Print every file that would be created, linked or edited;
+                      change nothing (implies --yes)
+  --uninstall         Reverse the install: PATH links, shell rc block, and the
+                      am entries in every agent's hook configuration
   -h, --help          Show this help
 USAGE
 }
 
 log() { printf '%s\n' "$*"; }
 warn() { printf 'warn: %s\n' "$*" >&2; }
+# --dry-run: one line per mutation, in the same order the real run makes them.
+plan() { printf 'would %s\n' "$*"; }
 
 auto_detect_shell_rc() {
     if [[ -n "${ZDOTDIR:-}" && -f "$ZDOTDIR/.zshrc" ]]; then
@@ -63,6 +71,10 @@ install_link_or_copy() {
     local src="$1"
     local dest="$2"
 
+    if $DRY_RUN; then
+        if $USE_SYMLINK; then plan "link $dest -> $src"; else plan "copy $src to $dest"; fi
+        return 0
+    fi
     if $USE_SYMLINK; then
         ln -sfn "$src" "$dest"
     else
@@ -78,6 +90,11 @@ replace_managed_block() {
     local content="$4"
     local tmp_file
 
+    if $DRY_RUN; then
+        plan "write the managed block ($begin_marker) in $file:"
+        printf '    %s\n' "$content"
+        return 0
+    fi
     mkdir -p "$(dirname "$file")"
     touch "$file"
 
@@ -105,8 +122,13 @@ remove_managed_block() {
     local end_marker="$3"
     local tmp_file
 
-    mkdir -p "$(dirname "$file")"
-    touch "$file"
+    # Nothing to do when the file has no block: never create a file just to
+    # say it was cleaned.
+    [[ -f "$file" ]] && grep -Fqx "$begin_marker" "$file" || return 0
+    if $DRY_RUN; then
+        plan "remove the managed block ($begin_marker) from $file"
+        return 0
+    fi
 
     tmp_file=$(mktemp)
 
@@ -350,6 +372,94 @@ _install_opencode_plugin() {
     log "Symlinked $dir/am-state.js -> $src"
 }
 
+# --- Uninstall helpers -------------------------------------------------
+# Each removes only what the install above put there (entries carrying the
+# am marker, links into this checkout, the managed hook helper copy) and
+# leaves everything else in the file. All honour --dry-run.
+
+# Remove a PATH link/copy when it is ours: a symlink into the repo, or a
+# byte-identical copy of the repo file. Anything else is left with a warning.
+_uninstall_command() {
+    local dest="$1" src="$2"
+    [[ -e "$dest" || -L "$dest" ]] || return 0
+    if [[ -L "$dest" ]]; then
+        local target
+        target=$(readlink "$dest")
+        if [[ "$target" != "$src" ]]; then
+            warn "left $dest: links to $target, not this checkout"
+            return 0
+        fi
+    elif ! cmp -s "$dest" "$src"; then
+        warn "left $dest: not a copy of $src"
+        return 0
+    fi
+    if $DRY_RUN; then plan "remove $dest"; return 0; fi
+    rm -f "$dest"
+    log "Removed $dest"
+}
+
+# Remove a symlink we created when it still points at our source.
+_uninstall_symlink() {
+    local link="$1" src="$2"
+    [[ -L "$link" ]] || return 0
+    if [[ "$(readlink "$link")" != "$src" ]]; then
+        warn "left $link: links elsewhere"
+        return 0
+    fi
+    if $DRY_RUN; then plan "remove $link"; return 0; fi
+    rm -f "$link"
+    log "Removed $link"
+}
+
+# Drop the am entries from a Claude/Codex-shaped hooks file (event ->
+# [{matcher, hooks:[{command}]}]); an event array that held only am entries
+# is dropped too, so a file am alone touched returns to its previous shape.
+_uninstall_nested_hooks() {
+    local file="$1" marker="# am-state-hook"
+    [[ -f "$file" ]] && grep -Fq "$marker" "$file" || return 0
+    if $DRY_RUN; then plan "remove the am hook entries from $file"; return 0; fi
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg marker "$marker" '
+        if (.hooks | type) == "object" then
+            .hooks |= (with_entries(
+                .value |= if type == "array" then
+                    map(select(
+                        (.hooks // []) | all((.command // "") | contains($marker) | not)
+                    ))
+                else . end
+            ) | with_entries(select((.value | type) != "array" or (.value | length) > 0)))
+        else . end
+    ' "$file" > "$tmp_file" && mv "$tmp_file" "$file"
+    log "Removed am hook entries from $file"
+}
+
+# Same for Cursor's flat shape (event -> [{command}]), plus the helper copy.
+_uninstall_cursor_hooks() {
+    local file="$1" helper="$2" marker="# am-state-hook"
+    if [[ -f "$file" ]] && grep -Fq "$marker" "$file"; then
+        if $DRY_RUN; then
+            plan "remove the am hook entries from $file"
+        else
+            local tmp_file
+            tmp_file=$(mktemp)
+            jq --arg marker "$marker" '
+                if (.hooks | type) == "object" then
+                    .hooks |= (with_entries(
+                        .value |= if type == "array" then
+                            map(select((.command // "") | contains($marker) | not))
+                        else . end
+                    ) | with_entries(select((.value | type) != "array" or (.value | length) > 0)))
+                else . end
+            ' "$file" > "$tmp_file" && mv "$tmp_file" "$file"
+            log "Removed am hook entries from $file"
+        fi
+    fi
+    if [[ -f "$helper" ]] && grep -Fq "lib/hooks/state-hook.sh - Agent hook" "$helper"; then
+        if $DRY_RUN; then plan "remove $helper"; else rm -f "$helper"; log "Removed $helper"; fi
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
@@ -380,6 +490,15 @@ while [[ $# -gt 0 ]]; do
             ASSUME_YES=true
             shift
             ;;
+        --dry-run)
+            DRY_RUN=true
+            ASSUME_YES=true
+            shift
+            ;;
+        --uninstall)
+            MODE=uninstall
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -396,20 +515,65 @@ if [[ -z "$SHELL_RC" ]]; then
     SHELL_RC="$(auto_detect_shell_rc)"
 fi
 
-mkdir -p "$PREFIX"
+# Every host-config target, overridable for tests (a bare run writes into
+# the real home of whoever runs it).
+CLAUDE_SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+CODEX_HOOKS="${CODEX_HOOKS:-$CODEX_HOME_DIR/hooks.json}"
+CODEX_CONFIG="${CODEX_CONFIG:-$CODEX_HOME_DIR/config.toml}"
+HOOK_SCRIPT="$REPO_DIR/lib/hooks/state-hook.sh"
+CURSOR_CONFIG_HOME="${CURSOR_CONFIG_DIR:-$HOME/.cursor}"
+CURSOR_HOOKS="${CURSOR_HOOKS:-$CURSOR_CONFIG_HOME/hooks.json}"
+CURSOR_HOOKS_DIR="${CURSOR_HOOKS_DIR:-$CURSOR_CONFIG_HOME/hooks}"
+CURSOR_CLI_CONFIG="${CURSOR_CLI_CONFIG:-$CURSOR_CONFIG_HOME/cli-config.json}"
+PI_EXT_DIR="${PI_EXT_DIR:-$HOME/.pi/agent/extensions}"
+PI_EXT_SRC="$REPO_DIR/lib/hooks/am-state.ts"
+OPENCODE_PLUGINS_DIR="${OPENCODE_PLUGINS_DIR:-$HOME/.config/opencode/plugins}"
+OPENCODE_PLUGIN_SRC="$REPO_DIR/lib/hooks/opencode-state.js"
+
+SHELL_BEGIN='# >>> agent-manager >>>'
+SHELL_END='# <<< agent-manager <<<'
+
+if [[ "$MODE" == "uninstall" ]]; then
+    if ! confirm "Remove am from $PREFIX, the $SHELL_RC block, and the am hook entries of every agent?"; then
+        log "Uninstall cancelled"
+        exit 0
+    fi
+    _uninstall_command "$PREFIX/am" "$REPO_DIR/am"
+    _uninstall_command "$PREFIX/switch-last" "$REPO_DIR/bin/switch-last"
+    _uninstall_command "$PREFIX/kill-and-switch" "$REPO_DIR/bin/kill-and-switch"
+    remove_managed_block "$SHELL_RC" "$SHELL_BEGIN" "$SHELL_END"
+    _uninstall_nested_hooks "$CLAUDE_SETTINGS"
+    _uninstall_nested_hooks "$CODEX_HOOKS"
+    if [[ -f "$CODEX_CONFIG" ]] && grep -Eq '^[[:space:]]*hooks[[:space:]]*=' "$CODEX_CONFIG"; then
+        log "Left the hooks feature flag in $CODEX_CONFIG (other hooks may rely on it)"
+    fi
+    _uninstall_cursor_hooks "$CURSOR_HOOKS" "$CURSOR_HOOKS_DIR/am-state-hook.sh"
+    _uninstall_symlink "$PI_EXT_DIR/am-state.ts" "$PI_EXT_SRC"
+    _uninstall_symlink "$OPENCODE_PLUGINS_DIR/am-state.js" "$OPENCODE_PLUGIN_SRC"
+    if $DRY_RUN; then
+        log "Dry run: nothing was changed"
+    else
+        log "Uninstall complete"
+    fi
+    exit 0
+fi
+
+if $DRY_RUN; then
+    log "Dry run: nothing below is changed"
+elif [[ ! -d "$PREFIX" ]]; then
+    mkdir -p "$PREFIX"
+fi
 
 install_link_or_copy "$REPO_DIR/am" "$PREFIX/am"
 install_link_or_copy "$REPO_DIR/bin/switch-last" "$PREFIX/switch-last"
 install_link_or_copy "$REPO_DIR/bin/kill-and-switch" "$PREFIX/kill-and-switch"
-log "Installed commands into $PREFIX"
+$DRY_RUN || log "Installed commands into $PREFIX"
 
 if $UPDATE_SHELL; then
     if confirm "Update $SHELL_RC to ensure $PREFIX is on PATH?"; then
         shell_block='export PATH="'"$PREFIX"':$PATH"'
-        replace_managed_block "$SHELL_RC" \
-            '# >>> agent-manager >>>' \
-            '# <<< agent-manager <<<' \
-            "$shell_block"
+        replace_managed_block "$SHELL_RC" "$SHELL_BEGIN" "$SHELL_END" "$shell_block"
     else
         log "Skipped shell rc update"
     fi
@@ -417,49 +581,51 @@ fi
 
 if $UPDATE_TMUX; then
     if confirm "Remove legacy agent-manager bindings from $TMUX_CONF?"; then
-        remove_managed_block "$TMUX_CONF" \
-            '# >>> agent-manager >>>' \
-            '# <<< agent-manager <<<'
-        log "agent-manager now uses its own tmux server/socket: $AM_TMUX_SOCKET"
-        log "No shared-server tmux bindings are required."
+        remove_managed_block "$TMUX_CONF" "$SHELL_BEGIN" "$SHELL_END"
+        $DRY_RUN || log "agent-manager now uses its own tmux server/socket: $AM_TMUX_SOCKET"
+        $DRY_RUN || log "No shared-server tmux bindings are required."
     else
         log "Skipped tmux config cleanup"
     fi
 fi
 
 # Install Claude Code hooks for state detection
-CLAUDE_SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
-CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
-CODEX_HOOKS="${CODEX_HOOKS:-$CODEX_HOME_DIR/hooks.json}"
-CODEX_CONFIG="${CODEX_CONFIG:-$CODEX_HOME_DIR/config.toml}"
-HOOK_SCRIPT="$REPO_DIR/lib/hooks/state-hook.sh"
-
 if confirm "Install state-detection hooks into Claude Code settings ($CLAUDE_SETTINGS)?"; then
-    _install_claude_hooks "$CLAUDE_SETTINGS" "$HOOK_SCRIPT"
-    log "Installed state-detection hooks into $CLAUDE_SETTINGS"
+    if $DRY_RUN; then
+        plan "add the am hook entries (Stop, Notification, UserPromptSubmit, PostToolUse) to $CLAUDE_SETTINGS"
+    else
+        _install_claude_hooks "$CLAUDE_SETTINGS" "$HOOK_SCRIPT"
+        log "Installed state-detection hooks into $CLAUDE_SETTINGS"
+    fi
 else
     log "Skipped Claude Code hook installation"
 fi
 
 if confirm "Install state-detection hooks into Codex hooks ($CODEX_HOOKS)?"; then
-    _install_codex_hooks "$CODEX_HOOKS" "$HOOK_SCRIPT"
-    log "Installed state-detection hooks into $CODEX_HOOKS"
-    _enable_codex_hooks_feature "$CODEX_CONFIG"
-    log "Enabled Codex hooks feature flag in $CODEX_CONFIG"
+    if $DRY_RUN; then
+        plan "add the am hook entries (PermissionRequest, UserPromptSubmit, PreToolUse, PostToolUse, Stop) to $CODEX_HOOKS"
+        plan "set hooks = true under [features] in $CODEX_CONFIG"
+    else
+        _install_codex_hooks "$CODEX_HOOKS" "$HOOK_SCRIPT"
+        log "Installed state-detection hooks into $CODEX_HOOKS"
+        _enable_codex_hooks_feature "$CODEX_CONFIG"
+        log "Enabled Codex hooks feature flag in $CODEX_CONFIG"
+    fi
 else
     log "Skipped Codex hook installation"
 fi
 
-CURSOR_CONFIG_HOME="${CURSOR_CONFIG_DIR:-$HOME/.cursor}"
-CURSOR_HOOKS="${CURSOR_HOOKS:-$CURSOR_CONFIG_HOME/hooks.json}"
-CURSOR_HOOKS_DIR="${CURSOR_HOOKS_DIR:-$CURSOR_CONFIG_HOME/hooks}"
-CURSOR_CLI_CONFIG="${CURSOR_CLI_CONFIG:-$CURSOR_CONFIG_HOME/cli-config.json}"
-
 if command -v agent >/dev/null 2>&1; then
     if confirm "Install state-detection hooks into Cursor Agent ($CURSOR_HOOKS)?"; then
-        _install_cursor_hooks "$CURSOR_HOOKS" "$CURSOR_HOOKS_DIR" "$HOOK_SCRIPT"
-        _enable_cursor_status_indicators "$CURSOR_CLI_CONFIG"
-        log "Installed Cursor Agent hooks and enabled terminal status indicators"
+        if $DRY_RUN; then
+            plan "copy $HOOK_SCRIPT to $CURSOR_HOOKS_DIR/am-state-hook.sh"
+            plan "add the am hook entries to $CURSOR_HOOKS"
+            plan "set display.showStatusIndicators = true in $CURSOR_CLI_CONFIG"
+        else
+            _install_cursor_hooks "$CURSOR_HOOKS" "$CURSOR_HOOKS_DIR" "$HOOK_SCRIPT"
+            _enable_cursor_status_indicators "$CURSOR_CLI_CONFIG"
+            log "Installed Cursor Agent hooks and enabled terminal status indicators"
+        fi
     else
         log "Skipped Cursor Agent hook installation"
     fi
@@ -467,12 +633,13 @@ else
     log "Cursor Agent CLI not found -- skipped Cursor hook installation"
 fi
 
-PI_EXT_DIR="${PI_EXT_DIR:-$HOME/.pi/agent/extensions}"
-PI_EXT_SRC="$REPO_DIR/lib/hooks/am-state.ts"
-
 if command -v pi >/dev/null 2>&1; then
     if confirm "Install state-detection extension into pi ($PI_EXT_DIR)?"; then
-        _install_pi_extension "$PI_EXT_DIR" "$PI_EXT_SRC"
+        if $DRY_RUN; then
+            plan "link $PI_EXT_DIR/am-state.ts -> $PI_EXT_SRC"
+        else
+            _install_pi_extension "$PI_EXT_DIR" "$PI_EXT_SRC"
+        fi
     else
         log "Skipped pi extension installation"
     fi
@@ -480,17 +647,23 @@ else
     log "pi CLI not found -- skipped pi state extension"
 fi
 
-OPENCODE_PLUGINS_DIR="${OPENCODE_PLUGINS_DIR:-$HOME/.config/opencode/plugins}"
-OPENCODE_PLUGIN_SRC="$REPO_DIR/lib/hooks/opencode-state.js"
-
 if command -v opencode >/dev/null 2>&1; then
     if confirm "Install state-detection plugin into opencode ($OPENCODE_PLUGINS_DIR)?"; then
-        _install_opencode_plugin "$OPENCODE_PLUGINS_DIR" "$OPENCODE_PLUGIN_SRC"
+        if $DRY_RUN; then
+            plan "link $OPENCODE_PLUGINS_DIR/am-state.js -> $OPENCODE_PLUGIN_SRC"
+        else
+            _install_opencode_plugin "$OPENCODE_PLUGINS_DIR" "$OPENCODE_PLUGIN_SRC"
+        fi
     else
         log "Skipped opencode plugin installation"
     fi
 else
     log "opencode CLI not found -- skipped opencode state plugin"
+fi
+
+if $DRY_RUN; then
+    log "Dry run: nothing was changed"
+    exit 0
 fi
 
 log "Installation complete"

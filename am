@@ -61,7 +61,8 @@ COMMANDS:
     result              Read the summary a session recorded with 'done'
     interrupt           Send Ctrl-C to an agent pane
     restore             Browse and resume a closed agent session
-    install             First-time setup (deps, config, skills, PATH)
+    install             First-time setup (deps, config, skills, PATH, hooks); --dry-run previews
+    uninstall           Reverse install (PATH, shell rc, hooks, skills); --purge also removes ~/.agent-manager
     help                Show this help message
 
 OPTIONS FOR 'list':
@@ -2005,6 +2006,141 @@ _install_refresh_if_stale() {
     _install_refresh
 }
 
+# --dry-run twin of the skills step: one line per link, no mkdir.
+_install_plan_skills() {
+    local skills_root="$1" skills_dir="$2"
+    local skill_src skill_name skill_target existing_real
+    shopt -s nullglob
+    for skill_src in "$skills_root"/*/; do
+        skill_src="${skill_src%/}"
+        [[ -f "$skill_src/SKILL.md" ]] || continue
+        skill_name=$(basename "$skill_src")
+        skill_target="$skills_dir/$skill_name"
+        if [[ -L "$skill_target" ]]; then
+            existing_real=$(cd "$(dirname "$skill_target")" 2>/dev/null && cd "$(readlink "$skill_target")" 2>/dev/null && pwd -P)
+            if [[ "$existing_real" == "$skill_src" ]]; then
+                echo "  keep $skill_target"
+            else
+                echo "would re-point $skill_target -> $skill_src"
+            fi
+        elif [[ -e "$skill_target" ]]; then
+            echo "  leave $skill_target (not a symlink)"
+        else
+            echo "would link $skill_target -> $skill_src"
+        fi
+    done
+    shopt -u nullglob
+}
+
+# Remove the skill links am install created (only links into this
+# checkout's skills/; a user's own entries stay).
+_uninstall_skills() {
+    local dry_run="$1"
+    local skills_root="$AM_SCRIPT_DIR/skills"
+    local skills_dir skill_src skill_name skill_target existing_real
+    shopt -s nullglob
+    for skills_dir in "${AM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}" "${AM_CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"; do
+        for skill_src in "$skills_root"/*/; do
+            skill_src="${skill_src%/}"
+            skill_name=$(basename "$skill_src")
+            skill_target="$skills_dir/$skill_name"
+            [[ -L "$skill_target" ]] || continue
+            existing_real=$(cd "$(dirname "$skill_target")" 2>/dev/null && cd "$(readlink "$skill_target")" 2>/dev/null && pwd -P)
+            [[ "$existing_real" == "$skill_src" ]] || continue
+            if $dry_run; then
+                echo "would remove $skill_target"
+            else
+                rm -f "$skill_target"
+                log_success "  Removed $skill_target"
+            fi
+        done
+    done
+    shopt -u nullglob
+}
+
+cmd_uninstall() {
+    local dry_run=false purge=false yes=false
+    local -a fwd=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                cat <<'HELP'
+Usage: am uninstall [--dry-run] [--purge] [-y] [--prefix <dir>] [--shell-rc <file>]
+
+Reverse 'am install': the PATH links, the shell rc block, the am entries in
+Claude Code / Codex / Cursor hook configuration, the pi extension and
+opencode plugin links, and the skill links. Running sessions are left
+alone (they live on am's own tmux server; 'am kill --all' stops them).
+
+  --dry-run           Print what would be removed; change nothing
+  --purge             Also remove ~/.agent-manager (config, sessions log,
+                      snapshots, presets). Kept by default
+  -y, --yes           Do not ask for confirmation
+  --prefix <dir>      Where 'am install' put the links (default: ~/.local/bin)
+  --shell-rc <file>   Shell rc file that holds the PATH block
+HELP
+                return 0
+                ;;
+            --dry-run) dry_run=true; fwd+=("$1"); shift ;;
+            --purge) purge=true; shift ;;
+            -y|--yes) yes=true; shift ;;
+            --prefix|--shell-rc) fwd+=("$1" "$2"); shift 2 ;;
+            *)
+                log_error "Unknown option: $1"
+                echo "Run 'am uninstall --help' for usage" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    if $dry_run; then
+        echo -e "${BOLD}am uninstall --dry-run — nothing below is changed${RESET}" >&2
+    else
+        echo -e "${BOLD}am uninstall${RESET}" >&2
+        if ! $yes; then
+            local what="PATH links, shell rc block, agent hook entries, skill links"
+            $purge && what+=", and $AM_DIR"
+            printf 'Remove %s? [y/N] ' "$what" >&2
+            local answer=""
+            read -r answer || true
+            [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "Uninstall cancelled" >&2; return 0; }
+        fi
+    fi
+    echo "" >&2
+
+    if command -v tmux >/dev/null 2>&1; then
+        local live
+        live=$(tmux -L "${AM_TMUX_SOCKET:-agent-manager}" list-sessions -F '#S' 2>/dev/null | grep -c "^${AM_SESSION_PREFIX:-am}-" || true)
+        if [[ "${live:-0}" -gt 0 ]]; then
+            log_warn "  $live am session(s) still running on tmux socket ${AM_TMUX_SOCKET:-agent-manager}; they are left alone (am kill --all stops them)"
+        fi
+    fi
+
+    echo -e "${BOLD}Skill links...${RESET}" >&2
+    _uninstall_skills "$dry_run"
+
+    echo "" >&2
+    echo -e "${BOLD}PATH, shell rc, agent hooks...${RESET}" >&2
+    AM_INSTALL_NESTED=1 "$AM_SCRIPT_DIR/scripts/install.sh" --uninstall -y "${fwd[@]}"
+
+    echo "" >&2
+    if $purge; then
+        if $dry_run; then
+            echo "would remove $AM_DIR (config, sessions log, snapshots, presets)"
+        elif [[ -d "$AM_DIR" ]]; then
+            rm -rf "$AM_DIR"
+            log_success "  Removed $AM_DIR"
+        fi
+    else
+        echo "Kept $AM_DIR (config, sessions log, snapshots, presets): 'am uninstall --purge' removes it too." >&2
+    fi
+    if $dry_run; then
+        echo "Dry run: nothing was changed." >&2
+    else
+        log_success "Uninstall complete"
+    fi
+}
+
 cmd_install() {
     if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
         cat <<'EOF'
@@ -2016,6 +2152,10 @@ and install am onto PATH.
   --refresh           Only refresh what the checkout derives (skill links, Go
                       binaries when sources changed, tmux config). The browser
                       runs this itself when it notices the checkout changed.
+  --dry-run           Print every file the install would create, link or edit
+                      (config, skills, PATH, shell rc, agent hooks, binaries)
+                      and change nothing. Reverse a real install with
+                      'am uninstall'.
 
 Options (forwarded to scripts/install.sh):
   --prefix <dir>      Install directory (default: ~/.local/bin)
@@ -2034,7 +2174,17 @@ EOF
         return 0
     fi
 
-    echo -e "${BOLD}am install — first-time setup${RESET}" >&2
+    local dry_run=false _arg
+    for _arg in "$@"; do [[ "$_arg" == "--dry-run" ]] && dry_run=true; done
+
+    if $dry_run; then
+        echo -e "${BOLD}am install --dry-run — nothing below is changed${RESET}" >&2
+    else
+        # main() defers these for install so a dry run creates no directory
+        am_init
+        am_config_init
+        echo -e "${BOLD}am install — first-time setup${RESET}" >&2
+    fi
     echo "" >&2
 
     local warnings=0
@@ -2051,10 +2201,14 @@ EOF
     # --- Step 2: Create config ---
     echo "" >&2
     echo -e "${BOLD}Setting up config...${RESET}" >&2
-    # am_init + am_config_init already called by main() before we get here
-    log_success "  Config directory: $AM_DIR"
-    log_success "  Config file: $AM_CONFIG"
-    steps_done+=("Config: $AM_CONFIG")
+    if $dry_run; then
+        [[ -d "$AM_DIR" ]] || echo "would create $AM_DIR"
+        [[ -f "$AM_CONFIG" ]] && echo "  keep $AM_CONFIG" || echo "would create $AM_CONFIG (defaults)"
+    else
+        log_success "  Config directory: $AM_DIR"
+        log_success "  Config file: $AM_CONFIG"
+        steps_done+=("Config: $AM_CONFIG")
+    fi
 
     # --- Step 3: Symlink skills for Claude Code and Cursor discovery ---
     echo "" >&2
@@ -2071,6 +2225,10 @@ EOF
     else
         local skills_dir
         for skills_dir in "${skill_destinations[@]}"; do
+            if $dry_run; then
+                _install_plan_skills "$skills_root" "$skills_dir"
+                continue
+            fi
             mkdir -p "$skills_dir"
 
             # Remove only managed legacy symlinks. Real user directories are
@@ -2128,6 +2286,17 @@ EOF
     echo "" >&2
     echo -e "${BOLD}Building compiled helpers...${RESET}" >&2
     local min_go_version="1.19"
+    if $dry_run; then
+        if _install_go_ready_for_build "$min_go_version"; then
+            echo "would build bin/am-list-internal bin/am-browse bin/am-core bin/am-review (go build)"
+        else
+            echo "  skip the Go build (no usable Go); am works without the browser"
+        fi
+        echo "would write $AM_DIR/tmux.conf and $AM_DIR/.install_stamp"
+        echo "" >&2
+        echo "Dry run: nothing was changed. Reverse a real install with 'am uninstall'." >&2
+        return 0
+    fi
     if _install_go_ready_for_build "$min_go_version"; then
         local go_ok=true
         if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ ) 2>&1; then
@@ -2191,19 +2360,21 @@ main() {
     # Initialize tracing if requested
     trace_init
 
-    # Initialize
-    am_init
-    am_config_init
-
     # Parse command
     local cmd="${1:-browse}"
     [[ $# -gt 0 ]] && shift
 
-    # Install runs before strict dependency checks (it verifies deps itself)
-    if [[ "$cmd" == "install" ]]; then
-        cmd_install "$@"
-        return $?
-    fi
+    # Install and uninstall run before the directory setup and the strict
+    # dependency checks: install verifies deps itself, and a --dry-run must
+    # not create $AM_DIR on the way in.
+    case "$cmd" in
+        install) cmd_install "$@"; return $? ;;
+        uninstall) cmd_uninstall "$@"; return $? ;;
+    esac
+
+    # Initialize
+    am_init
+    am_config_init
 
     # Check dependencies
     require_cmd tmux
