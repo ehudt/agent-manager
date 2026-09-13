@@ -87,7 +87,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `bin/switch-cycle` | tmux helper: cycle next/prev in canonical sidebar order |
 | `bin/switch-index` | tmux helper: jump to Nth slot in canonical sidebar order |
 | `bin/kill-and-switch` | tmux helper: kill a session and switch to next best |
-| `docs/` | Architecture docs, backlog, perf notes |
+| `docs/` | Architecture docs, backlog, perf notes; `docs/adding-an-agent.md` is the end-to-end guide for a new agent integration |
 
 ## Data Flow
 
@@ -678,7 +678,7 @@ Display: `dirname/branch [agent] task Δ<files> +<add> −<del> (Xm ago)` — di
 
 | Task | Where |
 |------|-------|
-| Add agent type | `lib/agents.manifest` → one block of `<type>.<field>` lines (fields documented in the file header); a new transcript layout or title parser also needs its code in `internal/sessions/` (`storeJSONLExists`, `FirstMessage`, `refreshedTitle`) and `lib/doctor.sh` `_doc_transcript`; add a live lab and a `tests/live_lab/VERIFIED` pin |
+| Add agent type | `lib/agents.manifest` → one block of `<type>.<field>` lines (fields documented in the file header); a new transcript layout or title parser also needs its code in `internal/sessions/` (`storeJSONLExists`, `FirstMessage`, `refreshedTitle`) and `lib/doctor.sh` `_doc_transcript`; add a live lab and a `tests/live_lab/VERIFIED` pin. Full walkthrough: `docs/adding-an-agent.md` |
 | Add CLI command | `am` → `case "$cmd"` in `main()` |
 | Change browser keybindings | `cmd/am-browse/main.go` |
 | Change review pane keybindings or layout | `cmd/am-review/main.go` → `handleKey` / `layout`; diff parsing and rendering in `view.go` |
