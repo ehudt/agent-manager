@@ -459,6 +459,40 @@ test_strip_ansi() {
     $SUMMARY_MODE || echo ""
 }
 
+# scripts/check-changelog.sh: CI fails when AM_VERSION has no CHANGELOG
+# entry, so the changelog cannot silently stop at the release it was
+# written for.
+test_check_changelog() {
+    $SUMMARY_MODE || echo "=== Testing scripts/check-changelog.sh ==="
+    local tmp am_file log_file rc out
+    tmp=$(mktemp -d)
+    am_file="$tmp/am"; log_file="$tmp/CHANGELOG.md"
+    printf '#!/usr/bin/env bash\nAM_VERSION="1.2.3"\n' > "$am_file"
+
+    printf '# Changelog\n\n## [1.2.3] - 2026-09-13\n\n- something\n\n## [1.2.2] - 2026-09-01\n' > "$log_file"
+    rc=0; out=$("$PROJECT_DIR/scripts/check-changelog.sh" "$am_file" "$log_file" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "check-changelog: entry for AM_VERSION passes"
+
+    printf '# Changelog\n\n## [1.2.2] - 2026-09-01\n' > "$log_file"
+    rc=0; out=$("$PROJECT_DIR/scripts/check-changelog.sh" "$am_file" "$log_file" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "check-changelog: missing entry fails"
+    assert_contains "$out" "1.2.3" "check-changelog: names the version without an entry"
+    assert_contains "$out" "CHANGELOG.md" "check-changelog: names the file to edit"
+
+    printf '# Changelog\n\n## [1.2.30] - 2026-09-13\n' > "$log_file"
+    rc=0; "$PROJECT_DIR/scripts/check-changelog.sh" "$am_file" "$log_file" >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "check-changelog: a longer version is not a match"
+
+    rc=0; "$PROJECT_DIR/scripts/check-changelog.sh" "$am_file" "$tmp/missing.md" >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "check-changelog: missing changelog fails"
+
+    # Defaults: the repo's own am and CHANGELOG.md must agree right now.
+    assert_cmd_succeeds "check-changelog: the checkout passes" "$PROJECT_DIR/scripts/check-changelog.sh"
+
+    rm -rf "$tmp"
+    $SUMMARY_MODE || echo ""
+}
+
 test_standalone_status_bar_layout() {
     $SUMMARY_MODE || echo "=== Testing lib/status-bar (adaptive layout) ==="
     source "$LIB_DIR/utils.sh"
@@ -623,6 +657,7 @@ run_standalone_scripts_tests() {
     _run_test test_standalone_status_bar_many_sessions
     _run_test test_standalone_status_bar_layout
     _run_test test_strip_ansi
+    _run_test test_check_changelog
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

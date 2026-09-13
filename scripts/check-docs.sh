@@ -4,6 +4,7 @@
 # Checks:
 # 1. Every file in the "Key Files" table exists on disk
 # 2. Every function in the "Key Functions" section exists in lib/*.sh or am
+# 3. CHANGELOG.md has an entry for the current AM_VERSION (scripts/check-changelog.sh)
 #
 # Portable: uses awk + perl (no GNU-only `grep -oP` / `head -n -1`).
 
@@ -85,6 +86,12 @@ for func in "${funcs[@]}"; do
         fi
     fi
 done
+
+# --- Check CHANGELOG ---
+printf 'Checking CHANGELOG entry for AM_VERSION...\n'
+if ! scripts/check-changelog.sh; then
+    errors=$((errors + 1))
+fi
 
 if (( errors > 0 )); then
     printf '\nDoc sync check FAILED: %d error(s)\n' "$errors" >&2
