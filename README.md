@@ -29,13 +29,13 @@ It works equally well whether **you** are driving from the keyboard or whether *
 
 ```bash
 # Install dependencies (see full list below)
-brew install tmux fzf jq          # macOS
+brew install bash tmux fzf jq     # macOS (its built-in bash is 3.2; am needs 4.4+)
 # sudo apt install tmux fzf jq    # Debian/Ubuntu
 
 # Install am
 git clone https://github.com/ehudt/agent-manager.git
 cd agent-manager
-./scripts/install.sh
+./am install
 
 # Launch your first session
 am new ~/my-project
@@ -51,7 +51,7 @@ That's it. You're in a tmux session with Claude running full-screen. Press ``Pre
 
 | Dependency | Minimum | Install |
 |-----------|---------|---------|
-| **bash** | 4.0+ | Ships with most Linux distros. macOS: `brew install bash` |
+| **bash** | 4.4+ | Ships with most Linux distros. macOS ships 3.2: `brew install bash` (Homebrew's bash goes first in `PATH`; open a new terminal after) |
 | **tmux** | 3.2+ | `brew install tmux` / `apt install tmux` / `pacman -S tmux` |
 | **fzf** | 0.40+ | `brew install fzf` / `apt install fzf` / `pacman -S fzf` |
 | **jq** | 1.6+ | `brew install jq` / `apt install jq` / `pacman -S jq` |
@@ -89,20 +89,27 @@ sudo pacman -S tmux fzf jq zoxide
 ```bash
 git clone https://github.com/ehudt/agent-manager.git
 cd agent-manager
-./scripts/install.sh
+./am install
 ```
 
-This symlinks `am` into `~/.local/bin` and sets up the dedicated tmux configuration. The installer will:
-- Add `~/.local/bin` to your PATH in `.zshrc` or `.bashrc` if needed
+`am install` is the whole setup. It will:
+- Check the dependencies above against their minimum versions
+- Create `~/.agent-manager/config.json` with the defaults
+- Symlink `am` into `~/.local/bin` and add that to your PATH in `.zshrc` or `.bashrc` if needed
 - Generate a dedicated tmux config at `~/.agent-manager/tmux.conf` with am-specific keybindings (your personal `~/.tmux.conf` is unaffected)
-- Register state-detection hooks for push-based session monitoring in Claude, Codex, Cursor, pi, and opencode configuration (existing hooks are preserved)
+- Register state-detection hooks for push-based session monitoring in Claude, Codex, Cursor, pi, and opencode configuration (existing hooks are preserved; each is asked about, and only for agents that are installed)
+- Link the `am` skills into Claude Code's and Cursor's skill directories
+- Build the compiled browser and helpers (needs Go 1.19+; without Go, `am` still works but the session browser does not)
+
+Every prompt defaults to yes. `am install --dry-run` prints what would change without touching anything, and `am uninstall` reverses it.
 
 ```bash
 # Install options
-./scripts/install.sh --yes              # Non-interactive (accept all)
-./scripts/install.sh --no-shell         # Skip shell rc updates
-./scripts/install.sh --prefix /usr/local/bin  # Custom install path
-./scripts/install.sh --copy             # Copy files instead of symlink
+./am install --yes                 # Non-interactive (accept all)
+./am install --dry-run             # Show every file it would create, link, or edit
+./am install --no-shell            # Skip shell rc updates
+./am install --prefix /usr/local/bin  # Custom install path
+./am install --copy                # Copy files instead of symlink
 ```
 
 ### Verify

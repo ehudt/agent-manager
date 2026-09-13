@@ -6,7 +6,9 @@
 # (4.4) in lib/agents.sh — the latter is a parse-time error on older bash.
 if [[ -z "${BASH_VERSINFO:-}" ]] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
     echo "am requires bash >= 4.4 (current: ${BASH_VERSION:-unknown})." >&2
-    echo "Install a newer bash and ensure it is first in PATH so '/usr/bin/env bash' resolves to it." >&2
+    echo "  macOS: brew install bash   (ships 3.2; the new bash goes first in PATH)" >&2
+    echo "  Linux: install bash 4.4+ from your distro" >&2
+    echo "Then open a new terminal so '/usr/bin/env bash' resolves to it." >&2
     exit 1
 fi
 
@@ -2119,7 +2121,7 @@ EOF
     # --- Step 4: Install am onto PATH (via scripts/install.sh) ---
     echo "" >&2
     echo -e "${BOLD}Installing am onto PATH...${RESET}" >&2
-    "$AM_SCRIPT_DIR/scripts/install.sh" "$@"
+    AM_INSTALL_NESTED=1 "$AM_SCRIPT_DIR/scripts/install.sh" "$@"
     steps_done+=("PATH setup complete")
 
     # --- Step 5: Build compiled helpers ---

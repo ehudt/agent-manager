@@ -96,6 +96,31 @@ EOF
     $SUMMARY_MODE || echo ""
 }
 
+# scripts/install.sh run by hand does PATH, tmux config and hooks only;
+# skills and the Go binaries come from `am install`, which wraps it. Run
+# directly it must say so; run from `am install` the hint would be noise.
+test_installer_points_at_am_install() {
+    $SUMMARY_MODE || echo "=== Testing installer hint toward am install ==="
+
+    local temp_root output
+    temp_root=$(mktemp -d)
+
+    output=$(_run_installer_isolated "$temp_root" \
+        --prefix "$temp_root/bin" --shell-rc "$temp_root/.zshrc" \
+        --tmux-conf "$temp_root/.tmux.conf" -y 2>&1)
+    assert_contains "$output" "am install" \
+        "installer (direct): points at am install for skills and binaries"
+
+    output=$(AM_INSTALL_NESTED=1 _run_installer_isolated "$temp_root" \
+        --prefix "$temp_root/bin" --shell-rc "$temp_root/.zshrc" \
+        --tmux-conf "$temp_root/.tmux.conf" -y 2>&1)
+    assert_not_contains "$output" "am install" \
+        "installer (from am install): no hint"
+
+    rm -rf "$temp_root"
+    $SUMMARY_MODE || echo ""
+}
+
 test_install() {
     $SUMMARY_MODE || echo "=== Testing am install ==="
 
@@ -654,6 +679,7 @@ run_install_tests() {
     _run_test test_install_refresh_stamp
     _run_test test_installer_replaces_managed_blocks
     _run_test test_installer_defaults_prompts_to_yes
+    _run_test test_installer_points_at_am_install
     _run_test test_install
     _run_test test_install_hooks_into_empty_settings
     _run_test test_install_hooks_preserves_existing

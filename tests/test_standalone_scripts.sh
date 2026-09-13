@@ -125,6 +125,16 @@ test_standalone_bash_version_gate() {
     assert_eq "1" "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" "preview: exactly one line under bash < 4.4"
     assert_contains "$output" "bash >= 4.4" "preview: says which bash it needs"
 
+    # The entry point itself: the most likely first-run failure on macOS
+    # (which ships bash 3.2), so the error must name the fix, not just the
+    # requirement.
+    rc=0
+    output=$("$old_bash" "$PROJECT_DIR/am" version 2>&1) || rc=$?
+    assert_eq "1" "$rc" "am: exits 1 under bash < 4.4"
+    assert_contains "$output" "bash >= 4.4" "am: says which bash it needs"
+    assert_contains "$output" "brew install bash" "am: names the macOS fix"
+    assert_not_contains "$output" "syntax error" "am: no parse errors leak under bash < 4.4"
+
     $SUMMARY_MODE || echo ""
 }
 

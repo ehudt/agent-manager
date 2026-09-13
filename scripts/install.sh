@@ -494,4 +494,9 @@ else
 fi
 
 log "Installation complete"
-log "Verify with: am version"
+if [[ -z "${AM_INSTALL_NESTED:-}" ]]; then
+    log "This script covers PATH, tmux config and agent hooks only."
+    log "Run '$REPO_DIR/am install' for the skills and the compiled browser (or verify with: am version)."
+else
+    log "Verify with: am version"
+fi
