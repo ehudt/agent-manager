@@ -189,7 +189,7 @@ WORKER_PLAN=(
     "4:run_state_tests run_state_lab_tests run_doctor_tests"
     "5:run_cli_tests"
     "6:run_bin_helpers_tests"
-    "7:run_standalone_scripts_tests run_perf_session_switch_tests"
+    "7:run_standalone_scripts_tests run_perf_session_switch_tests run_completions_tests"
     "8:run_go_tests"
 )
 

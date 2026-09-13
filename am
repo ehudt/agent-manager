@@ -1787,11 +1787,7 @@ cmd_interrupt() {
 
 # Helper: compare version strings (true if actual >= required)
 _install_version_ge() {
-    local required="$1"
-    local actual="$2"
-    local oldest
-    oldest=$(printf '%s\n%s' "$required" "$actual" | sort -V | head -1)
-    [[ "$oldest" == "$required" ]]
+    am_version_ge "$1" "$2"
 }
 
 # Helper: check a single dependency, optionally with minimum version
@@ -2192,8 +2188,8 @@ EOF
 
     # --- Step 1: Check dependencies ---
     echo -e "${BOLD}Checking dependencies...${RESET}" >&2
-    _install_check_cmd tmux 3.2  || (( warnings += 1 ))
-    _install_check_cmd fzf 0.40  || (( warnings += 1 ))
+    _install_check_cmd tmux "$(am_dep_min tmux)" || (( warnings += 1 ))
+    _install_check_cmd fzf "$(am_dep_min fzf)"   || (( warnings += 1 ))
     _install_check_cmd jq        || (( warnings += 1 ))
     _install_check_cmd git       || (( warnings += 1 ))
     steps_done+=("Dependencies checked")
@@ -2285,7 +2281,8 @@ EOF
     # --- Step 5: Build compiled helpers ---
     echo "" >&2
     echo -e "${BOLD}Building compiled helpers...${RESET}" >&2
-    local min_go_version="1.19"
+    local min_go_version
+    min_go_version=$(am_dep_min go)
     if $dry_run; then
         if _install_go_ready_for_build "$min_go_version"; then
             echo "would build bin/am-list-internal bin/am-browse bin/am-core bin/am-review (go build)"

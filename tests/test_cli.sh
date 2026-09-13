@@ -102,6 +102,26 @@ test_cli() {
     $SUMMARY_MODE || echo ""
 }
 
+# A missing dependency is the one failure am doctor cannot diagnose (doctor
+# needs the same tools), so the error points at am install, which lists
+# every dependency with its minimum.
+test_cli_missing_dependency_points_at_install() {
+    $SUMMARY_MODE || echo "=== Testing missing-dependency error ==="
+    local bin_dir tool out rc=0
+    bin_dir=$(mktemp -d)
+    for tool in bash jq tmux git sed awk grep sort head tail tr cat mktemp dirname basename \
+                readlink mkdir date uname perl stat hostname ps id tput cut wc env rm mv; do
+        command -v "$tool" >/dev/null 2>&1 && ln -s "$(command -v "$tool")" "$bin_dir/$tool"
+    done
+    out=$(PATH="$bin_dir" "$PROJECT_DIR/am" list 2>&1) || rc=$?
+    assert_eq "1" "$rc" "missing fzf: exits 1"
+    assert_contains "$out" "Required command not found: fzf" "missing fzf: names the tool"
+    assert_contains "$out" "am install" "missing fzf: points at am install"
+    assert_contains "$out" "0.40" "missing fzf: states the minimum version"
+    rm -rf "$bin_dir"
+    $SUMMARY_MODE || echo ""
+}
+
 test_cli_extended() {
     $SUMMARY_MODE || echo "=== Testing CLI commands (extended) ==="
 
@@ -877,6 +897,7 @@ test_cli_diff() {
 run_cli_tests() {
     _run_test test_cli
     _run_test test_cli_workspace_and_id
+    _run_test test_cli_missing_dependency_points_at_install
     _run_test test_cli_extended
     _run_test test_cli_cd
     _run_test test_cli_dispatch

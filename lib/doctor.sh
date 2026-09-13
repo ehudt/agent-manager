@@ -56,12 +56,28 @@ _doc_hexhead() {
 
 # --- global section ---------------------------------------------------------
 
+# One dependency row, with a warning when the installed version is below
+# the minimum am install checks (same table: am_dep_min).
+_doc_dep_row() {
+    local tool="$1" ver="$2" min core
+    _doc_kv "$tool" "$ver"
+    min=$(am_dep_min "$tool")
+    [[ -n "$min" && "$ver" != missing ]] || return 0
+    core=$(am_version_core "$ver")
+    if [[ -z "$core" ]]; then
+        _doc_warn "$tool: version not recognised ($ver); am needs >= $min"
+    elif ! am_version_ge "$min" "$core"; then
+        _doc_warn "$tool $core is below the $min am needs (am install lists every dependency)"
+    fi
+}
+
 _doc_versions() {
     _doc_h2 "versions"
     _doc_kv "am" "${AM_VERSION:-unknown} ($AM_LIB_DIR)"
-    _doc_kv "bash" "${BASH_VERSION}"
-    _doc_kv "tmux" "$(tmux -V 2>/dev/null || echo missing)"
-    _doc_kv "jq" "$(jq --version 2>/dev/null || echo missing)"
+    _doc_dep_row "bash" "${BASH_VERSION}"
+    _doc_dep_row "tmux" "$(tmux -V 2>/dev/null || echo missing)"
+    _doc_dep_row "fzf" "$(fzf --version 2>/dev/null | head -1 || echo missing)"
+    _doc_dep_row "jq" "$(jq --version 2>/dev/null || echo missing)"
     local agent bin ver
     for agent in $(_doc_version_bins); do
         bin=$(command -v "$agent" 2>/dev/null) || { _doc_kv "$agent" "not installed"; continue; }
@@ -626,7 +642,9 @@ _doc_nc_flags_parse() {
 
 _doc_nc_flags() {
     [[ "$OSTYPE" == darwin* ]] || return 0
-    defaults read com.apple.ncprefs apps 2>/dev/null | _doc_nc_flags_parse "$1"
+    # `|| true`: under the entry point's pipefail a failing `defaults read`
+    # (domain never registered) aborted the whole report.
+    defaults read com.apple.ncprefs apps 2>/dev/null | _doc_nc_flags_parse "$1" || true
 }
 
 # Desktop notifications: config, and on macOS the Notification Center style of

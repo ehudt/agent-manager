@@ -113,11 +113,49 @@ die() {
     exit 1
 }
 
-# Ensure required commands exist
+# Minimum version of each dependency, one source for `am install`, `am
+# doctor`, and the missing-dependency error. Empty for tools without one.
+am_dep_min() {
+    case "$1" in
+        bash) echo 4.4 ;;
+        tmux) echo 3.2 ;;
+        fzf) echo 0.40 ;;
+        jq) echo 1.6 ;;
+        go) echo 1.19 ;;
+    esac
+}
+
+# The dotted-numeric core of a version string, with tmux's letter suffix
+# ("3.4a") kept: "tmux 3.4a" -> 3.4a, "0.52.1 (brew)" -> 0.52.1,
+# "jq-1.7.1" -> 1.7.1. Empty when there is no number.
+am_version_core() {
+    local v="$1"
+    if [[ "$v" =~ ([0-9]+(\.[0-9]+)*[a-z]?) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
+}
+
+# True when the actual version is at least the required one (dotted
+# compare via sort -V; a letter suffix sorts after the bare number).
+# Usage: am_version_ge <required> <actual>
+am_version_ge() {
+    local required="$1" actual
+    actual=$(am_version_core "$2")
+    [[ -n "$actual" ]] || return 1
+    local oldest
+    oldest=$(printf '%s\n%s' "$required" "$actual" | sort -V | head -1)
+    [[ "$oldest" == "$required" ]]
+}
+
+# Ensure required commands exist. A missing dependency is the one failure
+# `am doctor` cannot diagnose (it needs the same tools), so point at `am
+# install`, which checks every dependency against its minimum.
 require_cmd() {
     local cmd="$1"
     if ! command -v "$cmd" &>/dev/null; then
-        die "Required command not found: $cmd"
+        local min
+        min=$(am_dep_min "$cmd")
+        die "Required command not found: $cmd${min:+ (>= $min)}. Run 'am install' to check every dependency; see README > Dependencies for install commands."
     fi
 }
 

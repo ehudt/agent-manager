@@ -76,6 +76,48 @@ test_doctor_notify_style() {
         "nc_flags: first app in the list"
     assert_eq "" "$(printf '%s\n' "$sample" | _doc_nc_flags_parse com.example.missing)" \
         "nc_flags: unregistered bundle is empty"
+
+    # `defaults read` fails on a machine that never registered the domain;
+    # under the entry point's pipefail that used to abort the whole report
+    # (observed live: `am doctor` exited 1 after the notifications header).
+    local fake_bin
+    fake_bin=$(mktemp -d)
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$fake_bin/defaults"
+    chmod +x "$fake_bin/defaults"
+    local rc=0 out=""
+    out=$(PATH="$fake_bin:$PATH" OSTYPE=darwin25 bash -c '
+        set -euo pipefail
+        source "$1/utils.sh"; set +u; source "$1/config.sh"; source "$1/tmux.sh"
+        source "$1/registry.sh"; source "$1/state.sh"; source "$1/doctor.sh"; set -u
+        _doc_nc_flags com.apple.ScriptEditor2; echo "rc=$?"' _ "$LIB_DIR" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "nc_flags: a failing defaults read does not abort under pipefail"
+    assert_contains "$out" "rc=0" "nc_flags: returns 0 with no output when defaults fails"
+    rm -rf "$fake_bin"
+}
+
+# The versions section compares tmux / fzf / jq / bash against the minimums
+# am install checks, so a too-old tool is a warning in the report too.
+test_doctor_versions_minimums() {
+    $SUMMARY_MODE || echo "=== Testing doctor version minimums ==="
+    _doctor_source_libs
+
+    local fake_bin out
+    fake_bin=$(mktemp -d)
+    printf '#!/usr/bin/env bash\necho "tmux 3.1a"\n' > "$fake_bin/tmux"
+    printf '#!/usr/bin/env bash\necho "0.30.0 (brew)"\n' > "$fake_bin/fzf"
+    printf '#!/usr/bin/env bash\necho "jq-1.7.1"\n' > "$fake_bin/jq"
+    chmod +x "$fake_bin"/*
+    out=$(PATH="$fake_bin:$PATH" _doc_versions 2>&1)
+    assert_contains "$out" "tmux 3.1a" "doctor versions: prints the tmux version"
+    assert_contains "$out" "tmux 3.1a is below the 3.2 am needs" "doctor versions: warns on old tmux"
+    assert_contains "$out" "fzf 0.30.0 is below the 0.40 am needs" "doctor versions: warns on old fzf"
+    assert_not_contains "$out" "jq-1.7.1 is below" "doctor versions: no warning for a recent jq"
+
+    printf '#!/usr/bin/env bash\necho "tmux 3.4"\n' > "$fake_bin/tmux"
+    printf '#!/usr/bin/env bash\necho "0.52.1 (brew)"\n' > "$fake_bin/fzf"
+    out=$(PATH="$fake_bin:$PATH" _doc_versions 2>&1)
+    assert_not_contains "$out" "is below" "doctor versions: recent tools draw no warning"
+    rm -rf "$fake_bin"
 }
 
 test_doctor_drift() {
@@ -266,6 +308,7 @@ test_doctor_hooks_installed() {
 run_doctor_tests() {
     _run_test test_doctor_version_compare
     _run_test test_doctor_notify_style
+    _run_test test_doctor_versions_minimums
     _run_test test_doctor_drift
     _run_test test_doctor_hook_schema_recording
     _run_test test_doctor_hooks_installed

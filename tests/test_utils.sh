@@ -443,7 +443,27 @@ test_file_mtime_and_log_cap() {
     rm -rf "$root"
 }
 
+# One source of dependency minimums for am install and am doctor.
+test_utils_dep_minimums() {
+    $SUMMARY_MODE || echo "=== Testing dependency minimums ==="
+    source "$LIB_DIR/utils.sh"
+    assert_eq "4.4" "$(am_dep_min bash)" "dep_min: bash 4.4"
+    assert_eq "3.2" "$(am_dep_min tmux)" "dep_min: tmux 3.2"
+    assert_eq "0.40" "$(am_dep_min fzf)" "dep_min: fzf 0.40"
+    assert_eq "1.6" "$(am_dep_min jq)" "dep_min: jq 1.6"
+    assert_eq "1.19" "$(am_dep_min go)" "dep_min: go 1.19"
+    assert_eq "" "$(am_dep_min perl)" "dep_min: unknown tool is empty"
+    assert_cmd_succeeds "version_ge: 3.4 >= 3.2" am_version_ge 3.2 3.4
+    assert_cmd_succeeds "version_ge: 3.2a >= 3.2" am_version_ge 3.2 3.2a
+    assert_cmd_fails "version_ge: 3.1a < 3.2" am_version_ge 3.2 3.1a
+    assert_cmd_fails "version_ge: 0.30.0 < 0.40" am_version_ge 0.40 0.30.0
+    assert_cmd_succeeds "version_ge: 0.52.1 >= 0.40" am_version_ge 0.40 0.52.1
+    $SUMMARY_MODE || echo ""
+}
+
+
 run_utils_tests() {
+    _run_test test_utils_dep_minimums
     _run_test test_utils
     _run_test test_utils_extended
     _run_test test_claude_first_user_message
