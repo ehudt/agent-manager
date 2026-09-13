@@ -530,6 +530,7 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 | `am doctor [session]` | Print every input behind a session's state (`--capture` for a tarball); the global report also flags agents newer than the last live-lab verified version and hook payload fields that went missing |
 | `am config` | Show or change saved defaults |
 | `am install [--refresh\|--dry-run]` | First-time setup for dependencies, config, skills, PATH, and agent hooks; `--dry-run` lists every file it would touch |
+| `am completions bash\|zsh` | Print the shell completion script (subcommands, flags, live session names); `am install` wires it into the shell rc |
 | `am uninstall [--dry-run\|--purge]` | Reverse the install (PATH, shell rc block, hook entries, skill links); `--purge` also removes `~/.agent-manager` |
 | `am help` | Show help |
 | `am version` | Show version |

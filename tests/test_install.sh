@@ -258,6 +258,18 @@ EOF
     assert_eq "1" "$(grep -Fc '# >>> agent-manager >>>' "$shell_rc")" \
         "installer: shell managed block not duplicated"
     assert_cmd_fails "installer: old shell block removed" grep -Fq '/old/prefix' "$shell_rc"
+    assert_contains "$shell_contents" 'eval "$(am completions zsh)"' \
+        "installer: zshrc block loads the zsh completions"
+    assert_contains "$shell_contents" 'command -v am' \
+        "installer: completions line is guarded on am being on PATH"
+
+    # A bash rc gets the bash completer.
+    local bash_rc="$temp_root/.bashrc"
+    : > "$bash_rc"
+    _run_installer_isolated "$temp_root" \
+        --prefix "$prefix" --shell-rc "$bash_rc" --tmux-conf "$tmux_conf" -y >/dev/null
+    assert_contains "$(cat "$bash_rc")" 'eval "$(am completions bash)"' \
+        "installer: bashrc block loads the bash completions"
     assert_cmd_fails "installer: old tmux block removed" grep -Fq 'bind x kill-pane' "$tmux_conf"
     assert_cmd_fails "installer: tmux managed block removed" grep -Fq '# >>> agent-manager >>>' "$tmux_conf"
 

@@ -63,6 +63,7 @@ COMMANDS:
     restore             Browse and resume a closed agent session
     install             First-time setup (deps, config, skills, PATH, hooks); --dry-run previews
     uninstall           Reverse install (PATH, shell rc, hooks, skills); --purge also removes ~/.agent-manager
+    completions         Print the bash or zsh completion script (am install wires it in)
     help                Show this help message
 
 OPTIONS FOR 'list':
@@ -185,6 +186,24 @@ case "${1:-}" in
     version|--version|-v)
         echo "am version $AM_VERSION"
         exit 0
+        ;;
+    completions)
+        # Printed at every shell start from the rc block, so it stays on the
+        # no-libs path: the completion file with the agent types (manifest
+        # order) filled in.
+        case "${2:-}" in
+            bash|zsh)
+                _am_types=$(awk -F. '/^[a-z][a-z0-9_-]*\./ { print $1 }' "$AM_LIB_DIR/agents.manifest" | awk '!seen[$0]++' | tr '\n' ' ')
+                sed "s/@AGENT_TYPES@/${_am_types% }/" "$AM_SCRIPT_DIR/completions/am.$2"
+                exit 0
+                ;;
+            *)
+                echo "Usage: am completions bash|zsh" >&2
+                echo "  bash: eval \"\$(am completions bash)\"  in ~/.bashrc" >&2
+                echo "  zsh:  eval \"\$(am completions zsh)\"   in ~/.zshrc (am install adds it)" >&2
+                exit 1
+                ;;
+        esac
         ;;
 esac
 

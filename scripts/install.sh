@@ -573,6 +573,13 @@ $DRY_RUN || log "Installed commands into $PREFIX"
 if $UPDATE_SHELL; then
     if confirm "Update $SHELL_RC to ensure $PREFIX is on PATH?"; then
         shell_block='export PATH="'"$PREFIX"':$PATH"'
+        # Completions: dynamic (session names come from the live registry),
+        # so the rc evals the script rather than sourcing a static file.
+        case "$(basename "$SHELL_RC")" in
+            *zsh*) comp_shell=zsh ;;
+            *) comp_shell=bash ;;
+        esac
+        shell_block+=$'\n''command -v am >/dev/null 2>&1 && eval "$(am completions '"$comp_shell"')"'
         replace_managed_block "$SHELL_RC" "$SHELL_BEGIN" "$SHELL_END" "$shell_block"
     else
         log "Skipped shell rc update"
