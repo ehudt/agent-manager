@@ -92,7 +92,7 @@ replace_managed_block() {
 
     if $DRY_RUN; then
         plan "write the managed block ($begin_marker) in $file:"
-        printf '    %s\n' "$content"
+        printf '%s\n' "$content" | sed 's/^/    /'
         return 0
     fi
     mkdir -p "$(dirname "$file")"
