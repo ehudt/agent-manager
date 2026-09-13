@@ -3,179 +3,214 @@
 **Date:** 2026-09-13
 **Context:** An audit of the agent-manager project's product readiness for a wider
 audience — preserving the tool's power and tailored feel while removing barriers
-for new users.
+for new users. Every claim below was checked against the checkout at 0.34.1;
+items the repo already covers are listed at the end so they are not re-proposed.
 
-The project has genuine competitive depth (state detection architecture, Go
-mirror discipline, A2A primitives with `am send`/`am wait`/`am peek`/`am done`,
-review checkpoint system, recovery/reboot resilience). The polish gaps are in
-*presentation, discoverability, and safety* — not missing features.
+The project has genuine competitive depth (state detection architecture, the Go
+back end behind the maintenance path, A2A primitives with `am send`/`am wait`/
+`am peek`/`am done`, review checkpoint system, recovery/reboot resilience). The
+polish gaps are in *first-run success, reversibility, and discoverability* —
+not missing features.
 
----
-
-## Tier 1: Make It Discoverable & Approachable
-
-### 1.1 README — add a visual hook and a 15-second path to "wow"
-
-The current README leads with a philosophy section before showing anything.
-A visitor should see the tool in action instantly.
-
-- **Animated gif or recorded `script` cast** — showing `am`, the browser with
-  3–4 sessions, switching tabs, `am peek`, a restore. Even a 10-second loop.
-  Without it, there's no visceral sense of what the product does.
-- **A screenshot** of the TUI browser with the status-bar tabs visible. The
-  `<!-- TODO: Screenshot -->` comment has been there for multiple releases.
-- **The tagline image** (`assets/tagline.png`) is a plain-text render with no
-  visual design. Commission a simple logo mark or drop it.
-- **Move "Why" to `docs/philosophy.md`** — the Concepts guide (`docs/concepts.md`)
-  already serves as deep architecture reading. The README should lead with
-  Quick Start, not justification.
-- **A one-liner install block at the top**, before any prose:
-
-```bash
-brew install tmux fzf jq
-git clone https://github.com/ehudt/agent-manager.git && cd agent-manager && ./scripts/install.sh
-```
-
-### 1.2 Ship shell completions
-
-`am` has 20+ subcommands with their own flags. No tab completion exists. Every
-command the user types without `--help` is friction. A static `_am` completions
-file for bash/zsh, shipped via `am install`, would be the single highest-impact
-polish change. Priority: high.
-
-### 1.3 Publish a CHANGELOG.md
-
-You bump SemVer regularly (0.28 → 0.33 in ~2 weeks of commits), but no
-changelog exists. A new user seeing `0.33.2` has no idea what has changed since
-`0.1` or what "stable enough" means. Create `CHANGELOG.md` at the repo root with
-entries per minor release capturing user-facing changes. Key events to include:
-review pane, notifications, `am send --queue`/`--wait`, presets, `am doctor`,
-`am restore`, state detection improvements, Go mirror introduction.
-
-### 1.4 Add a CONTRIBUTING.md
-
-Without this, the project is unlikely to receive contributions. It should cover:
-
-- Dev environment setup
-- How to run tests: `./tests/test_all.sh --summary`
-- The mirror discipline: "bash defines semantics, Go buys latency — schema
-  changes must move both sides in one commit"
-- Code style: lib functions are prefixed by module name, return values via
-  stdout, all logging/UI to stderr
-- CI constraint: hook tests require real tmux; fork PRs may need opt-in
+`am` stays an opinionated tool. Its defaults are the author's preferences and
+that is the product; nothing here proposes changing them. The work is to make
+the first ten minutes succeed for someone who is not the author, and to make
+every change `am` makes to a user's machine visible and reversible.
 
 ---
 
-## Tier 2: Reduce the Confidence Gap
+## Tier 1: Make the First Run Succeed
 
-### 2.1 Error messages that include a diagnostic path
+### 1.1 Fix the bash version story
 
-Current errors are terse — fine when you know the domain, opaque when you don't.
-When a compound command fails (`am new`, `am send`, `am restore`), append the
-equivalent `am doctor` command:
+This is the most likely first-run failure on macOS and it is missing from the
+docs. macOS ships bash 3.2; the entry point requires bash ≥ 4.4
+(`BASH_VERSINFO` check at the top of `am`); the README dependency table says
+"4.0+". A new macOS user who follows the README hits a version error whose
+message does not say how to fix it.
 
-```
-am new failed. Run 'am doctor' to diagnose, or 'am doctor --capture' to share a report.
-```
+- README table: `bash 4.4+`, with `brew install bash` as the macOS install.
+- The entry point's version error should name the fix: `brew install bash` on
+  macOS, the distro package elsewhere.
+- Quick Start should mention bash in the dependency one-liner where it is not
+  a given (macOS).
 
-The diagnostic infrastructure (`am doctor`) already exists — the bridge is one
-line of output.
+Cheapest item on the list and the highest impact.
 
-### 2.2 Proactive health check
+### 1.2 One documented install path: `./am install`
 
-The entry point checks bash ≥4.4 but nothing proactively verifies: tmux ≥3.2,
-fzf, jq, `osascript` (macOS), `notify-send` (Linux), writable `~/.agent-manager`.
-Move `am doctor`'s dependency check into an `am health` flag (or run it as part
-of `am install`):
+`am install` is the full installer: it checks dependencies with minimum
+versions (tmux ≥ 3.2, fzf ≥ 0.40, jq, git), writes the config, links the
+skills, runs `scripts/install.sh` for PATH / tmux.conf / hooks, and builds the
+Go binaries. The README's Quick Start and Install sections tell people to run
+`scripts/install.sh` directly, which skips the skills and the Go build — a
+fresh install has no browser until the stale-stamp refresh runs on the next
+bare `am`.
 
-```
-am health
-  tmux 3.4a ✔
-  fzf 0.52 ✔
-  jq 1.7 ✔
-  osascript  (macOS only) ✔
-  tmux ≥3.2  ✔  (for -e pane env, display-popup)
-```
+- README: `./am install` everywhere `./scripts/install.sh` appears; the
+  script's flags (`--yes`, `--no-shell`, `--prefix`, `--copy`) are forwarded,
+  so the option block stays the same.
+- `scripts/install.sh`, when run directly, ends with one line pointing at
+  `am install` for skills and binaries.
 
-### 2.3 Config defaults that don't assume "like me"
+No merge of the two scripts is needed; the wrapper relationship is already
+right, only the documentation points at the wrong end of it.
 
-Current defaults (`auto_restore: true`, `stream_logs: true`, `shell_pane: false`,
-`notify: true`, `notify_states: waiting_user`) are personal preferences. For a
-wider audience:
+### 1.3 Visual hook in the README
 
-- `notify_states` defaulting to `waiting_user,ready` — a finished turn is often
-  more useful to know about than a permission dialog
-- An `am init` wizard (3–4 yes/no questions at first install) instead of
-  dumping config keys into `am config set`
-- Document every config key in the README with a short sentence about what it
-  does (most are documented, a few are not)
+The README has carried four `<!-- TODO: Screenshot / Video -->` comments for
+many releases. The structure around them is fine (short "Why", Quick Start
+with the install block right after, Orchestration section with a real
+example), so this is an asset problem, not a rewrite.
 
-### 2.4 Platform expectations
+- One screenshot of the browser with 3–4 sessions and the status-bar tabs.
+- One 10–20s recording: `am new`, detach, `am`, pick a session, reattach.
+- Optionally a second recording of the orchestration example (the TODO at the
+  end of the A2A section).
+- `assets/tagline.png` is a plain-text render. Either a simple mark or drop it
+  for the heading alone.
 
-The project is macOS-first but doesn't state it. Linux runs in CI, but:
+### 1.4 Platform expectations
 
-- `osascript` — macOS-only notification path
-- `notify-send` / `terminal-notifier` / `alerter` — Linux/macOS fallbacks exist
-  in code but are undocumented
-- Windows is unsupported (no tmux)
+The project is macOS-first but does not state it. Linux runs in CI, but the
+notification path (`osascript` on macOS; `notify-send` on Linux, with the
+`terminal-notifier` / `alerter` fallbacks) and the macOS-specific doctor
+sections are undocumented, and Windows is unsupported (no tmux). A short
+"Platform support" subsection in the README — not a separate doc — sets this
+before someone invests in the install.
 
-Add `docs/platform-support.md` setting correct expectations before someone
-invests in the install.
+---
+
+## Tier 2: Make Every Change Reversible
+
+`am install` edits five other tools' configuration: `~/.claude/settings.json`,
+`~/.codex/config.toml` and Codex's hooks file, `~/.cursor/hooks.json` (plus a
+byte copy of the state hook), pi's extension dir, and opencode's plugin dir.
+For the author this is fine; for a stranger it is the scariest thing the tool
+does, and today there is no way to see the changes before they happen or to
+undo them.
+
+### 2.1 `am install --dry-run`
+
+Print every file the install would create, link, or edit, and the managed
+block it would add, without touching anything. The install code already knows
+each target; this is a mode flag on the same functions.
+
+### 2.2 `am uninstall`
+
+Remove the managed blocks from each agent's config (the `remove_managed_block`
+helper already exists in `scripts/install.sh`), the hook entries, the skill
+symlinks, the PATH line, and optionally `~/.agent-manager`. Print what was
+removed. Without this, trying `am` is a one-way door.
+
+### 2.3 Doctor flags versions below the minimum
+
+`am doctor` prints tmux / fzf / jq versions but does not compare them to the
+minimums that `am install` checks. Reuse the install check inside doctor's
+"versions" section so a too-old tmux shows as a warning there too. No new
+command; `am health` would duplicate what doctor is for.
 
 ---
 
-## Tier 3: Product Depth for a Public Release
+## Tier 3: Discoverability
 
-### 3.1 CI badge and contribution infrastructure
+### 3.1 Shell completions — dynamic, not a static file
 
-- CI status badge in the README
-- GitHub issue templates (bug report + feature request)
-- Brief `SECURITY.md` with a reporting path
+`am` has 20+ subcommands and no completion. The completion that matters most
+is `am send <TAB>` / `am peek <TAB>` / `am kill <TAB>` listing live session
+names, which a static `_am` file cannot do. Ship `am completions zsh|bash`
+printing a script whose session completer calls the fast Go list; `am
+install` adds the one `source`/`eval` line to the shell rc (inside the
+managed block, so `am uninstall` removes it). Same effort as a static file,
+much more useful.
 
-### 3.2 Merge scripts/install.sh into am install
+### 3.2 CHANGELOG.md, with a CI check
 
-The standalone `scripts/install.sh` adds `am` to PATH and sets up tmux config.
-`am install` does the real work (hooks, skills, Go binaries). Two install paths
-with different scopes confuse new users. Merge the PATH/shell-rc logic into
-`am install`, making the bootstrap either a one-line `curl | bash` wrapper or
-deleted.
+SemVer is bumped steadily (0.28 → 0.34 in a few weeks) and AGENTS.md already
+ties every bump to the commit that earns it, but there is no changelog. A new
+user seeing `0.34.1` cannot tell what changed or what "stable enough" means.
 
-### 3.3 Highlight the A2A superpower
+- `CHANGELOG.md` at the repo root, one entry per minor release, user-facing
+  changes only. Seed it from commit history; key milestones: the Go back end
+  for maintenance, `am restore` and reboot recovery, `am doctor`, presets,
+  `am send --queue`/`--wait`, notifications, the review pane, opencode.
+- Extend `scripts/check-docs.sh` (already run in CI) so a change to
+  `AM_VERSION` without a matching entry fails the build. A changelog without
+  enforcement stops at the release it was written for.
 
-`am send`, `am wait`, `am peek`, `am done`/`am result` — agent-to-agent
-orchestration — is a genuine differentiator that no other agent management tool
-provides. It's buried as reference table entries. A single "Agent-to-Agent
-Orchestration" section in the README with one real example (a dispatcher
-spawning two sessions and collecting results) would make "why am?" much
-stronger for power users.
+### 3.3 Targeted error bridge to `am doctor`
+
+The diagnostic infrastructure exists; the bridge is one line of output. But
+append it only to *environment* failures — binary not built, tmux missing or
+too old, hooks not installed, state dir unwritable — not to every error.
+Semantic errors (`no running agent`, `unknown session`) are clear already,
+and a doctor hint on each of them is daily noise for the primary user.
+
+### 3.4 Config keys documented in one table
+
+The keys are sane and stay as they are. What is missing is a single table
+listing every key (`agent`, `logs`, `shell`, `auto_restore`, `notify`,
+`notify_states`, `notify_cmd`, `dir_provider`), its default, and one
+sentence. Most appear in prose somewhere in the README; a table is what a
+new user scans. No first-run wizard: eight keys with defaults that work do
+not justify an interactive setup, and it would be the first verbose thing in
+a terse CLI.
+
+### 3.5 Contribution surface
+
+- `CONTRIBUTING.md` as a one-page pointer: AGENTS.md already holds the
+  commands, code style, and gotchas, so the file names those sections and
+  adds only what is not there — how to run one test file, that hook tests
+  need a real tmux (fork PRs may need opt-in), and the current division of
+  labor between bash and Go (the maintenance and query paths run in
+  `bin/am-core`; bash is the CLI and the one-line wrappers; a schema change
+  moves both sides in one commit). Do not describe Go as a "mirror" of bash;
+  that model is from before the maintenance path moved.
+- `SECURITY.md` with a reporting path. The repo already runs a secrets scan
+  in CI; say so.
+- CI status badge in the README; GitHub issue templates (bug report, feature
+  request).
 
 ---
+
+## Already Covered (do not re-propose)
+
+Checked against the checkout so the plan does not spend effort here:
+
+- **Agent-to-Agent section in the README** — exists, with the core pattern,
+  parallel workers, presets, session states, and the dispatch skill. Only the
+  recording is missing (1.3).
+- **README structure** — "Why" is three short paragraphs; Quick Start with the
+  install block follows it directly. No rewrite or philosophy split needed.
+- **Dependency check** — `am install` checks tmux, fzf, jq, and git with
+  minimum versions. Doctor only needs to reuse it (2.3).
+- **Install wrapper** — `am install` already calls `scripts/install.sh`; the
+  fix is which command the README names (1.2).
+- **Config defaults** — they are the product's opinion and stay. Documentation
+  only (3.4).
 
 ## What Would *Not* Change
 
-These opinions are worth preserving:
-
 - The terse, fast CLI voice. Verbose output for new users would annoy the
-  primary user (you) daily. The right fix is better diagnostics and
-  discoverability (completions, `am doctor` bridge), not rewriting the CLI.
-- The Go mirror discipline. It works and is a strength. Contributors need it
-  explained (CONTRIBUTING.md does this).
-- The state detection code. It's the core IP. No public-facing polish needed.
-- The test suite. Thorough, parallel, with summary mode — already ready for
-  public scrutiny.
+  primary user daily. The right fix is diagnostics and discoverability
+  (completions, doctor bridge on environment failures), not rewriting the CLI.
+- The defaults. See above.
+- The bash/Go split. Contributors need it explained (3.5), not changed.
+- The state detection code. It is the core IP; no public-facing polish needed.
+- The test suite. Thorough, parallel, with summary mode. The live labs spend
+  real tokens and are opt-in; CONTRIBUTING should say so.
 
 ---
 
 ## Suggested Priority Order
 
-1. **Shell completions** (`_am` generation, wired into `am install`)
-2. **README rewrite** — philosophy to `docs/philosophy.md`, add screenshot, tighten
-   quick start
-3. **CHANGELOG.md** — entries from commit history
-4. **`am init` / config wizard** — interactive first-run setup
-5. **`am health` flag** — dependency and environment check
-6. **Error diagnostic bridge** — append `am doctor` hint on failure
-7. **CONTRIBUTING.md** — contribution guide
-8. **A2A section in README** — show the orchestration use case
-9. **Platform support doc** — set expectations
-10. **CI badge + issue templates**
+1. **Bash 4.4** in the README table and the entry point's error text (1.1)
+2. **`./am install` as the documented path** (1.2)
+3. **`am install --dry-run` and `am uninstall`** (2.1, 2.2)
+4. **Screenshot and one recording**, replacing the TODO comments (1.3)
+5. **Dynamic shell completions** (3.1)
+6. **CHANGELOG.md with the CI check** (3.2)
+7. **Doctor minimum-version flags** and the **targeted error bridge** (2.3, 3.3)
+8. **Config table** in the README (3.4)
+9. **CONTRIBUTING.md, SECURITY.md, CI badge, issue templates** (3.5)
+10. **Platform subsection** in the README (1.4)
