@@ -338,6 +338,18 @@ _install_pi_extension() {
     log "Symlinked $ext_dir/am-state.ts -> $src"
 }
 
+# Install the opencode state-detection plugin: symlink into opencode's global
+# plugin directory (auto-discovered) so it stays version-fresh with the repo
+# checkout. Idempotent.
+# Usage: _install_opencode_plugin <plugins_dir> <plugin_source_path>
+_install_opencode_plugin() {
+    local dir="$1"
+    local src="$2"
+    mkdir -p "$dir"
+    ln -sfn "$src" "$dir/am-state.js"
+    log "Symlinked $dir/am-state.js -> $src"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
@@ -466,6 +478,19 @@ if command -v pi >/dev/null 2>&1; then
     fi
 else
     log "pi CLI not found -- skipped pi state extension"
+fi
+
+OPENCODE_PLUGINS_DIR="${OPENCODE_PLUGINS_DIR:-$HOME/.config/opencode/plugins}"
+OPENCODE_PLUGIN_SRC="$REPO_DIR/lib/hooks/opencode-state.js"
+
+if command -v opencode >/dev/null 2>&1; then
+    if confirm "Install state-detection plugin into opencode ($OPENCODE_PLUGINS_DIR)?"; then
+        _install_opencode_plugin "$OPENCODE_PLUGINS_DIR" "$OPENCODE_PLUGIN_SRC"
+    else
+        log "Skipped opencode plugin installation"
+    fi
+else
+    log "opencode CLI not found -- skipped opencode state plugin"
 fi
 
 log "Installation complete"

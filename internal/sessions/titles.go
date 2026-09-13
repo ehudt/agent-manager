@@ -222,6 +222,8 @@ func (e Env) refreshedTitle(name string, meta Session) (string, bool) {
 		title = piTitleExtract(title)
 	case "cursor":
 		title = cursorTitleExtract(title)
+	case "opencode":
+		title = opencodeTitleExtract(title)
 	default:
 		dir := meta.Workdir
 		if dir == "" {
@@ -240,11 +242,9 @@ func (e Env) refreshedTitle(name string, meta Session) (string, bool) {
 			// THIS session's conversation id comes from the sidecar its own
 			// hook wrote; the readers open exactly that transcript. With no
 			// id there is no fallback: the directory's transcript store is
-			// shared with other sessions and with agents outside am.
-			transcript := ""
-			if spec.Store == "cursor" {
-				transcript = e.SidecarTranscript(name)
-			}
+			// shared with other sessions and with agents outside am. Cursor
+			// and opencode report the transcript path in their sidecar too.
+			transcript := e.SidecarTranscript(name)
 			sid := e.DetectID(name, meta.Directory, meta.AgentType)
 			fallback := FirstMessage(meta.AgentType, meta.Directory, sid, transcript)
 			if len(fallback) > titleMaxLen {
@@ -446,6 +446,70 @@ func cursorFirstUserMessage(directory, sessionID, transcriptPath string) string 
 			text = match[1]
 		}
 		text = cleanContent(strings.ReplaceAll(text, "\n", " "))
+		if titleWorthy(text) {
+			return text
+		}
+	}
+	return ""
+}
+
+// opencodeTitleExtract drops opencode's self-maintained title prefix
+// ("OC | <title>"). The bare boot placeholder ("OpenCode") returns "" so the
+// caller falls back to the first-user-message mirror; anything without the
+// prefix passes through.
+func opencodeTitleExtract(title string) string {
+	if title == "OpenCode" {
+		return ""
+	}
+	if rest, ok := strings.CutPrefix(title, "OC | "); ok {
+		return rest
+	}
+	if rest, ok := strings.CutPrefix(title, "OC|"); ok {
+		return strings.TrimSpace(rest)
+	}
+	return title
+}
+
+// opencodeFirstUserMessage reads the transcript mirror the opencode state
+// plugin writes ($AM_DIR/opencode/<sid>.jsonl, one {"role":"user","text":…}
+// line recorded at the first prompt). opencode's real conversation lives in a
+// SQLite store am cannot address, so this mirror is the addressable copy; the
+// hook-reported transcript path is authoritative, the standard mirror path is
+// the fallback. No id → "".
+func opencodeFirstUserMessage(sessionID, transcriptPath string) string {
+	target := ""
+	if transcriptPath != "" {
+		if st, err := os.Stat(transcriptPath); err == nil && !st.IsDir() {
+			target = transcriptPath
+		}
+	}
+	if target == "" && sessionID != "" {
+		amDir := EnvOr("AM_DIR", filepath.Join(homeDir(), ".agent-manager"))
+		candidate := opencodeMirrorPath(amDir, homeDir(), sessionID)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			target = candidate
+		}
+	}
+	if target == "" {
+		return ""
+	}
+
+	f, err := os.Open(target)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var rec struct {
+			Role string `json:"role"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil || rec.Role != "user" {
+			continue
+		}
+		text := cleanContent(rec.Text)
 		if titleWorthy(text) {
 			return text
 		}

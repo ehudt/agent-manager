@@ -1,22 +1,23 @@
 # Live state-detection lab
 
-Drives a **real** Claude Code, Cursor Agent, or pi session through observable
-am states inside an
+Drives a **real** Claude Code, Cursor Agent, pi, or opencode session through
+observable am states inside an
 isolated tmux server + state/registry sandbox, and records ground truth at 1s
 resolution. This is the empirical layer of state-detection testing — the fast
 layers (`tests/test_state.sh`, `tests/state_lab/`) encode what this lab observed.
 
-Three runners:
+Four runners:
 - `run.sh` — Claude Code (7 scenarios, ~8 min)
 - `run_cursor.sh` — Cursor Agent (6 independently selectable scenarios)
 - `run_pi.sh` — pi (4 scenarios, ~5 min)
+- `run_opencode.sh` — opencode (4 scenarios, ~5 min)
 
 Not part of `test_all.sh`: they spend real tokens.
 
 ## When to run
 
-- Agent updated (Claude Code, Cursor, or pi — verify signal contracts still hold)
-- Changing `lib/state.sh`, `lib/hooks/state-hook.sh`, or `lib/hooks/am-state.ts` semantics
+- Agent updated (Claude Code, Cursor, pi, or opencode — verify signal contracts still hold)
+- Changing `lib/state.sh`, `lib/hooks/state-hook.sh`, `lib/hooks/am-state.ts`, or `lib/hooks/opencode-state.js` semantics
 - Harvesting fresh pane/title fixtures for the unit tests
 
 ## Usage
@@ -36,6 +37,11 @@ LAB_PI_ARGS="--provider anthropic --model claude-haiku-4-5" ./tests/live_lab/run
 ./tests/live_lab/run_cursor.sh
 LAB_SCENARIOS="c1 c2" ./tests/live_lab/run_cursor.sh
 LAB_CURSOR_ARGS="--model auto" ./tests/live_lab/run_cursor.sh
+
+# opencode runner
+./tests/live_lab/run_opencode.sh
+LAB_SCENARIOS="o1 o2" ./tests/live_lab/run_opencode.sh
+LAB_OPENCODE_ARGS="--model openrouter/deepseek/deepseek-v4.1-flash" ./tests/live_lab/run_opencode.sh
 ```
 
 ## Scenarios (Claude — `run.sh`)
@@ -87,6 +93,23 @@ lifecycle hooks. Its forced permission dialog still showed `⏳ Working`, so it
 remains `running`. Cursor exposes no background-work lifecycle event; the
 resolver narrowly reads the CLI-owned footer task count while the title says
 Ready. Older Cursor releases without suffixes fall back to hooks.
+
+## Scenarios (opencode — `run_opencode.sh`)
+
+| # | Drives | Verifies |
+|---|--------|----------|
+| o1 | fresh TUI, no prompt | plugin init writes `ready` (opencode creates no session until the first prompt) |
+| o2 | prompt round-trip | `session.status busy` → `running`; `session.status idle` → `ready`; first-message mirror populated, `.sid`/`.transcript` bound |
+| o3 | `sleep 200` (> 180s quiet) | ungated plugin read: resolved state NEVER leaves `running` during a long tool call |
+| o4 | ctrl-c opencode → shell | shell-pane check precedence: resolved state == `idle` despite a stale plugin state file |
+
+opencode 1.18.30 runs state detection as an in-process plugin
+(`lib/hooks/opencode-state.js`): `session.status` busy/idle are the turn
+boundaries, `permission.asked`/`question.asked` → `waiting_user`, and the
+TUI's `OC | <title>` pane title is parsed for the tab label. Post-turn title
+generation emits a synthetic `message.updated` user message *after*
+`session.idle`, so user messages must not be treated as turn starts — only
+`session.status busy` is.
 
 ## Key empirical findings (2026-07-10, Claude Code 2.1.206)
 

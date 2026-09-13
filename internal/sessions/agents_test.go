@@ -8,7 +8,7 @@ import (
 )
 
 func TestAgentManifestTypes(t *testing.T) {
-	want := []string{"claude", "codex", "cursor", "pi"}
+	want := []string{"claude", "codex", "cursor", "pi", "opencode"}
 	if got := AgentTypes(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("AgentTypes = %v, want %v", got, want)
 	}
@@ -43,6 +43,7 @@ func TestAgentManifestFacts(t *testing.T) {
 		{"codex", "codex", "argv", "none", "claude", []string{"resume", "x1"}, false},
 		{"cursor", "agent", "argv", "cursor", "cursor", []string{"--resume", "x1"}, true},
 		{"pi", "pi", "argv", "pi", "pi", []string{"--session", "x1"}, true},
+		{"opencode", "opencode", "argv:--prompt", "opencode", "opencode", []string{"--session", "x1"}, true},
 	}
 	for _, c := range cases {
 		spec, _ := Agent(c.typ)
@@ -126,5 +127,20 @@ func TestStoreDispatch(t *testing.T) {
 	}
 	if e.JSONLExists("/x", "abc-123", "claude", "") {
 		t.Error("claude: missing transcript must not exist")
+	}
+	if e.JSONLExists("/x", "abc-123", "opencode", "") {
+		t.Error("opencode: missing mirror must not exist")
+	}
+	// opencode's mirror under $AM_DIR is addressable and satisfies the check.
+	e.AmDir = t.TempDir()
+	mirror := opencodeMirrorPath(e.AmDir, e.Home, "abc-123")
+	if err := os.MkdirAll(filepath.Dir(mirror), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mirror, []byte(`{"role":"user","text":"hello world"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !e.JSONLExists("/x", "abc-123", "opencode", "") {
+		t.Error("opencode: the mirror under $AM_DIR must exist")
 	}
 }

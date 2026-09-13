@@ -447,6 +447,11 @@ pi_first_user_message() { am_core first-message pi "$1" "${2:-}"; }
 # Usage: cursor_first_user_message <directory> [session_id] [transcript_path]
 cursor_first_user_message() { am_core first-message cursor "$1" "${2:-}" "${3:-}"; }
 
+# opencode: the state plugin mirrors the first user message to
+# $AM_DIR/opencode/<sid>.jsonl and reports its path via .transcript.
+# Usage: opencode_first_user_message <directory> [session_id] [transcript_path]
+opencode_first_user_message() { am_core first-message opencode "$1" "${2:-}" "${3:-}"; }
+
 # TRACE=1 profiling — uses bash set -x with timestamped PS4.
 # Traces every line automatically, no per-function instrumentation needed.
 # Usage: TRACE=1 am list-internal

@@ -201,7 +201,7 @@ func (e Env) RestoreScan(force bool) {
 		transcript := entry.get("transcript_path")
 
 		spec := agentSpec(meta.AgentType)
-		if spec.Store == "cursor" {
+		if spec.SidecarTranscriptStore() {
 			if sc := e.SidecarTranscript(name); sc != "" && sc != transcript {
 				updates = append(updates, slogUpdate{name, "transcript_path", sc})
 				transcript = sc

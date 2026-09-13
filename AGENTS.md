@@ -7,7 +7,7 @@ Architecture reference for AI agents working with this codebase.
 - Run tests: `./tests/test_all.sh`
 - Run tests (summary): `./tests/test_all.sh --summary` — suppresses PASS lines, shows only failures with details and a counts summary
 - Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
-- Run live state-detection labs: `tests/live_lab/run.sh` (Claude), `run_cursor.sh` (Cursor), and `run_pi.sh` (pi). They record hook payloads, pane titles, and transitions; they are opt-in and spend tokens.
+- Run live state-detection labs: `tests/live_lab/run.sh` (Claude), `run_cursor.sh` (Cursor), `run_pi.sh` (pi), and `run_opencode.sh` (opencode). They record hook payloads, pane titles, and transitions; they are opt-in and spend tokens.
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
 - Build the Go binaries: `make -s build` → `bin/am-list-internal`, `bin/am-browse`, `bin/am-core`, `bin/am-review`; `go vet ./... && go test ./...` for the Go side. `tests/test_all.sh` builds them first, because the bash maintenance wrappers exec `bin/am-core`
 
@@ -58,7 +58,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/recovery.sh` | Durable desired-session store, boot/machine identity, reboot preflight, and progressive recovery worker |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
-| `lib/agents.manifest` | Agent adapter table (symlink to `internal/sessions/agents.manifest`, which Go embeds): per agent type, the launch command, aliases, prompt delivery (stdin/argv), resume-args template, transcript store layout, title parser, title→state signal, turn-boundary reliability, hook family, restore preflight, version binary, live lab. Bash reads it through `am_agent_field`; Go through `Agent()` / `AgentSpec`. Libs branch on these fields, not on agent names. The state hook reads it when run from the repo and falls back to an inline table (Cursor's byte copy runs outside the repo; `tests/test_agents.sh` keeps them equal) |
+| `lib/agents.manifest` | Agent adapter table (symlink to `internal/sessions/agents.manifest`, which Go embeds): per agent type, the launch command, aliases, prompt delivery (stdin/argv/argv:<flags>), resume-args template, transcript store layout, title parser, title→state signal, turn-boundary reliability, hook family, restore preflight, version binary, live lab. Bash reads it through `am_agent_field`; Go through `Agent()` / `AgentSpec`. Libs branch on these fields, not on agent names. The state hook reads it when run from the repo and falls back to an inline table (Cursor's byte copy runs outside the repo; `tests/test_agents.sh` keeps them equal) |
 | `lib/form.sh` | tput-based new session form (two-mode: Navigate/Edit); shows a Preset select field first when any preset exists |
 | `lib/presets.sh` | Named launch presets for `am new -p` (stored under `presets` in config.json): `am preset save/list/show/rm` |
 | `lib/review.sh` | `am diff [session] [--ack\|--reset\|--list\|--checkpoint id] [--stat] [-- git args]`: resolves the session (argument, else the caller's pane), asks `am-core review-*` for the baseline/worktree trees and the numstat, prints the header to stderr and runs `git diff <base_tree> <cur_tree>` so the user's pager and diff tools apply. Also `review_init` / `review_adopt` wrappers for the lifecycle |
@@ -76,7 +76,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: title glyph + hook file + process tree, wait/poll |
 | `lib/hooks/am-state.ts` | Pi extension: lifecycle events → am state files (session_start/agent_settled → ready, agent_start → running) |
-| `tests/live_lab/run.sh`, `run_cursor.sh`, `run_pi.sh` | Empirical state labs for real agent sessions; each prints the installed agent version at the end so `tests/live_lab/VERIFIED` (the per-agent verified-version pins `am doctor` compares against) can be updated |
+| `lib/hooks/opencode-state.js` | opencode plugin: server events → am state files (session.status busy/idle → running/ready, permission/question asked/replied → waiting_user/running), plus `.sid`/`.transcript`/`.cwd`/`.dirty` sidecars and the first-user-message mirror (`$AM_DIR/opencode/<sid>.jsonl`, since opencode's conversation store is SQLite) |
+| `tests/live_lab/run.sh`, `run_cursor.sh`, `run_pi.sh`, `run_opencode.sh` | Empirical state labs for real agent sessions; each prints the installed agent version at the end so `tests/live_lab/VERIFIED` (the per-agent verified-version pins `am doctor` compares against) can be updated |
 | `skills/agent-manager-dispatch/SKILL.md` | Claude/Cursor skill: teaches agents to use am for multi-session dispatch/orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
 | `bin/toggle-shell` | tmux helper (prefix+\`): toggle the collapsible shell panel — create on first use via `am shell`, then hide/show by parking the pane in the hidden `_amshell` window |
@@ -103,6 +104,7 @@ auto_title_scan / registry_gc / sessions_log_scan / sessions_log_gc / sessions_l
 am list-internal → am-list-internal (Go binary) → stdout
 agent_launch() → am-core review-init → launch checkpoint (refs/am/<session>/{checkpoints,baseline} in the repo; silent outside one)
 tool hook (PostToolUse family) → detached tail: touch /tmp/am-state/<session>.dirty; HEAD ≠ .head sidecar → am-core review-sync (branch checkpoint moves the baseline, head checkpoint does not) → rm .title_scan_last
+opencode plugin (in-process) → session.status busy/idle + permission/question events → $AM_STATE_DIR/<session> state file; .sid/.transcript (.cwd/.dirty) sidecars + $AM_DIR/opencode/<sid>.jsonl first-message mirror
 am-core tick → RefreshTitles → refreshedReview (only when .dirty is newer than review_at, or the branch changed) → ReviewMeasure → registry review_files/added/deleted/at → tab "Δ<files> +<add> −<del>"
 am diff [s] → review_diff_main → am-core review-stat --record → git -C dir diff <base_tree> <cur_tree>; --ack → review-ack (worktree tree becomes the baseline, count zeroed); --reset → review-baseline --reset
 am restore → cmd_restore_internal → am-core review-adopt <old> <new> (refs follow the resumed conversation); sessions_log_gc → ReviewDrop when the entry is dropped
@@ -316,6 +318,25 @@ disappearance of the row returns it to `ready`. It cannot override a
 Working title, and task-like text in
 the conversation does not match.
 
+**opencode sessions:** State comes from the in-process plugin
+`lib/hooks/opencode-state.js`, installed by `am install` as a symlink at
+`~/.config/opencode/plugins/am-state.js` (opencode auto-discovers the global
+plugin dir and loads it with Bun). The plugin maps `session.status`
+(`busy`/`retry` → `running`, `idle` → `ready`), `session.idle` → `ready`, and
+`permission(.v2).asked` / `question(.v2).asked` → `waiting_user` (replied /
+rejected → `running`). State is read ungated (`turn_boundary=reliable`): a
+dead opencode drops the pane to a shell, which the shell-pane check catches.
+Plugin init writes `ready` because a fresh TUI creates no session until the
+first prompt; `message.updated` user messages are **not** turn starts —
+opencode emits a synthetic user message for post-turn title generation after
+`session.idle`, which would otherwise pin the tab at `running`. The plugin
+writes `.sid`/`.transcript` (identity), `.cwd` (tab label), `.dirty` (review
+re-measure), and a first-user-message mirror at `$AM_DIR/opencode/<sid>.jsonl`
+(opencode's real conversation store is SQLite, which am cannot address; the
+mirror backs the title fallback and restore preflight). The TUI's
+`OC | <title>` pane title is parsed by `opencodeTitleExtract`
+(`title_state=none`, so no state comes from the title).
+
 ### Verifying against real agents
 
 `tests/live_lab/run.sh` drives a real `claude --model haiku` session in an
@@ -330,7 +351,9 @@ the Claude lab when Claude Code updates or when changing `lib/state.sh` /
 `timeline.tsv` for glyph/hook/state agreement.
 `tests/live_lab/run_cursor.sh` records Cursor's fresh, running, permission,
 question, subagent, stop, resume, and background-task footer behavior.
-`tests/live_lab/run_pi.sh` covers pi.
+`tests/live_lab/run_pi.sh` covers pi. `tests/live_lab/run_opencode.sh` covers
+opencode (o1 fresh ready, o2 prompt round-trip + mirror/identity, o3 200s
+quiet turn stays running, o4 death → idle).
 
 **Version-drift canary.** Everything above is empirical, so an agent upgrade
 can move the ground without any test failing. Two signals make that visible
@@ -681,3 +704,4 @@ Display: `dirname/branch [agent] task Δ<files> +<add> −<del> (Xm ago)` — di
 | Add new skill (auto-installed) | drop `skills/<name>/SKILL.md`; `am install` loops `skills/*/` |
 | Add restore agent support | `lib/agents.manifest` → `resume` template, `store`, `preflight` (the bash `agent_resume_args` / `agent_restorable` and Go `AgentSpec.ResumeArgs` / `Restorable` read them); a new store layout needs its Go existence check and first-message reader |
 | Change pi state mapping | `lib/hooks/am-state.ts` → event-to-state mapping |
+| Change opencode state mapping or identity/title sidecars | `lib/hooks/opencode-state.js` → event mapping, `bind`/`handlePart`; install/refresh wiring in `scripts/install.sh` + `am` `_install_refresh`; `lib/doctor.sh` `_doc_opencode_plugin` |

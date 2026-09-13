@@ -42,6 +42,15 @@ test_agents() {
     assert_eq "true" "$(_agent_prompt_as_arg pi && echo true || echo false)" \
         "_agent_prompt_as_arg: pi takes prompt as arg"
 
+    # --- opencode agent type ---
+    assert_eq "opencode" "$(agent_get_command opencode)" "agent_get_command: opencode"
+    assert_eq "true" "$(agent_type_supported opencode && echo true || echo false)" \
+        "agent_type_supported: opencode"
+    assert_eq "true" "$(_agent_prompt_as_arg opencode && echo true || echo false)" \
+        "_agent_prompt_as_arg: opencode takes prompt as arg"
+    assert_eq "argv:--prompt" "$(_agent_prompt_mode opencode)" \
+        "_agent_prompt_mode: opencode prefixes --prompt"
+
     # --- agent_resume_args ---
     assert_eq "--resume|abc123" "$(agent_resume_args claude abc123 | paste -sd'|' -)" \
         "agent_resume_args: claude"
@@ -49,6 +58,8 @@ test_agents() {
         "agent_resume_args: cursor"
     assert_eq "--session|abc123" "$(agent_resume_args pi abc123 | paste -sd'|' -)" \
         "agent_resume_args: pi"
+    assert_eq "--session|abc123" "$(agent_resume_args opencode abc123 | paste -sd'|' -)" \
+        "agent_resume_args: opencode"
     assert_eq "resume|abc123" "$(agent_resume_args codex abc123 | paste -sd'|' -)" \
         "agent_resume_args: codex"
 
@@ -282,6 +293,20 @@ test_prompt_injection() {
             am_tmux capture-pane -t "${session_name}:.{top}" -p)
         assert_contains "$cursor_pane_output" "hello cursor" \
             "cursor CLI arg prompt: prompt appears in pane"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+
+    # --- Test: opencode gets the prompt after its --prompt flag ---
+    _AM_LAUNCH_PROMPT="hello opencode"
+    session_name=$(set +u; agent_launch "$test_dir" "opencode" "" 2>/dev/null)
+    assert_not_empty "$session_name" "opencode flag prompt: session created"
+
+    if [[ -n "$session_name" ]]; then
+        local oc_pane_output
+        oc_pane_output=$(wait_for_text "stub-agent-argv:--prompt hello opencode" \
+            am_tmux capture-pane -t "${session_name}:.{top}" -p)
+        assert_contains "$oc_pane_output" "--prompt hello opencode" \
+            "opencode flag prompt: manifest argv:<flags> inserts --prompt before the text"
         agent_kill "$session_name" 2>/dev/null
     fi
 
@@ -782,7 +807,7 @@ test_agent_manifest() {
     source "$LIB_DIR/registry.sh"
     set +u; source "$LIB_DIR/agents.sh"; set -u
 
-    assert_eq "claude codex cursor pi" "${AM_AGENT_TYPES[*]}" \
+    assert_eq "claude codex cursor pi opencode" "${AM_AGENT_TYPES[*]}" \
         "manifest: types in file order"
     assert_eq "stdin" "$(am_agent_field claude prompt)" "manifest: claude.prompt"
     assert_eq "argv" "$(am_agent_field cursor-agent prompt)" "manifest: field lookup through an alias"
@@ -800,7 +825,7 @@ test_agent_manifest() {
 
     # Derived helpers in agents.sh
     assert_eq "agent" "${AGENT_COMMANDS[cursor]}" "AGENT_COMMANDS built from the manifest"
-    assert_eq "4" "${#AGENT_COMMANDS[@]}" "AGENT_COMMANDS has one entry per type"
+    assert_eq "5" "${#AGENT_COMMANDS[@]}" "AGENT_COMMANDS has one entry per type"
     assert_eq "true" "$(agent_restorable claude && echo true || echo false)" "agent_restorable: claude"
     assert_eq "true" "$(agent_restorable codex && echo true || echo false)" "agent_restorable: codex"
     assert_eq "false" "$(agent_restorable bogus && echo true || echo false)" "agent_restorable: unknown type"
@@ -845,7 +870,7 @@ test_agent_manifest() {
     AM_AGENT_MANIFEST="$real_manifest"
     am_agent_manifest_load
     rm -rf "$alt_dir"
-    assert_eq "claude codex cursor pi" "${AM_AGENT_TYPES[*]}" "manifest: real manifest reloaded"
+    assert_eq "claude codex cursor pi opencode" "${AM_AGENT_TYPES[*]}" "manifest: real manifest reloaded"
 
     $SUMMARY_MODE || echo ""
 }

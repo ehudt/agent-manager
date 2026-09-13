@@ -13,7 +13,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.33.2"
+AM_VERSION="0.34.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -67,7 +67,7 @@ OPTIONS FOR 'list':
     --state <list>  Only sessions in these states (comma-separated)
 
 OPTIONS FOR 'new':
-    -t, --type      Agent type: claude, codex, cursor, pi (saved default applies)
+    -t, --type      Agent type: claude, codex, cursor, pi, opencode (saved default applies)
     -p, --preset    Apply a saved preset; explicit flags win (see 'am preset')
     -n, --name      Custom task description
     -d, --dir       Directory (can also be positional arg)
@@ -380,7 +380,7 @@ cmd_restore() {
         cat <<'EOF'
 Usage: am restore
 
-Browse recently closed Claude, Codex, Cursor, and pi sessions and resume one.
+Browse recently closed Claude, Codex, Cursor, pi, and opencode sessions and resume one.
 Shows pane snapshots in the preview panel for visual recall.
 
 Sessions are available as long as their conversation file exists.
@@ -513,7 +513,7 @@ cmd_new() {
                 echo "(am config set dir_provider wp): @48351, @my-branch, or bare @."
                 echo ""
                 echo "Options:"
-                echo "  -t, --type      Agent type (claude, codex, cursor, pi)"
+                echo "  -t, --type      Agent type (claude, codex, cursor, pi, opencode)"
                 echo "  -p, --preset    Apply a saved preset (am preset list); explicit flags win"
                 echo "  -n, --name      Task description"
                 echo "  --shell         Open the shell panel at launch (default: agent-only)"
@@ -1866,7 +1866,8 @@ _install_go_ready_for_build() {
 _install_inputs() {
     local root="$AM_SCRIPT_DIR"
     printf '%s\n' "$root/am" "$root/lib/tmux.sh" "$root/lib/hooks/state-hook.sh" \
-        "$root/lib/hooks/am-state.ts" "$root/scripts/install.sh" "$root/go.mod" "$root/Makefile" \
+        "$root/lib/hooks/am-state.ts" "$root/lib/hooks/opencode-state.js" \
+        "$root/scripts/install.sh" "$root/go.mod" "$root/Makefile" \
         "$root/internal/sessions/agents.manifest"
     local f
     for f in "$root"/skills/*/SKILL.md "$root"/cmd/*/*.go "$root"/internal/*/*.go; do
@@ -1969,6 +1970,21 @@ _install_refresh() {
             done_parts+=("cursor hook copy")
         else
             log_warn "am: could not refresh the Cursor hook copy at $cursor_helper"
+        fi
+    fi
+
+    # opencode loads the state plugin from its global plugin dir; keep the
+    # symlink pointed at the checkout so a moved repo leaves no dangling link.
+    local opencode_plugins="${OPENCODE_PLUGINS_DIR:-$HOME/.config/opencode/plugins}"
+    local opencode_src="$AM_SCRIPT_DIR/lib/hooks/opencode-state.js"
+    local opencode_target="$opencode_plugins/am-state.js"
+    if [[ -L "$opencode_target" || -d "$opencode_plugins" ]]; then
+        mkdir -p "$opencode_plugins" 2>/dev/null || true
+        if [[ -L "$opencode_target" ]]; then
+            [[ "$(readlink "$opencode_target")" == "$opencode_src" ]] \
+                || { ln -sfn "$opencode_src" "$opencode_target" && done_parts+=("opencode plugin"); }
+        elif [[ ! -e "$opencode_target" && -f "$opencode_src" ]]; then
+            ln -s "$opencode_src" "$opencode_target" && done_parts+=("opencode plugin")
         fi
     fi
 

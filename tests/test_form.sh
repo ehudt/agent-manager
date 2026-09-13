@@ -131,7 +131,7 @@ test_form_loop() {
 
     # Each harness has a direct launch shortcut
     local -a launch_keys=($'\x0c' $'\x18' $'\x12' $'\x10')
-    local -a launch_agents=("claude" "codex" "cursor" "pi")
+    local -a launch_agents=("claude" "codex" "cursor" "pi" "opencode")
     local launch_idx
     for ((launch_idx=0; launch_idx<${#launch_keys[@]}; launch_idx++)); do
         _form_init "/tmp" "claude" ""

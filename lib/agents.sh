@@ -27,12 +27,19 @@ agent_normalize_type() {
     am_agent_normalize "$1"
 }
 
+# Print an agent's prompt-delivery mode (manifest `prompt`): stdin, argv, or
+# argv:<flags> where <flags> are inserted before the prompt text.
+# Usage: _agent_prompt_mode <agent_type>
+_agent_prompt_mode() {
+    am_agent_field "$1" prompt
+}
+
 # Check if an agent type accepts the initial prompt as a CLI argument
-# (manifest `prompt`: argv) rather than on stdin.
+# (manifest `prompt`: argv or argv:<flags>) rather than on stdin.
 _agent_prompt_as_arg() {
     local _mode
-    am_agent_field "$1" prompt _mode
-    [[ "$_mode" == "argv" ]]
+    _mode=$(_agent_prompt_mode "$1")
+    [[ "$_mode" == "argv" || "$_mode" == argv:* ]]
 }
 
 # True when the manifest gives the agent a resume form: its sessions are
@@ -238,11 +245,21 @@ agent_launch() {
 
     # If there's an initial prompt, inject it into the launch command.
     # - Agents that accept a CLI prompt arg (codex): append to command args.
+    #   A `argv:<flags>` mode (opencode's `--prompt`) inserts those flags first.
     # - Agents that accept piped stdin (claude): pipe a temp file into the command
     #   to avoid overflowing the kernel tty input buffer (~4096 bytes on macOS).
     local prompt_file=""
     if [[ -n "$initial_prompt" ]]; then
         if _agent_prompt_as_arg "$agent_type"; then
+            local prompt_mode
+            prompt_mode=$(_agent_prompt_mode "$agent_type")
+            if [[ "$prompt_mode" == argv:* ]]; then
+                local prompt_flag
+                for prompt_flag in ${prompt_mode#argv:}; do
+                    printf -v quoted_part '%q' "$prompt_flag"
+                    full_cmd+=" $quoted_part"
+                done
+            fi
             local quoted_prompt
             printf -v quoted_prompt '%q' "$initial_prompt"
             full_cmd+=" $quoted_prompt"
@@ -627,7 +644,7 @@ agent_kill() {
         # overwrite a binding established while hooks were alive.
         local sid transcript="" store
         am_agent_field "$agent_type" store store
-        if [[ "$store" == "cursor" ]]; then
+        if [[ "$store" == "cursor" || "$store" == "opencode" ]]; then
             transcript=$(_sessions_log_sidecar_transcript "$session_name" 2>/dev/null || true)
             [[ -z "$transcript" ]] && transcript=$(_sessions_log_field "$session_name" "transcript_path" 2>/dev/null || true)
             [[ -n "$transcript" ]] && sessions_log_update "$session_name" "transcript_path" "$transcript"

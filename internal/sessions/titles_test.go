@@ -312,6 +312,49 @@ func TestCursorTitleExtract(t *testing.T) {
 	}
 }
 
+func TestOpencodeTitleExtract(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"OpenCode", ""},
+		{"OC | Fix the flaky test", "Fix the flaky test"},
+		{"OC | Running sleep 8 command", "Running sleep 8 command"},
+		{"OC| Tight separator", "Tight separator"},
+		{"plain title", "plain title"},
+	}
+	for _, c := range cases {
+		if got := opencodeTitleExtract(c.in); got != c.want {
+			t.Errorf("opencodeTitleExtract(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestOpencodeFirstUserMessage(t *testing.T) {
+	tmp := t.TempDir()
+	transcript := filepath.Join(tmp, "mirror.jsonl")
+	content := `{"role":"user","text":"Implement the opencode adapter"}` + "\n"
+	if err := os.WriteFile(transcript, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := opencodeFirstUserMessage("opencode-id", transcript); got != "Implement the opencode adapter" {
+		t.Fatalf("opencodeFirstUserMessage = %q", got)
+	}
+	if got := opencodeFirstUserMessage("", ""); got != "" {
+		t.Fatalf("opencodeFirstUserMessage without id or transcript = %q, want empty", got)
+	}
+
+	// Standard mirror path addressed by session id under $AM_DIR.
+	t.Setenv("AM_DIR", tmp)
+	sid := "ses_abc123"
+	if err := os.MkdirAll(filepath.Dir(opencodeMirrorPath(tmp, tmp, sid)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opencodeMirrorPath(tmp, tmp, sid), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := opencodeFirstUserMessage(sid, ""); got != "Implement the opencode adapter" {
+		t.Fatalf("opencodeFirstUserMessage via AM_DIR = %q", got)
+	}
+}
+
 func TestCursorFirstUserMessage(t *testing.T) {
 	tmp := t.TempDir()
 	transcript := filepath.Join(tmp, "conversation.jsonl")

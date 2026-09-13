@@ -22,10 +22,10 @@ type AgentSpec struct {
 	Type         string
 	Command      string
 	Aliases      []string
-	Prompt       string // stdin | argv
+	Prompt       string // stdin | argv | argv:<flags>
 	Resume       string // args template with {id}; "" = not restorable
-	Store        string // claude | cursor | pi | none
-	Title        string // claude | cursor | pi
+	Store        string // claude | cursor | pi | opencode | none
+	Title        string // claude | cursor | pi | opencode
 	TitleState   string // glyph | suffix | none
 	TurnBoundary string // reliable | gated
 	HookFamily   string // claude | cursor | pi
@@ -41,6 +41,13 @@ func (a AgentSpec) Restorable() bool { return a.Resume != "" }
 // address (dir + id → file): the first-message title fallback and the
 // transcript preflight both need it.
 func (a AgentSpec) HasStore() bool { return a.Store != "" && a.Store != "none" }
+
+// SidecarTranscriptStore reports whether the agent's hook writes an absolute
+// transcript path into the .transcript sidecar (Cursor, opencode). Other
+// layouts derive the path from home+dir+id.
+func (a AgentSpec) SidecarTranscriptStore() bool {
+	return a.Store == "cursor" || a.Store == "opencode"
+}
 
 // ResumeArgs expands the resume template for a conversation id.
 func (a AgentSpec) ResumeArgs(id string) []string {

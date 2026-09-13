@@ -637,6 +637,14 @@ _form_process_key_edit() {
                 FORM_KEY_RESULT="continue"
             fi
             ;;
+        $'\x0f')
+            # Ctrl-O: launch opencode from the directory launcher.
+            if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
+                _form_launch_from_directory "opencode"
+            else
+                FORM_KEY_RESULT="continue"
+            fi
+            ;;
         *)
             if [[ "$key" =~ [[:print:]] ]]; then
                 _form_handle_char "$key"

@@ -480,7 +480,7 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 		}
 		// Store "none" (Codex) exposes exact native resume by id but no
 		// stable rollout-file location, so a well-formed id passes.
-		if !storeJSONLExists(home, spec.Store, log.Directory, log.SessionID, log.TranscriptPath) {
+		if !storeJSONLExists(amDir, home, spec.Store, log.Directory, log.SessionID, log.TranscriptPath) {
 			continue
 		}
 
@@ -600,6 +600,37 @@ func cursorJSONLExists(home, dir, sessionID, transcriptPath string) bool {
 		return false
 	}
 	st, err := os.Stat(cursorStandardTranscriptPath(home, dir, sessionID))
+	return err == nil && !st.IsDir()
+}
+
+// opencodeMirrorRoot is where the opencode state plugin writes its
+// per-session transcript mirror ($AM_DIR/opencode). opencode keeps its real
+// conversation in a SQLite database that am cannot address, so the plugin
+// mirrors the first user message here and records the absolute path in the
+// .transcript sidecar the restore scan persists.
+func opencodeMirrorRoot(amDir, home string) string {
+	if amDir == "" {
+		amDir = filepath.Join(home, ".agent-manager")
+	}
+	return filepath.Join(amDir, "opencode")
+}
+
+func opencodeMirrorPath(amDir, home, sessionID string) string {
+	return filepath.Join(opencodeMirrorRoot(amDir, home), sessionID+".jsonl")
+}
+
+// opencodeJSONLExists accepts the hook-reported mirror path first, then the
+// standard mirror path addressed by session id.
+func opencodeJSONLExists(amDir, home, sessionID, transcriptPath string) bool {
+	if transcriptPath != "" {
+		if st, err := os.Stat(transcriptPath); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	if sessionID == "" || !validSessionID.MatchString(sessionID) {
+		return false
+	}
+	st, err := os.Stat(opencodeMirrorPath(amDir, home, sessionID))
 	return err == nil && !st.IsDir()
 }
 

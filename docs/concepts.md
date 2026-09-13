@@ -12,7 +12,7 @@ mechanics implement.
 
 ## Big picture
 
-**am is a multiplexer for AI coding agents.** Each Claude, Cursor, Codex, or
+**am is a multiplexer for AI coding agents.** Each Claude, Cursor, Codex, opencode, or
 pi agent lives in its own tmux session on a dedicated tmux server, with a
 registry of metadata beside it. Around that core, everything serves one
 promise: *tell the human — instantly and truthfully — which sessions are
@@ -47,8 +47,8 @@ Signals with complementary strengths are crossed inside `_state_resolve`
 - **Process ownership** distinguishes an agent process from a shell and yields
   `starting`, `idle`, or `dead` before any activity signal is considered.
 - **Lifecycle state files** record `running`, `background`, `waiting_user`, or
-  `ready`. Claude/Codex/Cursor hooks and pi's in-process extension write only on
-  transitions, so file mtime is the state-entry timestamp.
+  `ready`. Claude/Codex/Cursor hooks and pi's and opencode's in-process
+  extensions write only on transitions, so file mtime is the state-entry timestamp.
 - **Agent-maintained terminal titles** self-heal missed transitions. Legacy
   Claude versions expose a busy glyph; current Claude's static `✳` only proves
   a fresh process painted its title. Cursor exposes explicit Ready, Working,
@@ -103,7 +103,7 @@ flowchart TD
   id, title — is ever attributed by cwd. Cursor's durable identity is pinned to the first complete
   conversation-id/transcript pair because nested agents inherit
   `AM_SESSION_NAME` and do not reliably identify themselves as background.
-- **Staleness gates are fallback-only.** Claude, Cursor, and pi have reliable
+- **Staleness gates are fallback-only.** Claude, Cursor, pi, and opencode have reliable
   turn-boundary events and are read ungated; the 180s gate applies only to
   other agents. File mtime and tmux activity routinely go quiet during live
   long tool calls.

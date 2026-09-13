@@ -11,21 +11,27 @@
 #
 #   command        binary to launch (also the install-time presence probe)
 #   aliases        other names `am new -t` / config accept for this type
-#   prompt         how the initial prompt reaches the agent: stdin | argv
+#   prompt         how the initial prompt reaches the agent: stdin | argv |
+#                  argv:<flags> (append <flags> then the prompt text; e.g.
+#                  opencode needs `--prompt <text>`, not a bare positional)
 #   resume         args that resume conversation {id}; - = not restorable
 #   store          transcript store layout (root, dir encoding, file naming,
 #                  existence check, first-message reader): claude | cursor |
-#                  pi | none. Code for each layout lives in
-#                  internal/sessions/sessions.go + titles.go.
+#                  pi | opencode | none. Code for each layout lives in
+#                  internal/sessions/sessions.go + titles.go. cursor and
+#                  opencode also carry a hook-written .transcript sidecar
+#                  (an absolute path am persists for restore).
 #   title          pane-title parser: claude (strip " - 🔄…" / " - <dir>") |
-#                  cursor (strip status suffixes) | pi ("pi - X - base")
+#                  cursor (strip status suffixes) | pi ("pi - X - base") |
+#                  opencode (strip the "OC | " prefix)
 #   title_state    title→state signal: glyph (Claude busy/✳ glyphs) |
 #                  suffix (Cursor ✅/⏳/❓) | none
 #   turn_boundary  reliable = turn-boundary hook events exist, read the
 #                  hook state ungated; gated = 180s running-staleness gate
 #   hook_family    hook namespace the agent's events arrive in: claude
 #                  (CamelCase shell hook: Claude Code, Codex) | cursor
-#                  (camelCase shell hook) | pi (in-process extension)
+#                  (camelCase shell hook) | pi (in-process extension) |
+#                  opencode (in-process JS plugin)
 #   preflight      restore preflight: transcript (must exist in the store) |
 #                  id (well-formed id only)
 #   version_bin    binary `am doctor` probes with --version and the name
@@ -86,3 +92,16 @@ pi.hook_family        pi
 pi.preflight          transcript
 pi.version_bin        pi
 pi.lab                tests/live_lab/run_pi.sh
+
+opencode.command        opencode
+opencode.aliases        -
+opencode.prompt         argv:--prompt
+opencode.resume         --session {id}
+opencode.store          opencode
+opencode.title          opencode
+opencode.title_state    none
+opencode.turn_boundary  reliable
+opencode.hook_family    opencode
+opencode.preflight      transcript
+opencode.version_bin    opencode
+opencode.lab            tests/live_lab/run_opencode.sh

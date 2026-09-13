@@ -166,7 +166,31 @@ _doc_hooks_installed() {
         Stop UserPromptSubmit PreToolUse PostToolUse PermissionRequest
     _doc_hooks_check cursor "$cursor_home/hooks.json" true "${CURSOR_HOOKS_DIR:-$cursor_home/hooks}/am-state-hook.sh" \
         sessionStart beforeSubmitPrompt preToolUse postToolUse afterAgentResponse stop
+    _doc_opencode_plugin
     [[ -x "$expected" || -f "$expected" ]] || _doc_warn "hook script missing: $expected"
+}
+
+# opencode loads a JS plugin (lib/hooks/opencode-state.js) from its global
+# plugin directory; report whether the am symlink is installed and current.
+_doc_opencode_plugin() {
+    if ! command -v opencode >/dev/null 2>&1; then
+        _doc_kv "opencode" "CLI not installed"
+        return 0
+    fi
+    local dir="${OPENCODE_PLUGINS_DIR:-$HOME/.config/opencode/plugins}"
+    local target="$dir/am-state.js"
+    local src="$AM_LIB_DIR/hooks/opencode-state.js"
+    if [[ ! -e "$target" ]]; then
+        _doc_warn "opencode plugin: not installed ($target; run: am install)"
+    elif [[ ! -L "$target" ]]; then
+        _doc_warn "opencode plugin $target is not an am symlink"
+    elif [[ "$(readlink "$target")" != "$src" ]]; then
+        _doc_warn "opencode plugin points elsewhere: $(readlink "$target")"
+    elif [[ ! -f "$src" ]]; then
+        _doc_warn "opencode plugin source missing: $src"
+    else
+        _doc_ok "opencode plugin"
+    fi
 }
 
 # --- version-drift canary ----------------------------------------------------
@@ -443,6 +467,10 @@ _doc_transcript() {
             if [[ -n "$tp" ]]; then path="$tp"
             else path="$(_cursor_projects_root)/$(_slog_encode_cursor_dir "$resolved")/agent-transcripts/$sid/$sid.jsonl"; fi
             ;;
+        opencode)
+            if [[ -n "$tp" ]]; then path="$tp"
+            else path="${AM_DIR:-$HOME/.agent-manager}/opencode/$sid.jsonl"; fi
+            ;;
         claude)
             path="$HOME/.claude/projects/$(_slog_encode_dir "$resolved")/$sid.jsonl"
             ;;
@@ -457,11 +485,12 @@ _doc_transcript() {
         case "$store" in
             pi)     first=$(pi_first_user_message "$dir" "$sid" 2>/dev/null || true) ;;
             cursor) first=$(cursor_first_user_message "$dir" "$sid" "$tp" 2>/dev/null || true) ;;
+            opencode) first=$(opencode_first_user_message "$dir" "$sid" "$tp" 2>/dev/null || true) ;;
             claude) first=$(claude_first_user_message "$dir" "$sid" 2>/dev/null || true) ;;
             *)      first="" ;;
         esac
         [[ -n "$first" ]] && _doc_kv "first user message" "${first:0:80}"
-    elif [[ "$store" == "pi" || "$store" == "cursor" || "$store" == "claude" ]]; then
+    elif [[ "$store" == "pi" || "$store" == "cursor" || "$store" == "opencode" || "$store" == "claude" ]]; then
         _doc_warn "transcript file missing: restore will not offer this session"
     fi
     return 0

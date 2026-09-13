@@ -6,7 +6,7 @@
 
 <p align="center">
   Run multiple AI coding agents side by side. Switch between them instantly.<br>
-  <code>tmux</code> + <code>fzf</code> powered. Works with Claude Code, Cursor Agent, Codex, and pi.
+  <code>tmux</code> + <code>fzf</code> powered. Works with Claude Code, Cursor Agent, Codex, pi, and opencode.
 </p>
 
 <p align="center">
@@ -82,6 +82,7 @@ sudo pacman -S tmux fzf jq zoxide
 | [Codex CLI](https://github.com/openai/codex) | `npm install -g @openai/codex` |
 | [Cursor Agent](https://cursor.com/docs/cli/installation) | `curl https://cursor.com/install -fsS \| bash` |
 | [pi](https://github.com/badlogic/pi-mono) | `npm install -g @earendil-works/pi-coding-agent` |
+| [opencode](https://opencode.ai) | `curl -fsSL https://opencode.ai/install \| bash` |
 
 ### Install
 
@@ -94,7 +95,7 @@ cd agent-manager
 This symlinks `am` into `~/.local/bin` and sets up the dedicated tmux configuration. The installer will:
 - Add `~/.local/bin` to your PATH in `.zshrc` or `.bashrc` if needed
 - Generate a dedicated tmux config at `~/.agent-manager/tmux.conf` with am-specific keybindings (your personal `~/.tmux.conf` is unaffected)
-- Register state-detection hooks for push-based session monitoring in Claude, Codex, and Cursor configuration (existing hooks are preserved)
+- Register state-detection hooks for push-based session monitoring in Claude, Codex, Cursor, pi, and opencode configuration (existing hooks are preserved)
 
 ```bash
 # Install options
@@ -119,6 +120,7 @@ am help
 am new ~/code/myproject              # New Claude session in a directory
 am new -t codex ~/code/project       # Use Codex instead
 am new -t cursor ~/code/project      # Use Cursor Agent
+am new -t opencode ~/code/project    # Use opencode
 am new -n "fix auth bug" .           # Session with a task description
 am new ~/code/proj -- --resume       # Anything after -- goes to the agent verbatim
 am new @48351                        # Directory from a provider you configure (below)
@@ -318,7 +320,7 @@ can no longer be restored.
 ### Restoring closed sessions
 
 Closed a session and want to pick it back up? Recently closed Claude, Codex,
-Cursor, and pi sessions appear below active sessions in the main `am` browser. Select
+Cursor, pi, and opencode sessions appear below active sessions in the main `am` browser. Select
 an inactive session and press Enter to resume it exactly where you left off.
 
 You can also open the standalone restore picker directly:
@@ -351,8 +353,8 @@ Press Enter to retry a blocked row after fixing its prerequisite, or Ctrl-X to
 forget it. Explicit commands and automation (`am list`, `am new`, `am wait`,
 and similar) never start recovery.
 
-Claude and Cursor resume by conversation ID, pi by session ID, and Codex via
-its native `codex resume ID` command. Conversation history and filesystem state
+Claude and Cursor resume by conversation ID, pi and opencode by session ID, and
+Codex via its native `codex resume ID` command. Conversation history and filesystem state
 survive; interrupted tool calls, shell processes, and background jobs do not.
 Disable automatic recovery with:
 
@@ -432,7 +434,7 @@ am preset list
 | `idle` | Agent process exited cleanly |
 | `dead` | Agent process crashed or session gone |
 
-Claude, Cursor, Codex, and pi use push-based lifecycle hooks/extensions
+Claude, Cursor, Codex, pi, and opencode use push-based lifecycle hooks/extensions
 installed by `am install`. Cursor lifecycle hooks expose turn start/stop; on
 Cursor 2026.08+, verified terminal-title suffixes also distinguish ready,
 working, and in-turn question states. Cursor permission prompts still remain
@@ -459,8 +461,8 @@ Authenticate the host CLI with `agent login`, or export `CURSOR_API_KEY`.
 ## Auto-titling
 
 Agent-maintained terminal titles are used when they represent a task. Claude,
-Cursor, and pi can also fall back to the exact session transcript's first user
-message; transient Cursor titles such as `Cursor Agent` and `Shell Command` are
+Cursor, pi, and opencode can also fall back to the exact session transcript's
+first user message; transient Cursor titles such as `Cursor Agent` and `Shell Command` are
 ignored.
 
 ## Configuration
@@ -492,6 +494,7 @@ Precedence: CLI flag > environment variable > saved config > built-in default.
 | `codex` | `codex` |
 | `cursor` (`cursor-agent` alias) | `agent` |
 | `pi` | `pi` |
+| `opencode` | `opencode` |
 
 Everything am knows per agent (command, aliases, how the first prompt is delivered, resume arguments, where transcripts live, how the pane title and state hooks are read) is one table, `lib/agents.manifest`, shared by the bash and Go sides.
 Unknown agent types are passed through as the command name, so `am new -t aider .` will try to run `aider`.
@@ -514,7 +517,7 @@ Agent-specific flags go after `--`, e.g. `am new . -- --dangerously-skip-permiss
 | `am result <session>` | Read the summary a session recorded with `am done` |
 | `am interrupt <session>` | Send Ctrl-C to the agent pane |
 | `am attach <session>` | Attach to a session |
-| `am restore` | Browse and resume closed Claude, Codex, Cursor, and pi sessions |
+| `am restore` | Browse and resume closed Claude, Codex, Cursor, pi, and opencode sessions |
 | `am kill <session> \| --all \| --state s1,s2` | Kill a session, every session, or every session in given states |
 | `am status [--json]` | Show detailed session info |
 | `am doctor [session]` | Print every input behind a session's state (`--capture` for a tarball); the global report also flags agents newer than the last live-lab verified version and hook payload fields that went missing |

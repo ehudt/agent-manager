@@ -388,6 +388,7 @@ setup_integration_env() {
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/claude"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/codex"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/agent"
+    ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/opencode"
     ln -sf "$TEST_STUB_DIR/stub_agent" "$TEST_STUB_BIN/stubagent"
     TEST_ZOXIDE_LOG="$TEST_AM_DIR/zoxide.log"
     export TEST_ZOXIDE_LOG
@@ -422,6 +423,8 @@ EOF
     AGENT_COMMANDS[codex]="$TEST_STUB_DIR/stub_agent"
     # shellcheck disable=SC2034,SC2154
     AGENT_COMMANDS[cursor]="$TEST_STUB_DIR/stub_agent"
+    # shellcheck disable=SC2034,SC2154
+    AGENT_COMMANDS[opencode]="$TEST_STUB_DIR/stub_agent"
 }
 
 # Tear down integration test environment

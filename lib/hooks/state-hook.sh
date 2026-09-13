@@ -490,7 +490,7 @@ esac
 # ~/.cursor/hooks, outside the repo. tests/test_agents.sh keeps the table
 # equal to the manifest. Prints nothing for unknown types.
 # Usage: _agent_hook_family <agent_type> <out_var>
-_AM_HOOK_FAMILY_FALLBACK="claude=claude codex=claude cursor=cursor pi=pi"
+_AM_HOOK_FAMILY_FALLBACK="claude=claude codex=claude cursor=cursor pi=pi opencode=opencode"
 _agent_hook_family() {
     local _manifest="${AM_AGENT_MANIFEST:-${BASH_SOURCE[0]%/*}/../agents.manifest}" _key _value _pair
     printf -v "$2" '%s' ""

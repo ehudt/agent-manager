@@ -72,12 +72,12 @@ and agents without hooks run `am cd <dir>` after moving.
 
 ## Choosing the Agent
 
-`am new -t <type>` accepts `claude` (default), `codex`, `cursor`, and `pi`.
-Everything am knows per type (launch command, aliases, whether the first
-prompt goes on stdin or argv, resume arguments, transcript store, how state
+`am new -t <type>` accepts `claude` (default), `codex`, `cursor`, `pi`, and
+`opencode`. Everything am knows per type (launch command, aliases, whether the
+first prompt goes on stdin or argv, resume arguments, transcript store, how state
 is detected) is one table, `lib/agents.manifest` in the am checkout; read
 it when a type behaves unexpectedly rather than guessing. State detection
-is verified by live labs for claude, cursor, and pi; codex has no lab, so
+is verified by live labs for claude, cursor, pi, and opencode; codex has no lab, so
 its `running` state can go stale and falls to `unknown` after 180s of
 silence.
 

@@ -66,6 +66,8 @@ if [[ -n "$directory" && -n "$session_id" ]]; then
     first_msg=""
     case "$agent_type" in
         pi) first_msg=$(pi_first_user_message "$directory" "$session_id" 2>/dev/null || true) ;;
+        cursor) first_msg=$(cursor_first_user_message "$directory" "$session_id" 2>/dev/null || true) ;;
+        opencode) first_msg=$(opencode_first_user_message "$directory" "$session_id" 2>/dev/null || true) ;;
         *)  first_msg=$(claude_first_user_message "$directory" "$session_id" 2>/dev/null || true) ;;
     esac
     if [[ -n "$first_msg" ]]; then
