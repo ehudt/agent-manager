@@ -9,6 +9,7 @@ Architecture reference for AI agents working with this codebase.
 - Run perf benchmark: `./tests/perf_test.sh` — standalone latency check for `am list-internal`; not part of `test_all.sh` and should not leave resources behind
 - Run live state-detection labs: `tests/live_lab/run.sh` (Claude), `run_cursor.sh` (Cursor), `run_pi.sh` (pi), and `run_opencode.sh` (opencode). They record hook payloads, pane titles, and transitions; they are opt-in and spend tokens.
 - Typecheck/lint: `bash -n lib/*.sh am` (syntax check only — no linter)
+- Doc sync: `./scripts/check-docs.sh` — Key Files / Key Functions in this file exist, and `CHANGELOG.md` has an entry for `AM_VERSION` (`scripts/check-changelog.sh`); CI runs it
 - Build the Go binaries: `make -s build` → `bin/am-list-internal`, `bin/am-browse`, `bin/am-core`, `bin/am-review`; `go vet ./... && go test ./...` for the Go side. `tests/test_all.sh` builds them first, because the bash maintenance wrappers exec `bin/am-core`
 
 ## Versioning
@@ -21,7 +22,7 @@ When to bump (pre-1.0, so `MAJOR` stays `0`):
 - **MINOR** (`0.2.0` → `0.3.0`) — new user-facing capability: a new `am` command/flag, a new pane/UI mode, restore/skill features, or a behavior change a user would notice.
 - **MAJOR** — reserved; bump to `1.0.0` only on the first stability commitment.
 
-How to bump: edit `AM_VERSION` in `am` in the same commit as the change that earns it; mention the bump in the commit body. Accumulate several small changes under one bump rather than bumping per-commit — bump when cutting a coherent batch.
+How to bump: edit `AM_VERSION` in `am` in the same commit as the change that earns it, add the `## [x.y.z] - date` entry at the top of `CHANGELOG.md` in that commit (CI fails otherwise), and mention the bump in the commit body. Accumulate several small changes under one bump rather than bumping per-commit — bump when cutting a coherent batch. Patch releases are folded into the minor entry unless a user would notice.
 
 ## Code Style
 
@@ -52,7 +53,11 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 
 | File | Purpose |
 |------|---------|
-| `am` | Main entry point. Handles CLI args, routes to commands. |
+| `am` | Main entry point. Handles CLI args, routes to commands. `install` / `uninstall` / `completions` are dispatched before the directory setup and dependency checks (`--dry-run` must create nothing; the rc block evals `completions` at every shell start) |
+| `completions/am.bash`, `completions/am.zsh` | Shell completions printed by `am completions bash\|zsh` with `@AGENT_TYPES@` filled from the manifest; subcommands, per-command flags, config keys, preset names (`am preset list`), and live session names (`am list --json`) at completion time. `scripts/install.sh` adds `eval "$(am completions <shell>)"` to the rc managed block, shell chosen by the rc file's name |
+| `scripts/install.sh` | PATH links, shell rc block (PATH + completions), legacy tmux block, and the agent hook installs; `--dry-run` prints every mutation, `--uninstall` reverses them (marker-tagged hook entries only; a user's own hooks stay). `am install` wraps it (`AM_INSTALL_NESTED=1`); run by hand it points at `am install` for skills and binaries |
+| `scripts/check-changelog.sh` | CI guard: `CHANGELOG.md` must have a `## [<AM_VERSION>]` entry; called by `scripts/check-docs.sh` |
+| `CHANGELOG.md` | User-facing changes per release, newest first |
 | `lib/utils.sh` | Shared: colors, logging, time formatting, paths, agent JSONL extraction |
 | `lib/registry.sh` | JSON storage for session metadata (locked jq rewrites), sessions-log append/update/snapshot, and the thin bash wrappers (`am_tick`, `auto_title_scan`, `registry_gc`, `sessions_log_scan/gc/restorable`, detect-id, jsonl-exists) that exec `bin/am-core` |
 | `lib/recovery.sh` | Durable desired-session store, boot/machine identity, reboot preflight, and progressive recovery worker |
@@ -115,6 +120,9 @@ am send --queue s "..." → $AM_DIR/queue/<s>.XXXXXX (prompt) → detached _send
 am wait --all|--any s1 s2 → _wait_many() → one agent_wait_state per session in the background → '<session> <state>' lines
 am done "..." (in a worker) → $AM_DIR/results/<session>.txt → am result <session> (dispatcher); removed by agent_kill
 hook state transition → waiting_user (or notify_states) → _notify_maybe() in the detached tail → notify_cmd | osascript | notify-send, skipped when a client shows the session
+am completions bash|zsh → no-libs path → completions/am.<shell> with @AGENT_TYPES@ from the manifest → eval'd by the rc block at shell start; session names via `am list --json` at <TAB>
+am install --dry-run → cmd_install plan (config, skill links, Go build, tmux.conf) + scripts/install.sh --dry-run (PATH links, rc block, hook entries) → nothing written
+am uninstall → _uninstall_skills → scripts/install.sh --uninstall (PATH links, rc block, marker-tagged hook entries, Cursor helper copy, pi/opencode links) → --purge: rm -rf $AM_DIR
 bare `am` → _install_refresh_if_stale() → fingerprint of install inputs vs $AM_DIR/.install_stamp → _install_refresh() (skills, Go build if sources newer, tmux.conf)
 Ctrl-N in browser → am_new_session_form() → _form_run()
 prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
@@ -563,11 +571,17 @@ am restore
 - `_doc_hooks_installed()` / `_doc_hooks_check(label, file, optional, helper|-, events...)` - Per-family check that the events scripts/install.sh registers name the am hook: Claude (settings.json, nested command shape), Codex and Cursor (optional hooks.json; Cursor's flat shape runs a byte copy of the hook, compared with cmp - a stale copy points at `am install --refresh`)
 - `_doc_drift()` - Version-drift canary: installed agent versions vs `tests/live_lab/VERIFIED` pins (`AM_VERIFIED_FILE` overrides the path), then every `$AM_DIR/hook-schema/*.keys` file against the fields the hook reads (`_doc_required_keys`), with `_doc_keys_diff` against `.keys.prev`
 - `_doc_notify()` - "notifications" section: the notify / notify_states / notify_cmd config, and on macOS the Notification Center style of Script Editor (the app osascript banners are attributed to) with a warning when it is Banners (fade after seconds) or None; `_doc_nc_style(flags)` decodes the ncprefs flags (bit 3 Banners, bit 4 Alerts), `_doc_nc_flags(bundle)` / `_doc_nc_flags_parse(bundle)` read the app-level flags from `defaults read com.apple.ncprefs apps` (the nested per-source flags are skipped; empty when the app never posted)
+- `_doc_dep_row(tool, version)` - One row of the versions section with a warning when the tool is below `am_dep_min`
 - `_doc_ver_newer(a, b)` / `_doc_ver_core(v)` / `_doc_agent_version(agent)` - Dotted-numeric version compare (missing components are 0, non-numeric never compares newer), version-string core extraction, first line of `<agent> --version`
 
 **Notifications (lib/hooks/state-hook.sh, lib/config.sh):**
 - `_notify_maybe(session, state)` - Fired from the hook's detached tail only on a state transition into one of the configured notify states; skipped when an attached client displays the session; `AM_NOTIFY_CMD` env > notify_cmd config > osascript / notify-send
 - `am_notify_enabled()` / `am_notify_states()` - Config readers (notify: bool, default true; notify_states: default waiting_user; notify_cmd: string)
+
+**Install / uninstall (in the am entry point):**
+- `cmd_install(args...)` - Deps check (`am_dep_min` minimums), config, skill links, `scripts/install.sh` (PATH, rc block, hooks), Go build, tmux.conf, stamp. `--dry-run` prints each step's plan (`_install_plan_skills` for the links) and forwards the flag to the script; nothing is created, including `$AM_DIR`
+- `cmd_uninstall([--dry-run] [--purge] [-y] [--prefix d] [--shell-rc f])` - `_uninstall_skills` (only links that point into this checkout's skills directory) → `scripts/install.sh --uninstall` → `--purge` removes `$AM_DIR`; asks once unless `-y`; running sessions are left alone with a warning
+- `am_dep_min(tool)` / `am_version_core(str)` / `am_version_ge(required, actual)` (utils.sh) - The one table of minimums (bash 4.4, tmux 3.2, fzf 0.40, jq 1.6, go 1.19), the dotted core of a version string (tmux's letter suffix kept), and the compare; used by install, `require_cmd`'s error (which points at `am install`, since doctor needs the same tools), and doctor's `_doc_dep_row`
 
 **Install fingerprint (in the am entry point):**
 - `_install_inputs()` / `_install_fingerprint()` - Version + cksum over the mtimes of everything `am install` derives artifacts from (am, lib/tmux.sh, hooks, scripts/install.sh, skills, Go sources)

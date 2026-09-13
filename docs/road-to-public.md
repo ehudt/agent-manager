@@ -19,6 +19,21 @@ every change `am` makes to a user's machine visible and reversible.
 
 ---
 
+## Status (2026-09-13, shipped in 0.35.0)
+
+Done: 1.1 bash 4.4, 1.2 `./am install`, 1.4 platform section, 2.1
+`--dry-run`, 2.2 `am uninstall`, 2.3 doctor minimums, 3.1 completions,
+3.2 CHANGELOG with the CI check, 3.3 the missing-dependency error (the
+one environment failure doctor cannot diagnose; the not-built messages
+already pointed at `am install`), 3.4 config table, 3.5 CONTRIBUTING /
+SECURITY / badge / issue templates.
+
+Open: 1.3, the visual assets (screenshot, recordings, tagline). Those need
+a real terminal with real sessions; the README's `TODO` comments mark the
+spots. The capture recipe is in "Capturing the visual assets" at the end.
+
+---
+
 ## Tier 1: Make the First Run Succeed
 
 ### 1.1 Fix the bash version story
@@ -214,3 +229,131 @@ Checked against the checkout so the plan does not spend effort here:
 8. **Config table** in the README (3.4)
 9. **CONTRIBUTING.md, SECURITY.md, CI badge, issue templates** (3.5)
 10. **Platform subsection** in the README (1.4)
+
+---
+
+## Capturing the visual assets (1.3)
+
+Four `<!-- TODO -->` comments in the README mark the spots. Everything below
+assumes a real terminal window (not the IDE pane), 130 columns × 38 rows, a
+dark theme, and the font size you use daily; `am` renders the same at any
+size but the screenshots must be legible at README width.
+
+### Seed three sessions that look like real work
+
+The captures need believable tabs: different directories, branches, tasks,
+and states. Use real projects; the labels come from the directory and the
+branch.
+
+```bash
+am kill --all                       # start from an empty strip
+am new --detach -n "Fix the flaky registry lock test" ~/code/agent-manager
+am new --detach -n "Add CSV export to the reports page" ~/code/some-webapp
+am new --detach -n "Review PR 412" ~/code/another-repo
+```
+
+Then give each a different state, in this order:
+
+1. Attach to the second one (`am attach some-webapp`) and send a real prompt
+   so it is `running` for the capture (ask for something that takes a
+   minute: "read the reports module and summarise how export works").
+2. Detach (`prefix+d`), attach to the third, ask it to run a command that
+   needs a permission (`run the test suite`), and leave the dialog up →
+   `waiting_user`.
+3. The first stays `ready` at its prompt.
+
+Now `am` shows three tabs in three states with ages, which is the picture.
+
+### Screenshot 1: the browser (README line ~26)
+
+1. Detach and run `am` with no arguments. The browser opens with the three
+   rows; move the cursor to the running one so the preview shows a live
+   turn.
+2. macOS: `Cmd+Shift+4`, then `Space`, click the terminal window (window
+   capture with the shadow is fine). Linux: `gnome-screenshot -w` or
+   `grim -g "$(slurp)"`.
+3. Save as `assets/browser.png`. Resize to 1600 px wide if larger
+   (`sips --resampleWidth 1600 assets/browser.png` on macOS).
+4. Replace the TODO comment with
+   `<p align="center"><img src="assets/browser.png" alt="am session browser" width="800" /></p>`.
+
+### Screenshot 2: inside a session (README line ~154 wants the form; do both)
+
+- **Attached view**: `am attach some-webapp`, open the review pane
+  (`prefix+v`) so the agent, the diff, and the status-bar tab strip are all
+  visible. Capture as `assets/session.png`. Put it under "Inside a session".
+- **The form**: in the browser press `Ctrl-N`, type the first letters of a
+  directory so the zoxide suggestions show, tab to the Agent field. Capture
+  as `assets/new-session-form.png` and replace the TODO at line ~154.
+
+### Recording 1: first session in 15 seconds (README line ~46)
+
+Use VHS (`brew install vhs`); it scripts the recording from a tape file, so a
+retake is one command and the timing is deterministic. Save this as
+`assets/quickstart.tape`:
+
+```
+Output assets/quickstart.gif
+Set Shell zsh
+Set FontSize 15
+Set Width 1300
+Set Height 760
+Set Theme "Catppuccin Mocha"
+Set TypingSpeed 40ms
+
+Type "am new ~/code/some-webapp" Sleep 500ms Enter
+Sleep 4s                                 # the agent boots full-screen
+Type "Summarise what this repo does in two lines" Sleep 300ms Enter
+Sleep 6s                                 # the turn runs; tabs show running
+Ctrl+b Type "d" Sleep 1s                 # detach
+Type "am" Sleep 500ms Enter
+Sleep 2s                                 # browser with the session and preview
+Enter
+Sleep 3s                                 # reattached
+```
+
+Run `vhs assets/quickstart.tape`. VHS records its own terminal; tmux and the
+agent render inside it. Trim the `Sleep`s until the loop is 15–20 s and the
+gif is under ~3 MB (`gifsicle -O3 --lossy=80`). Replace the TODO with
+`<p align="center"><img src="assets/quickstart.gif" width="800" /></p>`.
+
+### Recording 2: orchestration (README line ~455)
+
+Same tool, `assets/orchestration.tape`, with the three sessions already
+killed:
+
+```
+Output assets/orchestration.gif
+Set Shell zsh
+Set FontSize 15
+Set Width 1300
+Set Height 760
+Set TypingSpeed 40ms
+
+Type 'a=$(printf "List every TODO in this repo\n" | am new --detach --print-session ~/code/agent-manager)' Enter Sleep 2s
+Type 'b=$(printf "Count the shell functions in lib/\n" | am new --detach --print-session ~/code/agent-manager)' Enter Sleep 2s
+Type 'am list' Enter Sleep 3s
+Type 'am wait --all $a $b' Enter
+Sleep 25s                                # both turns finish
+Type 'am peek --lines 12 $a' Enter Sleep 4s
+Type 'am kill $a $b' Enter Sleep 2s
+```
+
+Use prompts that finish in under 30 s so `am wait` returns on camera.
+
+### Tagline
+
+`assets/tagline.png` is a text render. Either drop the `<img>` and keep the
+`<h1>` (one-line README change, no asset to maintain), or replace it with a
+wordmark: the letters `am` in the terminal font at 200 px, on a transparent
+background, exported at 2× (`assets/tagline.png`, 560 px wide, shown at 280).
+Dropping it is the recommendation.
+
+### After capturing
+
+```bash
+git add assets README.md
+git commit -m "README: browser and session screenshots, quick-start and orchestration recordings"
+```
+
+Then bump the patch version and add the changelog line; CI checks the pair.

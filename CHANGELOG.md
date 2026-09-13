@@ -6,6 +6,29 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.35.0] - 2026-09-13
+
+- `am install --dry-run` prints every file the setup would create, link, or
+  edit (config, skill links, PATH links, shell rc block, the am entries in
+  Claude / Codex / Cursor hook files, the pi and opencode plugin links, the
+  Go build) and changes nothing.
+- `am uninstall [--dry-run] [--purge]` reverses the install: PATH links,
+  the shell rc block, the am hook entries (a user's own hooks stay), the
+  Cursor helper copy, the pi/opencode links, the skill links; `--purge`
+  also removes `~/.agent-manager`.
+- `am completions bash|zsh`: subcommands, flags, agent types, config keys,
+  preset names, and live session names at every `<TAB>`. `am install` adds
+  the `eval` line to the shell rc block.
+- `./am install` is the documented install path (the script alone skipped
+  the skills and the Go build); the bash version error names the fix
+  (macOS ships 3.2, am needs 4.4); the README dependency table says so.
+- `am doctor` flags tmux / fzf / jq / bash below their minimum, and no
+  longer exits 1 on macOS when Notification Center has no Script Editor
+  entry. A missing dependency error points at `am install`.
+- `CHANGELOG.md`, checked by CI against `AM_VERSION`; `CONTRIBUTING.md`,
+  `SECURITY.md`, issue templates, the CI badge, a platform-support section
+  and a config-key table in the README.
+
 ## [0.34.1] - 2026-09-13
 
 - `docs/adding-an-agent.md`: the end-to-end guide for integrating a new agent.

@@ -10,7 +10,11 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> · <a href="#interactive-session-browser">Browser</a> · <a href="#agent-to-agent-orchestration">Orchestration</a> · <a href="#commands-reference">Reference</a>
+  <a href="#quick-start">Quick Start</a> · <a href="#interactive-session-browser">Browser</a> · <a href="#agent-to-agent-orchestration">Orchestration</a> · <a href="#commands-reference">Reference</a> · <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ehudt/agent-manager/actions/workflows/ci.yml"><img src="https://github.com/ehudt/agent-manager/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 ---
@@ -57,6 +61,18 @@ That's it. You're in a tmux session with Claude running full-screen. Press ``Pre
 | **jq** | 1.6+ | `brew install jq` / `apt install jq` / `pacman -S jq` |
 | **git** | any | Required for branch display |
 | **[zoxide](https://github.com/ajeetdsouza/zoxide)** | any | Frecent directory ranking in the session creation form |
+
+### Platform support
+
+- **macOS** is the primary platform: this is where am is developed and
+  used daily. Desktop notifications go through `osascript` (Script Editor's
+  Notification Center entry; `am doctor` reports its banner style).
+- **Linux** is tested in CI (Ubuntu) and works the same way; notifications
+  use `notify-send` when present, otherwise nothing is shown unless
+  `notify_cmd` names a notifier.
+- **Windows** is not supported (am is built on tmux). WSL2 works like Linux.
+- **Terminals**: any terminal that runs tmux. The status-bar tabs are
+  clickable where the terminal forwards mouse events to tmux.
 
 **One-liner install for all dependencies:**
 
@@ -485,6 +501,22 @@ am config set notify_states waiting_user,ready   # Also announce finished turns
 am config get agent                # Read a single value
 ```
 
+Every key, its default, and what it does. The defaults are the tool's
+opinion and stay as they are; each key is a one-line change.
+
+| Key (`am config set …`) | Default | Effect |
+|---|---|---|
+| `agent` | `claude` | Agent type for `am new` without `-t`. Any manifest type or alias (`claude`, `codex`, `cursor`, `pi`, `opencode`). Env: `AM_DEFAULT_AGENT` |
+| `logs` | `true` | Stream every pane to `/tmp/am-logs/<session>/{agent,shell}.log`; backs `am peek --follow` and `--history`. Env: `AM_STREAM_LOGS` |
+| `shell` | `false` | Open the shell panel at launch (else agent-only; prefix + backtick or `am shell` opens it later). Env: `AM_SHELL_PANE` |
+| `auto-restore` | `true` | After a reboot, recreate the sessions that were open when the browser next starts. Env: `AM_AUTO_RESTORE` |
+| `notify` | `true` | Desktop notification on a state transition into a notify state, skipped when a client already shows the session. Env: `AM_NOTIFY` |
+| `notify_states` | `waiting_user` | Comma-separated states that notify. Add `ready` to hear about finished turns |
+| `notify_cmd` | unset | Your own notifier instead of osascript / notify-send; runs with `AM_NOTIFY_SESSION`, `AM_NOTIFY_STATE`, `AM_NOTIFY_TITLE`, `AM_NOTIFY_BODY` in the environment. Env: `AM_NOTIFY_CMD` |
+| `dir_provider` | unset | Command behind `am new @spec` (`suggest <partial>` / `resolve <spec>` verbs). Env: `AM_DIR_PROVIDER`; `AM_DIR_SUGGEST_TIMEOUT` caps the suggest call (0.3s) |
+
+Presets (`am preset save`) are stored in the same file under `presets`.
+
 `am install` records a fingerprint of the checkout it installed from. When
 the checkout changes (pull, local edit) the browser refreshes the derived
 pieces on its next start (skill links, Go binaries when sources changed,
@@ -559,6 +591,7 @@ bash -n lib/*.sh am                # Syntax check
 
 Tests require `tmux`, `fzf`, and `jq`.
 `tests/perf_test.sh` is not part of `test_all.sh`; it is a manual benchmark and should not create persistent resources.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the test layout, the bash/Go split, and what a pull request needs; [CHANGELOG.md](CHANGELOG.md) for what changed per release.
 
 ## License
 
