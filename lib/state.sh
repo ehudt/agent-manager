@@ -58,17 +58,13 @@ _STATE_LIB_DIR="${AM_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 
-# Canonicalize state values at every read boundary. The waiting_* names were
-# emitted through am 0.11 and can remain in /tmp while live sessions survive an
-# upgrade; accepting them here avoids false "unknown" states without rewriting
-# the file and resetting its time-in-state mtime.
+# Canonicalize a state value at every read boundary. An unknown value (or a
+# pre-0.12 `waiting_*` spelling, no longer accepted) normalizes to ""; the
+# caller decides the fallback.
 # Usage: _state_normalize <value> <out_var>
 _state_normalize() {
     local -n __normalized="$2"
     case "$1" in
-        waiting_input)                         __normalized="ready" ;;
-        waiting_permission|waiting_custom)     __normalized="waiting_user" ;;
-        waiting_background)                    __normalized="background" ;;
         starting|running|ready|waiting_user|background|idle|unknown|dead)
                                                 __normalized="$1" ;;
         *)                                     __normalized="" ;;

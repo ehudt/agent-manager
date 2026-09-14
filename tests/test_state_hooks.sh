@@ -111,20 +111,6 @@ test_state_hooks() {
     assert_eq "$mtime_before" "$mtime_after" \
         "idle_prompt over ready: same-state rewrite skipped (mtime pinned)"
 
-    # Upgrade compatibility: normalize a legacy value for comparisons but do
-    # not rewrite it merely to change the spelling, because that would reset
-    # the live session's time-in-state timestamp.
-    printf 'waiting_input' > "$state_dir/am-abc123"
-    touch -t 202601010000 "$state_dir/am-abc123"
-    mtime_before=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
-    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
-    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    mtime_after=$(stat -c %Y "$state_dir/am-abc123" 2>/dev/null || stat -f %m "$state_dir/am-abc123")
-    assert_eq "waiting_input" "$state" \
-        "legacy waiting_input remains on a same-state ready event"
-    assert_eq "$mtime_before" "$mtime_after" \
-        "legacy waiting_input same-state event preserves mtime"
-
     # Stop re-fires while background work drains: background over background
     # must also keep the original mtime.
     printf 'background' > "$state_dir/am-abc123"

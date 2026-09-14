@@ -96,13 +96,11 @@ AM_REGISTRY="${AM_REGISTRY:-${AM_DIR}/sessions.json}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 AM_IDENTITY_DIR="${AM_IDENTITY_DIR:-${AM_DIR}/identities}"
 
-# Canonicalize state values read from files created by am <=0.11. Keep this
-# Bash-3-compatible: the hook runs under /bin/bash on macOS.
+# Canonicalize a state value read from a state file (the hook only ever writes
+# the four below). Keep this Bash-3-compatible: the hook runs under /bin/bash
+# on macOS.
 _normalize_state_value() {
     case "$1" in
-        waiting_input)                         NORMALIZED_STATE="ready" ;;
-        waiting_permission|waiting_custom)     NORMALIZED_STATE="waiting_user" ;;
-        waiting_background)                    NORMALIZED_STATE="background" ;;
         running|ready|waiting_user|background) NORMALIZED_STATE="$1" ;;
         *)                                     NORMALIZED_STATE="" ;;
     esac

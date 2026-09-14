@@ -1548,8 +1548,6 @@ cmd_wait() {
             -h|--help)
                 echo "Usage: am wait [--state <states>] [--timeout N] [--json] [--any|--all] <session> [session...]"
                 echo "  states: starting,running,ready,waiting_user,background,idle,unknown,dead"
-                echo "  legacy aliases: waiting_input, waiting_permission, waiting_custom,"
-                echo "                  waiting_background"
                 echo ""
                 echo "One session: prints the state reached. Several sessions: prints"
                 echo "'<session> <state>' per line; --all (default) waits for every session,"

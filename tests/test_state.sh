@@ -31,28 +31,6 @@ test_state() {
     _state_hook_read "am-foo" got
     assert_eq "background" "$got" "_state_hook_read: background"
 
-    # Live sessions may retain state files written by an older am process
-    # during an upgrade. Readers canonicalize those values without rewriting
-    # the file, preserving the original time-in-state mtime.
-    printf 'waiting_input' > "$tmp_state_dir/am-foo"
-    _state_hook_read "am-foo" got
-    assert_eq "ready" "$got" "_state_hook_read: legacy waiting_input -> ready"
-
-    printf 'waiting_permission' > "$tmp_state_dir/am-foo"
-    _state_hook_read "am-foo" got
-    assert_eq "waiting_user" "$got" \
-        "_state_hook_read: legacy waiting_permission -> waiting_user"
-
-    printf 'waiting_custom' > "$tmp_state_dir/am-foo"
-    _state_hook_read "am-foo" got
-    assert_eq "waiting_user" "$got" \
-        "_state_hook_read: legacy waiting_custom -> waiting_user"
-
-    printf 'waiting_background' > "$tmp_state_dir/am-foo"
-    _state_hook_read "am-foo" got
-    assert_eq "background" "$got" \
-        "_state_hook_read: legacy waiting_background -> background"
-
     printf 'running' > "$tmp_state_dir/am-foo"
     _state_hook_read "am-foo" got
     assert_eq "running" "$got" "_state_hook_read: fresh running"
@@ -337,14 +315,6 @@ test_state_title_glyph() {
     assert_eq "running" "$(_resolve am-g claude)" \
         "resolve: busy + ready -> running (turn resumed / wrap-up)"
 
-    # A pending dialog needs the user even if a spinner frame lingers.
-    printf 'waiting_permission' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_user" "$(_resolve am-g claude)" \
-        "resolve: busy + legacy waiting_permission -> waiting_user"
-    printf 'waiting_custom' > "$tmp_state_dir/am-g"
-    assert_eq "waiting_user" "$(_resolve am-g claude)" \
-        "resolve: busy + legacy waiting_custom -> waiting_user"
-
     # hook never fired (first turn just started)
     rm -f "$tmp_state_dir/am-g"
     assert_eq "running" "$(_resolve am-g claude)" \
@@ -624,9 +594,9 @@ test_agent_wait_state_stable_idle() {
 
     local state
     AM_WAIT_STABLE_POLLS=2 AM_WAIT_QUIET_SECS=2 \
-        state=$(agent_wait_state "fake-session" "waiting_input" 5)
+        state=$(agent_wait_state "fake-session" "ready" 5)
     assert_eq "ready" "$state" \
-        "agent_wait_state: legacy waiting_input target matches canonical ready"
+        "agent_wait_state: stable ready target matches"
 
     eval "$saved_get_state"
     eval "$saved_tmux_exists"

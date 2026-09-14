@@ -78,8 +78,6 @@ test_cli() {
     assert_contains "$wait_help" "ready" "am wait --help: lists ready"
     assert_contains "$wait_help" "waiting_user" "am wait --help: lists waiting_user"
     assert_contains "$wait_help" "background" "am wait --help: lists background"
-    assert_contains "$wait_help" "legacy aliases" \
-        "am wait --help: documents legacy state aliases"
 
     local peek_help
     peek_help=$("$PROJECT_DIR/am" peek --help)

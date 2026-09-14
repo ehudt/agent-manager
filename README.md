@@ -464,10 +464,8 @@ working, and in-turn question states. Cursor permission prompts still remain
 `running`. Cursor exposes no background-work lifecycle event, so a Ready pane
 is narrowly refined from its CLI-owned footer task count.
 
-`am wait --state` continues to accept the pre-0.12 names (`waiting_input`,
-`waiting_permission`, `waiting_custom`, `waiting_background`) as aliases for
-`ready`, `waiting_user`, and `background`. Commands and JSON output emit only
-the canonical names.
+Commands and JSON output emit only the canonical state names: `starting`,
+`running`, `ready`, `waiting_user`, `background`, `idle`, `unknown`, `dead`.
 
 ### Agent dispatch skill
 
