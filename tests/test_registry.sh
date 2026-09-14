@@ -56,7 +56,7 @@ test_registry_extended() {
 
     mkdir -p "$AM_DIR/identities"
     printf '%s' "durable-session-id" > "$AM_DIR/identities/am-durable.sid"
-    assert_eq "durable-session-id" "$(_sessions_log_sidecar_id am-durable)" \
+    assert_eq "durable-session-id" "$(am_core sidecar am-durable id)" \
         "session identity: durable sidecar survives runtime state loss"
 
     # Test: get_field on nonexistent session returns empty
@@ -92,8 +92,12 @@ test_registry_extended() {
     assert_eq "/tmp/r3" "$(registry_get_field rapid-3 directory)" "registry: rapid-3 correct"
 
     # --- pi sessions-log helpers ---
-    assert_eq "--Users-x.y-code-proj--" "$(_slog_encode_pi_dir /Users/x.y/code/proj)" \
-        "_slog_encode_pi_dir: slashes to dashes, dots preserved, wrapped"
+    local enc_root
+    enc_root=$(mktemp -d)
+    export AM_PI_SESSIONS_DIR="$enc_root"
+    assert_eq "$enc_root/--Users-x.y-code-proj--" "$(am_core store-dir pi /Users/x.y/code/proj)" \
+        "store-dir pi: slashes to dashes, dots preserved, wrapped"
+    unset AM_PI_SESSIONS_DIR
 
     local pi_home
     pi_home=$(mktemp -d)
@@ -102,7 +106,7 @@ test_registry_extended() {
     local resolved_pi_dir
     resolved_pi_dir=$(cd "$pi_dir" && pwd -P)
     local enc
-    enc=$(_slog_encode_pi_dir "$resolved_pi_dir")
+    enc=$(basename "$(am_core store-dir pi "$resolved_pi_dir")")
     export AM_PI_SESSIONS_DIR="$pi_home/.pi/agent/sessions"
     mkdir -p "$AM_PI_SESSIONS_DIR/$enc"
     touch "$AM_PI_SESSIONS_DIR/$enc/2026-07-19T08-00-00-000Z_0199aaaa-bbbb-cccc-dddd-eeeeffff0001.jsonl"
@@ -138,7 +142,7 @@ test_registry_extended() {
     local pr_dir="$pr_home/proj"; mkdir -p "$pr_dir"
     local pr_resolved; pr_resolved=$(cd "$pr_dir" && pwd -P)
     export AM_PI_SESSIONS_DIR="$pr_home/sessions"
-    local pr_enc; pr_enc=$(_slog_encode_pi_dir "$pr_resolved")
+    local pr_enc; pr_enc=$(basename "$(am_core store-dir pi "$pr_resolved")")
     mkdir -p "$AM_PI_SESSIONS_DIR/$pr_enc"
     touch "$AM_PI_SESSIONS_DIR/$pr_enc/2026-07-19T08-00-00-000Z_0199bbbb-0000-0000-0000-000000000001.jsonl"
     local pr_log; pr_log=$(mktemp)

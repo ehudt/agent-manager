@@ -470,25 +470,11 @@ _doc_transcript() {
         return 0
     fi
     _doc_kv "session id" "$sid"
-    local resolved path=""
-    resolved=$(cd "$dir" 2>/dev/null && pwd -P) || resolved="$dir"
-    local store
+    local store path=""
     am_agent_field "$agent" store store
     case "$store" in
-        pi)
-            local matches=("$(_pi_sessions_root)/$(_slog_encode_pi_dir "$resolved")"/*_"${sid}".jsonl)
-            [[ -f "${matches[0]}" ]] && path="${matches[0]}"
-            ;;
-        cursor)
-            if [[ -n "$tp" ]]; then path="$tp"
-            else path="$(_cursor_projects_root)/$(_slog_encode_cursor_dir "$resolved")/agent-transcripts/$sid/$sid.jsonl"; fi
-            ;;
-        opencode)
-            if [[ -n "$tp" ]]; then path="$tp"
-            else path="${AM_DIR:-$HOME/.agent-manager}/opencode/$sid.jsonl"; fi
-            ;;
-        claude)
-            path="$HOME/.claude/projects/$(_slog_encode_dir "$resolved")/$sid.jsonl"
+        pi|cursor|opencode|claude)
+            path=$(am_core transcript-path "$agent" "$dir" "$sid" "$tp" 2>/dev/null || true)
             ;;
         *)
             path="($agent: id only; no local transcript check)"

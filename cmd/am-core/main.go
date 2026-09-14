@@ -32,6 +32,10 @@ queries:
   detect-id <session> <dir> [agent]   conversation id from the session's own hook sidecar, verified
   jsonl-exists <dir> <sid> [agent] [transcript]
                                       exit 0 when the transcript still exists
+  store-dir <agent> <dir>             directory holding the agent's transcripts for dir (empty when none)
+  transcript-path <agent> <dir> [sid] [transcript]
+                                      path am would read for the bound conversation (empty when unknown)
+  sidecar <session> <id|transcript>   hook-written sidecar value (durable copy first)
 
 review checkpoints (refs/am/<session>/{checkpoints,baseline} in <dir>'s repo):
   review-init <session> <dir>         record the launch checkpoint unless one exists; prints its id
@@ -110,6 +114,40 @@ func main() {
 		}
 		if !env.JSONLExists(arg(0), arg(1), agent, arg(3)) {
 			os.Exit(1)
+		}
+	case "store-dir":
+		if len(args) < 2 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if dir := env.StoreDir(arg(0), arg(1)); dir != "" {
+			fmt.Println(dir)
+		}
+	case "transcript-path":
+		if len(args) < 2 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if path := env.TranscriptPath(arg(0), arg(1), arg(2), arg(3)); path != "" {
+			fmt.Println(path)
+		}
+	case "sidecar":
+		if len(args) < 2 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		switch arg(1) {
+		case "id":
+			if sid := env.SidecarID(arg(0)); sid != "" {
+				fmt.Println(sid)
+			}
+		case "transcript":
+			if tp := env.SidecarTranscript(arg(0)); tp != "" {
+				fmt.Println(tp)
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "am-core sidecar: unknown kind %q (id|transcript)\n", arg(1))
+			os.Exit(2)
 		}
 	case "review-init", "review-sync", "review-ack", "review-baseline", "review-list", "review-stat", "review-adopt", "review-drop":
 		if len(args) < 2 {

@@ -645,11 +645,11 @@ agent_kill() {
         local sid transcript="" store
         am_agent_field "$agent_type" store store
         if [[ "$store" == "cursor" || "$store" == "opencode" ]]; then
-            transcript=$(_sessions_log_sidecar_transcript "$session_name" 2>/dev/null || true)
+            transcript=$(am_core sidecar "$session_name" transcript 2>/dev/null || true)
             [[ -z "$transcript" ]] && transcript=$(_sessions_log_field "$session_name" "transcript_path" 2>/dev/null || true)
             [[ -n "$transcript" ]] && sessions_log_update "$session_name" "transcript_path" "$transcript"
         fi
-        sid=$(_sessions_log_sidecar_id "$session_name" 2>/dev/null || true)
+        sid=$(am_core sidecar "$session_name" id 2>/dev/null || true)
         if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent_type" "$transcript"; then
             sid=""
         fi

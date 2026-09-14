@@ -399,6 +399,47 @@ func TestEncodedPiSessionDir(t *testing.T) {
 	}
 }
 
+func TestStoreDirAndTranscriptPath(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AM_PI_SESSIONS_DIR", filepath.Join(home, "pi-sessions"))
+	env := Env{AmDir: filepath.Join(home, ".agent-manager"), Home: home}
+
+	claudeStore := filepath.Join(home, ".claude", "projects", encodedClaudeProjectDir(dir))
+	if got := env.StoreDir("claude", dir); got != claudeStore {
+		t.Errorf("StoreDir claude = %q, want %q", got, claudeStore)
+	}
+	if got := env.StoreDir("codex", dir); got != "" {
+		t.Errorf("StoreDir codex = %q, want empty", got)
+	}
+	wantClaude := filepath.Join(claudeStore, "sid-1.jsonl")
+	if got := env.TranscriptPath("claude", dir, "sid-1", ""); got != wantClaude {
+		t.Errorf("TranscriptPath claude = %q, want %q", got, wantClaude)
+	}
+	if got := env.TranscriptPath("claude", dir, "", ""); got != "" {
+		t.Errorf("TranscriptPath claude without id = %q, want empty", got)
+	}
+	cursorPath := filepath.Join(home, "cursor-transcript.jsonl")
+	if got := env.TranscriptPath("cursor", dir, "sid-1", cursorPath); got != cursorPath {
+		t.Errorf("TranscriptPath cursor hook path = %q, want %q", got, cursorPath)
+	}
+
+	piStore := env.StoreDir("pi", dir)
+	if err := os.MkdirAll(piStore, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	piFile := filepath.Join(piStore, "2026-01-01T00-00-00-000Z_sid-pi.jsonl")
+	if err := os.WriteFile(piFile, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.TranscriptPath("pi", dir, "sid-pi", ""); got != piFile {
+		t.Errorf("TranscriptPath pi = %q, want %q", got, piFile)
+	}
+}
+
 func TestFormatDisplayBaseUsesWorkdir(t *testing.T) {
 	s := TmuxSession{Name: "am-wd"}
 	meta := Session{Directory: "/repos/wekapp", Branch: "pr-42", AgentType: "claude", Task: "fix"}

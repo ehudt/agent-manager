@@ -31,8 +31,9 @@ func (e Env) sidecarFirstLine(session, suffix string) string {
 	return ""
 }
 
-// SidecarID mirrors lib/registry.sh:_sessions_log_sidecar_id: the hook-written
-// conversation id, validated against the id character set, unverified.
+// SidecarID is the hook-written conversation id from the durable identity
+// dir (preferred) or the ephemeral state dir, validated against the id
+// character set, unverified.
 func (e Env) SidecarID(session string) string {
 	sid := e.sidecarFirstLine(session, ".sid")
 	if validSessionID.MatchString(sid) {
@@ -41,8 +42,8 @@ func (e Env) SidecarID(session string) string {
 	return ""
 }
 
-// SidecarTranscript mirrors _sessions_log_sidecar_transcript: the Cursor
-// hook's transcript_path, kept only when absolute and present on disk.
+// SidecarTranscript is the Cursor hook's transcript_path, kept only when
+// absolute and present on disk.
 func (e Env) SidecarTranscript(session string) string {
 	p := e.sidecarFirstLine(session, ".transcript")
 	if p == "" || !filepath.IsAbs(p) {
@@ -81,6 +82,64 @@ func storeJSONLExists(amDir, home, store, dir, sid, transcript string) bool {
 // agent's manifest `store` field (empty agent = claude).
 func (e Env) JSONLExists(dir, sid, agent, transcript string) bool {
 	return storeJSONLExists(e.AmDir, e.Home, agentSpec(agent).Store, dir, sid, transcript)
+}
+
+// StoreDir is the directory holding an agent's transcripts for dir, from the
+// manifest `store` layout: the Claude per-project store, Cursor's
+// agent-transcripts dir, pi's session dir, or opencode's mirror root. "" for a
+// layout am cannot address (codex, unknown).
+func (e Env) StoreDir(agent, dir string) string {
+	if dir == "" {
+		return ""
+	}
+	switch agentSpec(agent).Store {
+	case "claude":
+		return filepath.Join(e.Home, ".claude", "projects", encodedClaudeProjectDir(dir))
+	case "cursor":
+		return cursorTranscriptsDir(e.Home, dir)
+	case "pi":
+		return filepath.Join(piSessionsRoot(e.Home), encodedPiSessionDir(dir))
+	case "opencode":
+		return opencodeMirrorRoot(e.AmDir, e.Home)
+	}
+	return ""
+}
+
+// TranscriptPath is where am would read the conversation for (agent, dir,
+// sid): the hook-reported path when the layout stores one (Cursor, opencode),
+// else the standard per-project path. pi's filenames carry a timestamp
+// prefix, so its match is globbed; "" when the layout cannot be addressed or
+// nothing matches. Existence is the caller's check.
+func (e Env) TranscriptPath(agent, dir, sid, transcript string) string {
+	switch agentSpec(agent).Store {
+	case "pi":
+		if sid == "" {
+			return ""
+		}
+		matches, _ := filepath.Glob(filepath.Join(e.StoreDir(agent, dir), "*_"+sid+".jsonl"))
+		if len(matches) > 0 {
+			return matches[0]
+		}
+	case "cursor":
+		if transcript != "" {
+			return transcript
+		}
+		if sid != "" {
+			return cursorStandardTranscriptPath(e.Home, dir, sid)
+		}
+	case "opencode":
+		if transcript != "" {
+			return transcript
+		}
+		if sid != "" {
+			return opencodeMirrorPath(e.AmDir, e.Home, sid)
+		}
+	case "claude":
+		if sid != "" {
+			return filepath.Join(e.Home, ".claude", "projects", encodedClaudeProjectDir(dir), sid+".jsonl")
+		}
+	}
+	return ""
 }
 
 // DetectID backs the bash _sessions_log_detect_id_for_session wrapper: the sidecar id,

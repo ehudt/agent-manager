@@ -318,69 +318,6 @@ sessions_log_snapshot() {
     echo "$snap_file"
 }
 
-# Encode a path as a Claude project directory name (/ and . become -).
-# Mirrored in Go (internal/sessions encodedClaudeProjectDir) and inline in
-# utils.sh claude_first_user_message.
-_slog_encode_dir() {
-    echo "$1" | sed -E 's|[/.]|-|g'
-}
-
-# Encode a path as a pi session directory name. Mirrors pi's session-manager
-# encoding: "--" + path minus leading slash, with / \ : replaced by -, + "--".
-# Unlike Claude's encoding, dots are preserved.
-_slog_encode_pi_dir() {
-    local p="${1#/}"
-    p=$(printf '%s' "$p" | sed -E 's|[/\\:]|-|g')
-    printf -- '--%s--\n' "$p"
-}
-
-# Cursor's project key strips the leading slash, then replaces slash/dot.
-_slog_encode_cursor_dir() {
-    local p="${1#/}"
-    printf '%s\n' "$p" | sed -E 's|[/.]|-|g'
-}
-
-_cursor_projects_root() {
-    echo "${AM_CURSOR_PROJECTS_DIR:-$HOME/.cursor/projects}"
-}
-
-# Root of pi's session storage (override: AM_PI_SESSIONS_DIR, for tests).
-_pi_sessions_root() {
-    echo "${AM_PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
-}
-
-_sessions_log_valid_id() {
-    local sid="$1"
-    [[ -n "$sid" && "$sid" =~ ^[A-Za-z0-9._-]+$ ]]
-}
-
-_sessions_log_sidecar_id() {
-    local session_name="$1"
-    local durable_file="${AM_IDENTITY_DIR:-$AM_DIR/identities}/$session_name.sid"
-    local sid_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid"
-    local source_file="$sid_file"
-    [[ -f "$durable_file" ]] && source_file="$durable_file"
-    [[ -f "$source_file" ]] || return 0
-
-    local sid=""
-    IFS= read -r sid < "$source_file" 2>/dev/null || true
-    if _sessions_log_valid_id "$sid"; then
-        echo "$sid"
-    fi
-}
-
-_sessions_log_sidecar_transcript() {
-    local session_name="$1"
-    local durable_file="${AM_IDENTITY_DIR:-$AM_DIR/identities}/$session_name.transcript"
-    local path_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript"
-    [[ -f "$durable_file" ]] && path_file="$durable_file"
-    [[ -f "$path_file" ]] || return 0
-
-    local transcript=""
-    IFS= read -r transcript < "$path_file" 2>/dev/null || true
-    [[ "$transcript" == /* && -f "$transcript" ]] && echo "$transcript"
-}
-
 # Read a field from the most recent sessions log entry for a session.
 # Usage: _sessions_log_field <session_name> <field>
 _sessions_log_field() {

@@ -561,8 +561,7 @@ func homeDir() string {
 	return h
 }
 
-// validSessionID is the conversation-id character set (bash
-// _sessions_log_valid_id).
+// validSessionID is the conversation-id character set.
 var validSessionID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // piTitleExtract pulls a task candidate out of pi's self-maintained title.
