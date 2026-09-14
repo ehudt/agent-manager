@@ -460,18 +460,6 @@ test_form_modes() {
     assert_eq "0" "$_FORM_DIR_SCROLL_OFFSET" "dir scroll offset: tab resets offset"
 
     $SUMMARY_MODE || echo ""
-    $SUMMARY_MODE || echo "=== Testing disabled field behavior ==="
-
-    # Navigate mode: enter on a disabled text field does not enter edit mode
-    _form_init "/tmp" "claude" ""
-    FORM_DISABLED[task]="true"
-    FORM_CURSOR=2  # task
-    _FORM_MODE="navigate"
-    _form_process_key $'\n'
-    assert_eq "navigate" "$_FORM_MODE" "disabled: enter on disabled text stays in navigate"
-    _form_process_key "x"
-    assert_eq "" "${FORM_VALUES[task]}" "disabled: typing into a disabled text field is ignored"
-    FORM_DISABLED[task]=""
 
     # Cursor block only shows in edit mode (not navigate)
     _form_init "/tmp" "claude" ""

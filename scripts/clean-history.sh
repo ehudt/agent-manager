@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # clean-history.sh - remove agent-manager test noise from zsh history
 #
-# Removes entries matching stub_agent, shell-peek-ready, am-prompt-test,
+# Removes entries matching stub_agent, shell-peek-ready,
 # and bare "bash" commands from test runs.
 #
 # Usage: ./scripts/clean-history.sh [--dry-run]
@@ -27,7 +27,6 @@ before=$(wc -l < "$HISTFILE")
 NOISE_PATTERNS=(
     'stub_agent'
     'shell-peek-ready'
-    'am-prompt-test'
     'test-am-'
     '^: [0-9]+:0;bash$'
     ";cat '/tmp/am-prompt-"

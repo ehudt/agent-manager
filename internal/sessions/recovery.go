@@ -20,7 +20,6 @@ type DesiredSession struct {
 	ProjectDirectory   string `json:"project_directory"`
 	EffectiveDirectory string `json:"effective_directory"`
 	Task               string `json:"task"`
-	CreatedAt          string `json:"created_at"`
 	OrderKey           int64  `json:"order_key"`
 	SessionID          string `json:"session_id"`
 	MachineID          string `json:"machine_id"`

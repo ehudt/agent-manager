@@ -82,9 +82,7 @@ type previewLoadedMsg struct {
 	content string
 }
 
-type killDoneMsg struct {
-	session string
-}
+type killDoneMsg struct{}
 
 type recoveryTickMsg struct{}
 
@@ -212,7 +210,7 @@ func loadPreview(entry sessions.Entry) tea.Cmd {
 func killSession(sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		if killCmd == "" || sessionName == "" {
-			return killDoneMsg{session: sessionName}
+			return killDoneMsg{}
 		}
 		client := clientName
 		if client == "" {
@@ -225,7 +223,7 @@ func killSession(sessionName string) tea.Cmd {
 		}
 		cmd := exec.Command(killCmd, client, sessionName)
 		_ = cmd.Run()
-		return killDoneMsg{session: sessionName}
+		return killDoneMsg{}
 	}
 }
 

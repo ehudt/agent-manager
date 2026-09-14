@@ -26,7 +26,6 @@ declare -gA FORM_VALUES=()
 declare -gA FORM_TYPES=()
 declare -gA FORM_LABELS=()
 declare -gA FORM_OPTIONS=()
-declare -gA FORM_DISABLED=()
 FORM_CURSOR=0
 
 # Mode: "navigate" or "edit"
@@ -63,7 +62,6 @@ _form_init() {
     FORM_TYPES=()
     FORM_LABELS=()
     FORM_OPTIONS=()
-    FORM_DISABLED=()
     FORM_CURSOR=0
     _FORM_DIR_SUGGESTIONS=()
     _FORM_DIR_SUGGESTIONS_LOADED=false
@@ -111,7 +109,6 @@ _form_render_field() {
     local label="${FORM_LABELS[$name]}"
     local type="${FORM_TYPES[$name]}"
     local value="${FORM_VALUES[$name]}"
-    local disabled="${FORM_DISABLED[$name]:-}"
 
     local prefix="  "
     if [[ "$focused" == "true" ]]; then
@@ -126,9 +123,7 @@ _form_render_field() {
     local display=""
     case "$type" in
         text|directory)
-            if [[ "$disabled" == "true" ]]; then
-                display="${_FORM_DIM}--${_FORM_RESET}"
-            elif [[ "$focused" == "true" && "$_FORM_MODE" == "edit" ]]; then
+            if [[ "$focused" == "true" && "$_FORM_MODE" == "edit" ]]; then
                 display="${value}${_FORM_INVERSE} ${_FORM_RESET}"
             else
                 display="$value"
@@ -147,15 +142,6 @@ _form_render_field() {
                     display+="${_FORM_DIM}${_render_opt}${_FORM_RESET} "
                 fi
             done
-            ;;
-        checkbox)
-            if [[ "$disabled" == "true" ]]; then
-                display="[disabled]"
-            elif [[ "$value" == "true" ]]; then
-                display="[x]"
-            else
-                display="[ ]"
-            fi
             ;;
     esac
 
@@ -278,27 +264,15 @@ _form_apply_preset() {
     return 0
 }
 
-# Handle space: toggle checkbox or cycle select
+# Handle space: cycle select
 _form_handle_space() {
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
     local type="${FORM_TYPES[$name]}"
-    local disabled="${FORM_DISABLED[$name]:-}"
 
-    [[ "$disabled" == "true" ]] && return 0
-
-    case "$type" in
-        checkbox)
-            if [[ "${FORM_VALUES[$name]}" == "true" ]]; then
-                FORM_VALUES[$name]="false"
-            else
-                FORM_VALUES[$name]="true"
-            fi
-            ;;
-        select)
-            _form_cycle_select "$name" 1
-            _form_after_select_change "$name"
-            ;;
-    esac
+    if [[ "$type" == "select" ]]; then
+        _form_cycle_select "$name" 1
+        _form_after_select_change "$name"
+    fi
 }
 
 # Handle cursor movement
@@ -320,9 +294,6 @@ _form_handle_char() {
     local ch="$1"
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
     local type="${FORM_TYPES[$name]}"
-    local disabled="${FORM_DISABLED[$name]:-}"
-
-    [[ "$disabled" == "true" ]] && return 0
 
     case "$type" in
         text|directory)
@@ -339,9 +310,6 @@ _form_handle_char() {
 _form_handle_backspace() {
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
     local type="${FORM_TYPES[$name]}"
-    local disabled="${FORM_DISABLED[$name]:-}"
-
-    [[ "$disabled" == "true" ]] && return 0
 
     case "$type" in
         text|directory)
@@ -445,26 +413,17 @@ _form_process_key_navigate() {
         $'\n'|"")
             local name="${FORM_FIELDS[$FORM_CURSOR]}"
             local type="${FORM_TYPES[$name]}"
-            local disabled="${FORM_DISABLED[$name]:-}"
             case "$type" in
                 directory)
-                    if [[ "$disabled" == "true" ]]; then
-                        FORM_KEY_RESULT="continue"
-                    else
-                        _FORM_OPTIONS_OPEN=false
-                        _FORM_MODE="edit"
-                        FORM_KEY_RESULT="continue"
-                    fi
+                    _FORM_OPTIONS_OPEN=false
+                    _FORM_MODE="edit"
+                    FORM_KEY_RESULT="continue"
                     ;;
                 text)
-                    if [[ "$disabled" == "true" ]]; then
-                        FORM_KEY_RESULT="continue"
-                    else
-                        _FORM_MODE="edit"
-                        FORM_KEY_RESULT="continue"
-                    fi
+                    _FORM_MODE="edit"
+                    FORM_KEY_RESULT="continue"
                     ;;
-                checkbox|select)
+                select)
                     FORM_KEY_RESULT="submit"
                     ;;
             esac
@@ -486,19 +445,13 @@ _form_process_key_navigate() {
                     "[C"|"[D")
                         local _nav_name="${FORM_FIELDS[$FORM_CURSOR]}"
                         local _nav_type="${FORM_TYPES[$_nav_name]}"
-                        local _nav_disabled="${FORM_DISABLED[$_nav_name]:-}"
-                        if [[ "$_nav_disabled" != "true" ]]; then
-                            case "$_nav_type" in
-                                select)
-                                    if [[ "$extra" == "[C" ]]; then
-                                        _form_cycle_select "$_nav_name" 1
-                                    else
-                                        _form_cycle_select "$_nav_name" -1
-                                    fi
-                                    _form_after_select_change "$_nav_name"
-                                    ;;
-                                checkbox) _form_handle_space ;;
-                            esac
+                        if [[ "$_nav_type" == "select" ]]; then
+                            if [[ "$extra" == "[C" ]]; then
+                                _form_cycle_select "$_nav_name" 1
+                            else
+                                _form_cycle_select "$_nav_name" -1
+                            fi
+                            _form_after_select_change "$_nav_name"
                         fi
                         FORM_KEY_RESULT="continue"
                         ;;

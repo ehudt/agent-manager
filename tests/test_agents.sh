@@ -820,8 +820,6 @@ test_agent_manifest() {
     assert_eq "--session {id}" "$v" "manifest: out_var form"
     assert_eq "cursor" "$(am_agent_normalize cursor-agent)" "manifest: alias normalizes"
     assert_eq "bogus" "$(am_agent_normalize bogus)" "manifest: unknown name passes through"
-    assert_eq "true" "$(am_agent_known cursor-agent && echo true || echo false)" "manifest: alias is known"
-    assert_eq "false" "$(am_agent_known bogus && echo true || echo false)" "manifest: bogus is unknown"
 
     # Derived helpers in agents.sh
     assert_eq "agent" "${AGENT_COMMANDS[cursor]}" "AGENT_COMMANDS built from the manifest"

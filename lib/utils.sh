@@ -69,13 +69,6 @@ am_agent_field() {
     if [[ -n "${3:-}" ]]; then printf -v "$3" '%s' "$_af_val"; else printf '%s\n' "$_af_val"; fi
 }
 
-# True when the name (or alias) is a manifest type.
-am_agent_known() {
-    local _ak_canon
-    am_agent_normalize "$1" _ak_canon
-    [[ -n "${_AM_AGENT_FIELDS[$_ak_canon.type]-}" ]]
-}
-
 am_agent_manifest_load
 
 # Colors (only if terminal supports it)

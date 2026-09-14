@@ -241,10 +241,7 @@ func FormatDisplayBase(s TmuxSession, meta Session) string {
 	display.WriteString(s.Name)
 
 	// Label from where the agent works now, falling back to the launch dir.
-	dir := meta.Workdir
-	if dir == "" {
-		dir = meta.Directory
-	}
+	dir := meta.EffectiveDir()
 	if dir != "" {
 		display.WriteByte(' ')
 		display.WriteString(filepath.Base(dir))

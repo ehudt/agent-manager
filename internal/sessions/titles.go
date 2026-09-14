@@ -225,11 +225,7 @@ func (e Env) refreshedTitle(name string, meta Session) (string, bool) {
 	case "opencode":
 		title = opencodeTitleExtract(title)
 	default:
-		dir := meta.Workdir
-		if dir == "" {
-			dir = meta.Directory
-		}
-		title = normalizeTitle(title, dir)
+		title = normalizeTitle(title, meta.EffectiveDir())
 	}
 	if !titleValid(title) {
 		// Hysteresis: a title the session already

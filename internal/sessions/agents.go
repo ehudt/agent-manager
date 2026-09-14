@@ -31,7 +31,6 @@ type AgentSpec struct {
 	HookFamily   string // claude | cursor | pi
 	Preflight    string // transcript | id
 	VersionBin   string
-	Lab          string
 }
 
 // Restorable reports whether the manifest gives the agent a resume form.
@@ -123,8 +122,6 @@ func parseAgentManifest(text string) (map[string]AgentSpec, map[string]string, [
 			spec.Preflight = value
 		case "version_bin":
 			spec.VersionBin = value
-		case "lab":
-			spec.Lab = value
 		}
 		specs[typ] = spec
 	}

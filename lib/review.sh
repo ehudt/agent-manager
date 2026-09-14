@@ -10,8 +10,8 @@
 # runs the diff itself through git so the user's pager and diff tooling (delta,
 # difftastic, …) apply.
 #
-# Sourced lazily by the am entry point (_ensure_review); lib/agents.sh calls
-# review_init / review_adopt through `am_core` directly so it never needs this
+# Sourced lazily by the am entry point (_ensure_review); the review lifecycle
+# calls `am_core review-init` / `review-adopt` directly so it never needs this
 # file loaded.
 
 # Effective directory of a session: the registry workdir when the agent moved,
@@ -22,18 +22,6 @@ review_session_dir() {
     IFS='|' read -r directory workdir <<< "$fields"
     [[ -n "$directory" ]] || return 1
     echo "${workdir:-$directory}"
-}
-
-# Record the launch checkpoint of a new session; silent outside a repository.
-# Usage: review_init <session_name> <directory>
-review_init() {
-    am_core review-init "$1" "$2" >/dev/null 2>&1 || true
-}
-
-# Move a closed session's refs to the session that resumed its conversation
-# (`am restore` gives it a new name). Usage: review_adopt <old> <new> <dir>
-review_adopt() {
-    am_core review-adopt "$1" "$2" "$3" >/dev/null 2>&1 || true
 }
 
 # Short id for display.
