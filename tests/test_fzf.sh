@@ -23,14 +23,13 @@ test_annotated_directories() {
     git -C "$git_dir" init -q -b picker-branch
     git -C "$git_dir" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
 
-    # Test _annotate_directory with current git branch
+    # Batch annotation is one am-core call for a whole directory list.
     local annotation
-    annotation=$(_annotate_directory "$git_dir")
-    assert_eq " picker-branch" "$annotation" "annotate: shows current git branch"
+    annotation=$(printf '%s\n' "$git_dir" | _am_branch_batch | cut -f2-)
+    assert_eq "picker-branch" "$annotation" "batch: shows current git branch"
 
-    # Test _annotate_directory with non-git directory
-    annotation=$(_annotate_directory "$non_git_dir")
-    assert_eq "" "$annotation" "annotate: empty for non-git directory"
+    annotation=$(printf '%s\n' "$non_git_dir" | _am_branch_batch | cut -f2-)
+    assert_eq "" "$annotation" "batch: empty for non-git directory"
 
     # Test _strip_annotation with tab-separated line
     local stripped
@@ -41,14 +40,11 @@ test_annotated_directories() {
     stripped=$(_strip_annotation "/tmp/plain-path")
     assert_eq "/tmp/plain-path" "$stripped" "strip: handles plain path"
 
-    # Callers on the startup hot path can request bare paths and avoid one Git
-    # subprocess per suggestion.
-    local saved_annotate_directory plain_list
-    saved_annotate_directory=$(declare -f _annotate_directory)
-    _annotate_directory() { echo " branch"; }
+    # Callers on the startup hot path can request bare paths and avoid the
+    # annotation call per suggestion.
+    local plain_list
     plain_list=$(_list_directories "" false)
     assert_not_contains "$plain_list" $'\t' "directory list: annotations can be disabled"
-    eval "$saved_annotate_directory"
 
     rm -rf "$git_dir" "$non_git_dir"
     rm -rf "$AM_DIR"

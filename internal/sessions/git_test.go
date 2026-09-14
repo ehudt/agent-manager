@@ -66,3 +66,35 @@ func TestGitHeadBranch(t *testing.T) {
 		t.Errorf("empty arg: got %q, want empty", got)
 	}
 }
+
+func TestHeadSignal(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+	writeFile(t, filepath.Join(repo, ".git", "refs", "heads", "main"), "abcdef0123456789abcdef0123456789abcdef01\n")
+	want := "ref: refs/heads/main abcdef0123456789abcdef0123456789abcdef01"
+	if got := HeadSignal(repo); got != want {
+		t.Errorf("symbolic: got %q, want %q", got, want)
+	}
+
+	// Linked worktree: the working-dir .git file points at the gitdir, whose
+// commondir points back at the main repository for the ref.
+	wt := filepath.Join(root, "wt")
+	wtGitDir := filepath.Join(repo, ".git", "worktrees", "wt")
+	writeFile(t, filepath.Join(wt, ".git"), "gitdir: "+wtGitDir+"\n")
+	writeFile(t, filepath.Join(wtGitDir, "HEAD"), "ref: refs/heads/wt-branch\n")
+	writeFile(t, filepath.Join(wtGitDir, "commondir"), "../..\n")
+	writeFile(t, filepath.Join(repo, ".git", "refs", "heads", "wt-branch"), "1111111111111111111111111111111111111111\n")
+	if got := HeadSignal(wt); got != "ref: refs/heads/wt-branch 1111111111111111111111111111111111111111" {
+		t.Errorf("worktree commondir: got %q", got)
+	}
+
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "7777777777777777777777777777777777777777\n")
+	if got := HeadSignal(repo); got != "7777777777777777777777777777777777777777" {
+		t.Errorf("detached: got %q", got)
+	}
+
+	if got := HeadSignal(filepath.Join(root, "plain")); got != "" {
+		t.Errorf("non-repo: got %q, want empty", got)
+	}
+}

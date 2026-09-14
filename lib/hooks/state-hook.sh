@@ -239,58 +239,29 @@ _state_dir_ensure() {
     [[ -d "$AM_STATE_DIR" ]] || (umask 077; mkdir -p "$AM_STATE_DIR")
 }
 
-# Review-checkpoint HEAD watch (lib/review.sh, `am diff`). Reads the HEAD of
-# the repository the tool cwd is in — fork-free: .git/HEAD plus the loose ref
-# file it points at, which git rewrites on every branch update, so commits and
-# pulls are seen as well as checkouts — and compares it with the .head
-# sidecar. Only when it changed does am-core run (a few git forks) to record a
-# branch or head checkpoint; a branch switch therefore moves the review
-# baseline before the agent's next edit. Runs from the detached tail. Cursor's
-# byte copy of this script lives outside the repo and has no am-core; the
-# title scan catches its branch changes within 60s instead.
+# Review-checkpoint HEAD watch (lib/review.sh, `am diff`). Asks `am-core
+# head-signal` for the repository HEAD the tool cwd is in (raw HEAD line plus
+# the resolved sha) and compares it with the .head sidecar. Only when it
+# changed does am-core run (a few git forks) to record a branch or head
+# checkpoint; a branch switch therefore moves the review baseline before the
+# agent's next edit. Runs from the detached tail. Cursor's byte copy of this
+# script lives outside the repo and has no am-core; the title scan catches its
+# branch changes within 60s instead.
 # Usage: _review_head_check <session_name> <cwd>
 _review_head_check() {
-    local session="$1" dir="$2" cur gitdir="" head_now="" prev="" ref sha="" common
-    [[ -n "$dir" && -d "$dir" ]] || return 0
-    cur="$dir"
-    while :; do
-        if [[ -d "$cur/.git" ]]; then
-            gitdir="$cur/.git"
-            break
-        elif [[ -f "$cur/.git" ]]; then
-            IFS= read -r gitdir < "$cur/.git" || true
-            gitdir="${gitdir#gitdir: }"
-            [[ "$gitdir" == /* ]] || gitdir="$cur/$gitdir"
-            break
-        fi
-        [[ "$cur" == "/" || -z "$cur" ]] && return 0
-        cur="${cur%/*}"
-        [[ -z "$cur" ]] && cur="/"
-    done
-    [[ -f "$gitdir/HEAD" ]] || return 0
-    IFS= read -r head_now < "$gitdir/HEAD" || true
+    local session="$1" dir="$2"
+    local core="${BASH_SOURCE[0]%/*}/../../bin/am-core"
+    [[ -x "$core" ]] || return 0
+    local head_now
+    head_now=$("$core" head-signal "$dir" 2>/dev/null) || true
     [[ -n "$head_now" ]] || return 0
-    if [[ "$head_now" == "ref: "* ]]; then
-        ref="${head_now#ref: }"
-        if [[ -f "$gitdir/$ref" ]]; then
-            IFS= read -r sha < "$gitdir/$ref" || true
-        elif [[ -f "$gitdir/commondir" ]]; then
-            # Linked worktree: branches live in the main repository's git dir.
-            IFS= read -r common < "$gitdir/commondir" || true
-            [[ "$common" == /* ]] || common="$gitdir/$common"
-            [[ -f "$common/$ref" ]] && { IFS= read -r sha < "$common/$ref" || true; }
-        fi
-        head_now="$head_now $sha"
-    fi
-    local head_file="$AM_STATE_DIR/$session.head"
+    local head_file="$AM_STATE_DIR/$session.head" prev=""
     if [[ -f "$head_file" ]]; then
         IFS= read -r prev < "$head_file" || true
     fi
     [[ "$head_now" == "$prev" ]] && return 0
     _state_dir_ensure
     printf '%s\n' "$head_now" > "$head_file"
-    local core="${BASH_SOURCE[0]%/*}/../../bin/am-core"
-    [[ -x "$core" ]] || return 0
     AM_DIR="$AM_DIR" AM_STATE_DIR="$AM_STATE_DIR" "$core" review-sync "$session" "$dir" >/dev/null 2>&1 || true
     # A branch checkpoint moved the baseline: relabel and recount on the next tick.
     rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true

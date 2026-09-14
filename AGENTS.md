@@ -71,7 +71,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/doctor.sh` | `am doctor [session] [--capture]`: one report with every state input (registry row, tmux panes/titles, hook sidecars, identity, transcript, process tree, desired record, resolver layer via `AM_STATE_DEBUG_SINK`) plus the version-drift canary (installed agents vs `tests/live_lab/VERIFIED`, observed hook payload keys vs the fields the hook reads) |
 | `cmd/am-browse/main.go` | Compiled Go TUI session browser (bubbletea); primary UI for `am` |
 | `cmd/am-list-internal/main.go` | Compiled Go binary for fast session list generation |
-| `cmd/am-core/main.go` | Compiled Go back end of the bash maintenance and query wrappers: `tick` (title/workdir/branch refresh + restore scan + gc, one status-bar tick), `titles`, `restore-scan`, `gc`, `slog-gc`, `restorable`, `first-message`, `detect-id`, `jsonl-exists`, `store-dir`, `transcript-path`, `sidecar`. Paths from the environment (`AM_DIR`, `AM_STATE_DIR`, `AM_IDENTITY_DIR`, `AM_SESSIONS_LOG`, `AM_TMUX_SOCKET`, `AM_SESSION_PREFIX`, `HOME`) with utils.sh's defaults |
+| `cmd/am-core/main.go` | Compiled Go back end of the bash maintenance and query wrappers: `tick` (title/workdir/branch refresh + restore scan + gc, one status-bar tick), `titles`, `restore-scan`, `gc`, `slog-gc`, `restorable`, `first-message`, `detect-id`, `jsonl-exists`, `store-dir`, `transcript-path`, `sidecar`, `branch`, `branch-batch`, `head-signal`. Paths from the environment (`AM_DIR`, `AM_STATE_DIR`, `AM_IDENTITY_DIR`, `AM_SESSIONS_LOG`, `AM_TMUX_SOCKET`, `AM_SESSION_PREFIX`, `HOME`) with utils.sh's defaults |
 | `internal/sessions/` | Shared Go package: tmux queries, registry parsing and locking, formatting, title/workdir/branch refresh (`titles.go`), session identity and transcript readers (`identity.go`), sessions-log rewrites (`slog.go`), the periodic maintenance entry points and GC (`maintenance.go`, `reap.go`), environment/paths (`env.go`) |
 | `lib/fzf.sh` | Browser launcher (`fzf_main`), directory picker, restore picker, `am list` helpers |
 | `lib/preview` | Standalone preview script (extracts first user message, captures pane) |
@@ -208,8 +208,8 @@ it flips with `cd` while the process cwd stays put — so an agent that moves
 into another checkout is relabelled without pane scraping. The scan
 (`auto_title_scan` / `RefreshTitles`) turns the
 sidecar into the registry `workdir` and re-reads the branch from the
-effective directory's `.git/HEAD` (fork-free `git_head_branch` /
-`GitHeadBranch`), so a checkout in place also updates the label. Agents
+effective directory's `.git/HEAD` (`GitHeadBranch`), so a checkout in place
+also updates the label. Agents
 without hooks, and shell tools that hand out a checkout (`wp allocate`), call
 `am cd <dir>` instead.
 
@@ -628,7 +628,7 @@ am restore
 - `am_file_mode(path)` / `am_file_size(path)` - Octal permission bits / byte size through the same flavor logic (`_am_stat_field`, regex-validated with a one-time flavor flip). Use these instead of `stat -f X || stat -c Y`: on GNU coreutils `stat -f` is filesystem status and succeeds with a blob, so the fallback never runs (the CI-only doctor crash and eight 0700 test failures on 2026-09-07)
 - `am_core(subcommand, args...)` - Run `$AM_ROOT_DIR/bin/am-core` with the caller's effective paths passed explicitly (`AM_DIR`, `AM_SESSIONS_LOG`, `AM_TMUX_SOCKET`, `AM_SESSION_PREFIX`, and `AM_STATE_DIR` / `AM_IDENTITY_DIR` when set) — bash derives them after sourcing and tests re-point them, so exports cannot be trusted. Missing binary: one stderr line, return 127; the periodic wrappers turn that into 0, the query wrappers into a failed lookup
 - `am_mkdir_private(dir)` - `mkdir -p` with mode 700 (state, log, results, queue dirs)
-- `git_head_branch(dir, [out_var])` - Fork-free branch lookup: walk up to the nearest `.git` (dir or worktree/submodule pointer file), read HEAD → branch name, 8-char sha when detached, empty outside a repo. `detect_git_branch` delegates to it; Go twin `GitHeadBranch`
+- `git_head_branch(dir, [out_var])` - Wrapper over `am-core branch` (Go `GitHeadBranch`, sole implementation): branch name, 8-char sha when detached, empty outside a repo. `detect_git_branch` delegates to it
 - `claude_first_user_message(dir, session_id)` - Wrapper over `am-core first-message claude` (Go `FirstMessage`): first user message of exactly the Claude transcript bound to a session; the directory only locates the per-project store. No id → empty (never the newest file in the store). Used by the preview and doctor scripts
 - `pi_first_user_message(dir, session_id)` - Pi twin, same contract (`AM_PI_SESSIONS_DIR` overrides the store root)
 - `cursor_first_user_message(dir, [session_id], [transcript_path])` - Cursor twin: the hook-reported transcript path, else the standard layout addressed by id (`AM_CURSOR_PROJECTS_DIR` overrides the root); neither → empty
@@ -667,7 +667,7 @@ am restore
 - `fzf_list_json()` - JSON output of sessions for `am list --json`
 - `fzf_list_simple()` - Plain text session list for `am list`
 - `fzf_pick_directory()` - Directory picker with git-branch annotations and path completion
-- `_annotate_directory(path)` - Annotate path with its current git branch
+- `_am_branch_batch()` - Read paths on stdin, print `path<TAB>branch` via one `am-core branch-batch` call (used by `_list_directories` to annotate a whole list without a fork per path)
 - `_dir_repo_scan_cached()` - Git-repo suggestions for `_list_directories`, served from `$AM_DIR/.dir_repo_cache` and refreshed in the background when older than `AM_DIR_REPO_CACHE_TTL` (default 1h); the raw `_dir_repo_scan` find is ~1s+ on large trees and never runs on the interactive path
 - `fzf_restore_picker()` - Browse closed sessions, select to resume via `claude --resume`
 

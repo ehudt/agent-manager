@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
@@ -36,6 +37,9 @@ queries:
   transcript-path <agent> <dir> [sid] [transcript]
                                       path am would read for the bound conversation (empty when unknown)
   sidecar <session> <id|transcript>   hook-written sidecar value (durable copy first)
+  branch <dir>                        branch name, or 8-char sha for a detached HEAD (empty outside a repo)
+  branch-batch                        read paths on stdin, print "path<TAB>branch" per line
+  head-signal <dir>                   .head sidecar value: HEAD line + resolved sha (empty outside a repo)
 
 review checkpoints (refs/am/<session>/{checkpoints,baseline} in <dir>'s repo):
   review-init <session> <dir>         record the launch checkpoint unless one exists; prints its id
@@ -148,6 +152,32 @@ func main() {
 		default:
 			fmt.Fprintf(os.Stderr, "am-core sidecar: unknown kind %q (id|transcript)\n", arg(1))
 			os.Exit(2)
+		}
+	case "branch":
+		if len(args) < 1 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if branch := sessions.GitHeadBranch(arg(0)); branch != "" {
+			fmt.Println(branch)
+		}
+	case "branch-batch":
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			dir := scanner.Text()
+			if dir == "" {
+				continue
+			}
+			fmt.Printf("%s\t%s\n", dir, sessions.GitHeadBranch(dir))
+		}
+	case "head-signal":
+		if len(args) < 1 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if signal := sessions.HeadSignal(arg(0)); signal != "" {
+			fmt.Println(signal)
 		}
 	case "review-init", "review-sync", "review-ack", "review-baseline", "review-list", "review-stat", "review-adopt", "review-drop":
 		if len(args) < 2 {

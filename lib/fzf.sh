@@ -88,31 +88,35 @@ _list_directories() {
         fi
     done
 
-    # Output with annotations
+    # One am-core call annotates the whole list; a per-path fork would cost
+    # seconds on a long list.
+    local -A branches=()
+    if [[ "$annotate" == "true" ]]; then
+        local bp bb
+        while IFS=$'\t' read -r bp bb; do
+            [[ -n "$bp" ]] && branches["$bp"]="$bb"
+        done < <(printf '%s\n' "${unique_paths[@]}" | _am_branch_batch)
+    fi
+
     for p in "${unique_paths[@]}"; do
-        if [[ "$annotate" != "true" ]]; then
-            echo "$p"
-            continue
-        fi
-        local annotation
-        annotation=$(_annotate_directory "$p")
-        if [[ -n "$annotation" ]]; then
-            printf '%s\t%s\n' "$p" "$annotation"
+        if [[ "$annotate" == "true" && -n "${branches[$p]:-}" ]]; then
+            printf '%s\t %s\n' "$p" "${branches[$p]}"
         else
             echo "$p"
         fi
     done
 }
 
-# Annotate a directory path with its current git branch.
-# Usage: _annotate_directory <path>
-# Returns: annotation string like ' main' or empty
-_annotate_directory() {
-    local dir_path="$1"
-    local branch=""
-    branch=$(detect_git_branch "$dir_path")
-    [[ -n "$branch" ]] || return 0
-    echo " $branch"
+# Branch per path read from stdin as "path<TAB>branch" lines. One am-core
+# call for a whole directory list; falls back to the bare paths (no
+# annotation) when the binary or its root is unavailable.
+_am_branch_batch() {
+    local core="${AM_ROOT_DIR:-}/bin/am-core"
+    if [[ -x "$core" ]]; then
+        "$core" branch-batch 2>/dev/null
+    else
+        cat
+    fi
 }
 
 # Strip annotation from a picker line, returning just the path
@@ -131,8 +135,9 @@ fzf_pick_directory() {
     export -f _list_directories
     export -f _dir_repo_scan
     export -f _dir_repo_scan_cached
-    export -f _annotate_directory
+    export -f _am_branch_batch
     export -f _strip_annotation
+    export AM_ROOT_DIR
     local initial_list
     initial_list=$(_list_directories | grep -v '^$')
 
