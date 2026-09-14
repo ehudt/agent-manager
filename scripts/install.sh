@@ -304,6 +304,10 @@ _install_cursor_hooks() {
     rm -f "$helper"
     cp "$hook_script" "$helper"
     chmod 755 "$helper"
+    # The hook resolves the agent's family from this manifest; Cursor's copy
+    # runs outside the repo, so keep a materialized copy beside it.
+    local manifest_src="${hook_script%/*}/../agents.manifest"
+    [[ -r "$manifest_src" ]] && cp "$manifest_src" "$hooks_dir/agents.manifest"
 
     local tmp_file
     tmp_file=$(mktemp)
@@ -457,6 +461,10 @@ _uninstall_cursor_hooks() {
     fi
     if [[ -f "$helper" ]] && grep -Fq "lib/hooks/state-hook.sh - Agent hook" "$helper"; then
         if $DRY_RUN; then plan "remove $helper"; else rm -f "$helper"; log "Removed $helper"; fi
+    fi
+    local manifest="${helper%/*}/agents.manifest"
+    if [[ -f "$manifest" ]]; then
+        if $DRY_RUN; then plan "remove $manifest"; else rm -f "$manifest"; log "Removed $manifest"; fi
     fi
 }
 

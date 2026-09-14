@@ -1989,6 +1989,17 @@ _install_refresh() {
         fi
     fi
 
+    # The Cursor hook copy resolves agent families from the manifest beside it
+    # (it runs outside the repo); keep that copy current.
+    local cursor_manifest="${cursor_helper%/*}/agents.manifest"
+    local manifest_src="$AM_SCRIPT_DIR/lib/agents.manifest"
+    if [[ -f "$cursor_helper" && ! -L "$cursor_helper" && -r "$manifest_src" ]] \
+        && ! cmp -s "$cursor_manifest" "$manifest_src"; then
+        if cp "$manifest_src" "$cursor_manifest" 2>/dev/null; then
+            done_parts+=("cursor manifest")
+        fi
+    fi
+
     # opencode loads the state plugin from its global plugin dir; keep the
     # symlink pointed at the checkout so a moved repo leaves no dangling link.
     local opencode_plugins="${OPENCODE_PLUGINS_DIR:-$HOME/.config/opencode/plugins}"

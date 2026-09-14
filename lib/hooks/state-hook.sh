@@ -453,17 +453,15 @@ case "$hook_type" in
         hook_family="cursor" ;;
 esac
 
-# Hook family of a registered agent_type, from lib/agents.manifest when the
-# hook runs from the repo (lib/hooks/ → lib/agents.manifest), else from the
-# inline table below — Cursor runs a byte copy of this script from
-# ~/.cursor/hooks, outside the repo. tests/test_agents.sh keeps the table
-# equal to the manifest. Prints nothing for unknown types.
+# Hook family of a registered agent_type, from the manifest: the repo copy
+# (lib/hooks/ → ../agents.manifest) or the manifest installed next to
+# Cursor's out-of-repo hook copy. Prints nothing for unknown types.
 # Usage: _agent_hook_family <agent_type> <out_var>
-_AM_HOOK_FAMILY_FALLBACK="claude=claude codex=claude cursor=cursor pi=pi opencode=opencode"
 _agent_hook_family() {
-    local _manifest="${AM_AGENT_MANIFEST:-${BASH_SOURCE[0]%/*}/../agents.manifest}" _key _value _pair
+    local _dir="${BASH_SOURCE[0]%/*}" _manifest _key _value
     printf -v "$2" '%s' ""
-    if [[ -r "$_manifest" ]]; then
+    for _manifest in "${AM_AGENT_MANIFEST:-}" "$_dir/agents.manifest" "$_dir/../agents.manifest"; do
+        [[ -n "$_manifest" && -r "$_manifest" ]] || continue
         while read -r _key _value; do
             if [[ "$_key" == "$1.hook_family" ]]; then
                 printf -v "$2" '%s' "$_value"
@@ -471,12 +469,6 @@ _agent_hook_family() {
             fi
         done < "$_manifest"
         return 0
-    fi
-    for _pair in $_AM_HOOK_FAMILY_FALLBACK; do
-        if [[ "${_pair%%=*}" == "$1" ]]; then
-            printf -v "$2" '%s' "${_pair#*=}"
-            return 0
-        fi
     done
     return 0
 }

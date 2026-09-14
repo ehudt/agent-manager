@@ -471,6 +471,8 @@ EOF
         test -f "$temp_cursor_config/hooks.json"
     assert_cmd_succeeds "install: Cursor hook helper copied to temp cursor dir" \
         test -f "$temp_cursor_config/hooks/am-state-hook.sh"
+    assert_cmd_succeeds "install: manifest copied beside the Cursor hook" \
+        test -f "$temp_cursor_config/hooks/agents.manifest"
     assert_cmd_succeeds "install: pi extension symlinked into temp ext dir" \
         test -L "$temp_pi_ext/am-state.ts"
 

@@ -842,19 +842,9 @@ test_agent_manifest() {
     assert_eq "$(cd "$LIB_DIR" && readlink agents.manifest)" "../internal/sessions/agents.manifest" \
         "manifest: lib/agents.manifest links to the Go-embedded file"
 
-    # The hook's inline fallback table (used by Cursor's out-of-repo copy)
-    # must say what the manifest says.
-    local table pair
-    table=$(sed -nE 's/^_AM_HOOK_FAMILY_FALLBACK="([^"]*)"$/\1/p' "$LIB_DIR/hooks/state-hook.sh")
-    assert_not_empty "$table" "hook: fallback family table present"
-    missing=""
-    for pair in $table; do
-        [[ "$(am_agent_field "${pair%%=*}" hook_family)" == "${pair#*=}" ]] || missing+=" $pair"
-    done
-    for t in "${AM_AGENT_TYPES[@]}"; do
-        [[ " $table " == *" $t="* ]] || missing+=" (no entry for $t)"
-    done
-    assert_eq "" "$missing" "hook: fallback family table matches the manifest"
+    # The hook resolves each type's family from the manifest (repo copy, or
+    # the copy installed beside Cursor's out-of-repo hook); there is no
+    # hand-maintained table to drift.
 
     # A custom manifest replaces the built-in one.
     local alt_dir real_manifest="$AM_AGENT_MANIFEST"
