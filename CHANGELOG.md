@@ -6,6 +6,17 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.36.0] - 2026-09-14
+
+- `am wait --state` and state-file reads no longer accept the pre-0.12
+  `waiting_input` / `waiting_permission` / `waiting_custom` /
+  `waiting_background` aliases; use the canonical `ready`, `waiting_user`,
+  `background` names.
+- Internal consolidation (no behavior change): the bash git-branch, transcript
+  path, and sidecar helpers now call the Go binaries instead of reimplementing
+  them; the state hook resolves agent families from the manifest; dead code
+  removed across bash and Go.
+
 ## [0.35.0] - 2026-09-13
 
 - `am install --dry-run` prints every file the setup would create, link, or
