@@ -575,6 +575,15 @@ _doc_recent_debug() {
         _doc_h2 "last state-debug transitions"
         awk -F'\t' -v s="$name" '$2 == s { if ($5 != last) { print "  " $1 "\t" $4 "\t" $5; last = $5 } }' "$state_log" 2>/dev/null | tail -8
     fi
+    local ev="${AM_EVENTS_LOG-$AM_DIR/events.log}"
+    if [[ -n "$ev" && -f "$ev" ]]; then
+        local lines
+        lines=$(awk -F'\t' -v s="$name" '$4 == s || $5 ~ ("(^| )from=" s "( |$)")' "$ev" 2>/dev/null | tail -8 || true)
+        if [[ -n "$lines" ]]; then
+            _doc_h2 "last events for $name (more: am log $name)"
+            sed 's/^/  /' <<< "$lines"
+        fi
+    fi
     return 0
 }
 
@@ -662,6 +671,40 @@ _doc_notify() {
     esac
 }
 
+# Events log (lib/utils.sh am_event): size, failure counts over the last 24h
+# by event name, and the newest failure lines. The first section to read when
+# something "just didn't happen" — a launch, a restore, a send, a banner.
+_doc_events() {
+    _doc_h2 "events log"
+    local ev="${AM_EVENTS_LOG-$AM_DIR/events.log}"
+    if [[ -z "$ev" ]]; then
+        _doc_kv "events.log" "disabled (AM_EVENTS_LOG is empty)"
+        return 0
+    fi
+    if [[ ! -f "$ev" ]]; then
+        _doc_kv "events.log" "$ev (no events yet)"
+        return 0
+    fi
+    local size lines
+    size=$(am_file_size "$ev" 2>/dev/null || echo "?")
+    lines=$(awk 'END { print NR }' "$ev" 2>/dev/null || echo "?")
+    _doc_kv "events.log" "$ev ($lines lines, $size bytes; cap 8MB)"
+    local cutoff
+    TZ=UTC printf -v cutoff '%(%Y-%m-%dT%H:%M:%SZ)T' "$(( $(date +%s) - 86400 ))"
+    local counts
+    counts=$(awk -F'\t' -v c="$cutoff" \
+        '$1 >= c && $3 ~ /fail|refused|error|drop|abandoned|blocked|unverified|warn/ { n[$3]++ }
+         END { for (k in n) printf "%d\t%s\n", n[k], k }' "$ev" 2>/dev/null | sort -rn || true)
+    if [[ -z "$counts" ]]; then
+        _doc_ok "no failures in the last 24h"
+        return 0
+    fi
+    _doc_kv "failures, last 24h" ""
+    awk -F'\t' '{ printf "    %6d  %s\n", $1, $2 }' <<< "$counts"
+    _doc_kv "newest failures" "(am log --grep 'fail|refused|error')"
+    awk -F'\t' '$3 ~ /fail|refused|error|drop|abandoned|blocked|unverified/' "$ev" 2>/dev/null | tail -5 | sed 's/^/    /' || true
+}
+
 _doc_global() {
     _doc_h1 "am doctor"
     _doc_versions
@@ -670,6 +713,7 @@ _doc_global() {
     _doc_hooks_installed
     _doc_notify
     _doc_drift
+    _doc_events
     _doc_h2 "registry vs tmux"
     local -A live=() reg=()
     local n
@@ -705,7 +749,7 @@ _doc_capture() {
     mkdir -p "$dir/am-state"
     cp "$state_dir"/* "$dir/am-state/" 2>/dev/null || true
     cp -R "$AM_DIR/hook-schema" "$dir/hook-schema" 2>/dev/null || true
-    for f in .hook-debug.log .state-debug.log titler.log; do
+    for f in events.log gc.log queue.log .hook-debug.log .state-debug.log titler.log; do
         [[ -f "$AM_DIR/$f" ]] && tail -2000 "$AM_DIR/$f" > "$dir/$f.tail" 2>/dev/null
     done
     local n

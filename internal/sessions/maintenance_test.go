@@ -456,6 +456,75 @@ func TestCapLog(t *testing.T) {
 	}
 }
 
+// EventLog: the Go writer of events.log shares the bash line shape, honors
+// AM_EVENTS_LOG (empty disables), and the title scan caps the file.
+func TestEventLogAndCap(t *testing.T) {
+	amDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	log := filepath.Join(amDir, "events.log")
+	t.Setenv("AM_EVENTS_LOG", log)
+	t.Setenv("AM_SESSION_NAME", "am-disp01")
+
+	EventLog(amDir, "core.error", "", "sub=tick", "err=a\tb\nc", "long="+strings.Repeat("x", 500))
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("events.log not written: %v", err)
+	}
+	line := strings.TrimRight(string(b), "\n")
+	f := strings.Split(line, "\t")
+	if len(f) != 5 {
+		t.Fatalf("want 5 TSV fields, got %d: %q", len(f), line)
+	}
+	if _, err := time.Parse("2006-01-02T15:04:05Z", f[0]); err != nil {
+		t.Fatalf("field 1 is not a UTC rfc3339 stamp: %q", f[0])
+	}
+	comp, pid, ok := strings.Cut(f[1], ":")
+	if !ok || comp == "" {
+		t.Fatalf("field 2 is not component:pid: %q", f[1])
+	}
+	if _, err := strconv.Atoi(pid); err != nil {
+		t.Fatalf("field 2 pid is not numeric: %q", f[1])
+	}
+	if f[2] != "core.error" || f[3] != "-" {
+		t.Fatalf("event/session fields: %q %q", f[2], f[3])
+	}
+	if !strings.HasPrefix(f[4], "from=am-disp01 sub=tick err=a b c long=") {
+		t.Fatalf("kv field: %q", f[4])
+	}
+	if len(f[4]) > 480 {
+		t.Fatalf("500-char value not capped at 400: %d", len(f[4]))
+	}
+
+	t.Setenv("AM_EVENTS_LOG", "")
+	EventLog(amDir, "core.error", "s", "k=v")
+	b2, _ := os.ReadFile(log)
+	if len(b2) != len(b) {
+		t.Fatalf("empty AM_EVENTS_LOG still wrote: %q", b2[len(b):])
+	}
+	t.Setenv("AM_EVENTS_LOG", log)
+	t.Setenv("AM_SESSION_NAME", "")
+	EventLog(amDir, "review.measure_fail", "am-abc123", "rc=1")
+	b3, _ := os.ReadFile(log)
+	if !strings.HasSuffix(strings.TrimRight(string(b3), "\n"), "\treview.measure_fail\tam-abc123\trc=1") {
+		t.Fatalf("second line without from=: %q", b3[len(b):])
+	}
+
+	// The title scan caps the file at eventsLogCap, newest half kept.
+	env := testEnv(t, amDir)
+	fakeTmux(t)
+	row := strings.Repeat("y", 199) + "\n"
+	fh, _ := os.OpenFile(log, os.O_APPEND|os.O_WRONLY, 0o644)
+	for i := 0; i < (eventsLogCap+1024*1024)/len(row); i++ {
+		fh.WriteString(row)
+	}
+	fh.Close()
+	RefreshTitles(env, true)
+	st, _ := os.Stat(log)
+	if st.Size() > int64(eventsLogCap/2)+1024 {
+		t.Fatalf("oversized events.log not capped: %d", st.Size())
+	}
+}
+
 // --- GC ------------------------------------------------------------------
 
 // Mirrors tests/test_registry.sh test_registry_gc_extras: sessions-log GC

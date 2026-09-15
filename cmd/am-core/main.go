@@ -187,14 +187,20 @@ func main() {
 		if err := reviewCmd(env, cmd, args); err != nil {
 			fmt.Fprintf(os.Stderr, "am-core %s: %v\n", cmd, err)
 			if sessions.ErrNoRepo(err) {
+				// By design outside a repository (launch runs review-init
+				// everywhere); not an event.
 				os.Exit(3)
 			}
+			// Callers mostly discard this stderr (`|| true`); the events
+			// log keeps the message.
+			sessions.EventLog(env.AmDir, "core.error", arg(0), "sub="+cmd, fmt.Sprintf("args=%q", args), "err="+err.Error())
 			os.Exit(1)
 		}
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
 		fmt.Fprintf(os.Stderr, "am-core: unknown command %q\n%s", cmd, usage)
+		sessions.EventLog(env.AmDir, "core.error", "", "sub="+cmd, "err=unknown command")
 		os.Exit(2)
 	}
 }

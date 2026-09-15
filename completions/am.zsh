@@ -19,6 +19,7 @@ _am_flags_for() {
         status) echo "--json" ;;
         kill) echo "--all --state" ;;
         doctor) echo "--capture" ;;
+        log) echo "-n --lines --grep -g -f --follow --path" ;;
         result) echo "--wait" ;;
         interrupt) echo "-i --interactive" ;;
         install) echo "--refresh --dry-run --prefix --shell-rc --tmux-conf --no-shell --no-tmux --copy -y --yes" ;;
@@ -49,6 +50,7 @@ _am() {
         'info:Registry metadata of a session'
         'status:Detailed session info'
         'doctor:Every input behind a session state'
+        'log:Events log (launches, kills, sends, failures)'
         'wait:Block until sessions reach a state'
         'done:Record a result summary (inside a session)'
         'result:Read a session result'
@@ -82,7 +84,7 @@ _am() {
     fi
 
     case "$cmd" in
-        send|peek|attach|shell|review|kill|info|status|wait|result|interrupt|doctor|diff)
+        send|peek|attach|shell|review|kill|info|status|wait|result|interrupt|doctor|log|diff)
             compadd -- ${(f)"$(_am_sessions)"} ;;
         new|cd)
             _files -/ ;;

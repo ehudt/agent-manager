@@ -95,10 +95,42 @@ log_success() {
 
 log_warn() {
     echo -e "${YELLOW}warn:${RESET} $*" >&2
+    am_event warn - "fn=${FUNCNAME[1]:-main}" "msg=$*"
 }
 
 log_error() {
     echo -e "${RED}error:${RESET} $*" >&2
+    am_event error - "fn=${FUNCNAME[1]:-main}" "msg=$*"
+}
+
+# Append one line to the events log, the always-on after-the-fact record of
+# lifecycle events (launch, kill, restore, send, provider resolve) and of
+# every failure the code otherwise swallows. Not a debug trace: nothing on a
+# hot path (state resolution, status-bar render, list, tick, the hook's
+# success path) may call it — only failures and rare lifecycle events.
+#
+# Format (TSV): <utc rfc3339> TAB <component>:<pid> TAB <event> TAB <session|->
+# TAB k=v k=v ...; `from=<AM_SESSION_NAME>` is added when the caller runs
+# inside an am session so a dispatcher's actions are attributable. Values
+# are sanitized (tabs/newlines → space) and capped at 400 chars. Fork-free:
+# printf's %(…)T supplies the timestamp, so a call costs one append. The
+# file is capped at 8MB (newest half kept) by the Go title scan with the
+# other logs. AM_EVENTS_LOG overrides the path; empty disables. Never fails
+# the caller.
+# Usage: am_event <event> <session|-> [k=v ...]
+am_event() {
+    local sink="${AM_EVENTS_LOG-$AM_DIR/events.log}"
+    [[ -n "$sink" ]] || return 0
+    local event="$1" session="${2:--}" kv="" v
+    shift 2 2>/dev/null || shift $#
+    [[ -n "${AM_SESSION_NAME:-}" ]] && kv="from=$AM_SESSION_NAME"
+    for v in "$@"; do
+        v="${v//[$'\t\n\r']/ }"
+        kv+="${kv:+ }${v:0:400}"
+    done
+    TZ=UTC printf '%(%Y-%m-%dT%H:%M:%SZ)T\t%s:%s\t%s\t%s\t%s\n' -1 \
+        "${AM_EVENT_COMPONENT:-am}" "$$" "$event" "${session//[$'\t\n\r']/ }" "$kv" \
+        >> "$sink" 2>/dev/null || true
 }
 
 die() {
@@ -406,11 +438,24 @@ am_core() {
         echo "am: bin/am-core is not built. Run 'make' (or 'am install') to build it." >&2
         return 127
     fi
+    local rc=0
     command env "AM_DIR=$AM_DIR" "AM_SESSIONS_LOG=$AM_SESSIONS_LOG" \
         "AM_TMUX_SOCKET=$AM_TMUX_SOCKET" "AM_SESSION_PREFIX=$AM_SESSION_PREFIX" \
         ${AM_STATE_DIR:+"AM_STATE_DIR=$AM_STATE_DIR"} \
         ${AM_IDENTITY_DIR:+"AM_IDENTITY_DIR=$AM_IDENTITY_DIR"} \
-        "$bin" "$@"
+        ${AM_EVENTS_LOG+"AM_EVENTS_LOG=$AM_EVENTS_LOG"} \
+        "$bin" "$@" || rc=$?
+    # jsonl-exists answers with exit 1 (a predicate, not a failure) and the
+    # review-* verbs exit 3 outside a repository (by design, launch runs
+    # review-init in every directory); every other non-zero exit is one the
+    # callers mostly swallow (`|| true`), so it is recorded here, once, for
+    # all of them. The binary logs the error text itself (Go EventLog); this
+    # line records who asked.
+    if (( rc != 0 )) && ! [[ "${1:-}" == jsonl-exists && rc -eq 1 ]] \
+        && ! [[ "${1:-}" == review-* && rc -eq 3 ]]; then
+        am_event core.fail - "sub=${1:-}" "args=${*:2:2}" "rc=$rc" "fn=${FUNCNAME[1]:-main}"
+    fi
+    return $rc
 }
 
 # Generate a short hash for session naming

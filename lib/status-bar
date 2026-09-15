@@ -512,7 +512,10 @@ batch_len=0
 
 _batch_flush() {
     (( ${#batch_args[@]} > 0 )) || return 0
-    am_tmux "${batch_args[@]}" >/dev/null 2>&1 || true
+    # The one failure that matters here: a rejected batch leaves every tab
+    # stale with no visible error (the ~16KB cap above). Logged, never fatal.
+    am_tmux "${batch_args[@]}" >/dev/null 2>&1 \
+        || AM_EVENT_COMPONENT=bar am_event bar.flush_fail - "rc=$?" "args=${#batch_args[@]}" "bytes=$batch_len"
     batch_args=()
     batch_len=0
 }

@@ -462,8 +462,88 @@ test_utils_dep_minimums() {
 }
 
 
+# am_event: the always-on events log writer, and `am log` over it.
+test_events_log() {
+    $SUMMARY_MODE || echo "=== Testing am_event / am log ==="
+    source "$LIB_DIR/utils.sh"
+
+    local tmp log
+    tmp=$(mktemp -d)
+    log="$tmp/events.log"
+    local long
+    long=$(printf 'k=%0500d' 0)
+
+    # One line, five TSV fields, from= attribution, sanitized and capped values.
+    (
+        AM_EVENTS_LOG="$log" AM_SESSION_NAME="am-disp01"
+        am_event launch.ok am-abc123 "dir=/x/y" $'multi\tline\nvalue' "$long"
+    )
+    assert_eq "1" "$(awk 'END { print NR }' "$log")" "am_event: one line per call"
+    assert_eq "5" "$(awk -F'\t' '{ print NF }' "$log")" "am_event: five TAB-separated fields (values sanitized)"
+    assert_cmd_succeeds "am_event: field 1 is a UTC rfc3339 timestamp" \
+        grep -Eq $'^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\t' "$log"
+    assert_cmd_succeeds "am_event: field 2 is component:pid" grep -Eq $'\tam:[0-9]+\t' "$log"
+    assert_eq "launch.ok" "$(cut -f3 "$log")" "am_event: field 3 is the event"
+    assert_eq "am-abc123" "$(cut -f4 "$log")" "am_event: field 4 is the session"
+    assert_contains "$(cut -f5 "$log")" "from=am-disp01 dir=/x/y multi line value k=" \
+        "am_event: kv field starts with from= and the sanitized values"
+    local kv_len
+    kv_len=$(cut -f5 "$log" | wc -c | tr -d ' ')
+    assert_cmd_succeeds "am_event: a 500-char value is capped at 400" test "$kv_len" -lt 480
+
+    # No session: "-" placeholder; no from= outside a session.
+    (AM_EVENTS_LOG="$log" AM_SESSION_NAME= am_event core.fail - "sub=tick" "rc=1")
+    assert_eq "-" "$(tail -n1 "$log" | cut -f4)" "am_event: empty session prints -"
+    assert_eq "sub=tick rc=1" "$(tail -n1 "$log" | cut -f5)" "am_event: no from= outside a session"
+
+    # AM_EVENT_COMPONENT names other writers (the status bar).
+    (AM_EVENTS_LOG="$log" AM_EVENT_COMPONENT=bar am_event bar.flush_fail - "rc=1")
+    assert_cmd_succeeds "am_event: AM_EVENT_COMPONENT overrides the component" \
+        grep -Eq $'\tbar:[0-9]+\tbar.flush_fail\t' "$log"
+
+    # log_warn / log_error tee into the log with the calling function.
+    _evt_caller() { log_warn "disk nearly full" 2>/dev/null; }
+    (AM_EVENTS_LOG="$log" AM_SESSION_NAME= _evt_caller)
+    assert_contains "$(tail -n1 "$log")" $'\twarn\t-\tfn=_evt_caller msg=disk nearly full' \
+        "log_warn: recorded as a warn event with the caller"
+
+    # Empty AM_EVENTS_LOG disables; unset falls back to $AM_DIR/events.log.
+    local before
+    before=$(awk 'END { print NR }' "$log")
+    (AM_EVENTS_LOG="" am_event launch.fail - "reason=x")
+    assert_eq "$before" "$(awk 'END { print NR }' "$log")" "am_event: empty AM_EVENTS_LOG disables logging"
+    mkdir -p "$tmp/am"
+    (unset AM_EVENTS_LOG; AM_DIR="$tmp/am" am_event restore - "sid=abc")
+    assert_cmd_succeeds "am_event: default sink is \$AM_DIR/events.log" test -s "$tmp/am/events.log"
+
+    # am log: newest N, per-session (column or from=), --grep, --path.
+    local am_env=(AM_DIR="$tmp/am" AM_EVENTS_LOG="$log" AM_SESSION_PREFIX="am-" AM_NO_INSTALL_REFRESH=1 AM_SESSION_NAME= TMUX=)
+    (AM_EVENTS_LOG="$log" AM_SESSION_NAME="am-abc123" am_event send.refused am-def456 "state=waiting_user")
+    local out
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" log 2>/dev/null)
+    assert_eq "$(awk 'END { print NR }' "$log")" "$(printf '%s\n' "$out" | awk 'END { print NR }')" "am log: prints every line by default"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" log -n 1 2>/dev/null)
+    assert_eq "1" "$(printf '%s\n' "$out" | awk 'END { print NR }')" "am log -n 1: newest line only"
+    assert_contains "$out" "send.refused" "am log -n 1: the newest line"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" log am-abc123 2>/dev/null)
+    assert_eq "2" "$(printf '%s\n' "$out" | awk 'END { print NR }')" \
+        "am log <session>: matches the session column and from= attribution"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" log abc123 2>/dev/null)
+    assert_eq "2" "$(printf '%s\n' "$out" | awk 'END { print NR }')" "am log <session>: accepts the name without its prefix"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" log --grep 'fail|refused' 2>/dev/null)
+    assert_contains "$out" "core.fail" "am log --grep: keeps matching events"
+    assert_not_contains "$out" "launch.ok" "am log --grep: drops the rest"
+    assert_eq "$log" "$(env "${am_env[@]}" "$PROJECT_DIR/am" log --path 2>/dev/null)" "am log --path: prints the sink"
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" log am-nothing 2>/dev/null)
+    assert_eq "" "$out" "am log <unknown>: empty, exit 0"
+
+    rm -rf "$tmp"
+    $SUMMARY_MODE || echo ""
+}
+
 run_utils_tests() {
     _run_test test_utils_dep_minimums
+    _run_test test_events_log
     _run_test test_utils
     _run_test test_utils_extended
     _run_test test_claude_first_user_message

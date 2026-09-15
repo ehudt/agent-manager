@@ -29,6 +29,12 @@ if [[ -z "${AM_STATE_DIR:-}" ]]; then
     export AM_STATE_DIR
     _TEST_STATE_DIR_OWNED="$AM_STATE_DIR"
 fi
+# Events log too: several tests run `am` against the default AM_DIR (missing
+# session name, unknown command, missing dependency) and would otherwise leave
+# their error lines in the user's ~/.agent-manager/events.log. Tests that
+# read the log back set AM_EVENTS_LOG themselves; `-` keeps an explicit
+# empty value (disabled) as is.
+export AM_EVENTS_LOG="${AM_EVENTS_LOG-$AM_STATE_DIR.events.log}"
 
 # Test counters
 TESTS_RUN=0
@@ -220,7 +226,8 @@ check_deps() {
 # In parallel mode (_AM_PARALLEL_WORKER=1), workers manage their own cleanup
 cleanup_test_tmux_server() {
     tmux -L "$AM_TMUX_SOCKET" kill-server 2>/dev/null || true
-    [[ -n "${_TEST_STATE_DIR_OWNED:-}" ]] && rm -rf "$_TEST_STATE_DIR_OWNED"
+    [[ -n "${_TEST_STATE_DIR_OWNED:-}" ]] && rm -rf "$_TEST_STATE_DIR_OWNED" "$_TEST_STATE_DIR_OWNED.events.log"
+    return 0
 }
 if [[ -z "${_AM_PARALLEL_WORKER:-}" ]]; then
     trap cleanup_test_tmux_server EXIT

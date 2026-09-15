@@ -56,19 +56,23 @@ am_config_set() {
         end
     '
 
-    local tmp
-    tmp=$(mktemp)
+    local tmp rc=0
+    tmp=$(mktemp) || return 1
     jq --arg key "$key" --arg value "$value" --arg type "$type" \
         ". + {(\$key): ($jq_value)}" \
-        "$AM_CONFIG" > "$tmp" && mv "$tmp" "$AM_CONFIG"
+        "$AM_CONFIG" > "$tmp" && mv "$tmp" "$AM_CONFIG" || rc=$?
+    (( rc == 0 )) || { rm -f "$tmp"; am_event config.write_fail - "op=set" "key=$key" "rc=$rc"; }
+    return $rc
 }
 
 am_config_unset() {
     local key="$1"
 
-    local tmp
-    tmp=$(mktemp)
-    jq --arg key "$key" 'del(.[$key])' "$AM_CONFIG" > "$tmp" && mv "$tmp" "$AM_CONFIG"
+    local tmp rc=0
+    tmp=$(mktemp) || return 1
+    jq --arg key "$key" 'del(.[$key])' "$AM_CONFIG" > "$tmp" && mv "$tmp" "$AM_CONFIG" || rc=$?
+    (( rc == 0 )) || { rm -f "$tmp"; am_event config.write_fail - "op=unset" "key=$key" "rc=$rc"; }
+    return $rc
 }
 
 am_bool_is_true() {

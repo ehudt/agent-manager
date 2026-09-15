@@ -204,6 +204,9 @@ func (e Env) refreshedReview(name string, meta Session, u metaUpdate) (ReviewSta
 	if err != nil {
 		if !ErrNoRepo(err) {
 			e.titlerLog("  %s: review: %v", name, err)
+			// Otherwise invisible: the tab simply stops counting. Repeats
+			// once per scan while the failure persists (the log is capped).
+			EventLog(e.AmDir, "review.measure_fail", name, "dir="+dir, "err="+err.Error())
 		}
 		return ReviewStat{}, 0, false
 	}

@@ -588,8 +588,11 @@ recovery_restore_one() {
     local id boot error
     id=$(jq -r '.logical_id // empty' <<< "$record")
     boot=$(recovery_current_boot_id 2>/dev/null || true)
+    # The worker has no terminal; the desired record's status and the events
+    # log are the only places its outcomes show up.
     if ! error=$(recovery_preflight_record "$record"); then
         recovery_desired_set_status "$id" "blocked" "$error" "$boot"
+        am_event recovery.blocked "$id" "reason=$error"
         return 1
     fi
 
@@ -612,33 +615,41 @@ recovery_restore_one() {
     _AM_SESSION_NAME_OVERRIDE="$id"
     _AM_RECOVERY_MODE=1
     _AM_DEFER_SIDEBAR_REFRESH=1
+    _AM_LAUNCH_SOURCE=recovery
     recovery_desired_is_open "$id" || return 1
     recovery_allow_identity_rebind "$id"
     local restored
     if restored=$(agent_launch "$directory" "$agent" "$task" "${restore_args[@]}") \
         && [[ -n "$restored" ]]; then
+        _AM_LAUNCH_SOURCE=""
         recovery_apply_workdir "$restored" "$directory" "$effective"
         if ! recovery_desired_is_open "$id"; then
             agent_kill "$restored" >/dev/null 2>&1 || true
+            am_event recovery.abandoned "$restored" "sid=$sid" "reason=closed_while_restoring"
             return 1
         fi
         if ! recovery_agent_started "$restored"; then
             recovery_cleanup_failed_runtime "$restored"
             recovery_desired_set_status "$id" "failed" \
                 "resume command exited before agent started" "$boot"
+            am_event recovery.failed "$restored" "sid=$sid" "agent=$agent" "dir=$directory" "reason=agent_exited_before_start"
             return 1
         fi
         if ! recovery_desired_is_open "$id"; then
             recovery_cleanup_failed_runtime "$restored"
+            am_event recovery.abandoned "$restored" "sid=$sid" "reason=closed_after_start"
             return 1
         fi
         recovery_desired_mark_live "$id" "$restored"
+        am_event recovery.ok "$restored" "sid=$sid" "agent=$agent" "dir=$directory"
         return 0
     fi
+    _AM_LAUNCH_SOURCE=""
 
     # No agent came up: the hook will never consume the rebind marker.
     recovery_revoke_identity_rebind "$id"
     recovery_desired_set_status "$id" "failed" "agent launch failed" "$boot"
+    am_event recovery.failed "$id" "sid=$sid" "agent=$agent" "dir=$directory" "reason=launch_failed"
     return 1
 }
 

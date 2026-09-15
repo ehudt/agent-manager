@@ -480,7 +480,11 @@ test_cli_workspace_and_id() {
 
     local test_dir
     test_dir=$(mktemp -d)
-    local am_env=(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_SESSION_NAME= TMUX=)
+    # Events from the `am` children and from the in-process agent_kill calls
+    # land in one file, read back at the end.
+    local ev="$TEST_AM_DIR/events.log" old_ev="${AM_EVENTS_LOG-}"
+    export AM_EVENTS_LOG="$ev"
+    local am_env=(AM_DIR="$TEST_AM_DIR" AM_EVENTS_LOG="$ev" AM_SESSION_PREFIX="test-am-" AM_SESSION_NAME= TMUX=)
 
     # --- am id: outside any session ---
     local rc=0
@@ -576,6 +580,20 @@ test_cli_workspace_and_id() {
         assert_not_contains "$extra_pane" "--preset=" "browser Ctrl-N preset: the --preset flag stays with am"
         agent_kill "$session_name" 2>/dev/null
     fi
+
+    # --- every launch, resolve, and kill above left its line in events.log ---
+    local ev_text
+    ev_text=$(cat "$ev" 2>/dev/null)
+    export AM_EVENTS_LOG="$old_ev"
+    assert_contains "$ev_text" $'\tresolve\t-\tspec=@feature-x ' "events: provider resolve recorded with the spec"
+    assert_contains "$ev_text" "dir=$test_dir/ws-feature-x" "events: resolve records the directory it produced"
+    assert_contains "$ev_text" $'\tresolve.fail\t-\tspec=@fail rc=1 ' "events: provider failure recorded with rc"
+    assert_contains "$ev_text" "err=cannot resolve fail" "events: provider stderr tail recorded"
+    assert_contains "$ev_text" "reason=bad_output out=/definitely/missing/" "events: bad provider output recorded"
+    assert_contains "$ev_text" $'\tlaunch.ok\t'"$session_name"$'\tsource=form ' "events: browser form launch attributed to source=form"
+    assert_contains "$ev_text" "source=cli dir=$test_dir/ws-feature-x agent=" "events: CLI launch attributed to source=cli"
+    assert_contains "$ev_text" $'\tkill\t'"$session_name"$'\t' "events: kill recorded"
+    assert_not_contains "$ev_text" $'\tlaunch.ok\t-\t' "events: no launch.ok without a session"
 
     rm -rf "$test_dir"
     teardown_integration_env

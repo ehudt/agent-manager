@@ -33,6 +33,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 
 ## Gotchas
 
+- `events.log` is always on, so it is bounded by *where* it is written from, not by a flag: log failures and rare lifecycle events (launch, kill, restore, send, provider resolve), never the success of anything periodic or per-render — state resolution, the status-bar tick, `am list`, a hook's state write, the hook's no-pane exit (every non-am Claude takes it on every tool call). One stray `am_event` on the render path costs a fork-free append per tick per session and fills the 8MB cap with noise that buries the one line you needed
 - Registry writes must go through `registry_add/update/remove` (or Go's `lockRegistry`-wrapped paths) — a bare jq-rewrite of `sessions.json` bypasses the write lock and reintroduces lost updates. Don't spawn background jobs while `_registry_lock` is held (children inherit the lock fd and keep the lock alive until they exit)
 - Periodic maintenance and store queries run in `bin/am-core`; the bash names (`auto_title_scan`, `registry_gc`, `sessions_log_scan`, `sessions_log_gc`, `sessions_log_restorable`, `_sessions_log_detect_id_for_session`, `_sessions_log_jsonl_exists`, `*_first_user_message`) are one-line wrappers. Consequences: a bash function stub for `tmux_pane_title` / `tmux_capture_pane` no longer reaches the scan (tests put a fake `tmux` on PATH via `setup_fake_tmux`); `am_core` passes `AM_DIR`, `AM_SESSIONS_LOG`, the socket, the prefix, and `AM_STATE_DIR` / `AM_IDENTITY_DIR` explicitly, so anything else the Go side reads (`AM_GC_GRACE_SECS`, `AM_TITLER_DEBUG`, `AM_PI_SESSIONS_DIR`, `AM_CURSOR_PROJECTS_DIR`, `HOME`) must be exported; a missing binary is one stderr line, and the periodic wrappers return 0 so the status-bar tick never fails
 - Sourced libs derive their own dir as `_<MODULE>_LIB_DIR` from `AM_LIB_DIR` (exported by the `am` entry point); standalone scripts like `lib/status-bar` set their own `SCRIPT_DIR`
@@ -58,7 +59,8 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `scripts/install.sh` | PATH links, shell rc block (PATH + completions), legacy tmux block, and the agent hook installs; `--dry-run` prints every mutation, `--uninstall` reverses them (marker-tagged hook entries only; a user's own hooks stay). `am install` wraps it (`AM_INSTALL_NESTED=1`); run by hand it points at `am install` for skills and binaries |
 | `scripts/check-changelog.sh` | CI guard: `CHANGELOG.md` must have a `## [<AM_VERSION>]` entry; called by `scripts/check-docs.sh` |
 | `CHANGELOG.md` | User-facing changes per release, newest first |
-| `lib/utils.sh` | Shared: colors, logging, time formatting, paths, agent JSONL extraction |
+| `lib/utils.sh` | Shared: colors, logging (`log_*` to stderr, `am_event` to the always-on `$AM_DIR/events.log`), time formatting, paths, agent JSONL extraction, the `am_core` wrapper |
+| `internal/sessions/eventlog.go` | Go writer of `events.log` (`EventLog`), same TSV shape as `am_event`; `eventsLogCap` is the 8MB size cap the title scan applies |
 | `lib/registry.sh` | JSON storage for session metadata (locked jq rewrites), sessions-log append/update/snapshot, and the thin bash wrappers (`am_tick`, `auto_title_scan`, `registry_gc`, `sessions_log_scan/gc/restorable`, detect-id, jsonl-exists) that exec `bin/am-core` |
 | `lib/recovery.sh` | Durable desired-session store, boot/machine identity, reboot preflight, and progressive recovery worker |
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
@@ -120,6 +122,7 @@ am send --queue s "..." → $AM_DIR/queue/<s>.XXXXXX (prompt) → detached _send
 am wait --all|--any s1 s2 → _wait_many() → one agent_wait_state per session in the background → '<session> <state>' lines
 am done "..." (in a worker) → $AM_DIR/results/<session>.txt → am result <session> (dispatcher); removed by agent_kill
 hook state transition → waiting_user (or notify_states) → _notify_maybe() in the detached tail → notify_cmd | osascript | notify-send, skipped when a client shows the session
+any failure / launch / kill / restore / send / resolve → am_event | _hook_event | EventLog → $AM_DIR/events.log (TSV, 8MB cap) → am log [-n N] [--grep ERE] [-f] [session] | am doctor "events log" section (24h failure counts) + per-session tail
 am completions bash|zsh → no-libs path → completions/am.<shell> with @AGENT_TYPES@ from the manifest → eval'd by the rc block at shell start; session names via `am list --json` at <TAB>
 am install --dry-run → cmd_install plan (config, skill links, Go build, tmux.conf) + scripts/install.sh --dry-run (PATH links, rc block, hook entries) → nothing written
 am uninstall → _uninstall_skills → scripts/install.sh --uninstall (PATH links, rc block, marker-tagged hook entries, Cursor helper copy, pi/opencode links) → --purge: rm -rf $AM_DIR
@@ -387,6 +390,31 @@ in `am doctor` (sections "version drift" and "hook payload schema"):
 
 ### Debug instrumentation
 
+- `$AM_DIR/events.log` — always on, the after-the-fact record (`am log`,
+  `am doctor` "events log" section). One TSV line per lifecycle event or
+  swallowed failure: `<utc> TAB <component>:<pid> TAB <event> TAB <session|->
+  TAB k=v ...`, `from=<AM_SESSION_NAME>` added when a session issued the
+  command. Writers: bash `am_event` (utils.sh; `log_warn`/`log_error` tee
+  into it as `warn`/`error` with the calling function), the state hook's
+  inlined `_hook_event` (component `hook`), Go `sessions.EventLog`
+  (component `core` / binary name), the status bar (`AM_EVENT_COMPONENT=bar`).
+  Events: `launch.ok/fail/step` (source=cli|form|restore|recovery, reason),
+  `resolve`/`resolve.fail`/`suggest.fail` (provider secs, rc, stderr tail),
+  `kill`/`kill.step`/`kill.sid_unverified`, `restore`/`restore.fail`,
+  `recovery.ok/blocked/abandoned/failed`, `send.ok/fail/refused`, `queue.*`,
+  `tmux.fail`, `registry.write_fail`/`slog.write_fail`/`config.write_fail`,
+  `core.fail` (am-core rc≠0, from the bash wrapper) / `core.error` (from
+  am-core itself), `review.measure_fail`/`review.sync_fail`,
+  `install.build_fail`, `bar.flush_fail`, `hook.drop` (registry_miss /
+  no_registry), `hook.bad_payload`, `hook.no_jq`, `hook.write_fail`,
+  `notify.sent`/`notify.fail`. Rules: **nothing on a hot path** — state
+  resolution, the status-bar render, `am list`, a successful tick, the
+  hook's success path and its every-tool-call no-pane exit log nothing;
+  only failures and rare lifecycle events do. Writers are fork-free (bash
+  `printf %(…)T`; the hook falls back to `date` under /bin/bash 3.2), values
+  are sanitized (tabs/newlines → space) and capped at 400 chars, the file at
+  8MB (newest half, Go `capLog` on the 60s title scan). `AM_EVENTS_LOG`
+  overrides the path (empty disables); `am_core` forwards it
 - `AM_STATE_DEBUG=1` — `_state_resolve` appends one line per call to
   `$AM_DIR/.state-debug.log` (`<iso8601>\t<session>\t<agent>\t<source>\t<state>`)
   recording which layer (`shell` / `title` / `pane` / `hook` / `fallback` /
@@ -401,7 +429,8 @@ in `am doctor` (sections "version drift" and "hook payload schema"):
   missing `AM_SESSION_NAME`, cwd mismatch). Surfaces vanished-session bugs
   that otherwise look like ghosts.
 
-Both are opt-in. Logs are append-only; rotate externally if they grow.
+`events.log` and `gc.log` are always on and capped by the title scan; the
+`AM_*_DEBUG` traces are opt-in and capped the same way once enabled.
 
 ## Agent-to-Agent CLI Guide
 
@@ -627,6 +656,7 @@ am restore
 - `am_file_mtime(file, [out_var])` / `am_files_mtime(assoc, files...)` - Portable mtime, flavor picked once from `$OSTYPE` (no probe fork); the batched form is one stat call for all files (status-bar tick, install fingerprint)
 - `am_file_mode(path)` / `am_file_size(path)` - Octal permission bits / byte size through the same flavor logic (`_am_stat_field`, regex-validated with a one-time flavor flip). Use these instead of `stat -f X || stat -c Y`: on GNU coreutils `stat -f` is filesystem status and succeeds with a blob, so the fallback never runs (the CI-only doctor crash and eight 0700 test failures on 2026-09-07)
 - `am_core(subcommand, args...)` - Run `$AM_ROOT_DIR/bin/am-core` with the caller's effective paths passed explicitly (`AM_DIR`, `AM_SESSIONS_LOG`, `AM_TMUX_SOCKET`, `AM_SESSION_PREFIX`, and `AM_STATE_DIR` / `AM_IDENTITY_DIR` when set) — bash derives them after sourcing and tests re-point them, so exports cannot be trusted. Missing binary: one stderr line, return 127; the periodic wrappers turn that into 0, the query wrappers into a failed lookup
+- `am_event(event, session|-, k=v...)` - Append one line to `$AM_DIR/events.log` (see Debug instrumentation): fork-free, sanitized, never fails the caller, `from=$AM_SESSION_NAME` added automatically, `AM_EVENT_COMPONENT` names writers other than the CLI (the status bar sets it to bar), `AM_EVENTS_LOG` overrides the sink (empty disables). Call it on failures and rare lifecycle events only — never from state resolution, the status-bar render, list, or a successful tick. Twins: the hook's `_hook_event` (state-hook.sh, no utils.sh) and Go `EventLog(amDir, event, session, kv...)` (`internal/sessions/eventlog.go`); `cmd_log` (in the am entry point) reads it back for `am log [-n N] [--grep ERE] [-f] [session]`
 - `am_mkdir_private(dir)` - `mkdir -p` with mode 700 (state, log, results, queue dirs)
 - `git_head_branch(dir, [out_var])` - Wrapper over `am-core branch` (Go `GitHeadBranch`, sole implementation): branch name, 8-char sha when detached, empty outside a repo. `detect_git_branch` delegates to it
 - `claude_first_user_message(dir, session_id)` - Wrapper over `am-core first-message claude` (Go `FirstMessage`): first user message of exactly the Claude transcript bound to a session; the directory only locates the per-project store. No id → empty (never the newest file in the store). Used by the preview and doctor scripts

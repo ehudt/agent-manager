@@ -1125,8 +1125,93 @@ test_state_hook_review_signals() {
     rm -rf "$tmp_dir"
 }
 
+# The hook's events-log lines: only drops and failures, never the success path.
+test_state_hook_events() {
+    $SUMMARY_MODE || echo "=== Testing state-hook events log ==="
+
+    local hook_script="$PROJECT_DIR/lib/hooks/state-hook.sh"
+    local tmp_dir registry state_dir am_dir home ev
+    tmp_dir=$(mktemp -d)
+    registry="$tmp_dir/sessions.json"
+    state_dir="$tmp_dir/state"
+    am_dir="$tmp_dir/am"
+    ev="$am_dir/events.log"
+    mkdir -p "$state_dir" "$am_dir" "$tmp_dir/home"
+    home=$(cd "$tmp_dir/home" && pwd -P)
+    jq -n --arg dir "$home" \
+        '{sessions: {"am-ev1": {name: "am-ev1", directory: $dir, branch: "main", agent_type: "claude", task: "t"}}}' \
+        > "$registry"
+
+    # Usage: run_hook <json> [VAR=VALUE ...]
+    run_hook() {
+        local input="$1"; shift
+        env AM_DIR="$am_dir" AM_EVENTS_LOG="$ev" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="am-ev1" AM_NOTIFY_CMD="true" "$@" \
+            "$hook_script" <<< "$input"
+    }
+    # Some lines come from the detached tail; wait for a pattern.
+    settle() { local i; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do grep -q -- "$1" "$ev" 2>/dev/null && return 0; sleep 0.2; done; return 0; }
+
+    # Success path: state written, nothing logged.
+    run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"'"$home"'"}'
+    sleep 0.3
+    assert_eq "running" "$(cat "$state_dir/am-ev1")" "events: hook still writes state"
+    assert_cmd_fails "events: the success path logs nothing" test -s "$ev"
+
+    # Unparseable payload.
+    run_hook 'not json at all'
+    assert_cmd_succeeds "events: bad payload logged" grep -q $'\thook.bad_payload\tam-ev1\t' "$ev"
+    assert_cmd_succeeds "events: component is hook:<pid>" grep -Eq $'^[0-9]{4}-[0-9-]+T[0-9:]+Z\thook:[0-9]+\t' "$ev"
+    assert_contains "$(tail -n1 "$ev")" "head=not json at all" "events: bad payload carries a head of the input"
+
+    # Positive pane signal but no registry row: the tab-stopped-updating case.
+    run_hook '{"hook_event_name":"PostToolUse","cwd":"'"$home"'"}' AM_SESSION_NAME=am-gone
+    assert_cmd_succeeds "events: registry miss logged as hook.drop" \
+        grep -q $'\thook.drop\tam-gone\thook=PostToolUse reason=registry_miss' "$ev"
+
+    # Not an am pane (no AM_SESSION_NAME, no TMUX_PANE): the hot exit of every
+    # non-am Claude on the machine stays silent.
+    local before
+    before=$(awk 'END { print NR }' "$ev")
+    run_hook '{"hook_event_name":"PostToolUse","cwd":"'"$home"'"}' AM_SESSION_NAME= TMUX_PANE=
+    assert_eq "$before" "$(awk 'END { print NR }' "$ev")" "events: the no-pane exit logs nothing"
+
+    # Notification sink outcome, from the detached tail.
+    run_hook '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"'"$home"'"}'
+    settle "notify.sent"
+    assert_cmd_succeeds "events: notify.sent with the sink" grep -q $'\tnotify.sent\tam-ev1\thook=Notification state=waiting_user via=cmd' "$ev"
+    run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"'"$home"'"}'
+    run_hook '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"'"$home"'"}' AM_NOTIFY_CMD="exit 7"
+    settle "notify.fail"
+    assert_cmd_succeeds "events: notify.fail with the exit code" grep -q $'\tnotify.fail\tam-ev1\thook=Notification state=waiting_user via=cmd rc=7' "$ev"
+
+    # A state dir that cannot be written: logged, and the hook still exits 0.
+    local ro="$tmp_dir/ro-state"
+    mkdir -p "$ro" && chmod 500 "$ro"
+    local rc=0
+    run_hook '{"hook_event_name":"Stop","stop_hook_active":false,"cwd":"'"$home"'"}' AM_STATE_DIR="$ro" 2>/dev/null || rc=$?
+    chmod 700 "$ro"
+    assert_eq "0" "$rc" "events: write failure keeps exit 0"
+    assert_cmd_succeeds "events: state write failure logged" grep -q $'\thook.write_fail\tam-ev1\thook=Stop what=state file=' "$ev"
+
+    # AM_EVENTS_LOG= disables; /bin/bash (3.2 on macOS) still writes a timestamped line.
+    before=$(awk 'END { print NR }' "$ev")
+    run_hook 'garbage' AM_EVENTS_LOG=
+    assert_eq "$before" "$(awk 'END { print NR }' "$ev")" "events: empty AM_EVENTS_LOG disables"
+    if [[ -x /bin/bash ]]; then
+        env AM_DIR="$am_dir" AM_EVENTS_LOG="$ev" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-ev1" \
+            /bin/bash "$hook_script" <<< "garbage"
+        assert_cmd_succeeds "events: /bin/bash writer produces a valid timestamp" \
+            grep -Eq $'^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\thook:[0-9]+\thook.bad_payload\t' <(tail -n1 "$ev")
+    fi
+
+    rm -rf "$tmp_dir"
+    $SUMMARY_MODE || echo ""
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
+    _run_test test_state_hook_events
     _run_test test_state_from_hook_reads_file
     _run_test test_state_from_hook_missing_file
     _run_test test_state_from_hook_stale_file

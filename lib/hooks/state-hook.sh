@@ -118,6 +118,39 @@ _hook_debug() {
         >> "$dir/.hook-debug.log" 2>/dev/null || true
 }
 
+# Always-on events log (the hook's twin of utils.sh am_event; this script
+# does not source utils.sh, so the writer is inlined). Same TSV shape,
+# component `hook`; `hook=<event name>` is added to every line. Only
+# failures and drops call it — never a successful state write, which is the
+# per-tool-call hot path — and the no-pane exit every non-am Claude takes on
+# every event stays silent (AM_HOOK_DEBUG=1 covers it), or the log would fill
+# with other people's tool calls. Fork-free; never fails the caller.
+# Usage: _hook_event <event> [k=v ...]
+_hook_event() {
+    local sink="${AM_EVENTS_LOG-${AM_DIR:-${HOME}/.agent-manager}/events.log}"
+    [[ -n "$sink" ]] || return 0
+    local event="$1" kv="hook=${hook_type:-?}" v
+    shift
+    for v in "$@"; do
+        v="${v//[$'\t\n\r']/ }"
+        kv+=" ${v:0:400}"
+    done
+    local session="${session_name:-${AM_SESSION_NAME:--}}" ts=""
+    # %(…)T needs bash ≥4.2; Claude may run this script with macOS /bin/bash
+    # 3.2, where the fork to date(1) is acceptable on this failure-only path.
+    TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T' -1 2>/dev/null || ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '%s\thook:%s\t%s\t%s\t%s\n' "$ts" \
+        "$$" "$event" "${session//[$'\t\n\r']/ }" "$kv" >> "$sink" 2>/dev/null || true
+}
+
+# Write one sidecar/state file, recording a failure instead of dying under
+# errexit (a full disk or a foreign-owned state dir used to kill the hook
+# with no trace). Usage: _hook_write <file> <content> <what>
+_hook_write() {
+    printf '%s' "$2" > "$1" 2>/dev/null \
+        || _hook_event hook.write_fail "what=$3" "file=$1"
+}
+
 # Desktop notification when a session enters a state the user should know
 # about. Runs only on a state *transition*, off the critical path (inside the
 # detached tail subshell), and never when the session is the one an attached
@@ -164,19 +197,30 @@ _notify_maybe() {
     export AM_NOTIFY_SESSION="$session" AM_NOTIFY_STATE="$state"
     export AM_NOTIFY_TITLE="am · $label · $verb"
     export AM_NOTIFY_BODY="${task:-$session}"
+    local via="none" rc=0
     if [[ -n "$cmd" ]]; then
-        bash -c "$cmd" >/dev/null 2>&1 || true
+        via="cmd"
+        bash -c "$cmd" >/dev/null 2>&1 || rc=$?
     elif command -v osascript >/dev/null 2>&1; then
         # The strings go in as script arguments, never via `system attribute`:
         # AppleScript decodes environment variables as MacRoman, so the UTF-8
         # `·` separators rendered as `¬∑` and any curly quote, dash, or check
         # mark in the task came out as mojibake (every banner looked like
         # gibberish until 0.27.3). argv is decoded as UTF-8.
+        via="osascript"
         osascript -e 'on run argv' \
             -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
-            -e 'end run' "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >/dev/null 2>&1 || true
+            -e 'end run' "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >/dev/null 2>&1 || rc=$?
     elif command -v notify-send >/dev/null 2>&1; then
-        notify-send -- "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >/dev/null 2>&1 || true
+        via="notify-send"
+        notify-send -- "$AM_NOTIFY_TITLE" "$AM_NOTIFY_BODY" >/dev/null 2>&1 || rc=$?
+    fi
+    # Rare (one per transition into a notify state) and the first thing to
+    # check when "I never got the banner": which sink ran and whether it failed.
+    if (( rc != 0 )); then
+        _hook_event notify.fail "state=$state" "via=$via" "rc=$rc"
+    else
+        _hook_event notify.sent "state=$state" "via=$via"
     fi
 }
 
@@ -185,6 +229,7 @@ hook_input=$(cat)
 
 # Require jq
 if ! command -v jq &>/dev/null; then
+    _hook_event hook.no_jq "path=${PATH:0:200}"
     exit 0
 fi
 
@@ -219,7 +264,12 @@ fi
         (.background_tasks // null | tojson),
         (if type == "object" then (keys | sort | join(",")) else "" end) ]
     | join($nul)' 2>/dev/null; printf '\0')
-[[ -z "$hook_type" ]] && exit 0
+if [[ -z "$hook_type" ]]; then
+    # Unparseable payload, or one without hook_event_name: a harness change
+    # that would otherwise look like hooks silently stopping.
+    _hook_event hook.bad_payload "bytes=${#hook_input}" "head=${hook_input:0:120}"
+    exit 0
+fi
 
 # Cursor background/subagent hook events inherit the parent pane's
 # AM_SESSION_NAME. They describe a different conversation and must never
@@ -260,7 +310,11 @@ _review_head_check() {
     [[ "$head_now" == "$prev" ]] && return 0
     _state_dir_ensure
     printf '%s\n' "$head_now" > "$head_file"
-    AM_DIR="$AM_DIR" AM_STATE_DIR="$AM_STATE_DIR" "$core" review-sync "$session" "$dir" >/dev/null 2>&1 || true
+    # Already forking am-core here, so capturing its stderr is free; a failed
+    # sync is why a tab's Δ count or baseline stopped following a branch switch.
+    local sync_err="" sync_rc=0
+    sync_err=$(AM_DIR="$AM_DIR" AM_STATE_DIR="$AM_STATE_DIR" "$core" review-sync "$session" "$dir" 2>&1 >/dev/null) || sync_rc=$?
+    (( sync_rc == 0 )) || _hook_event review.sync_fail "rc=$sync_rc" "dir=$dir" "err=${sync_err##*$'\n'}"
     # A branch checkpoint moved the baseline: relabel and recount on the next tick.
     rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
 }
@@ -474,7 +528,12 @@ _agent_hook_family() {
 }
 
 # Registry is required for any session lookup or validation
-[[ ! -f "$AM_REGISTRY" ]] && exit 0
+if [[ ! -f "$AM_REGISTRY" ]]; then
+    # Only worth a line when the pane says it is ours: a missing registry
+    # under an am pane means AM_DIR points somewhere unexpected.
+    [[ -n "${AM_SESSION_NAME:-}" ]] && _hook_event hook.drop "reason=no_registry" "registry=$AM_REGISTRY"
+    exit 0
+fi
 
 # Helper: print the session's registered agent_type — empty when the session
 # is not in the registry (every registry_add writes the field). One jq call
@@ -501,7 +560,10 @@ session_agent=""
 if [[ -n "${AM_SESSION_NAME:-}" ]]; then
     session_agent=$(_registry_agent_type "$AM_SESSION_NAME")
     if [[ -z "$session_agent" ]]; then
+        # A pane that am created but whose row is gone (GC'd, or a registry
+        # pointing elsewhere): the classic "my tab stopped updating".
         _hook_debug "AM_SESSION_NAME=$AM_SESSION_NAME not in registry; exiting"
+        _hook_event hook.drop "reason=registry_miss" "registry=$AM_REGISTRY"
         exit 0
     fi
     if ! _family_match "$session_agent"; then
@@ -565,7 +627,7 @@ if [[ "$hook_cwd" == /* && "$hook_cwd" != *$'\n'* && -d "$hook_cwd" ]]; then
     fi
     if [[ "$hook_cwd" != "$prev_cwd" ]]; then
         _state_dir_ensure
-        printf '%s' "$hook_cwd" > "$cwd_file"
+        _hook_write "$cwd_file" "$hook_cwd" cwd
         # Let the next status-bar tick relabel within ~5s instead of 60s.
         rm -f "$AM_DIR/.title_scan_last" 2>/dev/null || true
     fi
@@ -661,7 +723,7 @@ current=$(head -1 "$state_file" 2>/dev/null || true)
 _normalize_state_value "$current"
 state_transitioned=false
 if [[ "$NORMALIZED_STATE" != "$am_state" ]]; then
-    printf '%s' "$am_state" > "$state_file"
+    _hook_write "$state_file" "$am_state" state
     state_transitioned=true
 fi
 
@@ -670,11 +732,11 @@ fi
 # lets restore snapshots bind to the exact pane that fired the hook instead
 # of guessing by cwd, which is ambiguous for duplicate sessions in one repo.
 if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    printf '%s' "$hook_session_id" > "$AM_STATE_DIR/$session_name.sid"
+    _hook_write "$AM_STATE_DIR/$session_name.sid" "$hook_session_id" sid
 fi
 
 if [[ "$transcript_path" == /* && "$transcript_path" != *$'\n'* ]]; then
-    printf '%s' "$transcript_path" > "$AM_STATE_DIR/$session_name.transcript"
+    _hook_write "$AM_STATE_DIR/$session_name.transcript" "$transcript_path" transcript
 fi
 
 # Durable Cursor identity is a pair. Some events expose a new conversation id
@@ -684,7 +746,7 @@ fi
 if [[ "$hook_family" == "cursor" ]]; then
     if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ \
         && "$transcript_path" == /* && "$transcript_path" != *$'\n'* ]]; then
-        mkdir -p "$AM_IDENTITY_DIR"
+        mkdir -p "$AM_IDENTITY_DIR" 2>/dev/null || _hook_event hook.write_fail "what=identity_dir" "file=$AM_IDENTITY_DIR"
         durable_sid=""
         if [[ -f "$AM_IDENTITY_DIR/$session_name.sid" \
             && -f "$AM_IDENTITY_DIR/$session_name.transcript" ]]; then
@@ -695,13 +757,13 @@ if [[ "$hook_family" == "cursor" ]]; then
         # is_background_agent, so a later different id is not authoritative.
         if [[ -f "$AM_IDENTITY_DIR/$session_name.rebind" \
             || -z "$durable_sid" || "$durable_sid" == "$hook_session_id" ]]; then
-            printf '%s' "$hook_session_id" > "$AM_IDENTITY_DIR/$session_name.sid"
-            printf '%s' "$transcript_path" > "$AM_IDENTITY_DIR/$session_name.transcript"
+            _hook_write "$AM_IDENTITY_DIR/$session_name.sid" "$hook_session_id" durable_sid
+            _hook_write "$AM_IDENTITY_DIR/$session_name.transcript" "$transcript_path" durable_transcript
             rm -f "$AM_IDENTITY_DIR/$session_name.rebind"
         fi
     fi
 else
-    mkdir -p "$AM_IDENTITY_DIR"
+    mkdir -p "$AM_IDENTITY_DIR" 2>/dev/null || _hook_event hook.write_fail "what=identity_dir" "file=$AM_IDENTITY_DIR"
     durable_sid=""
     allow_rebind=false
     wrote_durable_identity=false
@@ -712,13 +774,13 @@ else
     if [[ -n "$hook_session_id" && "$hook_session_id" =~ ^[A-Za-z0-9._-]+$ \
         && ( "$allow_rebind" == "true" \
             || -z "$durable_sid" || "$durable_sid" == "$hook_session_id" ) ]]; then
-        printf '%s' "$hook_session_id" > "$AM_IDENTITY_DIR/$session_name.sid"
+        _hook_write "$AM_IDENTITY_DIR/$session_name.sid" "$hook_session_id" durable_sid
         wrote_durable_identity=true
     fi
     if [[ "$transcript_path" == /* && "$transcript_path" != *$'\n'* \
         && ( "$allow_rebind" == "true" \
             || -z "$durable_sid" || "$durable_sid" == "$hook_session_id" ) ]]; then
-        printf '%s' "$transcript_path" > "$AM_IDENTITY_DIR/$session_name.transcript"
+        _hook_write "$AM_IDENTITY_DIR/$session_name.transcript" "$transcript_path" durable_transcript
     fi
     if [[ "$allow_rebind" == "true" && "$wrote_durable_identity" == "true" ]]; then
         rm -f "$AM_IDENTITY_DIR/$session_name.rebind"
@@ -781,8 +843,9 @@ fi
         if [[ "$prev_keys" != "$payload_keys" ]]; then
             umask 077
             mkdir -p "$schema_dir" 2>/dev/null || true
-            [[ -n "$prev_keys" ]] && printf '%s\n' "$prev_keys" > "$schema_file.prev"
-            printf '%s\n' "$payload_keys" > "$schema_file"
+            [[ -n "$prev_keys" ]] && { printf '%s\n' "$prev_keys" > "$schema_file.prev" 2>/dev/null || true; }
+            printf '%s\n' "$payload_keys" > "$schema_file" 2>/dev/null \
+                || _hook_event hook.write_fail "what=schema" "file=$schema_file"
         fi
     fi
 ) </dev/null >/dev/null 2>&1 &

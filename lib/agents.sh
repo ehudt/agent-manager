@@ -118,13 +118,18 @@ agent_launch() {
     local initial_prompt="${_AM_LAUNCH_PROMPT:-}"
     local recovery_mode="${_AM_RECOVERY_MODE:-0}"
     local defer_sidebar_refresh="${_AM_DEFER_SIDEBAR_REFRESH:-0}"
+    # Who asked (cli / form / restore / recovery), for the events log.
+    local launch_source="${_AM_LAUNCH_SOURCE:-cli}"
     _AM_LAUNCH_PROMPT=""
     _AM_RECOVERY_MODE=0
     _AM_DEFER_SIDEBAR_REFRESH=0
+    _AM_LAUNCH_SOURCE=""
+    local -a launch_kv=("source=$launch_source" "dir=$directory" "agent=$agent_type" "args=${#agent_args[@]}" "prompt=${#initial_prompt}")
 
     # Validate directory
     if [[ ! -d "$directory" ]]; then
         log_error "Directory does not exist: $directory"
+        am_event launch.fail - "${launch_kv[@]}" "reason=dir_missing"
         return 1
     fi
 
@@ -165,6 +170,7 @@ agent_launch() {
     # Check if agent command exists
     if ! command -v "$agent_cmd" &>/dev/null; then
         log_error "Agent command not found: $agent_cmd"
+        am_event launch.fail - "${launch_kv[@]}" "reason=agent_cmd_missing" "cmd=$agent_cmd"
         return 1
     fi
 
@@ -188,18 +194,23 @@ agent_launch() {
     mapfile -t pane_env < <(agent_pane_env "$session_name" "$agent_type")
     if ! tmux_create_session "$session_name" "$directory" "${pane_env[@]}"; then
         log_error "Failed to create tmux session"
+        am_event launch.fail "$session_name" "${launch_kv[@]}" "reason=tmux_create"
         return 1
     fi
 
     # Register session metadata. Status-bar refresh deferred to the single
     # am_refresh_sidebar_cache call at the end of agent_launch — running
     # status-bar in several places during launch was the dominant source of
-    # new-session latency.
-    registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task"
+    # new-session latency. A failed registry write leaves a live tmux session
+    # am cannot see; the launch goes on (the pane is usable) but the failure
+    # is recorded.
+    registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task" \
+        || am_event launch.step "$session_name" "step=registry_add" "rc=$?"
 
     # Append to sessions log for restore support.
     if agent_restorable "$agent_type"; then
-        sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task"
+        sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task" \
+            || am_event launch.step "$session_name" "step=sessions_log_append" "rc=$?"
     fi
 
     # Review baseline: snapshot the working copy as the launch checkpoint
@@ -270,7 +281,11 @@ agent_launch() {
         fi
     fi
 
-    tmux_send_keys "$session_name:.{top-left}" "$full_cmd" Enter
+    # The agent start itself. A failure here leaves a registered session whose
+    # pane is a bare shell (it shows as idle); record it rather than report
+    # the launch as clean.
+    tmux_send_keys "$session_name:.{top-left}" "$full_cmd" Enter \
+        || am_event launch.step "$session_name" "step=send_keys" "rc=$?"
 
     # Clean up prompt temp file after agent starts (for stdin-piped agents).
     if [[ -n "$prompt_file" ]]; then
@@ -306,6 +321,7 @@ agent_launch() {
     fi
 
     log_success "Created session: $session_name"
+    am_event launch.ok "$session_name" "${launch_kv[@]}" "branch=$branch" "shell=$wants_shell"
     echo "$session_name"
 }
 
@@ -353,15 +369,42 @@ agent_dir_resolve() {
         echo "Set one with, e.g.: am config set dir_provider wp" >&2
         return 1
     fi
-    local dir
-    if ! dir=$(_agent_dir_provider_run resolve "$spec"); then
+    # The provider's stderr reaches the user live (tee) and its tail goes to
+    # the events log with the exit status and duration: a failed `wp resolve`
+    # otherwise leaves no trace once the terminal scrolls. The provider's
+    # stdout (the directory) is captured through fd 3 around the tee
+    # pipeline; its exit status through a temp file, since the pipeline's
+    # own status is tee's.
+    local dir errf rcf rc=0 t0=$SECONDS
+    errf=$(mktemp "${TMPDIR:-/tmp}/am-resolve.XXXXXX") && rcf=$(mktemp "${TMPDIR:-/tmp}/am-resolve.XXXXXX") || { errf=""; rcf=""; }
+    if [[ -n "$errf" && -n "$rcf" ]]; then
+        # `a && ok || fail` so errexit (inherited by the pipeline subshell)
+        # cannot skip the status write when the provider fails.
+        dir=$( { { _agent_dir_provider_run resolve "$spec" && printf 0 > "$rcf" || printf '%s' "$?" > "$rcf"; } 2>&1 1>&3 3>&- | tee "$errf" >&2; } 3>&1 )
+        rc=$(<"$rcf")
+        [[ -n "$rc" ]] || rc=1
+    else
+        dir=$(_agent_dir_provider_run resolve "$spec") || rc=$?
+    fi
+    local -a err_lines=()
+    [[ -n "$errf" ]] && mapfile -t err_lines < "$errf"
+    rm -f "$errf" "$rcf" 2>/dev/null || true
+    # Last two stderr lines. Not `${arr[*]: -2}`: a negative offset past the
+    # start of a one-line array yields nothing, and a failed provider usually
+    # prints exactly one line.
+    local err_tail="${err_lines[*]}" n=${#err_lines[@]}
+    (( n > 2 )) && err_tail="${err_lines[*]:n-2}"
+    if (( rc != 0 )); then
+        am_event resolve.fail - "spec=@$spec" "rc=$rc" "secs=$((SECONDS - t0))" "err=$err_tail"
         log_error "Directory provider could not resolve @$spec"
         return 1
     fi
     if [[ -z "$dir" || ! -d "$dir" ]]; then
+        am_event resolve.fail - "spec=@$spec" "rc=0" "secs=$((SECONDS - t0))" "reason=bad_output" "out=${dir:-<empty>}" "err=$err_tail"
         log_error "Directory provider did not print an existing directory for @$spec: ${dir:-<empty>}"
         return 1
     fi
+    am_event resolve - "spec=@$spec" "secs=$((SECONDS - t0))" "dir=$dir"
     echo "$dir"
 }
 
@@ -376,10 +419,10 @@ agent_dir_resolve() {
 agent_dir_suggest() {
     local partial="${1#@}"
     [[ -n "$(am_dir_provider)" ]] || return 0
-    local provider timeout
+    local provider timeout out rc=0
     provider=$(am_dir_provider)
     timeout=$(am_dir_suggest_timeout)
-    AM_SESSION_NAME= perl -MTime::HiRes=alarm -e '
+    out=$(AM_SESSION_NAME= perl -MTime::HiRes=alarm -e '
         my $t = shift;
         my $pid = fork;
         die "fork: $!" unless defined $pid;
@@ -389,7 +432,11 @@ agent_dir_suggest() {
         waitpid $pid, 0;
         exit($? >> 8);
     ' "$timeout" "${BASH:-bash}" -c "$provider \"\$@\"" _ suggest "$partial" \
-        </dev/null 2>/dev/null | grep -v '^[[:space:]]*$' || true
+        </dev/null 2>/dev/null) || rc=$?
+    # Successes are per-keystroke and never logged; a timeout (124) or a
+    # failing provider is, once per distinct partial (the form memoizes).
+    (( rc == 0 )) || am_event suggest.fail - "partial=@$partial" "rc=$rc" "timeout=$timeout"
+    [[ -n "$out" ]] && grep -v '^[[:space:]]*$' <<< "$out" || true
 }
 
 # Record where a session's agent is working now. Writes the .cwd sidecar (the
@@ -567,8 +614,14 @@ agent_send_prompt() {
     pane_target=$(agent_target_pane "$session_name")
 
     # One submission: the whole prompt goes in as a single bracketed paste
-    # (multi-line text included), then exactly one Enter submits it.
-    tmux_paste_text "$pane_target" "$prompt"
+    # (multi-line text included), then exactly one Enter submits it. Either
+    # tmux step failing used to be reported as a delivered prompt.
+    local rc=0
+    tmux_paste_text "$pane_target" "$prompt" || rc=$?
+    if (( rc != 0 )); then
+        am_event send.fail "$session_name" "step=paste" "rc=$rc" "chars=${#prompt}"
+        return $rc
+    fi
 
     # TUI agents (Codex) need a brief pause between paste and Enter —
     # without it, Enter arrives before the TUI finishes processing the
@@ -579,7 +632,12 @@ agent_send_prompt() {
     # re-verified against Codex since the switch to -p; kept deliberately.
     sleep 0.1
 
-    tmux_send_keys "$pane_target" Enter
+    tmux_send_keys "$pane_target" Enter || rc=$?
+    if (( rc != 0 )); then
+        am_event send.fail "$session_name" "step=enter" "rc=$rc" "chars=${#prompt}"
+        return $rc
+    fi
+    am_event send.ok "$session_name" "chars=${#prompt}"
 }
 
 # Get full info about a session for preview header
@@ -649,16 +707,21 @@ agent_kill() {
             [[ -z "$transcript" ]] && transcript=$(_sessions_log_field "$session_name" "transcript_path" 2>/dev/null || true)
             [[ -n "$transcript" ]] && sessions_log_update "$session_name" "transcript_path" "$transcript"
         fi
+        local sid_from="sidecar"
         sid=$(am_core sidecar "$session_name" id 2>/dev/null || true)
         if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent_type" "$transcript"; then
+            am_event kill.sid_unverified "$session_name" "sid=$sid" "agent=$agent_type" "dir=$dir"
             sid=""
         fi
         if [[ -z "$sid" ]]; then
             sid=$(_sessions_log_field "$session_name" "session_id" 2>/dev/null || true)
+            sid_from="log"
         fi
         if [[ -z "$sid" ]]; then
             sid=$(_sessions_log_detect_id_for_session "$session_name" "$dir" "$agent_type" 2>/dev/null || true)
+            sid_from="detect"
         fi
+        [[ -n "$sid" ]] || sid_from="none"
         local snap_file
         if [[ -n "$sid" ]]; then
             sessions_log_update "$session_name" "session_id" "$sid"
@@ -669,13 +732,22 @@ agent_kill() {
         [[ -n "$snap_file" ]] && sessions_log_update "$session_name" "snapshot_file" "$snap_file"
         local closed_at
         closed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-        sessions_log_update "$session_name" "closed_at" "$closed_at"
+        sessions_log_update "$session_name" "closed_at" "$closed_at" \
+            || am_event kill.step "$session_name" "step=sessions_log_update" "rc=$?"
+        # What restore will have to work with: no sid means the closed
+        # session cannot be resumed (killed before its first prompt, or the
+        # hooks never bound an identity).
+        am_event kill "$session_name" "agent=$agent_type" "sid=${sid:-none}" "sid_from=$sid_from" "snapshot=${snap_file:+ok}${snap_file:-fail}"
+    else
+        am_event kill "$session_name" "agent=${agent_type:-?}" "restorable=false"
     fi
 
     tmux_kill_session "$session_name" || rc=$?
+    (( rc == 0 )) || am_event kill.step "$session_name" "step=tmux_kill" "rc=$rc"
 
     # Always clean up registry and hook state file
-    registry_remove "$session_name"
+    registry_remove "$session_name" \
+        || am_event kill.step "$session_name" "step=registry_remove" "rc=$?"
     rm -f "${AM_STATE_DIR:-/tmp/am-state}/$session_name" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.sid" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.transcript" \

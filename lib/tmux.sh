@@ -232,9 +232,18 @@ tmux_create_session() {
 
     # Create with explicit dimensions to work around tmux sizing bugs in detached sessions
     # https://github.com/tmux/tmux/issues/3060
-    am_tmux new-session -d -s "$name" -c "$directory" -x 200 -y 60 "${env_flags[@]}" || return 1
+    # tmux's own message (server not running, bad -c path, ...) is the
+    # diagnosis; keep it in the events log as well as on the terminal.
+    local err rc=0
+    err=$(am_tmux new-session -d -s "$name" -c "$directory" -x 200 -y 60 "${env_flags[@]}" 2>&1) || rc=$?
+    if (( rc != 0 )); then
+        [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+        am_event tmux.fail "$name" "op=new-session" "rc=$rc" "dir=$directory" "err=$err"
+        return 1
+    fi
     for kv in "$@"; do
-        am_tmux set-environment -t "$name" "${kv%%=*}" "${kv#*=}"
+        am_tmux set-environment -t "$name" "${kv%%=*}" "${kv#*=}" \
+            || am_event tmux.fail "$name" "op=set-environment" "rc=$?" "var=${kv%%=*}"
     done
 }
 
@@ -249,7 +258,10 @@ tmux_kill_session() {
     fi
 
     tmux_cleanup_logs "$name"
-    am_tmux kill-session -t "$name"
+    local rc=0
+    am_tmux kill-session -t "$name" || rc=$?
+    (( rc == 0 )) || am_event tmux.fail "$name" "op=kill-session" "rc=$rc"
+    return $rc
 }
 
 # Create am-owned scratch directories under /tmp (pane logs, hook state)
@@ -401,7 +413,7 @@ tmux_paste_text() {
     local target="$1"
     local text="$2"
 
-    printf '%s' "$text" | am_tmux load-buffer -
+    printf '%s' "$text" | am_tmux load-buffer - || return 1
     am_tmux paste-buffer -d -p -t "$target"
 }
 

@@ -8,6 +8,20 @@ entry unless they changed behaviour a user would notice.
 
 ## [0.37.0] - 2026-09-15
 
+- New always-on events log, `~/.agent-manager/events.log`, and `am log` to
+  read it (`am log am-abc123`, `am log --grep 'fail|refused'`, `-f` to
+  follow). Every launch (with its source: CLI, browser form, restore,
+  reboot recovery), kill, restore, `am send` outcome, and `@spec` provider
+  resolve leaves one line, and so does every failure am used to swallow:
+  tmux session creation, registry / sessions-log / config writes, am-core
+  errors, review checkpoint sync, notification banners, hook events dropped
+  because the session is gone or the payload was unreadable, and the
+  reason a restore or launch stopped. Nothing is logged on the hot paths
+  (state resolution, the status bar, `am list`, a successful tick, the
+  hook's normal writes), writers are fork-free, and the file is capped at
+  8MB. `am doctor` gains an "events log" section (failure counts over the
+  last 24h, newest failures) and a per-session tail; `--capture` includes
+  the log. `AM_EVENTS_LOG=<path>` redirects it, empty disables.
 - Inactive sessions (the browser's restore rows and `am restore`) are listed
   most recently *closed* first. They were in launch order, so a long-lived
   session closed a minute ago sat below every shorter session started after

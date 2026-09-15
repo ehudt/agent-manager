@@ -106,10 +106,14 @@ func gcLog(amDir string, live int, format string, args ...any) {
 }
 
 // capDebugLogs keeps the opt-in trace logs bounded (20MB each, newest half
-// kept). Called from the unthrottled title-scan path only.
+// kept) and the always-on events log at eventsLogCap. Called from the
+// unthrottled title-scan path only.
 func (e Env) capDebugLogs() {
 	for _, name := range []string{"titler.log", ".state-debug.log", ".hook-debug.log", "gc.log", "queue.log"} {
 		capLog(filepath.Join(e.AmDir, name), debugLogCap)
+	}
+	if p := eventsLogPath(e.AmDir); p != "" {
+		capLog(p, eventsLogCap)
 	}
 }
 

@@ -3,7 +3,7 @@
 # Session names come from the live registry (`am list --json`), preset
 # names from `am preset list`, so they are current at every <TAB>.
 
-_am_commands="list new send peek attach shell review id cd diff kill config preset info status doctor wait done result interrupt restore install uninstall completions help version"
+_am_commands="list new send peek attach shell review id cd diff kill config preset info status doctor log wait done result interrupt restore install uninstall completions help version"
 _am_agent_types="@AGENT_TYPES@"
 _am_states="ready running waiting_user background starting idle dead unknown"
 _am_config_keys="agent auto_restore logs shell dir_provider notify notify_states notify_cmd"
@@ -22,6 +22,7 @@ _am_flags_for() {
         status) echo "--json" ;;
         kill) echo "--all --state" ;;
         doctor) echo "--capture" ;;
+        log) echo "-n --lines --grep -g -f --follow --path" ;;
         result) echo "--wait" ;;
         interrupt) echo "-i --interactive" ;;
         install) echo "--refresh --dry-run --prefix --shell-rc --tmux-conf --no-shell --no-tmux --copy -y --yes" ;;
@@ -58,7 +59,7 @@ _am() {
     fi
 
     case "$cmd" in
-        send|peek|attach|shell|review|kill|info|status|wait|result|interrupt|doctor|diff)
+        send|peek|attach|shell|review|kill|info|status|wait|result|interrupt|doctor|log|diff)
             COMPREPLY=($(compgen -W "$(_am_sessions)" -- "$cur")) ;;
         new|cd)
             COMPREPLY=($(compgen -d -- "$cur")) ;;

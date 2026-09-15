@@ -113,7 +113,7 @@ registry_add() {
            "created_at": $created,
            "task": $task
        }' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY" || rc=$?
-    (( rc )) && rm -f "$tmp_file"
+    (( rc )) && { rm -f "$tmp_file"; am_event registry.write_fail "$name" "op=add" "rc=$rc"; }
     _registry_unlock
     return $rc
 }
@@ -160,7 +160,7 @@ registry_update() {
        --arg value "$value" \
        'if .sessions[$name] then .sessions[$name][$field] = $value else . end' \
        "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY" || rc=$?
-    (( rc )) && rm -f "$tmp_file"
+    (( rc )) && { rm -f "$tmp_file"; am_event registry.write_fail "$name" "op=update" "field=$field" "rc=$rc"; }
     _registry_unlock
     return $rc
 }
@@ -174,7 +174,7 @@ registry_remove() {
     local tmp_file rc=0
     tmp_file=$(mktemp) || { _registry_unlock; return 1; }
     jq --arg name "$name" 'del(.sessions[$name])' "$AM_REGISTRY" > "$tmp_file" && command mv "$tmp_file" "$AM_REGISTRY" || rc=$?
-    (( rc )) && rm -f "$tmp_file"
+    (( rc )) && { rm -f "$tmp_file"; am_event registry.write_fail "$name" "op=remove" "rc=$rc"; }
     _registry_unlock
     return $rc
 }
@@ -259,8 +259,11 @@ sessions_log_append() {
           agent_type: $agent, task: $task, created_at: $created, closed_at: null,
           snapshot_file: $snap, transcript_path: ""}')
     _registry_lock
-    printf '%s\n' "$line" >> "$AM_SESSIONS_LOG"
+    local rc=0
+    printf '%s\n' "$line" >> "$AM_SESSIONS_LOG" || rc=$?
     _registry_unlock
+    (( rc == 0 )) || am_event slog.write_fail "$session_name" "op=append" "rc=$rc"
+    return $rc
 }
 
 # Update a field in the most recent sessions log entry for a session.
@@ -294,6 +297,7 @@ sessions_log_update() {
     fi
     _registry_tmp_release
     _registry_unlock
+    (( rc == 0 )) || am_event slog.write_fail "$session_name" "op=update" "field=$field" "rc=$rc"
     return $rc
 }
 

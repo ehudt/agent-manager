@@ -56,6 +56,7 @@ COMMANDS:
     info                Show a session's registry metadata
     status              Show detailed session info
     doctor              Print every input behind a session's state (debugging)
+    log                 Show the events log: launches, kills, sends, and swallowed failures
     wait                Block until one or more sessions reach a target state
     done                (inside a session) Record a result summary for the dispatcher
     result              Read the summary a session recorded with 'done'
@@ -124,6 +125,11 @@ OPTIONS FOR 'status':
 OPTIONS FOR 'doctor':
     --capture       Also write a tarball of the report and raw state files
 
+OPTIONS FOR 'log':
+    -n N            Newest N lines (default 50); a session argument filters to it
+    --grep ERE      Keep matching lines only (e.g. 'fail|refused')
+    -f              Follow: keep printing new lines
+
 KEYBINDINGS (interactive browser):
     Enter           Attach active session or restore inactive session
     Ctrl-N          Create new session (directory-first launcher)
@@ -161,6 +167,7 @@ EXAMPLES:
     am new -p review @48351         # Saved preset (am preset save review @ -- --model opus)
     am wait --any am-abc123 am-def456   # First worker to pause
     am doctor am-abc123             # Why does the tab show that state?
+    am log --grep 'fail|refused'    # What went wrong recently? (am log am-abc123 for one session)
     am peek am-abc123
     am peek --pane shell --follow am-abc123
     am send "$(am id)" "continue"   # Address the session you are in
@@ -371,7 +378,9 @@ cmd_new_internal() {
     fi
 
     local session_name
+    _AM_LAUNCH_SOURCE=form
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
+    _AM_LAUNCH_SOURCE=""
 
     if [[ -n "$session_name" ]]; then
         tmux_attach "$session_name"
@@ -386,6 +395,7 @@ cmd_restore_internal() {
     local agent_type="${3:-claude}"
 
     if [[ ! -d "$directory" ]]; then
+        am_event restore.fail - "sid=$session_id" "agent=$agent_type" "dir=$directory" "reason=dir_missing"
         log_error "Directory no longer exists: $directory"
         return 1
     fi
@@ -394,9 +404,23 @@ cmd_restore_internal() {
     while IFS= read -r _arg; do
         resume_args+=("$_arg")
     done < <(agent_resume_args "$agent_type" "$session_id")
+    if [[ ${#resume_args[@]} -eq 0 ]]; then
+        am_event restore.fail - "sid=$session_id" "agent=$agent_type" "dir=$directory" "reason=no_resume_form"
+        log_error "Agent type '$agent_type' has no resume form; cannot restore"
+        return 1
+    fi
 
     local session_name
+    _AM_LAUNCH_SOURCE=restore
     session_name=$(agent_launch "$directory" "$agent_type" "" "${resume_args[@]}")
+    _AM_LAUNCH_SOURCE=""
+
+    if [[ -z "$session_name" ]]; then
+        # agent_launch logged the launch.fail line with the reason.
+        am_event restore.fail - "sid=$session_id" "agent=$agent_type" "dir=$directory" "reason=launch_failed"
+        return 1
+    fi
+    am_event restore "$session_name" "sid=$session_id" "agent=$agent_type" "dir=$directory"
 
     if [[ -n "$session_name" ]]; then
         # Pre-seed the resumed conversation id so the entry never needs the
@@ -502,6 +526,7 @@ cmd_new() {
     local print_session=false
     local initial_prompt=""
     local preset_name=""
+    local launch_source=cli
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -599,6 +624,7 @@ cmd_new() {
         fi
 
         IFS=$'\x1f' read -r directory agent_type task flags <<< "$form_values"
+        launch_source=form
         # shellcheck disable=SC2206
         agent_args=($flags)
         # The form's preset choice arrives as --preset=<name>; it is for us,
@@ -645,8 +671,10 @@ cmd_new() {
     # Launch agent (prompt passed via _AM_LAUNCH_PROMPT to avoid tty buffer overflow
     # when piping long prompts through tmux send-keys)
     _AM_LAUNCH_PROMPT="$initial_prompt"
+    _AM_LAUNCH_SOURCE="$launch_source"
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
+    _AM_LAUNCH_SOURCE=""
 
     if [[ -n "$session_name" ]]; then
         if $print_session || ! $attach_session; then
@@ -872,6 +900,8 @@ EOF
 # Usage: _send_queue_log <session> <event> <detail>
 _send_queue_log() {
     printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >> "$AM_DIR/queue.log" 2>/dev/null || true
+    # Mirrored into the events log so one grep covers a session's timeline.
+    am_event "queue.$2" "$1" "detail=$3"
 }
 
 # The detached half of `am send --queue`: wait for the agent, send the
@@ -1006,14 +1036,17 @@ cmd_send() {
         # the agent exited and the pane is a shell.
         case "$cur_state" in
             waiting_user)
+                am_event send.refused "$resolved" "state=$cur_state" "exit=4" "chars=${#prompt}"
                 log_error "Session $resolved is waiting_user: a permission/question dialog is up and the text would answer it; use --wait or --queue to send after it, or --force"
                 return 4
                 ;;
             starting)
+                am_event send.refused "$resolved" "state=$cur_state" "exit=4" "chars=${#prompt}"
                 log_error "Session $resolved is starting: the agent has not taken the terminal yet; use --wait or --queue to send when it has, or --force"
                 return 4
                 ;;
             idle|dead)
+                am_event send.refused "$resolved" "state=$cur_state" "exit=2" "chars=${#prompt}"
                 log_error "Session $resolved has no running agent ($cur_state); the text would run in its shell"
                 return 2
                 ;;
@@ -1756,6 +1789,66 @@ cmd_result() {
     return 0
 }
 
+# Command: log — read the events log ($AM_DIR/events.log; see am_event in
+# lib/utils.sh). One awk pass filters by session (the session column, or a
+# `from=<session>` attribution) and by an ERE, then the newest N lines are
+# printed as raw TSV so cut/grep/sort compose. -f keeps following.
+cmd_log() {
+    local n=50 pat="" follow=false name="" show_path=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--lines) n="${2:-50}"; shift 2 ;;
+            -n*) n="${1#-n}"; shift ;;
+            -g|--grep) pat="${2:-}"; shift 2 ;;
+            -f|--follow) follow=true; shift ;;
+            --path) show_path=true; shift ;;
+            -h|--help)
+                cat <<'EOF'
+Usage: am log [-n N] [--grep ERE] [-f] [--path] [<session>]
+
+Print the newest lines of the events log: launches, kills, restores, sends,
+provider resolves, and every failure am otherwise swallows (tmux, registry,
+hook, notification, review sync). Lines are TSV:
+
+  <utc time> TAB <component>:<pid> TAB <event> TAB <session|-> TAB k=v ...
+
+  <session>   only lines about that session (its column, or from=<session>
+              when it issued the command); closed sessions work too
+  -n N        newest N lines after filtering (default 50)
+  --grep ERE  keep lines matching the expression (e.g. 'fail|refused')
+  -f          keep printing new lines (tail -f)
+  --path      print the log path and exit
+
+The log lives at $AM_DIR/events.log (AM_EVENTS_LOG overrides; empty
+disables); the title scan caps it at 8MB, newest half kept.
+EOF
+                return 0 ;;
+            -*) log_error "Unknown option: $1"; return 1 ;;
+            *) name="$1"; shift ;;
+        esac
+    done
+    [[ "$n" =~ ^[0-9]+$ ]] || { log_error "-n expects a number: $n"; return 1; }
+    local file="${AM_EVENTS_LOG-$AM_DIR/events.log}"
+    [[ -n "$file" ]] || { log_error "events log disabled (AM_EVENTS_LOG is empty)"; return 1; }
+    if $show_path; then printf '%s\n' "$file"; return 0; fi
+    [[ -f "$file" ]] || { log_info "no events yet ($file)"; return 0; }
+    local s="" ps=""
+    if [[ -n "$name" ]]; then
+        s=$(resolve_session_fuzzy "$name" 2>/dev/null) || s="$name"
+        ps="$AM_SESSION_PREFIX$name"
+    fi
+    _log_filter() {
+        awk -F'\t' -v s="$s" -v ps="$ps" -v pat="$pat" \
+            '(s == "" || $4 == s || $4 == ps || $5 ~ ("(^| )from=(" s "|" ps ")( |$)")) \
+             && (pat == "" || $0 ~ pat)'
+    }
+    _log_filter < "$file" | tail -n "$n"
+    if $follow; then
+        tail -n 0 -f "$file" | _log_filter
+    fi
+    return 0
+}
+
 # Command: interrupt
 cmd_interrupt() {
     _ensure_state
@@ -1976,12 +2069,17 @@ _install_refresh() {
     if $need_build; then
         if command -v go >/dev/null 2>&1; then
             [[ -n "$quiet" ]] || echo "am: rebuilding Go helpers..." >&2
-            if ( cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ \
+            # The compiler's diagnostics go to the events log: this runs
+            # quietly from bare `am`, so a broken build otherwise shows up
+            # only as stale binaries.
+            local build_out
+            if build_out=$( { cd "$AM_SCRIPT_DIR" && go build -o bin/am-list-internal ./cmd/am-list-internal/ \
                     && go build -o bin/am-browse ./cmd/am-browse/ \
                     && go build -o bin/am-core ./cmd/am-core/ \
-                    && go build -o bin/am-review ./cmd/am-review/ ) >/dev/null 2>&1; then
+                    && go build -o bin/am-review ./cmd/am-review/ ; } 2>&1 ); then
                 done_parts+=("go binaries")
             else
+                am_event install.build_fail - "rc=$?" "out=${build_out//$'\n'/ | }"
                 log_warn "am: go build failed; run 'make build' to see why"
             fi
         else
@@ -2484,6 +2582,9 @@ main() {
         doctor)
             _ensure_doctor
             doctor_main "$@"
+            ;;
+        log|events)
+            cmd_log "$@"
             ;;
         preset|presets)
             preset_main "$@"
