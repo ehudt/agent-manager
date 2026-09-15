@@ -520,6 +520,13 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 			SnapshotPath:     snapshotPath,
 		})
 	}
+	// Most recently closed first. The log is in launch order, so without
+	// this a long-lived session closed a minute ago sits below every
+	// short session launched after it — the row the user wants back is
+	// the one they just closed. Stable, so undated lines keep log order.
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].RecencyUnix > entries[j].RecencyUnix
+	})
 	return entries
 }
 

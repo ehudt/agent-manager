@@ -666,3 +666,38 @@ func TestRestorableRawLines(t *testing.T) {
 		t.Fatalf("restorable:\n got %q\nwant %q", got, want)
 	}
 }
+
+// The picker lists the most recently closed session first, not the most
+// recently launched: a long-lived session closed a moment ago leads even
+// though every later launch sits after it in the log.
+func TestRestorableClosedOrder(t *testing.T) {
+	amDir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	env := testEnv(t, amDir)
+	fakeTmux(t)
+	dir := t.TempDir()
+	for _, sid := range []string{"sid-long", "sid-mid", "sid-short", "sid-undated"} {
+		writeClaudeTranscript(t, home, dir, sid, "hello there world")
+	}
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-long", "session_id": "sid-long", "directory": dir, "agent_type": "claude",
+		"created_at": "2026-09-14T08:00:00Z", "closed_at": "2026-09-15T06:12:00Z"})
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-mid", "session_id": "sid-mid", "directory": dir, "agent_type": "claude",
+		"created_at": "2026-09-14T09:00:00Z", "closed_at": "2026-09-14T09:30:00Z"})
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-undated", "session_id": "sid-undated", "directory": dir, "agent_type": "claude"})
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-short", "session_id": "sid-short", "directory": dir, "agent_type": "claude",
+		"created_at": "2026-09-15T05:00:00Z", "closed_at": "2026-09-15T05:01:00Z"})
+
+	var names []string
+	for _, raw := range env.Restorable() {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatalf("unmarshal %q: %v", raw, err)
+		}
+		names = append(names, m["session_name"].(string))
+	}
+	want := []string{"am-long", "am-short", "am-mid", "am-undated"}
+	if strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Fatalf("restorable order: got %v, want %v", names, want)
+	}
+}

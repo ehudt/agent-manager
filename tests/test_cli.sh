@@ -555,6 +555,28 @@ test_cli_workspace_and_id() {
     assert_contains "$err" "could not resolve @fail" "am new @spec: reports the provider failure"
     assert_contains "$err" "cannot resolve fail" "am new @spec: provider stderr reaches the user"
 
+    # --- the browser's Ctrl-N form path resolves @spec and presets too ---
+    # A stand-in browser prints the form hand-off line straight away (fzf_main
+    # echoes unknown results verbatim, cmd_browse parses __NEW_SESSION__). The
+    # trailing attach fails without a tty, so the session is found by directory.
+    env "${am_env[@]}" "$PROJECT_DIR/am" preset save brw -- --stub-extra >/dev/null 2>&1 </dev/null || true
+    local fake_browse="$test_dir/fake_browse"
+    printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f@feature-w\\x1f%s\\x1f--preset=brw\\x1f\\n"\n' \
+        "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
+    chmod +x "$fake_browse"
+    env "${am_env[@]}" "${prov_env[@]}" AM_BROWSE_CMD="$fake_browse" AM_NO_INSTALL_REFRESH=1 AM_AUTO_RESTORE=false \
+        "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    session_name=$(jq -r --arg d "$test_dir/ws-feature-w" \
+        '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+    assert_not_empty "$session_name" "browser Ctrl-N @spec: session created in the resolved directory"
+    assert_contains "$(cat "$test_dir/calls.log")" "resolve feature-w" "browser Ctrl-N @spec: provider called with resolve <spec>"
+    if [[ -n "$session_name" ]]; then
+        extra_pane=$(wait_for_text "stub-extra" am_tmux capture-pane -pt "$session_name:.{top}" -S -)
+        assert_contains "$extra_pane" "stub-extra" "browser Ctrl-N preset: preset args reach the agent"
+        assert_not_contains "$extra_pane" "--preset=" "browser Ctrl-N preset: the --preset flag stays with am"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+
     rm -rf "$test_dir"
     teardown_integration_env
 

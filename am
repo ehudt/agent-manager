@@ -15,7 +15,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.36.0"
+AM_VERSION="0.37.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -349,6 +349,26 @@ cmd_new_internal() {
     local task="${3:-}"
     shift 3 2>/dev/null || shift $#
     local agent_args=("$@")
+
+    # The form's values arrive raw, exactly as in cmd_new's interactive
+    # branch: the preset choice is a --preset=<name> flag for us (its args
+    # and shell flag merge here), and a `@spec` directory still has to be
+    # resolved by the provider. Until 0.37 this path launched with both
+    # untouched, so Ctrl-N + `@<PR>` died on "Directory does not exist: @…".
+    local _flag _kept=() _form_preset=""
+    for _flag in "${agent_args[@]}"; do
+        case "$_flag" in
+            --preset=*) _form_preset="${_flag#--preset=}" ;;
+            *) _kept+=("$_flag") ;;
+        esac
+    done
+    agent_args=("${_kept[@]}")
+    if [[ -n "$_form_preset" ]]; then
+        _cmd_new_apply_preset "$_form_preset" false || return 1
+    fi
+    if am_dir_is_spec "$directory"; then
+        directory=$(agent_dir_resolve "$directory") || return 1
+    fi
 
     local session_name
     session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")

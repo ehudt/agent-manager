@@ -6,6 +6,17 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.37.0] - 2026-09-15
+
+- Inactive sessions (the browser's restore rows and `am restore`) are listed
+  most recently *closed* first. They were in launch order, so a long-lived
+  session closed a minute ago sat below every shorter session started after
+  it and looked missing.
+- The browser's Ctrl-N form now resolves a `@spec` directory through the
+  configured `dir_provider` and honors the Preset field, like `am new`. It
+  launched with the raw values before, so `@<PR>` failed with "Directory does
+  not exist: @…" and the preset's flags went to the agent unparsed.
+
 ## [0.36.0] - 2026-09-14
 
 - `am wait --state` and state-file reads no longer accept the pre-0.12

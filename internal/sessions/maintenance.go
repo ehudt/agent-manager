@@ -524,7 +524,11 @@ func (e Env) Restorable() []string {
 	}
 	live := e.LiveSet()
 	seen := make(map[string]struct{})
-	var out []string
+	type dated struct {
+		raw     string
+		recency int64
+	}
+	var picked []dated
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := lines[i]
 		agent := l.get("agent_type")
@@ -542,7 +546,29 @@ func (e Env) Restorable() []string {
 			continue
 		}
 		seen[sid] = struct{}{}
-		out = append(out, l.raw)
+		picked = append(picked, dated{raw: l.raw, recency: slogRecency(&l)})
+	}
+	// Most recently closed first (see restorableEntriesFromLog); stable, so
+	// undated lines keep their log order.
+	sort.SliceStable(picked, func(i, j int) bool {
+		return picked[i].recency > picked[j].recency
+	})
+	out := make([]string, 0, len(picked))
+	for _, p := range picked {
+		out = append(out, p.raw)
 	}
 	return out
+}
+
+// slogRecency: the unix time a log entry was closed, else created; 0 when
+// neither is present or parseable.
+func slogRecency(l *slogLine) int64 {
+	ref := parseSessionLogTime(l.get("closed_at"))
+	if ref.IsZero() {
+		ref = parseSessionLogTime(l.get("created_at"))
+	}
+	if ref.IsZero() {
+		return 0
+	}
+	return ref.Unix()
 }

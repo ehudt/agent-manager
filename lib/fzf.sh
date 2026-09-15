@@ -190,7 +190,9 @@ fzf_main() {
     local lib_dir="${AM_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
     # Require non-zero size so test_install's fake-go stub doesn't fire.
-    local browse_cmd="$lib_dir/../bin/am-browse"
+    # AM_BROWSE_CMD swaps in a stand-in that prints a protocol line (tests
+    # drive the browser's hand-off paths through it).
+    local browse_cmd="${AM_BROWSE_CMD:-$lib_dir/../bin/am-browse}"
     if [[ ! -x "$browse_cmd" || ! -s "$browse_cmd" ]]; then
         log_error "bin/am-browse is not built. Run 'make' (or 'am install') to build it."
         return 1

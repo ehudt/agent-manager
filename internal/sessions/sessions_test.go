@@ -188,6 +188,7 @@ func TestRestorableEntriesFromLog(t *testing.T) {
 	writeClaudeJSONL(t, home, dir, "sid-old")
 	writeClaudeJSONL(t, home, dir, "sid-dup")
 	writeClaudeJSONL(t, home, dir, "sid-live")
+	writeClaudeJSONL(t, home, dir, "sid-long")
 
 	if err := os.MkdirAll(filepath.Join(amDir, "snapshots"), 0o755); err != nil {
 		t.Fatalf("mkdir snapshots: %v", err)
@@ -197,6 +198,17 @@ func TestRestorableEntriesFromLog(t *testing.T) {
 	}
 
 	logs := []SessionLogEntry{
+		{
+			// Launched first, closed last: must lead the list even though
+			// every other entry sits after it in the log.
+			SessionName: "am-long",
+			SessionID:   "sid-long",
+			Directory:   dir,
+			AgentType:   "claude",
+			Task:        "Long-lived",
+			CreatedAt:   "2026-01-01T08:00:00Z",
+			ClosedAt:    "2026-01-02T11:59:45Z",
+		},
 		{
 			SessionName: "am-old",
 			SessionID:   "sid-old",
@@ -244,28 +256,36 @@ func TestRestorableEntriesFromLog(t *testing.T) {
 
 	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 	entries := restorableEntriesFromLog(logs, amDir, home, map[string]bool{"am-live": true}, now)
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("len(entries) = %d, want 3", len(entries))
 	}
 
-	if entries[0].Kind != EntryInactive || entries[0].RestoreSessionID != "sid-dup" {
-		t.Fatalf("first entry = %#v, want newest sid-dup inactive", entries[0])
+	// Most recently closed first, regardless of log (launch) order.
+	if entries[0].Kind != EntryInactive || entries[0].RestoreSessionID != "sid-long" {
+		t.Fatalf("first entry = %#v, want the most recently closed sid-long", entries[0])
 	}
-	if entries[0].DisplayBase != "my-site/main [claude] Duplicate new" {
-		t.Errorf("first DisplayBase = %q", entries[0].DisplayBase)
-	}
-	if entries[0].TimeAgo != "30s ago" {
-		t.Errorf("first TimeAgo = %q, want 30s ago", entries[0].TimeAgo)
-	}
-	if entries[0].SnapshotPath != filepath.Join(amDir, "snapshots", "sid-dup.txt") {
-		t.Errorf("first SnapshotPath = %q", entries[0].SnapshotPath)
+	if entries[0].TimeAgo != "15s ago" {
+		t.Errorf("first TimeAgo = %q, want 15s ago", entries[0].TimeAgo)
 	}
 
-	if entries[1].RestoreSessionID != "sid-old" {
-		t.Errorf("second RestoreSessionID = %q, want sid-old", entries[1].RestoreSessionID)
+	if entries[1].RestoreSessionID != "sid-dup" {
+		t.Fatalf("second entry = %#v, want newest sid-dup inactive", entries[1])
 	}
-	if entries[1].TimeAgo != "1d ago" {
-		t.Errorf("second TimeAgo = %q, want 1d ago", entries[1].TimeAgo)
+	if entries[1].DisplayBase != "my-site/main [claude] Duplicate new" {
+		t.Errorf("second DisplayBase = %q", entries[1].DisplayBase)
+	}
+	if entries[1].TimeAgo != "30s ago" {
+		t.Errorf("second TimeAgo = %q, want 30s ago", entries[1].TimeAgo)
+	}
+	if entries[1].SnapshotPath != filepath.Join(amDir, "snapshots", "sid-dup.txt") {
+		t.Errorf("second SnapshotPath = %q", entries[1].SnapshotPath)
+	}
+
+	if entries[2].RestoreSessionID != "sid-old" {
+		t.Errorf("third RestoreSessionID = %q, want sid-old", entries[2].RestoreSessionID)
+	}
+	if entries[2].TimeAgo != "1d ago" {
+		t.Errorf("third TimeAgo = %q, want 1d ago", entries[2].TimeAgo)
 	}
 }
 
