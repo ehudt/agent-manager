@@ -30,6 +30,9 @@ entry unless they changed behaviour a user would notice.
   configured `dir_provider` and honors the Preset field, like `am new`. It
   launched with the raw values before, so `@<PR>` failed with "Directory does
   not exist: @…" and the preset's flags went to the agent unparsed.
+- The new-session popup stays open after a failed launch ("Press any key to
+  close") instead of vanishing with the error message. `AM_LAUNCH_HOLD=0`
+  restores the old behaviour; scripted callers without a tty never wait.
 
 ## [0.36.0] - 2026-09-14
 

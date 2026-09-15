@@ -350,6 +350,21 @@ cmd_recover_open() {
 
 # Internal: create session from form data (called from fzf_main)
 # Usage: cmd_new_internal <directory> [agent_type] [task] [flags...]
+# The new-session popup (prefix+n, Ctrl-N in the browser) runs under
+# `display-popup -E`: tmux closes it the moment am exits, so a failure after
+# the form — the `@spec` provider, the launch itself — is gone before it can
+# be read. Observed 2026-09-15: a wp checkout died on a submodule and the
+# user saw "the popup closed and no session was created". Hold the popup on
+# a form-path failure until a key is pressed; scripted callers (no tty) never
+# wait, and AM_LAUNCH_HOLD=0 disables it.
+_launch_fail_hold() {
+    [[ "${1:-}" == form ]] || return 0
+    [[ "${AM_LAUNCH_HOLD:-1}" != 0 ]] || return 0
+    [[ -t 0 && -r /dev/tty ]] || return 0
+    printf '\n%s\n' "Session not created (details above; also in 'am log'). Press any key to close." >&2
+    read -rsn1 </dev/tty || true
+}
+
 cmd_new_internal() {
     local directory="$1"
     local agent_type="${2:-$(am_default_agent)}"
@@ -374,12 +389,19 @@ cmd_new_internal() {
         _cmd_new_apply_preset "$_form_preset" false || return 1
     fi
     if am_dir_is_spec "$directory"; then
-        directory=$(agent_dir_resolve "$directory") || return 1
+        if ! directory=$(agent_dir_resolve "$directory"); then
+            _launch_fail_hold form
+            return 1
+        fi
     fi
 
     local session_name
     _AM_LAUNCH_SOURCE=form
-    session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
+    if ! session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}"); then
+        _AM_LAUNCH_SOURCE=""
+        _launch_fail_hold form
+        return 1
+    fi
     _AM_LAUNCH_SOURCE=""
 
     if [[ -n "$session_name" ]]; then
@@ -663,7 +685,10 @@ cmd_new() {
     # skips path validation for them, so this is the one place they turn into
     # a real directory).
     if am_dir_is_spec "$directory"; then
-        directory=$(agent_dir_resolve "$directory") || return 1
+        if ! directory=$(agent_dir_resolve "$directory"); then
+            _launch_fail_hold "$launch_source"
+            return 1
+        fi
     fi
 
     initial_prompt=$(read_prompt_input)
@@ -673,7 +698,11 @@ cmd_new() {
     _AM_LAUNCH_PROMPT="$initial_prompt"
     _AM_LAUNCH_SOURCE="$launch_source"
     local session_name
-    session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}")
+    if ! session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}"); then
+        _AM_LAUNCH_SOURCE=""
+        _launch_fail_hold "$launch_source"
+        return 1
+    fi
     _AM_LAUNCH_SOURCE=""
 
     if [[ -n "$session_name" ]]; then
