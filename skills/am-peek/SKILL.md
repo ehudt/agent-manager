@@ -1,6 +1,6 @@
 ---
 name: am-peek
-description: Inspect another `am` session's shell history — commands run, grep an error, or scroll back. Triggers "peek the shell", "what did the user run", "check the shell history of <session>", or a backgrounded `am send`/`am new`. Not for your own session.
+description: Read another `am` session's shell history without attaching. Triggers "peek the shell", "what did the user run", "check the shell history of <session>", or a backgrounded `am send`/`am new`. Not for your own session.
 ---
 
 # Am Peek

@@ -1,6 +1,6 @@
 ---
 name: agent-manager-dispatch
-description: Use when a task has 2+ independent work streams, needs background agents, or when you want to delegate a subtask to a separate long-running agent session. Also use when asked to "spawn", "dispatch", or "launch" agent sessions.
+description: Spawn, dispatch, or launch background `am` agent sessions — for a task with 2+ independent work streams, or a subtask handed to a separate long-running agent. Triggers "spawn", "dispatch", "launch" agent sessions.
 ---
 
 # Agent Manager Dispatch
