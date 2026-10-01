@@ -581,6 +581,17 @@ test_cli_workspace_and_id() {
         agent_kill "$session_name" 2>/dev/null
     fi
 
+    # --- browser restore of a row whose directory is gone: reported, exit 1 ---
+    # (the popup hold needs a tty; without one the failure must still surface)
+    printf '#!/usr/bin/env bash\nprintf "__RESTORE__\\x1f%s\\x1fsid-gone\\x1fclaude\\n"\n' \
+        "$test_dir/released-copy" > "$fake_browse"
+    rc=0
+    err=$(env "${am_env[@]}" AM_BROWSE_CMD="$fake_browse" AM_NO_INSTALL_REFRESH=1 AM_AUTO_RESTORE=false \
+        "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "browser restore, directory gone: exits 1"
+    assert_contains "$err" "Directory no longer exists: $test_dir/released-copy" "browser restore, directory gone: names the directory"
+    assert_contains "$err" "mkdir -p '$test_dir/released-copy'" "browser restore, directory gone: says how to recover"
+
     # --- every launch, resolve, and kill above left its line in events.log ---
     local ev_text
     ev_text=$(cat "$ev" 2>/dev/null)
@@ -594,6 +605,7 @@ test_cli_workspace_and_id() {
     assert_contains "$ev_text" "source=cli dir=$test_dir/ws-feature-x agent=" "events: CLI launch attributed to source=cli"
     assert_contains "$ev_text" $'\tkill\t'"$session_name"$'\t' "events: kill recorded"
     assert_not_contains "$ev_text" $'\tlaunch.ok\t-\t' "events: no launch.ok without a session"
+    assert_contains "$ev_text" "sid=sid-gone agent=claude dir=$test_dir/released-copy reason=dir_missing" "events: restore of a missing directory recorded"
 
     rm -rf "$test_dir"
     teardown_integration_env

@@ -33,6 +33,11 @@ entry unless they changed behaviour a user would notice.
 - The new-session popup stays open after a failed launch ("Press any key to
   close") instead of vanishing with the error message. `AM_LAUNCH_HOLD=0`
   restores the old behaviour; scripted callers without a tty never wait.
+  Restoring an inactive session from the browser does the same, so a
+  failed restore no longer looks like Enter did nothing. When the session's
+  directory is gone (a removed checkout), the error says to recreate it:
+  the conversation is stored under that path, and an empty directory is
+  enough to resume it.
 
 ## [0.36.0] - 2026-09-14
 
