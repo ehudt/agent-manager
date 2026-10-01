@@ -3,7 +3,7 @@
 # Session names come from the live registry (`am list --json`), preset
 # names from `am preset list`, so they are current at every <TAB>.
 
-_am_commands="list new send peek attach shell review id cd diff kill config preset info status doctor log wait done result interrupt restore install uninstall completions help version"
+_am_commands="list new send peek attach shell review id cd owner diff kill config preset info status doctor log wait done result interrupt restore install uninstall completions help version"
 _am_agent_types="@AGENT_TYPES@"
 _am_states="ready running waiting_user background starting idle dead unknown"
 _am_config_keys="agent auto_restore logs shell dir_provider notify notify_states notify_cmd"
@@ -61,7 +61,7 @@ _am() {
     case "$cmd" in
         send|peek|attach|shell|review|kill|info|status|wait|result|interrupt|doctor|log|diff)
             COMPREPLY=($(compgen -W "$(_am_sessions)" -- "$cur")) ;;
-        new|cd)
+        new|cd|owner)
             COMPREPLY=($(compgen -d -- "$cur")) ;;
         config)
             if (( COMP_CWORD == 2 )); then

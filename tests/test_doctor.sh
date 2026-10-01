@@ -271,14 +271,15 @@ test_doctor_hooks_installed() {
         Stop: [{hooks: [{type: "command", command: $h}]}],
         Notification: [{hooks: [{type: "command", command: $h}]}],
         UserPromptSubmit: [{hooks: [{type: "command", command: $h}]}],
+        PreToolUse: [{hooks: [{type: "command", command: ("[ -s \"${AM_STATE_DIR:-/tmp/am-state}/${AM_SESSION_NAME:-}.fence\" ] || exit 0; bash " + $h + " # am-state-hook")}]}],
         PostToolUse: [{hooks: [{type: "command", command: "/elsewhere/lib/hooks/state-hook.sh"}]}]
     }}' > "$tmp/.claude/settings.json"
 
     out=$(HOME="$tmp" CODEX_HOME="$tmp/.codex" CURSOR_CONFIG_HOME="$tmp/.cursor" _doc_hooks_installed 2>&1)
     assert_contains "$out" "✓ claude Stop" "hooks: installed event is ok"
     assert_contains "$out" "✓ claude UserPromptSubmit" "hooks: UserPromptSubmit ok"
+    assert_contains "$out" "✓ claude PreToolUse" "hooks: the fence-gated PreToolUse command still names the hook"
     assert_contains "$out" "claude PostToolUse: hook points elsewhere" "hooks: foreign path flagged"
-    assert_not_contains "$out" "PreToolUse: no am state hook" "hooks: Claude is not expected to have PreToolUse"
     assert_not_contains "$out" "PermissionRequest: no am state hook" "hooks: Claude is not expected to have PermissionRequest"
     assert_contains "$out" "codex:" "hooks: codex row present"
     assert_contains "$out" "not configured" "hooks: optional families report not configured, not a warning"

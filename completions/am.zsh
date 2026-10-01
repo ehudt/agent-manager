@@ -43,6 +43,7 @@ _am() {
         'review:Toggle the review pane'
         'id:Print the current am session name'
         'cd:Record where the current session works now'
+        'owner:Live session working in a directory'
         'diff:What a session changed since you last reviewed it'
         'kill:Kill a session'
         'config:Show or change saved defaults'
@@ -86,7 +87,7 @@ _am() {
     case "$cmd" in
         send|peek|attach|shell|review|kill|info|status|wait|result|interrupt|doctor|log|diff)
             compadd -- ${(f)"$(_am_sessions)"} ;;
-        new|cd)
+        new|cd|owner)
             _files -/ ;;
         config)
             if (( CURRENT == 3 )); then

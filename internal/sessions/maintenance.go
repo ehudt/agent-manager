@@ -376,7 +376,7 @@ func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 			continue
 		}
 		session := name
-		for _, suffix := range []string{".sid", ".transcript", ".cwd", ".bg", ".dirty", ".head"} {
+		for _, suffix := range []string{".sid", ".transcript", ".cwd", ".bg", ".dirty", ".head", ".fence"} {
 			session = strings.TrimSuffix(session, suffix)
 		}
 		if _, ok := live[session]; ok {

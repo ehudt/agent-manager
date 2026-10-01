@@ -177,7 +177,7 @@ _doc_hooks_installed() {
     # Event lists mirror scripts/install.sh (_install_claude_hooks,
     # _install_codex_hooks, _install_cursor_hooks).
     _doc_hooks_check claude "$HOME/.claude/settings.json" false - \
-        Stop Notification UserPromptSubmit PostToolUse
+        Stop Notification UserPromptSubmit PreToolUse PostToolUse
     _doc_hooks_check codex "${CODEX_HOME:-$HOME/.codex}/hooks.json" true - \
         Stop UserPromptSubmit PreToolUse PostToolUse PermissionRequest
     _doc_hooks_check cursor "$cursor_home/hooks.json" true "${CURSOR_HOOKS_DIR:-$cursor_home/hooks}/am-state-hook.sh" \
@@ -427,7 +427,7 @@ _doc_hook_files() {
             _doc_kv "state file" "missing (no hook event yet, or not a hook-driven agent)"
         fi
     fi
-    for f in sid transcript cwd bg; do
+    for f in sid transcript cwd bg fence; do
         if [[ -f "$state_dir/$name.$f" ]]; then
             v=$(head -c 300 "$state_dir/$name.$f" | tr '\n' ' ')
             _doc_kv ".$f" "$v ($(_doc_age "$(_doc_mtime "$state_dir/$name.$f")" "$now"))"

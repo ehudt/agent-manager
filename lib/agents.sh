@@ -116,11 +116,13 @@ agent_launch() {
     shift 3 2>/dev/null || shift $#
     local agent_args=("$@")
     local initial_prompt="${_AM_LAUNCH_PROMPT:-}"
+    local fence="${_AM_LAUNCH_FENCE:-}"
     local recovery_mode="${_AM_RECOVERY_MODE:-0}"
     local defer_sidebar_refresh="${_AM_DEFER_SIDEBAR_REFRESH:-0}"
     # Who asked (cli / form / restore / recovery), for the events log.
     local launch_source="${_AM_LAUNCH_SOURCE:-cli}"
     _AM_LAUNCH_PROMPT=""
+    _AM_LAUNCH_FENCE=""
     _AM_RECOVERY_MODE=0
     _AM_DEFER_SIDEBAR_REFRESH=0
     _AM_LAUNCH_SOURCE=""
@@ -238,6 +240,16 @@ agent_launch() {
         tmux_enable_pipe_pane "$session_name" ".{top-left}" "$log_dir/agent.log"
     fi
     am_mkdir_private "${AM_STATE_DIR:-/tmp/am-state}"
+
+    # Relocation fence (am restore into another checkout, _AM_LAUNCH_FENCE):
+    # the directories the resumed conversation used to work in, one
+    # `<old>TAB<new>` line each; the state hook denies tool calls reaching
+    # under <old>. Written before the agent command runs, so its first tool
+    # call is already fenced.
+    if [[ -n "$fence" ]]; then
+        (umask 077; printf '%s\n' "$fence" > "${AM_STATE_DIR:-/tmp/am-state}/$session_name.fence") \
+            || am_event launch.step "$session_name" "step=fence_write" "rc=$?"
+    fi
 
     # Build the full agent command with shell-safe argument quoting.
     local -a cmd_parts=("$agent_cmd")
@@ -412,7 +424,9 @@ agent_dir_resolve() {
 # workdir, tmux session present), if any. A `@spec` resolves to whichever
 # pooled copy holds the branch — the copy another session is working in when
 # one is — so launching or relocating there would put two agents in one
-# checkout. Prints the session name; nothing when the directory is free.
+# checkout. A session launched or working in a subdirectory counts: it is in
+# the same checkout. Prints the session name; nothing when the directory is
+# free.
 # Usage: agent_dir_live_session <dir>
 agent_dir_live_session() {
     local dir="$1" line name d w
@@ -422,7 +436,7 @@ agent_dir_live_session() {
     # be relative.
     [[ -d "$dir" ]] && dir=$(abspath "$dir")
     while IFS=$'\t' read -r name d w; do
-        [[ "$d" == "$dir" || "$w" == "$dir" ]] || continue
+        [[ "$d" == "$dir" || "$d" == "$dir/"* || "$w" == "$dir" || "$w" == "$dir/"* ]] || continue
         if tmux_session_exists "$name"; then
             echo "$name"
             return 0
@@ -747,6 +761,14 @@ agent_kill() {
             close_sha=$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)
             [[ -n "$close_sha" ]] && sessions_log_update "$session_name" "head_sha" "$close_sha"
         fi
+        # Relocation fence lines carry over to the next restore (which
+        # re-seeds the sidecar from this field): the old copies stay off
+        # limits however many times the conversation moves.
+        local fence_file="${AM_STATE_DIR:-/tmp/am-state}/$session_name.fence"
+        if [[ -s "$fence_file" ]]; then
+            sessions_log_update "$session_name" "fence" "$(cat "$fence_file")" \
+                || am_event kill.step "$session_name" "step=fence_log" "rc=$?"
+        fi
         local sid_from="sidecar"
         sid=$(am_core sidecar "$session_name" id 2>/dev/null || true)
         if [[ -n "$sid" ]] && ! _sessions_log_jsonl_exists "$dir" "$sid" "$agent_type" "$transcript"; then
@@ -795,6 +817,7 @@ agent_kill() {
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.bg" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.dirty" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.head" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.fence" \
           "$(_recovery_identity_dir)/$session_name.sid" \
           "$(_recovery_identity_dir)/$session_name.transcript" \
           "$(_recovery_identity_dir)/$session_name.rebind" \

@@ -650,7 +650,38 @@ test_cli_workspace_and_id() {
             "restore =fresh: move note flags the HEAD the session closed on"
         assert_eq "sid-moved" "$(jq -rs --arg s "$restored" '[.[] | select(.session_name == $s)] | last | .session_id' "$slog")" \
             "restore =fresh: conversation id pre-seeded on the new row"
+        # The state hook's relocation fence: the old directory is off limits
+        # for tool calls (lib/hooks/state-hook.sh), written before the agent
+        # command ran.
+        assert_eq "$gone_dir	$test_dir/ws-feature-r" "$(cat "$AM_STATE_DIR/$restored.fence" 2>/dev/null)" \
+            "restore =fresh: .fence sidecar names the old and new directories"
+        # ... and on the new log row already, so a crash before kill (the
+        # sidecar is under /tmp) cannot lose it.
+        assert_eq "$gone_dir	$test_dir/ws-feature-r" "$(jq -rs --arg s "$restored" '[.[] | select(.session_name == $s)] | last | .fence' "$slog")" \
+            "restore =fresh: the fence is on the new sessions log row before kill"
         agent_kill "$restored" 2>/dev/null
+        assert_cmd_fails "restore =fresh: kill removes the .fence sidecar" test -e "$AM_STATE_DIR/$restored.fence"
+        assert_eq "$gone_dir	$test_dir/ws-feature-r" "$(jq -rs --arg s "$restored" '[.[] | select(.session_name == $s)] | last | .fence' "$slog")" \
+            "restore =fresh: kill records the fence on the sessions log row"
+    fi
+
+    # Restored again (the copy it moved to has since switched branches): the
+    # fence line from the first move carries over, and resuming under the
+    # same path adds none for it.
+    if [[ -n "$restored" ]]; then
+        (cd "$test_dir/ws-feature-r" && git checkout -q -b other-work)
+        printf '#!/usr/bin/env bash\nprintf "__RESTORE__\\x1f%s\\x1fsid-moved\\x1fclaude\\n"\n' "$test_dir/ws-feature-r" > "$fake_browse"
+        env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=fresh "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+        local restored2
+        restored2=$(jq -r --arg d "$test_dir/ws-feature-r" \
+            '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+        assert_not_empty "$restored2" "restore =fresh twice: session created again"
+        if [[ -n "$restored2" ]]; then
+            assert_eq "$gone_dir	$test_dir/ws-feature-r" "$(cat "$AM_STATE_DIR/$restored2.fence" 2>/dev/null)" \
+                "restore =fresh twice: the first move's fence line carries over, none added for the re-used path"
+            agent_kill "$restored2" 2>/dev/null
+        fi
+        (cd "$test_dir/ws-feature-r" && git checkout -q feature-r)
     fi
 
     # fresh under the same path: a pool slot re-allocated where the old copy
@@ -668,6 +699,7 @@ test_cli_workspace_and_id() {
         assert_contains "$restored_pane" "fresh checkout of branch feature-s at $test_dir/ws-feature-s" "restore =fresh, same path: move note names the re-created checkout"
         assert_contains "$restored_pane" "exist here only if they were pushed" "restore =fresh, same path: move note warns about the earlier copy's work"
         assert_not_contains "$restored_pane" "do not read or edit" "restore =fresh, same path: nothing to fence off"
+        assert_cmd_fails "restore =fresh, same path: no .fence sidecar" test -e "$AM_STATE_DIR/$restored.fence"
         agent_kill "$restored" 2>/dev/null
     fi
 
@@ -744,7 +776,44 @@ test_cli_workspace_and_id() {
     second=$(env "${am_env[@]}" "$PROJECT_DIR/am" new "$test_dir/ws-busy" --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
     assert_not_empty "$second" "am new <path> into a busy copy: allowed"
     [[ -n "$second" ]] && agent_kill "$second" 2>/dev/null
-    [[ -n "$busy_session" ]] && agent_kill "$busy_session" 2>/dev/null
+    # `am owner <dir>`: the same lookup for tools that reclaim checkouts
+    # (`wp clear` refuses a copy it names). Name + exit 0, exit 1 when free,
+    # exit 2 for a non-directory.
+    rc=0
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" owner "$test_dir/ws-busy" 2>/dev/null) || rc=$?
+    assert_eq "0" "$rc" "am owner: busy copy exits 0"
+    assert_eq "$busy_session" "$out" "am owner: prints the live session"
+    rc=0
+    # A trailing slash and a subdirectory of the copy name the same session:
+    # the registry path is clean, and a session working anywhere under the
+    # copy is in that checkout.
+    rc=0
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" owner "$test_dir/ws-busy/" 2>/dev/null) || rc=$?
+    assert_eq "0 $busy_session" "$rc $out" "am owner: trailing slash resolves to the same copy"
+    mkdir -p "$test_dir/ws-busy/sub"
+    local sub_session
+    sub_session=$(env "${am_env[@]}" "$PROJECT_DIR/am" new "$test_dir/ws-busy/sub" --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    agent_kill "$busy_session" 2>/dev/null
+    rc=0
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" owner "$test_dir/ws-busy" 2>/dev/null) || rc=$?
+    assert_eq "0 $sub_session" "$rc $out" "am owner: a session launched in a subdirectory owns the copy"
+    [[ -n "$sub_session" ]] && agent_kill "$sub_session" 2>/dev/null
+    # A new occupant for the remaining checks ($busy_session keeps the name
+    # the dir_busy refusals above were logged with).
+    local busy_again
+    busy_again=$(env "${am_env[@]}" "$PROJECT_DIR/am" new "$test_dir/ws-busy" --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    rc=0
+    out=$(env "${am_env[@]}" "$PROJECT_DIR/am" owner "$test_dir/ws-feature-x" 2>/dev/null) || rc=$?
+    assert_eq "1" "$rc" "am owner: free copy exits 1"
+    assert_eq "" "$out" "am owner: free copy prints nothing"
+    rc=0
+    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" owner "$test_dir/nowhere" 2>&1) || rc=$?
+    assert_eq "2" "$rc" "am owner: missing directory exits 2"
+    assert_contains "$err" "Not a directory" "am owner: missing directory says so"
+    [[ -n "$busy_again" ]] && agent_kill "$busy_again" 2>/dev/null
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" owner "$test_dir/ws-busy" >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "am owner: killed session no longer owns the copy"
 
     # --- every launch, resolve, and kill above left its line in events.log ---
     local ev_text

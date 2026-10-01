@@ -18,7 +18,9 @@
 #   Notification[permission_prompt]  → waiting_user
 #   Notification[elicitation_dialog] → waiting_user
 #   UserPromptSubmit                 → running
-#   PreToolUse                       → running
+#   PreToolUse                       → running; on a Claude session with a
+#                                      .fence sidecar, a tool_input under a
+#                                      fenced directory is denied (stdout)
 #   PermissionRequest                → waiting_user
 #   PostToolUse                      → running
 #   sessionStart / stop              → ready                 (Cursor)
@@ -250,6 +252,8 @@ fi
     IFS= read -r -d '' bg_field_present || true
     IFS= read -r -d '' bg_tasks_json || true
     IFS= read -r -d '' payload_keys || true
+    IFS= read -r -d '' tool_name || true
+    IFS= read -r -d '' tool_input_json || true
 } < <(printf '%s' "$hook_input" | jq -j '
     def s: (. // "") | tostring;
     ([0] | implode) as $nul
@@ -262,7 +266,9 @@ fi
         (.cwd | s),
         (has("background_tasks") | tostring),
         (.background_tasks // null | tojson),
-        (if type == "object" then (keys | sort | join(",")) else "" end) ]
+        (if type == "object" then (keys | sort | join(",")) else "" end),
+        (.tool_name | s),
+        (.tool_input // null | tojson) ]
     | join($nul)' 2>/dev/null; printf '\0')
 if [[ -z "$hook_type" ]]; then
     # Unparseable payload, or one without hook_event_name: a harness change
@@ -610,6 +616,54 @@ fi
 # sidecars further down.
 if [[ -z "$hook_session_id" && -n "$transcript_path" ]]; then
     hook_session_id=$(basename "$transcript_path" .jsonl)
+fi
+
+# Relocation fence. `am restore` into another checkout (cmd_restore_internal
+# → agent_launch) writes $AM_STATE_DIR/<session>.fence: one `<old>TAB<new>`
+# line per directory this conversation used to work in and no longer owns (a
+# released or re-allocated pooled copy). The move note tells the agent once;
+# every earlier turn of the transcript still names the old paths, so a tool
+# call that reaches under one is denied here (Claude Code PreToolUse:
+# `permissionDecision: deny` on stdout — the only JSON this script prints)
+# with a reason naming the live checkout. The whole tool_input is scanned as
+# text, so Read/Edit/Grep paths, Bash commands and anything else carrying the
+# old path are caught alike. A match must end at a path boundary (`/`, a
+# quote, a space, the end), so `<old>-bak` and `<old>2` pass; the `~/`
+# spelling of a path under $HOME counts too. The deny is one events.log line
+# (rare by construction); without a fence file this is one -s test per tool
+# call (and the installed PreToolUse command, scripts/install.sh, makes the
+# same test before this script is even started). Claude sessions only: the
+# deny JSON is Claude Code's PreToolUse contract, and Codex fires the same
+# event name. The state still goes to running below: the turn continues.
+fence_file="$AM_STATE_DIR/$session_name.fence"
+if [[ "$hook_type" == "PreToolUse" && "$session_agent" == "claude" && -s "$fence_file" && -n "$tool_input_json" ]]; then
+    # <haystack> <needle>: 0 when the needle occurs followed by a path
+    # boundary, 1 when every occurrence continues into a longer name. One
+    # regex match: the quoted needle is literal (bash ≥3.2), the scan is
+    # linear in the input — a loop of `${rest#*"$needle"}` went quadratic on
+    # inputs with many near-misses (2000 `<old>-bak` tokens: 1.3s vs 3ms).
+    _fence_hit() {
+        [[ -n "$2" ]] || return 1
+        [[ "$1" =~ "$2"([^A-Za-z0-9._-]|$) ]]
+    }
+    fence_old=""
+    fence_new=""
+    while IFS=$'\t' read -r f_old f_new; do
+        [[ "$f_old" == /* ]] || continue
+        if _fence_hit "$tool_input_json" "$f_old" \
+            || { [[ -n "${HOME:-}" && "$f_old" == "$HOME/"* ]] && _fence_hit "$tool_input_json" "~/${f_old#"$HOME"/}"; }; then
+            fence_old="$f_old"
+            fence_new="$f_new"
+            break
+        fi
+    done < "$fence_file"
+    if [[ -n "$fence_old" ]]; then
+        fence_reason="am: this conversation was moved from $fence_old to ${fence_new:-another checkout}; the old checkout was released and may now hold other work, so its files are not yours. Use the same path under ${fence_new:-the current working directory} instead."
+        jq -n --arg r "$fence_reason" \
+            '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}' 2>/dev/null \
+            || printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"am: this conversation was moved; its old checkout is off limits"}}\n'
+        _hook_event hook.fence_deny "tool=${tool_name:-?}" "old=$fence_old" "new=$fence_new"
+    fi
 fi
 
 # Live working directory sidecar. Claude Code stamps hook payloads (and every

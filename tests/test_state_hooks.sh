@@ -1209,6 +1209,126 @@ test_state_hook_events() {
     $SUMMARY_MODE || echo ""
 }
 
+# Relocation fence: with a `<old>TAB<new>` .fence sidecar (written by am
+# restore when the conversation resumes in another checkout), a PreToolUse
+# whose tool_input reaches under <old> is denied (permissionDecision JSON on
+# stdout) and logged; everything else leaves stdout empty.
+test_state_hook_fence() {
+    $SUMMARY_MODE || echo "=== Testing state-hook relocation fence ==="
+
+    local hook_script="$PROJECT_DIR/lib/hooks/state-hook.sh"
+    local tmp_dir registry state_dir am_dir home old new out
+    tmp_dir=$(mktemp -d)
+    registry="$tmp_dir/sessions.json"
+    state_dir="$tmp_dir/state"
+    am_dir="$tmp_dir/am"
+    mkdir -p "$state_dir" "$am_dir" "$tmp_dir/home/code/blue-wekapp" "$tmp_dir/home/code/red-wekapp"
+    home=$(cd "$tmp_dir/home" && pwd -P)
+    old="$home/code/blue-wekapp"
+    new="$home/code/red-wekapp"
+    jq -n --arg dir "$new" \
+        '{sessions: {"am-fence1": {name: "am-fence1", directory: $dir, branch: "feature-x", agent_type: "claude", task: ""}}}' \
+        > "$registry"
+
+    # The harness points AM_EVENTS_LOG at a shared file; this test reads the
+    # log back, so it gets its own.
+    run_hook() {
+        HOME="$home" AM_DIR="$am_dir" AM_EVENTS_LOG="$am_dir/events.log" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="am-fence1" "$hook_script" <<< "$1"
+    }
+    pre() {  # <tool_name> <tool_input JSON> -> PreToolUse payload
+        printf '{"hook_event_name":"PreToolUse","session_id":"sid-f","cwd":"%s","tool_name":"%s","tool_input":%s}' "$new" "$1" "$2"
+    }
+    deny_of() { jq -r '.hookSpecificOutput.permissionDecision // empty' <<< "$1" 2>/dev/null; }
+
+    # No fence: a tool call under any path prints nothing.
+    out=$(run_hook "$(pre Read "{\"file_path\":\"$old/src/a.d\"}")")
+    assert_eq "" "$out" "fence: no sidecar, no stdout"
+    assert_eq "running" "$(cat "$state_dir/am-fence1" 2>/dev/null)" "fence: no sidecar, state written as usual"
+
+    printf '%s\t%s\n' "$old" "$new" > "$state_dir/am-fence1.fence"
+
+    # Read / Edit under the old checkout: denied, with the reason naming both.
+    out=$(run_hook "$(pre Read "{\"file_path\":\"$old/src/a.d\"}")")
+    assert_eq "deny" "$(deny_of "$out")" "fence: Read under the old directory is denied"
+    assert_contains "$out" "moved from $old to $new" "fence: the reason names the old and new checkouts"
+    out=$(run_hook "$(pre Edit "{\"file_path\":\"$old/src/a.d\",\"old_string\":\"x\",\"new_string\":\"y\"}")")
+    assert_eq "deny" "$(deny_of "$out")" "fence: Edit under the old directory is denied"
+
+    # The old directory itself (no trailing path), quoted inside a Bash
+    # command, and spelled with ~/ : all denied.
+    out=$(run_hook "$(pre Bash "{\"command\":\"cd $old && git status\"}")")
+    assert_eq "deny" "$(deny_of "$out")" "fence: Bash cd into the old directory is denied"
+    out=$(run_hook "$(pre Bash "{\"command\":\"ls '$old'\"}")")
+    assert_eq "deny" "$(deny_of "$out")" "fence: quoted old directory in a command is denied"
+    out=$(run_hook "$(pre Bash "{\"command\":\"grep -r foo ~/code/blue-wekapp/src\"}")")
+    assert_eq "deny" "$(deny_of "$out")" "fence: ~/ spelling of the old directory is denied"
+    out=$(run_hook "$(pre Grep "{\"pattern\":\"foo\",\"path\":\"$old\"}")")
+    assert_eq "deny" "$(deny_of "$out")" "fence: Grep path equal to the old directory is denied"
+
+    # Longer names that merely start with the old path, and the new checkout:
+    # allowed.
+    out=$(run_hook "$(pre Read "{\"file_path\":\"$old-bak/src/a.d\"}")")
+    assert_eq "" "$out" "fence: a sibling whose name extends the old path passes"
+    out=$(run_hook "$(pre Read "{\"file_path\":\"${old}2/src/a.d\"}")")
+    assert_eq "" "$out" "fence: a digit-suffixed sibling passes"
+    out=$(run_hook "$(pre Read "{\"file_path\":\"$new/src/a.d\"}")")
+    assert_eq "" "$out" "fence: the new checkout passes"
+    out=$(run_hook "$(pre Bash "{\"command\":\"git -C $new log --oneline -3\"}")")
+    assert_eq "" "$out" "fence: a command in the new checkout passes"
+
+    # Only PreToolUse decides; a PostToolUse carrying the same input is a
+    # plain state event (there is nothing left to deny).
+    out=$(run_hook "{\"hook_event_name\":\"PostToolUse\",\"session_id\":\"sid-f\",\"cwd\":\"$new\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$old/src/a.d\"}}")
+    assert_eq "" "$out" "fence: PostToolUse prints nothing"
+
+    # Several fence lines (a conversation moved twice): any of them denies;
+    # the reason names the line that matched.
+    local older="$home/code/green-wekapp"
+    printf '%s\t%s\n%s\t%s\n' "$older" "$old" "$old" "$new" > "$state_dir/am-fence1.fence"
+    out=$(run_hook "$(pre Read "{\"file_path\":\"$older/README\"}")")
+    assert_eq "deny" "$(deny_of "$out")" "fence: a path under an earlier move's directory is denied"
+    assert_contains "$out" "moved from $older to $old" "fence: the reason names the matching line"
+
+    # Each deny is one events.log line; the allowed calls logged nothing.
+    local denies
+    denies=$(grep -c 'hook.fence_deny' "$am_dir/events.log" 2>/dev/null || echo 0)
+    assert_eq "7" "$denies" "fence: one events.log line per deny, none for allowed calls"
+    assert_contains "$(grep 'hook.fence_deny' "$am_dir/events.log" | head -1)" "tool=Read" "fence: the event names the tool"
+
+    # The scan is one regex match, so a large input with many near-misses
+    # (a Write of a file that names `<old>-bak` thousands of times) costs
+    # milliseconds, not seconds.
+    local big i t0 t1
+    big=$(for ((i = 0; i < 2000; i++)); do printf '%s-bak ' "$old"; done)
+    t0=$(date +%s)
+    out=$(run_hook "$(pre Write "{\"file_path\":\"$new/notes.txt\",\"content\":\"$big\"}")")
+    t1=$(date +%s)
+    assert_eq "" "$out" "fence: 2000 near-misses in a Write body pass"
+    assert_cmd_succeeds "fence: the 2000-near-miss scan takes under 2s" test $(( t1 - t0 )) -lt 2
+
+    # Claude Code's own /bin/bash (3.2 on macOS) runs the hook: the quoted
+    # regex needle is literal there too.
+    if [[ -x /bin/bash ]]; then
+        out=$(HOME="$home" AM_DIR="$am_dir" AM_EVENTS_LOG="$am_dir/events.log" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="am-fence1" /bin/bash "$hook_script" <<< "$(pre Read "{\"file_path\":\"$old/src/a.d\"}")")
+        assert_eq "deny" "$(deny_of "$out")" "fence: /bin/bash denies a Read under the old directory"
+        out=$(HOME="$home" AM_DIR="$am_dir" AM_EVENTS_LOG="$am_dir/events.log" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
+            AM_IDENTITY_DIR="$tmp_dir/ids" AM_SESSION_NAME="am-fence1" /bin/bash "$hook_script" <<< "$(pre Read "{\"file_path\":\"$old-bak/src/a.d\"}")")
+        assert_eq "" "$out" "fence: /bin/bash passes a sibling that extends the old path"
+    fi
+
+    # Codex fires PreToolUse under the same name but does not speak Claude's
+    # deny JSON: a codex session with a fence file gets state only.
+    jq '.sessions["am-fence1"].agent_type = "codex"' "$registry" > "$registry.tmp" && mv "$registry.tmp" "$registry"
+    out=$(run_hook "$(pre Read "{\"file_path\":\"$old/src/a.d\"}")")
+    assert_eq "" "$out" "fence: a codex session is never denied (no stdout)"
+    assert_eq "running" "$(cat "$state_dir/am-fence1" 2>/dev/null)" "fence: the codex event still writes state"
+
+    rm -rf "$tmp_dir"
+    $SUMMARY_MODE || echo ""
+}
+
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_hook_events
@@ -1218,6 +1338,7 @@ run_state_hooks_tests() {
     _run_test test_state_from_hook_invalid_state
     _run_test test_pi_durable_identity_guard
     _run_test test_state_hook_cwd_sidecar
+    _run_test test_state_hook_fence
     _run_test test_state_hook_review_signals
     _run_test test_state_hook_notify
     _run_test test_state_hook_notify_osascript_utf8

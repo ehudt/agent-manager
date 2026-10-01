@@ -48,6 +48,7 @@ COMMANDS:
     shell               Toggle a session's shell panel (open on first use, then hide/show)
     id                  Print the name of the am session you are inside
     cd                  Record where the current session works now (label + branch follow)
+    owner               Print the live session working in a directory (for tools reclaiming checkouts)
     diff                Show what a session changed since you last reviewed it (--ack, --list)
     review              Toggle the live review pane beside the agent (prefix+v)
     kill                Kill a session (--all, --state <list>)
@@ -572,11 +573,14 @@ cmd_restore_internal() {
     # records them; older rows carry only the launch branch).
     # Per line (fromjson?): the GC keeps lines this version cannot parse,
     # and a whole-file slurp would fail on one of them and skip the check.
-    local branch="" head_sha="" old_transcript=""
+    # `fence` is the relocation fence the closed session carried (newlines
+    # travel as RS so the row stays one line).
+    local branch="" head_sha="" old_transcript="" prev_fence=""
     if [[ -f "$AM_SESSIONS_LOG" ]]; then
-        IFS=$'\x1f' read -r branch head_sha old_transcript < <(jq -Rr --arg sid "$session_id" \
-            'fromjson? | select(.session_id == $sid) | [(.branch // ""), (.head_sha // ""), (.transcript_path // "")] | join("\u001f")' \
+        IFS=$'\x1f' read -r branch head_sha old_transcript prev_fence < <(jq -Rr --arg sid "$session_id" \
+            'fromjson? | select(.session_id == $sid) | [(.branch // ""), (.head_sha // ""), (.transcript_path // ""), (.fence // "" | tostring | gsub("\n"; "\u001e"))] | join("\u001f")' \
             "$AM_SESSIONS_LOG" 2>/dev/null | tail -n1 || true)
+        prev_fence="${prev_fence//$'\x1e'/$'\n'}"
     fi
     # A pre-0.38 row closed on a detached HEAD recorded the sha as its
     # branch: not a branch to check out or judge.
@@ -605,6 +609,11 @@ cmd_restore_internal() {
                 am_event restore.fail - "sid=$session_id" "agent=$agent_type" "dir=$directory" "reason=resolve_failed" "branch=$branch"
                 return 1
             fi
+            # The registry directory is abspath'd at launch; the provider's
+            # output may carry a trailing slash, so normalize before the
+            # same-path comparisons below (a slot re-allocated under the old
+            # path must not fence the directory the session now works in).
+            launch_dir=$(abspath "$launch_dir")
             local busy
             busy=$(agent_dir_live_session "$launch_dir")
             if [[ -n "$busy" ]]; then
@@ -619,14 +628,33 @@ cmd_restore_internal() {
         fi
     fi
 
+    # Relocation fence for the state hook (`<old>TAB<new>` lines, see
+    # lib/hooks/state-hook.sh): the directories this conversation no longer
+    # owns. Lines from earlier moves carry over — the transcript still names
+    # those paths — except one for the directory it resumes in (or a parent
+    # of it: the hook matches `<old>/…`, so fencing a parent would deny every
+    # call), which is back in use (a pool slot released and re-allocated to
+    # this branch).
+    local fence="" fline fold
+    while IFS= read -r fline; do
+        fold="${fline%%$'\t'*}"
+        [[ -n "$fold" && "$fold" != "$launch_dir" && "$launch_dir" != "$fold/"* && "$fold" != "$directory" ]] || continue
+        fence+="${fence:+$'\n'}$fline"
+    done <<< "$prev_fence"
+    if $relocated && [[ "$launch_dir" != "$directory" && "$launch_dir" != "$directory/"* ]]; then
+        fence+="${fence:+$'\n'}$directory"$'\t'"$launch_dir"
+    fi
+
     local session_name
     if $relocated; then
         _AM_LAUNCH_PROMPT=$(_restore_move_note "$directory" "$launch_dir" "$branch" "$problem" "$head_sha")
     fi
+    _AM_LAUNCH_FENCE="$fence"
     _AM_LAUNCH_SOURCE=restore
     session_name=$(agent_launch "$launch_dir" "$agent_type" "" "${resume_args[@]}")
     _AM_LAUNCH_SOURCE=""
     _AM_LAUNCH_PROMPT=""
+    _AM_LAUNCH_FENCE=""
 
     if [[ -z "$session_name" ]]; then
         # agent_launch logged the launch.fail line with the reason.
@@ -643,6 +671,10 @@ cmd_restore_internal() {
     # directory-scan guess; the sidecar-authoritative scan corrects it if
     # the agent forks the resume to a new id.
     sessions_log_update "$session_name" "session_id" "$session_id"
+    # The fence goes on the row now, not only at kill: the sidecar lives in
+    # /tmp, so a crash or reboot before agent_kill would otherwise drop it
+    # and the next restore (or reboot recovery) would resume unfenced.
+    [[ -n "$fence" ]] && sessions_log_update "$session_name" "fence" "$fence"
     local transcript=""
     if $relocated; then
         # The transcript stays in the old directory's store, which the new
@@ -1008,6 +1040,33 @@ EOF
     local branch
     branch=$(registry_get_field "$name" branch)
     log_info "$name now works in $dir${branch:+ ($branch)}"
+}
+
+# Command: owner — the live session working in a directory. For tools that
+# hand out and reclaim checkouts: `wp clear` refuses a copy this names, the
+# mirror of am's own refusal to launch `@spec` into a busy copy.
+cmd_owner() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        cat <<'EOF'
+Usage: am owner [directory]
+
+Print the name of the live am session working in or under <directory>
+(default: the caller's cwd): one launched there, or one that moved there
+(`am cd`, or a `cd` the state hooks tracked). Exit 0 with the name on stdout,
+1 when no live session works there, 2 when the directory does not exist.
+Meant for tools that reclaim checkouts — `wp clear` refuses a copy this names
+(other than the caller's own session).
+EOF
+        return 0
+    fi
+    local target="${1:-$PWD}" busy
+    if [[ ! -d "$target" ]]; then
+        log_error "Not a directory: $target"
+        return 2
+    fi
+    busy=$(agent_dir_live_session "$target")
+    [[ -n "$busy" ]] || return 1
+    echo "$busy"
 }
 
 # Resolve a session name: try exact match, then with prefix
@@ -2808,6 +2867,9 @@ main() {
             ;;
         cd|workdir)
             cmd_cd "$@"
+            ;;
+        owner)
+            cmd_owner "$@"
             ;;
         kill|rm|k)
             cmd_kill "$@"

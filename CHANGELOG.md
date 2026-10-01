@@ -39,6 +39,26 @@ entry unless they changed behaviour a user would notice.
   preset) and a `[f]` fresh-checkout restore fail with the live session's
   name when the provider resolves to a copy another am session is working
   in. Passing the directory itself is still allowed.
+- A relocated Claude session is fenced off its old directory. The move note
+  tells the agent once, but every earlier turn of the transcript still names
+  the old paths; now the state hook denies any tool call whose input reaches
+  under them (Read, Edit, Grep, a `cd` or `git -C` in a Bash command, the
+  `~/` spelling too) with a reason naming the new checkout, and logs
+  `hook.fence_deny`. The fence (`/tmp/am-state/<session>.fence`,
+  `<old>TAB<new>` per line, shown by `am doctor`) is recorded on the
+  session's log row at restore and follows the conversation through later
+  restores and reboot recovery, so a session moved twice keeps both old
+  copies off limits. `am install` now registers a Claude `PreToolUse` hook
+  for this — gated in the hook command itself on the pane's fence sidecar,
+  so an unfenced session pays one file test per tool call and never starts
+  the script. Verified on Claude Code 2.1.286 (live lab s8).
+- New `am owner [directory]`: the live session working in or under a
+  directory (name + exit 0; exit 1 when free). `wp clear` uses it to refuse
+  recycling or deleting a copy another am session is working in (`--stale`
+  skips such copies; the session clearing its own copy is exempt; no flag
+  overrides it — `am kill` first), and `wp allocate` no longer hands one out
+  as a "clean" copy — the mirror of am's own refusal to launch into a busy
+  copy.
 
 ## [0.37.0] - 2026-09-15
 

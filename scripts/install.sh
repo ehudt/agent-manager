@@ -150,6 +150,12 @@ _install_claude_hooks() {
     local hook_script="$2"
     local marker="# am-state-hook"
     local cmd="bash $hook_script $marker"
+    # PreToolUse exists for the relocation fence only (a denied tool call
+    # under a restored session's old checkout; lib/hooks/state-hook.sh). It
+    # runs synchronously before every tool call, so the full hook is reached
+    # only when the pane's session has a fence sidecar: one -s test
+    # otherwise. The same marker ends the command, so uninstall drops it.
+    local pre_cmd="[ -s \"\${AM_STATE_DIR:-/tmp/am-state}/\${AM_SESSION_NAME:-}.fence\" ] || exit 0; $cmd"
 
     [[ -f "$settings_file" ]] || echo '{}' > "$settings_file"
 
@@ -158,7 +164,7 @@ _install_claude_hooks() {
 
     # Step 1: Remove any existing am hooks (idempotent)
     # Step 2: Add our hooks to the event arrays
-    jq --arg cmd "$cmd" --arg marker "$marker" '
+    jq --arg cmd "$cmd" --arg pre_cmd "$pre_cmd" --arg marker "$marker" '
         # Remove existing am hook entries
         .hooks //= {} |
         .hooks |= with_entries(
@@ -179,6 +185,9 @@ _install_claude_hooks() {
         ] |
         .hooks.UserPromptSubmit = (.hooks.UserPromptSubmit // []) + [
             {"matcher": "", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]}
+        ] |
+        .hooks.PreToolUse = (.hooks.PreToolUse // []) + [
+            {"matcher": "", "hooks": [{"type": "command", "command": $pre_cmd, "timeout": 5000}]}
         ] |
         .hooks.PostToolUse = (.hooks.PostToolUse // []) + [
             {"matcher": "", "hooks": [{"type": "command", "command": $cmd, "timeout": 5000}]}
@@ -607,7 +616,7 @@ fi
 # Install Claude Code hooks for state detection
 if confirm "Install state-detection hooks into Claude Code settings ($CLAUDE_SETTINGS)?"; then
     if $DRY_RUN; then
-        plan "add the am hook entries (Stop, Notification, UserPromptSubmit, PostToolUse) to $CLAUDE_SETTINGS"
+        plan "add the am hook entries (Stop, Notification, UserPromptSubmit, PreToolUse [fence-gated], PostToolUse) to $CLAUDE_SETTINGS"
     else
         _install_claude_hooks "$CLAUDE_SETTINGS" "$HOOK_SCRIPT"
         log "Installed state-detection hooks into $CLAUDE_SETTINGS"

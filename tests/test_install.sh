@@ -619,6 +619,19 @@ test_install_hooks_into_empty_settings() {
     local post_count
     post_count=$(jq '.hooks.PostToolUse | length' "$settings")
     assert_eq "1" "$post_count" "PostToolUse hook installed"
+
+    # PreToolUse carries the relocation fence: installed, gated on the
+    # pane's .fence sidecar before the hook runs, marker-tagged like the rest.
+    local pre_cmd
+    pre_cmd=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$settings")
+    assert_eq "1" "$(jq '.hooks.PreToolUse | length' "$settings")" "PreToolUse hook installed"
+    assert_contains "$pre_cmd" '[ -s "${AM_STATE_DIR:-/tmp/am-state}/${AM_SESSION_NAME:-}.fence" ] || exit 0;' \
+        "PreToolUse command is gated on the session's fence sidecar"
+    assert_contains "$pre_cmd" "bash $PROJECT_DIR/lib/hooks/state-hook.sh # am-state-hook" "PreToolUse command runs the marker-tagged hook"
+    # The gate is plain sh: without a fence it exits 0 and prints nothing.
+    local gate_out
+    gate_out=$(AM_STATE_DIR="$tmp_dir/no-such-state" AM_SESSION_NAME=am-x sh -c "$pre_cmd" <<< '{}')
+    assert_eq "" "$gate_out" "PreToolUse gate: no fence sidecar, nothing runs"
 }
 
 test_install_hooks_preserves_existing() {

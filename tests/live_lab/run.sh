@@ -64,7 +64,11 @@ cat > "$LAB/tee-payload.sh" <<'TEESH'
 TEESH
 chmod +x "$LAB/tee-payload.sh"
 STATE_HOOK="bash $PROJECT_DIR/lib/hooks/state-hook.sh"
-hook_entry() { printf '{"matcher":"","hooks":[{"type":"command","command":"%s %s","timeout":5000},{"type":"command","command":"%s","timeout":5000}]}' "$LAB/tee-payload.sh" "$RESULTS/payloads.jsonl" "$STATE_HOOK"; }
+# PreToolUse runs the same fence-gated command scripts/install.sh registers,
+# so s8 proves the installed shape (one -s test per tool call until a fence
+# exists), not a lab-only ungated hook.
+PRE_HOOK="[ -s \\\"\${AM_STATE_DIR:-/tmp/am-state}/\${AM_SESSION_NAME:-}.fence\\\" ] || exit 0; $STATE_HOOK"
+hook_entry() { printf '{"matcher":"","hooks":[{"type":"command","command":"%s %s","timeout":5000},{"type":"command","command":"%s","timeout":5000}]}' "$LAB/tee-payload.sh" "$RESULTS/payloads.jsonl" "${1:-$STATE_HOOK}"; }
 cat > "$LAB/settings.json" <<EOF
 {
   "permissions": {
@@ -73,7 +77,7 @@ cat > "$LAB/settings.json" <<EOF
   "hooks": {
     "SessionStart":     [$(hook_entry)],
     "UserPromptSubmit": [$(hook_entry)],
-    "PreToolUse":       [$(hook_entry)],
+    "PreToolUse":       [$(hook_entry "$PRE_HOOK")],
     "PostToolUse":      [$(hook_entry)],
     "Stop":             [$(hook_entry)],
     "SubagentStop":     [$(hook_entry)],
@@ -381,6 +385,29 @@ if [[ " $SCENARIOS " == *" s8 "* ]]; then
             else
                 mark s8-resume-elsewhere "NO ready within 90s (state=$(hook_state))"
             fi
+            # Relocation fence: with the `<old>TAB<new>` sidecar am restore
+            # writes, a tool call reaching under the old directory must be
+            # denied by the hook (PreToolUse permissionDecision=deny), and the
+            # agent must see the denial rather than the file. The probe file
+            # holds a token the reply must not contain.
+            printf '%s\t%s\n' "$WORKDIR" "$WORKDIR2" > "$AM_STATE_DIR/$SESSION.fence"
+            fence_token="FENCE-TOKEN-$$"
+            printf '%s\n' "$fence_token" > "$WORKDIR/fence-probe.txt"
+            n_fence=$(wc -l < "$RESULTS/payloads.jsonl" | tr -d ' ')
+            sleep 2
+            send_prompt "Use the Read tool on $WORKDIR/fence-probe.txt and reply with its exact contents. If the tool call is denied, reply with exactly one word: DENIED"
+            sleep 5; s8_snap 6-fence-prompt
+            wait_hook_state ready 90 || mark s8-resume-elsewhere "fence: NO ready within 90s (state=$(hook_state))"
+            s8_snap 7-fence-reply
+            fence_calls=$(tail -n +"$((n_fence + 1))" "$RESULTS/payloads.jsonl" | jq -r --arg d "$WORKDIR" 'select(.payload.hook_event_name == "PreToolUse") | select((.payload.tool_input | tojson) | contains($d)) | .payload.tool_name' | wc -l | tr -d ' ')
+            fence_denies=$(grep -c 'hook.fence_deny' "$AM_DIR/events.log" 2>/dev/null || echo 0)
+            fence_reason_in_transcript=$(grep -c 'this conversation was moved from' "$orig_transcript" 2>/dev/null || echo 0)
+            if pane_text | grep -q 'DENIED' && ! pane_text | grep -q "$fence_token" && (( fence_denies > 0 )); then
+                mark s8-resume-elsewhere "fence: old-path Read DENIED ($fence_calls PreToolUse under the old dir, $fence_denies deny event(s), reason in transcript: $fence_reason_in_transcript), agent answered DENIED"
+            else
+                mark s8-resume-elsewhere "fence: NOT denied (PreToolUse under old dir: $fence_calls, deny events: $fence_denies, reason in transcript: $fence_reason_in_transcript, token in pane: $(pane_text | grep -c "$fence_token" || true))"
+            fi
+            rm -f "$AM_STATE_DIR/$SESSION.fence" "$WORKDIR/fence-probe.txt"
             new_sid=$(tail -n +"$((n_before + 1))" "$RESULTS/payloads.jsonl" | jq -r 'select(.payload.session_id != null) | .payload.session_id' | tail -1)
             new_transcript=$(tail -n +"$((n_before + 1))" "$RESULTS/payloads.jsonl" | jq -r 'select(.payload.transcript_path != null) | .payload.transcript_path' | tail -1)
             same_sid=no; [[ "$new_sid" == "$sid" ]] && same_sid=yes

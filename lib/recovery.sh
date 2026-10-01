@@ -621,6 +621,10 @@ recovery_restore_one() {
     _AM_RECOVERY_MODE=1
     _AM_DEFER_SIDEBAR_REFRESH=1
     _AM_LAUNCH_SOURCE=recovery
+    # The relocation fence (lib/hooks/state-hook.sh) lived in the state dir,
+    # which a reboot wipes; the sessions-log row keeps it (written by the
+    # restore that relocated the session and again by agent_kill).
+    _AM_LAUNCH_FENCE=$(_sessions_log_field "$id" fence 2>/dev/null || true)
     recovery_desired_is_open "$id" || return 1
     recovery_allow_identity_rebind "$id"
     local restored
