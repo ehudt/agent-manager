@@ -639,9 +639,11 @@ test_cli_workspace_and_id() {
     assert_contains "$(cat "$test_dir/calls.log")" "resolve feature-r" "restore =fresh: provider asked for the recorded branch"
     if [[ -n "$restored" ]]; then
         local restored_pane
-        restored_pane=$(wait_for_text "stub-agent-input" am_tmux capture-pane -pt "$restored:.{top}" -S -)
-        # The note is one long line; the pane wraps it, so compare unwrapped.
-        restored_pane="${restored_pane//$'\n'/}"
+        # The note is one long line that the pane wraps: -J joins the wrapped
+        # rows and keeps the space at each wrap point (stripping newlines from
+        # a plain capture loses it, and where the wrap falls depends on the
+        # tmpdir path length — "edits made" read "editsmade" on Linux CI).
+        restored_pane=$(wait_for_text "stub-agent-input" am_tmux capture-pane -pJt "$restored:.{top}" -S -)
         assert_contains "$restored_pane" "stub-agent-argv:--resume sid-moved" "restore =fresh: resume args reach the agent"
         assert_contains "$restored_pane" "resumed in $test_dir/ws-feature-r" "restore =fresh: move note names the new checkout"
         assert_contains "$restored_pane" "do not read or edit paths under $gone_dir" "restore =fresh: move note fences off the old directory"
@@ -694,8 +696,7 @@ test_cli_workspace_and_id() {
         '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
     assert_not_empty "$restored" "restore =fresh, same path: session created in the re-created copy"
     if [[ -n "$restored" ]]; then
-        restored_pane=$(wait_for_text "stub-agent-input" am_tmux capture-pane -pt "$restored:.{top}" -S -)
-        restored_pane="${restored_pane//$'\n'/}"
+        restored_pane=$(wait_for_text "stub-agent-input" am_tmux capture-pane -pJt "$restored:.{top}" -S -)
         assert_contains "$restored_pane" "fresh checkout of branch feature-s at $test_dir/ws-feature-s" "restore =fresh, same path: move note names the re-created checkout"
         assert_contains "$restored_pane" "exist here only if they were pushed" "restore =fresh, same path: move note warns about the earlier copy's work"
         assert_not_contains "$restored_pane" "do not read or edit" "restore =fresh, same path: nothing to fence off"
