@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -184,6 +185,7 @@ type Entry struct {
 	RestoreSessionID string
 	SnapshotPath     string
 	RecoveryError    string
+	RestoreNote      string // "dir gone" / "on <branch>": the checkout moved on, see RestoreNote
 }
 
 // ListTmuxSessions runs tmux list-sessions and returns matching sessions.
@@ -483,6 +485,12 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 
 		seenIDs[log.SessionID] = true
 		base := FormatRestorableDisplayBase(log)
+		// Enter on a row whose checkout is gone or re-allocated opens the
+		// relocation prompt rather than resuming; say so on the row.
+		note := RestoreNote(log.Directory, log.Branch)
+		if note != "" {
+			base += " ⚠ " + note
+		}
 		ref := parseSessionLogTime(log.ClosedAt)
 		if ref.IsZero() {
 			ref = parseSessionLogTime(log.CreatedAt)
@@ -518,6 +526,7 @@ func restorableEntriesFromLog(logs []SessionLogEntry, amDir, home string, liveSe
 			RecencyUnix:      recency,
 			RestoreSessionID: log.SessionID,
 			SnapshotPath:     snapshotPath,
+			RestoreNote:      note,
 		})
 	}
 	// Most recently closed first. The log is in launch order, so without
@@ -541,13 +550,116 @@ func parseSessionLogTime(value string) time.Time {
 	return t
 }
 
-func claudeJSONLExists(home, dir, sessionID string) bool {
-	if home == "" || dir == "" || sessionID == "" {
-		return false
+func claudeJSONLExists(home, dir, sessionID, transcript string) bool {
+	return claudeTranscriptPath(home, dir, sessionID, transcript) != ""
+}
+
+// claudeStandardTranscriptPath is where Claude files the conversation sid
+// started in dir: ~/.claude/projects/<encoded dir>/<sid>.jsonl.
+func claudeStandardTranscriptPath(home, dir, sessionID string) string {
+	return filepath.Join(home, ".claude", "projects", encodedClaudeProjectDir(dir), sessionID+".jsonl")
+}
+
+// claudeTranscriptPath is the existing Claude transcript of (dir, sid): the
+// hook-reported path when it is still on disk, else the standard per-project
+// file, else the one file named <sid>.jsonl anywhere under ~/.claude/projects.
+// The two fallbacks keep a conversation addressable after it was resumed in
+// another directory: Claude appends the new turns to the ORIGINAL file (the
+// store is keyed by the directory the conversation started in; verified on
+// 2.1.286, live lab s8), so the new directory's project store never holds
+// it, and a session whose hooks have not fired since the move has no
+// transcript sidecar yet. Ids are UUIDs, so a name match anywhere in the
+// store is this conversation. "" when nothing exists.
+func claudeTranscriptPath(home, dir, sessionID, transcript string) string {
+	// The hook-reported path is trusted only for this id: Claude names the
+	// file <sid>.jsonl, and the .sid / .transcript sidecars are written
+	// independently, so a stale pair must not verify one conversation
+	// against another's file.
+	if transcript != "" && (sessionID == "" || filepath.Base(transcript) == sessionID+".jsonl") {
+		if st, err := os.Stat(transcript); err == nil && !st.IsDir() {
+			return transcript
+		}
 	}
-	projectDir := filepath.Join(home, ".claude", "projects", encodedClaudeProjectDir(dir))
-	st, err := os.Stat(filepath.Join(projectDir, sessionID+".jsonl"))
-	return err == nil && !st.IsDir()
+	if home == "" || sessionID == "" {
+		return ""
+	}
+	if dir != "" {
+		p := claudeStandardTranscriptPath(home, dir, sessionID)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return claudeStoreSearch(home, sessionID)
+}
+
+// claudeStoreIndex caches sid → path for every *.jsonl under
+// ~/.claude/projects/*, so the restorable filter and the sessions-log GC
+// (hundreds of rows per pass) pay two readdir levels once instead of a glob
+// per row. Rebuilt after claudeStoreIndexTTL or for another home; the
+// standard path is checked uncached before this runs, so only relocated
+// conversations — files that exist since before the move — rely on it.
+var claudeStoreIndex struct {
+	sync.Mutex
+	home  string
+	built time.Time
+	paths map[string]string
+}
+
+const claudeStoreIndexTTL = 5 * time.Second
+
+func claudeStoreSearch(home, sessionID string) string {
+	claudeStoreIndex.Lock()
+	defer claudeStoreIndex.Unlock()
+	idx := &claudeStoreIndex
+	if idx.paths == nil || idx.home != home || time.Since(idx.built) > claudeStoreIndexTTL {
+		idx.home, idx.built, idx.paths = home, time.Now(), map[string]string{}
+		root := filepath.Join(home, ".claude", "projects")
+		projects, _ := os.ReadDir(root)
+		for _, p := range projects {
+			if !p.IsDir() {
+				continue
+			}
+			files, _ := os.ReadDir(filepath.Join(root, p.Name()))
+			for _, f := range files {
+				if f.Type().IsRegular() && strings.HasSuffix(f.Name(), ".jsonl") {
+					idx.paths[strings.TrimSuffix(f.Name(), ".jsonl")] = filepath.Join(root, p.Name(), f.Name())
+				}
+			}
+		}
+	}
+	// The index may be up to claudeStoreIndexTTL old: confirm the hit.
+	p := idx.paths[sessionID]
+	if p == "" {
+		return ""
+	}
+	if st, err := os.Stat(p); err != nil || st.IsDir() {
+		delete(idx.paths, sessionID)
+		return ""
+	}
+	return p
+}
+
+// RestoreNote is the restore picker's warning for a closed session whose
+// launch directory no longer holds the checkout it ran in: "dir gone" when
+// the directory is missing (a released pooled copy), "on <branch>" when it
+// now has another branch checked out. "" when the resume can run in place.
+// Restore offers a fresh checkout of the recorded branch in both cases.
+func RestoreNote(dir, branch string) string {
+	if dir == "" {
+		return ""
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "dir gone"
+	}
+	// A pre-0.38 row may carry a detached-HEAD sha as its branch: not a
+	// branch to judge against (bash twin: am_checkout_check).
+	if branch == "" || (len(branch) == 8 && isHexPrefix(branch, 8)) {
+		return ""
+	}
+	if head := GitHeadBranch(dir); head != "" && head != branch {
+		return "on " + head
+	}
+	return ""
 }
 
 func encodedClaudeProjectDir(dir string) string {

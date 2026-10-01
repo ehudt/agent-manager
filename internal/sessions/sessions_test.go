@@ -289,6 +289,71 @@ func TestRestorableEntriesFromLog(t *testing.T) {
 	}
 }
 
+// A conversation resumed in another directory keeps its file in the original
+// directory's store. The row is restorable through the hook-recorded path,
+// or — when no hook fired after the move — through the store-wide id search.
+func TestRestorableEntriesFollowRelocatedClaudeTranscript(t *testing.T) {
+	home := t.TempDir()
+	origDir := filepath.Join(home, "orig-copy")
+	newDir := filepath.Join(home, "new-copy")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeJSONL(t, home, origDir, "sid-path")
+	writeClaudeJSONL(t, home, origDir, "sid-search")
+	logs := []SessionLogEntry{
+		{SessionName: "am-path", SessionID: "sid-path", Directory: newDir, AgentType: "claude",
+			TranscriptPath: claudeStandardTranscriptPath(home, origDir, "sid-path"), ClosedAt: "2026-01-02T12:00:00Z"},
+		{SessionName: "am-search", SessionID: "sid-search", Directory: newDir, AgentType: "claude", ClosedAt: "2026-01-02T11:00:00Z"},
+		{SessionName: "am-nowhere", SessionID: "sid-nowhere", Directory: newDir, AgentType: "claude", ClosedAt: "2026-01-02T10:00:00Z"},
+	}
+	entries := restorableEntriesFromLog(logs, home, home, map[string]bool{}, time.Now())
+	if len(entries) != 2 || entries[0].RestoreSessionID != "sid-path" || entries[1].RestoreSessionID != "sid-search" {
+		t.Fatalf("restorable = %#v, want sid-path and sid-search", entries)
+	}
+	if entries[0].RestoreNote != "" {
+		t.Errorf("new-copy exists with no recorded branch: note = %q, want none", entries[0].RestoreNote)
+	}
+}
+
+// The restore row warns when its checkout is gone or now holds another
+// branch; Enter then opens the relocation prompt instead of resuming.
+func TestRestoreNote(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/other\n")
+	plain := filepath.Join(root, "plain")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ dir, branch, want string }{
+		{filepath.Join(root, "gone"), "feature-a", "dir gone"},
+		{filepath.Join(root, "gone"), "", "dir gone"},
+		{repo, "feature-a", "on other"},
+		{repo, "other", ""},
+		{repo, "", ""},
+		{repo, "1a2b3c4d", ""}, // pre-0.38 row closed on a detached HEAD: not a branch
+		{plain, "feature-a", ""}, // not a repository: nothing to judge
+		{"", "feature-a", ""},
+	}
+	for _, c := range cases {
+		if got := RestoreNote(c.dir, c.branch); got != c.want {
+			t.Errorf("RestoreNote(%q, %q) = %q, want %q", c.dir, c.branch, got, c.want)
+		}
+	}
+
+	home := t.TempDir()
+	writeClaudeJSONL(t, home, repo, "sid-repo")
+	logs := []SessionLogEntry{{SessionName: "am-repo", SessionID: "sid-repo", Directory: repo, Branch: "feature-a", AgentType: "claude", Task: "Fix it"}}
+	entries := restorableEntriesFromLog(logs, home, home, map[string]bool{}, time.Now())
+	if len(entries) != 1 || entries[0].RestoreNote != "on other" {
+		t.Fatalf("entries = %#v, want one row noted 'on other'", entries)
+	}
+	if entries[0].DisplayBase != "repo/feature-a [claude] Fix it ⚠ on other" {
+		t.Errorf("DisplayBase = %q", entries[0].DisplayBase)
+	}
+}
+
 func writeClaudeJSONL(t *testing.T, home, dir, sessionID string) {
 	t.Helper()
 	projectDir := filepath.Join(home, ".claude", "projects", encodedClaudeProjectDir(dir))

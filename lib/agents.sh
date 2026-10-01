@@ -408,6 +408,29 @@ agent_dir_resolve() {
     echo "$dir"
 }
 
+# The live am session already working in <dir> (registry directory or
+# workdir, tmux session present), if any. A `@spec` resolves to whichever
+# pooled copy holds the branch — the copy another session is working in when
+# one is — so launching or relocating there would put two agents in one
+# checkout. Prints the session name; nothing when the directory is free.
+# Usage: agent_dir_live_session <dir>
+agent_dir_live_session() {
+    local dir="$1" line name d w
+    [[ -n "$dir" && -f "$AM_REGISTRY" ]] || return 0
+    # Registry paths are absolute and clean (agent_launch abspath's the
+    # launch directory); a provider's output may carry a trailing slash or
+    # be relative.
+    [[ -d "$dir" ]] && dir=$(abspath "$dir")
+    while IFS=$'\t' read -r name d w; do
+        [[ "$d" == "$dir" || "$w" == "$dir" ]] || continue
+        if tmux_session_exists "$name"; then
+            echo "$name"
+            return 0
+        fi
+    done < <(jq -r '.sessions | to_entries[] | [.key, (.value.directory // ""), (.value.workdir // "")] | @tsv' "$AM_REGISTRY" 2>/dev/null)
+    return 0
+}
+
 # Candidates for a partial `@spec`, one "<spec>\t<label>" line each (the spec
 # without its @). Bounded by am_dir_suggest_timeout so a slow provider cannot
 # stall the form. The provider runs in its own process group and the whole
@@ -700,12 +723,29 @@ agent_kill() {
         # Bind the conversation id: sidecar (authoritative) → already-logged
         # sid → guarded directory detection. A kill-time guess must never
         # overwrite a binding established while hooks were alive.
+        # The hook-reported transcript path goes with it: for Claude it is
+        # what keeps a conversation resumed in another directory addressable
+        # (the file stays in the original directory's store).
         local sid transcript="" store
         am_agent_field "$agent_type" store store
-        if [[ "$store" == "cursor" || "$store" == "opencode" ]]; then
+        if [[ "$store" == "claude" || "$store" == "cursor" || "$store" == "opencode" ]]; then
             transcript=$(am_core sidecar "$session_name" transcript 2>/dev/null || true)
             [[ -z "$transcript" ]] && transcript=$(_sessions_log_field "$session_name" "transcript_path" 2>/dev/null || true)
             [[ -n "$transcript" ]] && sessions_log_update "$session_name" "transcript_path" "$transcript"
+        fi
+        # The checkout the session ends on, for restore: the branch guard and
+        # the fresh-checkout offer need the branch as of the close (the
+        # launch-time value is stale after a checkout, and the 60s scan may
+        # not have caught up), and head_sha tells a relocated resume whether
+        # the new copy is where the old one left off.
+        if [[ -d "$dir" ]]; then
+            local close_branch close_sha
+            # A detached HEAD leaves the logged branch alone (the sha goes
+            # into head_sha): a restore checks out and judges branches.
+            git_head_branch_name "$dir" close_branch
+            [[ -n "$close_branch" ]] && sessions_log_update "$session_name" "branch" "$close_branch"
+            close_sha=$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)
+            [[ -n "$close_sha" ]] && sessions_log_update "$session_name" "head_sha" "$close_sha"
         fi
         local sid_from="sidecar"
         sid=$(am_core sidecar "$session_name" id 2>/dev/null || true)

@@ -5,7 +5,7 @@
 # installed version at the end of its run).
 #
 # Whitespace-separated: <agent binary> <version> <date> <lab> <note...>
-claude 2.1.263 2026-09-07 tests/live_lab/run.sh s1-s7 agree with the 2.1.237 run; ✳ title static; ctrl-b Stop fires; s3 shows no dialog under a permissive policy
+claude 2.1.286 2026-10-01 tests/live_lab/run.sh s8 verified (resume by id from another directory: same session_id, turns append to the ORIGINAL directory's transcript, nothing under the new store, hooks fire, a stdin-piped first prompt is delivered after the trust dialog); s1-s7 last run on 2.1.263 (2026-09-07: ✳ title static; ctrl-b Stop fires; s3 shows no dialog under a permissive policy); trust dialog defaults to "No, exit"
 cursor-agent 2026.09.02 2026-09-07 tests/live_lab/run_cursor.sh c1-c7 agree; Ready/Working/Waiting title suffixes; tasks footer after "Add a follow-up"; resume fires no hook until the next prompt (title layer covers it)
 pi 0.84.2 2026-09-07 tests/live_lab/run_pi.sh p1-p4 agree (session_start/agent_start/agent_settled, 200s quiet turn stays running, death -> idle)
 opencode 1.18.30 2026-09-13 tests/live_lab/run_opencode.sh o1-o4 agree (plugin writes ready at boot, running on session.status busy, ready on idle after post-turn title-gen user message; 200s quiet turn stays running; "OC | <title>" pane title; death -> idle)

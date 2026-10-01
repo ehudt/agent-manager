@@ -60,6 +60,10 @@ session=$(printf 'Task...\n' | am new --detach --print-session @<branch>)  # a b
 session=$(printf 'Task...\n' | am new --detach --print-session @48351)     # a PR number
 ```
 
+A `@spec` that resolves to a copy another live am session is working in
+fails (exit 1) with that session's name: send the task there with `am send`
+instead, or pass the directory path to start a second agent on purpose.
+
 What a spec means is the provider's business. When no provider is configured,
 `@…` errors and a plain path is the only option. Repo-specific rules for where
 to launch (for example, which checkouts are off limits) live in the provider's

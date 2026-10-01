@@ -260,8 +260,13 @@ func (e Env) RestoreScan(force bool) {
 		if meta.Task != "" {
 			updates = append(updates, slogUpdate{name, "task", meta.Task})
 		}
-		if meta.Branch != "" {
-			updates = append(updates, slogUpdate{name, "branch", meta.Branch})
+		// The log's branch is the *launch* directory's — the directory a
+		// restore resumes in and judges (am_checkout_check / RestoreNote) —
+		// not the registry branch, which follows the workdir after `am cd`.
+		// Detached HEAD records nothing (GitHeadBranchName); agent_kill
+		// writes the same field as of the close.
+		if b := GitHeadBranchName(meta.Directory); b != "" {
+			updates = append(updates, slogUpdate{name, "branch", b})
 		}
 	}
 	e.applySlogUpdates(updates)

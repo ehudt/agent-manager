@@ -6,6 +6,40 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.38.0] - 2026-10-01
+
+- `am restore` survives a checkout that moved on. Pooled working copies
+  (`wp`) are released and re-allocated under the same path, so a closed
+  session's directory is often gone or on another branch by the time it is
+  restored; Enter on such a row used to fail (or, worse, resume on the wrong
+  code). The restore rows — in the browser and in `am restore` — now carry
+  `⚠ dir gone` / `⚠ on <branch>`, and Enter offers `[f]` a fresh checkout of
+  the session's branch through the configured `dir_provider` (`wp resolve
+  @branch`), `[h]` resuming in place, or `[q]` cancel. A relocated session
+  gets a first prompt telling the agent where it is now, which paths are off
+  limits, and — when the new copy's HEAD differs from the one the session
+  closed on — that unpushed work from the old copy is not there.
+  `AM_RESTORE_ON_MISMATCH=fresh|here|fail` presets the answer for scripts;
+  without a tty the prompt fails and names the options. Reboot recovery
+  keeps blocking on a changed checkout (it never asks); its preflight now
+  shares the judge (`am_checkout_check`).
+- The sessions log records the branch and HEAD a session closed on (the
+  launch branch was stale after a checkout; a detached HEAD records the sha
+  only) and, for Claude, the transcript path its hook reported. The branch
+  it carries is the launch directory's: the 60s scan used to copy the
+  registry branch, which follows the agent's working directory after
+  `am cd`, so a dispatcher that had moved into a worker's checkout would
+  have shown a false `⚠ on <branch>`. Claude transcripts are located by conversation id
+  — the hook's path, then the launch directory's store, then a search of
+  every project store — so a session whose directory is gone stays
+  identified, titled, and restorable (`claude --resume <id>` works from any
+  directory and keeps appending to the original transcript; verified on
+  Claude Code 2.1.286, live lab s8).
+- Two agents in one checkout are refused: `am new @spec` (CLI, form,
+  preset) and a `[f]` fresh-checkout restore fail with the live session's
+  name when the provider resolves to a copy another am session is working
+  in. Passing the directory itself is still allowed.
+
 ## [0.37.0] - 2026-09-15
 
 - New always-on events log, `~/.agent-manager/events.log`, and `am log` to

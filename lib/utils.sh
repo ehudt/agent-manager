@@ -282,6 +282,49 @@ git_head_branch() {
     fi
 }
 
+# Is <dir> still the checkout a session ran in? Pooled working copies (wp)
+# are released, deleted, and re-allocated to other branches under the same
+# path, so a resume there would put the conversation on the wrong code.
+# Prints nothing and returns 0 when the directory exists and either no branch
+# was recorded, the repository has no readable HEAD, or HEAD is on <branch>;
+# prints `missing` (dir gone) or `branch <found>` (another branch checked
+# out) and returns 1 otherwise. Shared by the manual restore (which then
+# offers a fresh checkout) and the reboot-recovery preflight (which blocks).
+# Usage: am_checkout_check <dir> <expected_branch>
+am_checkout_check() {
+    local dir="$1" expected="${2:-}" found=""
+    if [[ -z "$dir" || ! -d "$dir" ]]; then
+        echo missing
+        return 1
+    fi
+    # No branch, or a pre-0.38 row that recorded a detached-HEAD sha as its
+    # branch: nothing to judge against (Go twin: RestoreNote).
+    [[ -n "$expected" && ! "$expected" =~ ^[0-9a-f]{8}$ ]] || return 0
+    git_head_branch "$dir" found
+    if [[ -n "$found" && "$found" != "$expected" ]]; then
+        echo "branch $found"
+        return 1
+    fi
+    return 0
+}
+
+# git_head_branch without the detached-HEAD sha: the branch name, or empty
+# when HEAD is detached (mid-rebase, a PR checked out by commit). For values
+# a later checkout is judged against (sessions log, desired-session record):
+# a sha is not a branch to re-check out, and "on feature" against a recorded
+# "1a2b3c4d" would be noise once the rebase finished (Go: GitHeadBranchName).
+# Usage: git_head_branch_name <dir> [out_var]
+git_head_branch_name() {
+    local _b=""
+    git_head_branch "$1" _b
+    [[ "$_b" =~ ^[0-9a-f]{8}$ ]] && _b=""
+    if [[ -n "${2:-}" ]]; then
+        printf -v "$2" '%s' "$_b"
+    else
+        printf '%s\n' "$_b"
+    fi
+}
+
 # Truncate string with ellipsis
 truncate() {
     local str="$1"

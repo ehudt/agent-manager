@@ -63,6 +63,20 @@ func GitHeadBranch(dir string) string {
 	return ""
 }
 
+// GitHeadBranchName is GitHeadBranch without the detached-HEAD sha: the
+// branch name, or "" when HEAD is detached (mid-rebase, a PR checked out by
+// commit) or there is no repository. Recorded values that a later checkout
+// is judged against (the sessions log, the desired-session record) use this
+// form: a sha is not a branch to re-check out, and "⚠ on feature" against a
+// recorded "1a2b3c4d" would be noise once the rebase finished.
+func GitHeadBranchName(dir string) string {
+	b := GitHeadBranch(dir)
+	if len(b) == 8 && isHexPrefix(b, 8) {
+		return ""
+	}
+	return b
+}
+
 // HeadSignal is the hook's `.head` sidecar value: the raw HEAD line, plus the
 // resolved commit sha when HEAD is a symbolic ref (a linked worktree resolves
 // through commondir). Written by `am-core head-signal` and compared against

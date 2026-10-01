@@ -42,10 +42,13 @@ func (a AgentSpec) Restorable() bool { return a.Resume != "" }
 func (a AgentSpec) HasStore() bool { return a.Store != "" && a.Store != "none" }
 
 // SidecarTranscriptStore reports whether the agent's hook writes an absolute
-// transcript path into the .transcript sidecar (Cursor, opencode). Other
-// layouts derive the path from home+dir+id.
+// transcript path into the .transcript sidecar (Claude, Cursor, opencode),
+// which the restore scan then records in the sessions log. For Claude the
+// path is derivable from home+dir+id until the conversation is resumed in
+// another directory: the file stays in the original project folder, so the
+// sidecar is what keeps the relocated session identified and restorable.
 func (a AgentSpec) SidecarTranscriptStore() bool {
-	return a.Store == "cursor" || a.Store == "opencode"
+	return a.Store == "claude" || a.Store == "cursor" || a.Store == "opencode"
 }
 
 // ResumeArgs expands the resume template for a conversation id.

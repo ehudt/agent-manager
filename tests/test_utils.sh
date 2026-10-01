@@ -126,9 +126,14 @@ test_claude_first_user_message() {
     result=$(claude_first_user_message "$test_dir" stranger)
     assert_eq "" "$result" "claude_first_msg: empty for an unknown id"
 
-    # Test: nonexistent directory returns empty
+    # Test: the directory is only a hint — a bound id is found by a search of
+    # every project store when its directory is gone (a released wp copy:
+    # the conversation keeps writing the original store, am restore resumes
+    # it elsewhere)
     result=$(claude_first_user_message "/tmp/nonexistent-dir-xyz-$$" session1)
-    assert_eq "" "$result" "claude_first_msg: empty for nonexistent dir"
+    assert_contains "$result" "Fix the login bug" "claude_first_msg: bound id found when its directory is gone"
+    result=$(claude_first_user_message "/tmp/nonexistent-dir-xyz-$$" stranger)
+    assert_eq "" "$result" "claude_first_msg: unknown id stays empty when the directory is gone"
 
     # Cleanup
     rm -rf "$claude_dir" "$test_dir"

@@ -590,7 +590,161 @@ test_cli_workspace_and_id() {
         "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
     assert_eq "1" "$rc" "browser restore, directory gone: exits 1"
     assert_contains "$err" "Directory no longer exists: $test_dir/released-copy" "browser restore, directory gone: names the directory"
+    assert_contains "$err" "no recorded branch" "browser restore, directory gone, no branch: says why no fresh checkout is offered"
     assert_contains "$err" "mkdir -p '$test_dir/released-copy'" "browser restore, directory gone: says how to recover"
+
+    # --- restore of a session whose checkout moved on (released wp copy) ---
+    # The sessions log carries the branch and HEAD the session closed on
+    # (agent_kill records them). The stub `claude` on PATH receives the resume
+    # args, so the relocation runs end to end: provider resolve, launch in the
+    # fresh checkout, move note as the first prompt, bookkeeping pre-seeded.
+    local slog="$TEST_AM_DIR/sessions_log.jsonl" gone_dir="$test_dir/released-copy"
+    printf '{"session_name":"test-am-old1","directory":"%s","branch":"feature-r","head_sha":"0123456789abcdef0123456789abcdef01234567","agent_type":"claude","session_id":"sid-moved","created_at":"2026-09-01T00:00:00Z","closed_at":"2026-09-02T00:00:00Z"}\n' \
+        "$gone_dir" >> "$slog"
+    printf '#!/usr/bin/env bash\nprintf "__RESTORE__\\x1f%s\\x1fsid-moved\\x1fclaude\\n"\n' "$gone_dir" > "$fake_browse"
+    local restore_env=("${am_env[@]}" "${prov_env[@]}" AM_BROWSE_CMD="$fake_browse" AM_NO_INSTALL_REFRESH=1 AM_AUTO_RESTORE=false)
+
+    # No tty to ask on: fail, but spell out the scripted answers.
+    rc=0
+    err=$(env "${restore_env[@]}" "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "restore, dir gone, no tty: exits 1"
+    assert_contains "$err" "AM_RESTORE_ON_MISMATCH=fresh" "restore, dir gone, no tty: names the fresh-checkout answer"
+    assert_contains "$err" "fresh checkout of feature-r" "restore, dir gone, no tty: names the recorded branch"
+    assert_not_contains "$err" "AM_RESTORE_ON_MISMATCH=here" "restore, dir gone, no tty: resume-here is not offered for a missing directory"
+    assert_not_contains "$(cat "$test_dir/calls.log")" "resolve feature-r" "restore, dir gone, no tty: nothing allocated"
+
+    rc=0
+    err=$(env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=fail "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "restore, AM_RESTORE_ON_MISMATCH=fail: exits 1"
+    rc=0
+    err=$(env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=here "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "restore, dir gone, =here: exits 1"
+    assert_contains "$err" "Cannot resume in place" "restore, dir gone, =here: says the directory is gone"
+    rc=0
+    err=$(env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=bogus "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "restore, bad AM_RESTORE_ON_MISMATCH: exits 1"
+    assert_contains "$err" "expected ask, fresh, here, or fail" "restore, bad AM_RESTORE_ON_MISMATCH: lists the values"
+
+    # fresh: the provider resolves @<branch>, the session runs there, and the
+    # agent is told where it is (and that the old copy's HEAD is not here:
+    # the checkout the provider hands out has a HEAD of its own).
+    mkdir -p "$test_dir/ws-feature-r"
+    (cd "$test_dir/ws-feature-r" && git init -q && git checkout -q -b feature-r \
+        && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init)
+    env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=fresh "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    local restored
+    restored=$(jq -r --arg d "$test_dir/ws-feature-r" \
+        '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+    assert_not_empty "$restored" "restore =fresh: session created in the provider's checkout of the branch"
+    assert_contains "$(cat "$test_dir/calls.log")" "resolve feature-r" "restore =fresh: provider asked for the recorded branch"
+    if [[ -n "$restored" ]]; then
+        local restored_pane
+        restored_pane=$(wait_for_text "stub-agent-input" am_tmux capture-pane -pt "$restored:.{top}" -S -)
+        # The note is one long line; the pane wraps it, so compare unwrapped.
+        restored_pane="${restored_pane//$'\n'/}"
+        assert_contains "$restored_pane" "stub-agent-argv:--resume sid-moved" "restore =fresh: resume args reach the agent"
+        assert_contains "$restored_pane" "resumed in $test_dir/ws-feature-r" "restore =fresh: move note names the new checkout"
+        assert_contains "$restored_pane" "do not read or edit paths under $gone_dir" "restore =fresh: move note fences off the old directory"
+        assert_contains "$restored_pane" "no longer exists" "restore =fresh: move note says why the old directory is unusable"
+        assert_contains "$restored_pane" "the session ended on 0123456789ab, so commits or edits made in the old copy that were never pushed are not in this checkout" \
+            "restore =fresh: move note flags the HEAD the session closed on"
+        assert_eq "sid-moved" "$(jq -rs --arg s "$restored" '[.[] | select(.session_name == $s)] | last | .session_id' "$slog")" \
+            "restore =fresh: conversation id pre-seeded on the new row"
+        agent_kill "$restored" 2>/dev/null
+    fi
+
+    # fresh under the same path: a pool slot re-allocated where the old copy
+    # was is still a relocation (note sent, no stale directory to fence off).
+    printf '{"session_name":"test-am-old4","directory":"%s","branch":"feature-s","agent_type":"claude","session_id":"sid-same","created_at":"2026-09-01T00:00:00Z","closed_at":"2026-09-02T00:00:00Z"}\n' \
+        "$test_dir/ws-feature-s" >> "$slog"
+    printf '#!/usr/bin/env bash\nprintf "__RESTORE__\\x1f%s\\x1fsid-same\\x1fclaude\\n"\n' "$test_dir/ws-feature-s" > "$fake_browse"
+    env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=fresh "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    restored=$(jq -r --arg d "$test_dir/ws-feature-s" \
+        '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+    assert_not_empty "$restored" "restore =fresh, same path: session created in the re-created copy"
+    if [[ -n "$restored" ]]; then
+        restored_pane=$(wait_for_text "stub-agent-input" am_tmux capture-pane -pt "$restored:.{top}" -S -)
+        restored_pane="${restored_pane//$'\n'/}"
+        assert_contains "$restored_pane" "fresh checkout of branch feature-s at $test_dir/ws-feature-s" "restore =fresh, same path: move note names the re-created checkout"
+        assert_contains "$restored_pane" "exist here only if they were pushed" "restore =fresh, same path: move note warns about the earlier copy's work"
+        assert_not_contains "$restored_pane" "do not read or edit" "restore =fresh, same path: nothing to fence off"
+        agent_kill "$restored" 2>/dev/null
+    fi
+
+    # agent_kill records the checkout the session closed on: the branch as
+    # of the close (a checkout during the session), the HEAD sha, and — on a
+    # detached HEAD — the sha alone, with the logged branch left as it was.
+    local close_repo="$test_dir/close-repo" closed
+    mkdir -p "$close_repo"
+    (cd "$close_repo" && git init -q && git checkout -q -b launch-br \
+        && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init)
+    closed=$(env "${am_env[@]}" "$PROJECT_DIR/am" new -t claude --detach --print-session "$close_repo" </dev/null 2>/dev/null)
+    assert_not_empty "$closed" "kill records: session launched"
+    if [[ -n "$closed" ]]; then
+        (cd "$close_repo" && git checkout -q -b closed-on)
+        agent_kill "$closed" 2>/dev/null
+        assert_eq "closed-on" "$(jq -rs --arg s "$closed" '[.[] | select(.session_name == $s)] | last | .branch' "$slog")" \
+            "kill records: the branch as of the close, not the launch branch"
+        assert_eq "$(git -C "$close_repo" rev-parse HEAD)" "$(jq -rs --arg s "$closed" '[.[] | select(.session_name == $s)] | last | .head_sha' "$slog")" \
+            "kill records: head_sha"
+    fi
+    closed=$(env "${am_env[@]}" "$PROJECT_DIR/am" new -t claude --detach --print-session "$close_repo" </dev/null 2>/dev/null)
+    if [[ -n "$closed" ]]; then
+        (cd "$close_repo" && git checkout -q --detach)
+        agent_kill "$closed" 2>/dev/null
+        assert_eq "closed-on" "$(jq -rs --arg s "$closed" '[.[] | select(.session_name == $s)] | last | .branch' "$slog")" \
+            "kill records: detached HEAD leaves the launch branch in place"
+        assert_eq "$(git -C "$close_repo" rev-parse HEAD)" "$(jq -rs --arg s "$closed" '[.[] | select(.session_name == $s)] | last | .head_sha' "$slog")" \
+            "kill records: detached HEAD still records head_sha"
+    fi
+
+    # here: the directory exists but holds another branch; resume in place.
+    local other_copy="$test_dir/other-copy"
+    mkdir -p "$other_copy"
+    (cd "$other_copy" && git init -q && git checkout -q -b other)
+    printf '{"session_name":"test-am-old2","directory":"%s","branch":"feature-h","agent_type":"claude","session_id":"sid-here","created_at":"2026-09-01T00:00:00Z","closed_at":"2026-09-02T00:00:00Z"}\n' \
+        "$other_copy" >> "$slog"
+    printf '#!/usr/bin/env bash\nprintf "__RESTORE__\\x1f%s\\x1fsid-here\\x1fclaude\\n"\n' "$other_copy" > "$fake_browse"
+    rc=0
+    err=$(env "${restore_env[@]}" "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "restore, branch changed, no tty: exits 1"
+    assert_contains "$err" "Checkout changed: $other_copy is on other, the session ran on feature-h" "restore, branch changed: names both branches"
+    assert_contains "$err" "AM_RESTORE_ON_MISMATCH=here" "restore, branch changed, no tty: resume-here is offered"
+    err=$(env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=here "$PROJECT_DIR/am" 2>&1 </dev/null) || true
+    restored=$(jq -r --arg d "$other_copy" \
+        '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+    assert_not_empty "$restored" "restore =here: session resumed in the original directory"
+    if [[ -n "$restored" ]]; then
+        restored_pane=$(wait_for_text "stub-agent-argv" am_tmux capture-pane -pt "$restored:.{top}" -S -)
+        assert_not_contains "$restored_pane" "stub-agent-input" "restore =here: no move note when nothing moved"
+        agent_kill "$restored" 2>/dev/null
+    fi
+
+    # Two agents in one checkout: a fresh checkout that resolves to a copy a
+    # live session works in is refused, and so is `am new @spec` into it.
+    local busy_session
+    busy_session=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new @busy --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    assert_not_empty "$busy_session" "live-dir guard: first session in the copy launches"
+    printf '{"session_name":"test-am-old3","directory":"%s","branch":"busy","agent_type":"claude","session_id":"sid-busy","created_at":"2026-09-01T00:00:00Z","closed_at":"2026-09-02T00:00:00Z"}\n' \
+        "$gone_dir" >> "$slog"
+    printf '#!/usr/bin/env bash\nprintf "__RESTORE__\\x1f%s\\x1fsid-busy\\x1fclaude\\n"\n' "$gone_dir" > "$fake_browse"
+    rc=0
+    err=$(env "${restore_env[@]}" AM_RESTORE_ON_MISMATCH=fresh "$PROJECT_DIR/am" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "restore =fresh into a busy copy: exits 1"
+    assert_contains "$err" "A live session already works in $test_dir/ws-busy: $busy_session" "restore =fresh into a busy copy: names the session"
+    rc=0
+    err=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new @busy --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new @spec into a busy copy: exits 1"
+    assert_contains "$err" "@busy resolved to $test_dir/ws-busy, where a live session is already working: $busy_session" "am new @spec into a busy copy: names the session"
+    assert_contains "$err" "am attach $busy_session" "am new @spec into a busy copy: points at attach"
+    assert_eq "1" "$(jq -r --arg d "$test_dir/ws-busy" '[.sessions[] | select(.directory == $d)] | length' "$TEST_AM_DIR/sessions.json")" \
+        "am new @spec into a busy copy: no second session registered"
+    # The directory itself is never checked: a second agent there is a choice.
+    local second
+    second=$(env "${am_env[@]}" "$PROJECT_DIR/am" new "$test_dir/ws-busy" --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
+    assert_not_empty "$second" "am new <path> into a busy copy: allowed"
+    [[ -n "$second" ]] && agent_kill "$second" 2>/dev/null
+    [[ -n "$busy_session" ]] && agent_kill "$busy_session" 2>/dev/null
 
     # --- every launch, resolve, and kill above left its line in events.log ---
     local ev_text
@@ -606,6 +760,10 @@ test_cli_workspace_and_id() {
     assert_contains "$ev_text" $'\tkill\t'"$session_name"$'\t' "events: kill recorded"
     assert_not_contains "$ev_text" $'\tlaunch.ok\t-\t' "events: no launch.ok without a session"
     assert_contains "$ev_text" "sid=sid-gone agent=claude dir=$test_dir/released-copy reason=dir_missing" "events: restore of a missing directory recorded"
+    assert_contains "$ev_text" "sid=sid-moved agent=claude dir=$test_dir/ws-feature-r relocated_from=$gone_dir branch=feature-r" "events: relocated restore records both directories"
+    assert_contains "$ev_text" "sid=sid-same agent=claude dir=$test_dir/ws-feature-s relocated_from=$test_dir/ws-feature-s branch=feature-s" "events: same-path fresh checkout recorded as a relocation"
+    assert_contains "$ev_text" "sid=sid-here agent=claude dir=$other_copy reason=branch_changed branch=feature-h" "events: branch-changed refusal recorded"
+    assert_contains "$ev_text" "dir=$test_dir/ws-busy reason=dir_busy busy=$busy_session" "events: busy-copy refusals recorded"
 
     rm -rf "$test_dir"
     teardown_integration_env

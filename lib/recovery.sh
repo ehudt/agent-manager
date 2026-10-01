@@ -91,8 +91,8 @@ recovery_desired_upsert() {
     # The branch the launch directory is on. Pooled checkouts (wp copies) get
     # released and re-allocated to other branches while the directory path
     # stays valid, so the preflight compares against this before resuming.
-    if [[ "$(type -t git_head_branch)" == "function" ]]; then
-        git_head_branch "$directory" branch
+    if [[ "$(type -t git_head_branch_name)" == "function" ]]; then
+        git_head_branch_name "$directory" branch
     fi
 
     _registry_lock
@@ -353,8 +353,8 @@ recovery_sync_live_sidecars() {
         fi
         [[ -n "$mirrored" ]] && cwd="$mirrored"
         branch=""
-        if [[ "$(type -t git_head_branch)" == "function" && -d "${project_dir[$name]}" ]]; then
-            git_head_branch "${project_dir[$name]}" branch
+        if [[ "$(type -t git_head_branch_name)" == "function" && -d "${project_dir[$name]}" ]]; then
+            git_head_branch_name "${project_dir[$name]}" branch
         fi
         if [[ "$cwd" != "${cur_effective[$name]}" || "$branch" != "${cur_branch[$name]}" ]]; then
             recovery_desired_set_workspace "$name" "$cwd" "$branch" || true
@@ -459,28 +459,33 @@ recovery_preflight_record() {
         return 1
     fi
     # The resume runs in the launch directory: it keys the harness transcript
-    # store (~/.claude/projects/<encoded-dir>/ and its pi/Cursor twins), so a
-    # cwd anywhere else would not find the conversation. The effective
+    # store (~/.claude/projects/<encoded-dir>/ and its pi/Cursor twins), and
+    # it is where the recorded branch was checked out. The effective
     # directory (where the agent had moved) is only a label, re-applied as
-    # the restored session's workdir after launch.
-    if [[ -z "$directory" || ! -d "$directory" ]]; then
-        echo "directory unavailable: ${directory:-$effective}"
-        return 1
-    fi
-    # A directory that still exists may no longer hold the same checkout:
-    # pooled workspaces (wp copies) are released and re-allocated to other
-    # branches under the same path. Resuming there would put the conversation
-    # on the wrong branch, so block instead. A repo with no readable HEAD
-    # (or a directory that stopped being a repo) yields "" and is not judged.
-    local recorded_branch found_branch=""
+    # the restored session's workdir after launch. A directory that still
+    # exists may no longer hold the same checkout (pooled wp copies are
+    # re-allocated to other branches under the same path): recovery blocks
+    # rather than resume on the wrong code — the manual restore offers a
+    # fresh checkout instead. am_checkout_check is the shared judge; without
+    # utils.sh loaded only the existence check runs.
+    local recorded_branch problem=""
     recorded_branch=$(jq -r '.branch // empty' <<< "$record")
-    if [[ -n "$recorded_branch" && "$(type -t git_head_branch)" == "function" ]]; then
-        git_head_branch "$directory" found_branch
-        if [[ -n "$found_branch" && "$found_branch" != "$recorded_branch" ]]; then
-            echo "branch changed: expected $recorded_branch, found $found_branch"
-            return 1
-        fi
+    if [[ "$(type -t am_checkout_check)" == "function" ]]; then
+        problem=$(am_checkout_check "$directory" "$recorded_branch") || true
+    elif [[ -z "$directory" || ! -d "$directory" ]]; then
+        problem=missing
     fi
+    case "$problem" in
+        "") ;;
+        missing)
+            echo "directory unavailable: ${directory:-$effective}"
+            return 1
+            ;;
+        branch\ *)
+            echo "branch changed: expected $recorded_branch, found ${problem#branch }"
+            return 1
+            ;;
+    esac
 
     local agent_cmd
     agent_cmd=$(agent_get_command "$agent")

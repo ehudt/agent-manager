@@ -108,7 +108,7 @@ func TestClaudeFirstUserMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := claudeFirstUserMessage(directory, "session")
+	got := claudeFirstUserMessage(directory, "session", "")
 	if got != "Fix the broken login flow in auth" {
 		t.Errorf("got %q, want %q", got, "Fix the broken login flow in auth")
 	}
@@ -132,7 +132,7 @@ func TestClaudeFirstUserMessageArrayContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := claudeFirstUserMessage(directory, "session")
+	got := claudeFirstUserMessage(directory, "session", "")
 	if got != "Add JSONL fallback for tasks" {
 		t.Errorf("got %q, want %q", got, "Add JSONL fallback for tasks")
 	}
@@ -157,7 +157,7 @@ func TestClaudeFirstUserMessageSkipsShort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := claudeFirstUserMessage(directory, "session")
+	got := claudeFirstUserMessage(directory, "session", "")
 	if got != "This is the real user task description" {
 		t.Errorf("got %q, want non-short message", got)
 	}
@@ -199,7 +199,7 @@ func TestFirstUserMessageLengthGateCountsRunes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := claudeFirstUserMessage(directory, "session"); got != "שלוםעולםאבג" {
+	if got := claudeFirstUserMessage(directory, "session", ""); got != "שלוםעולםאבג" {
 		t.Errorf("claudeFirstUserMessage = %q, want the 11-letter message", got)
 	}
 }
@@ -207,7 +207,7 @@ func TestFirstUserMessageLengthGateCountsRunes(t *testing.T) {
 func TestClaudeFirstUserMessageMissingDir(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
-	if got := claudeFirstUserMessage("/nonexistent/dir/xyz", "session"); got != "" {
+	if got := claudeFirstUserMessage("/nonexistent/dir/xyz", "session", ""); got != "" {
 		t.Errorf("got %q, want empty for missing dir", got)
 	}
 }
@@ -239,18 +239,18 @@ func TestClaudeFirstUserMessageDisambiguatesBySessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := claudeFirstUserMessage(directory, "aaaa-old"); got != "Older session original task" {
+	if got := claudeFirstUserMessage(directory, "aaaa-old", ""); got != "Older session original task" {
 		t.Errorf("explicit id: got %q, want older session's message", got)
 	}
-	if got := claudeFirstUserMessage(directory, "bbbb-new"); got != "Newer session different task" {
+	if got := claudeFirstUserMessage(directory, "bbbb-new", ""); got != "Newer session different task" {
 		t.Errorf("explicit newer id: got %q, want newer session's message", got)
 	}
 	// No id → nothing, however many transcripts the store holds.
-	if got := claudeFirstUserMessage(directory, ""); got != "" {
+	if got := claudeFirstUserMessage(directory, "", ""); got != "" {
 		t.Errorf("empty id: got %q, want empty", got)
 	}
 	// An id whose transcript is not there → nothing, no substitute.
-	if got := claudeFirstUserMessage(directory, "does-not-exist"); got != "" {
+	if got := claudeFirstUserMessage(directory, "does-not-exist", ""); got != "" {
 		t.Errorf("missing id file: got %q, want empty", got)
 	}
 }
@@ -273,11 +273,33 @@ func TestClaudeFirstUserMessageRequiresBoundID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "only.jsonl"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := claudeFirstUserMessage(directory, ""); got != "" {
+	if got := claudeFirstUserMessage(directory, "", ""); got != "" {
 		t.Errorf("lone transcript without id: got %q, want empty", got)
 	}
-	if got := claudeFirstUserMessage(directory, "only"); got != "Stranger's conversation in this directory" {
+	if got := claudeFirstUserMessage(directory, "only", ""); got != "Stranger's conversation in this directory" {
 		t.Errorf("lone transcript with its id: got %q", got)
+	}
+}
+
+// After a resume in another directory the transcript is still in the
+// original directory's store: the reader follows the hook-reported path,
+// and without one finds the file by id anywhere in the store.
+func TestClaudeFirstUserMessageFollowsRelocatedTranscript(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	origDir := "/some/path/orig-copy"
+	newDir := "/some/path/new-copy"
+	transcript := claudeStandardTranscriptPath(tmp, origDir, "moved")
+	writeFile(t, transcript, `{"type":"user","message":{"content":"Fix all issues in the exports"}}`+"\n")
+
+	if got := claudeFirstUserMessage(newDir, "moved", transcript); got != "Fix all issues in the exports" {
+		t.Errorf("hook-reported path: got %q", got)
+	}
+	if got := claudeFirstUserMessage(newDir, "moved", ""); got != "Fix all issues in the exports" {
+		t.Errorf("store-wide id search: got %q", got)
+	}
+	if got := claudeFirstUserMessage(newDir, "moved", filepath.Join(tmp, "stale.jsonl")); got != "Fix all issues in the exports" {
+		t.Errorf("stale hook path falls through to the search: got %q", got)
 	}
 }
 

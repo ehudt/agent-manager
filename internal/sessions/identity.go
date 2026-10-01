@@ -42,8 +42,8 @@ func (e Env) SidecarID(session string) string {
 	return ""
 }
 
-// SidecarTranscript is the Cursor hook's transcript_path, kept only when
-// absolute and present on disk.
+// SidecarTranscript is the hook-reported transcript_path (Claude, Cursor,
+// opencode), kept only when absolute and present on disk.
 func (e Env) SidecarTranscript(session string) string {
 	p := e.sidecarFirstLine(session, ".transcript")
 	if p == "" || !filepath.IsAbs(p) {
@@ -57,8 +57,10 @@ func (e Env) SidecarTranscript(session string) string {
 
 // storeJSONLExists is the per-layout existence check behind JSONLExists and
 // the restorable filter. A layout of "none" (Codex: no stable local rollout
-// path) accepts any well-formed id. Cursor accepts the hook-reported
-// transcript path first, then its standard per-project layout. opencode's
+// path) accepts any well-formed id. Cursor and Claude accept the
+// hook-reported transcript path first, then their standard per-project
+// layout (Claude also searches the whole store by id: a conversation resumed
+// in another directory stays in its original project folder). opencode's
 // hook writes a mirror path (the .transcript sidecar) under $AM_DIR, which is
 // the only addressable copy of a SQLite-backed session.
 func storeJSONLExists(amDir, home, store, dir, sid, transcript string) bool {
@@ -72,7 +74,7 @@ func storeJSONLExists(amDir, home, store, dir, sid, transcript string) bool {
 	case "opencode":
 		return opencodeJSONLExists(amDir, home, sid, transcript)
 	case "claude":
-		return claudeJSONLExists(home, dir, sid)
+		return claudeJSONLExists(home, dir, sid, transcript)
 	}
 	return false
 }
@@ -106,10 +108,12 @@ func (e Env) StoreDir(agent, dir string) string {
 }
 
 // TranscriptPath is where am would read the conversation for (agent, dir,
-// sid): the hook-reported path when the layout stores one (Cursor, opencode),
-// else the standard per-project path. pi's filenames carry a timestamp
-// prefix, so its match is globbed; "" when the layout cannot be addressed or
-// nothing matches. Existence is the caller's check.
+// sid): the hook-reported path when the layout stores one (Claude, Cursor,
+// opencode), else the standard per-project path (Claude: the existing file
+// anywhere in its store before the standard path, see claudeTranscriptPath).
+// pi's filenames carry a timestamp prefix, so its match is globbed; "" when
+// the layout cannot be addressed or nothing matches. Existence is the
+// caller's check.
 func (e Env) TranscriptPath(agent, dir, sid, transcript string) string {
 	switch agentSpec(agent).Store {
 	case "pi":
@@ -136,7 +140,10 @@ func (e Env) TranscriptPath(agent, dir, sid, transcript string) string {
 		}
 	case "claude":
 		if sid != "" {
-			return filepath.Join(e.Home, ".claude", "projects", encodedClaudeProjectDir(dir), sid+".jsonl")
+			if p := claudeTranscriptPath(e.Home, dir, sid, transcript); p != "" {
+				return p
+			}
+			return claudeStandardTranscriptPath(e.Home, dir, sid)
 		}
 	}
 	return ""
@@ -173,7 +180,7 @@ func FirstMessage(agent, dir, sid, transcript string) string {
 	case "opencode":
 		return opencodeFirstUserMessage(sid, transcript)
 	case "claude":
-		return claudeFirstUserMessage(dir, sid)
+		return claudeFirstUserMessage(dir, sid, transcript)
 	}
 	return ""
 }

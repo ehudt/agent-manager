@@ -120,6 +120,9 @@ func TestRestoreScanBindsIDFromSidecarOnly(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The launch directory is on launch-br; am-wrong's registry branch
+	// ("feat") is its workdir's, which the log must not take.
+	writeFile(t, filepath.Join(proj, ".git", "HEAD"), "ref: refs/heads/launch-br\n")
 	if err := os.MkdirAll(env.StateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +131,7 @@ func TestRestoreScanBindsIDFromSidecarOnly(t *testing.T) {
 		"am-stale":   {Name: "am-stale", Directory: proj, AgentType: "claude"},
 		"am-sidecar": {Name: "am-sidecar", Directory: proj, AgentType: "claude"},
 		"am-pending": {Name: "am-pending", Directory: proj, AgentType: "claude"},
-		"am-wrong":   {Name: "am-wrong", Directory: proj, AgentType: "claude", Task: "task w", Branch: "feat"},
+		"am-wrong":   {Name: "am-wrong", Directory: proj, Workdir: filepath.Join(proj, "elsewhere"), AgentType: "claude", Task: "task w", Branch: "feat"},
 		"am-shared":  {Name: "am-shared", Directory: proj, AgentType: "claude"},
 		"am-nolog":   {Name: "am-nolog", Directory: proj, AgentType: "claude"},
 		"am-bash":    {Name: "am-bash", Directory: proj, AgentType: "bash"},
@@ -185,8 +188,8 @@ func TestRestoreScanBindsIDFromSidecarOnly(t *testing.T) {
 	if got := slogField(t, env.SessionsLog, "am-wrong", "task"); got != "task w" {
 		t.Errorf("task synced into the log: got %q", got)
 	}
-	if got := slogField(t, env.SessionsLog, "am-wrong", "branch"); got != "feat" {
-		t.Errorf("branch synced into the log: got %q", got)
+	if got := slogField(t, env.SessionsLog, "am-wrong", "branch"); got != "launch-br" {
+		t.Errorf("log branch is the launch directory's, not the workdir's: got %q, want launch-br", got)
 	}
 	if got := slogField(t, env.SessionsLog, "am-shared", "session_id"); got != "" {
 		t.Errorf("shared directory: no guess, got %q", got)
@@ -213,6 +216,47 @@ func TestRestoreScanBindsIDFromSidecarOnly(t *testing.T) {
 	}
 	if got := slogField(t, env.SessionsLog, "am-pending", "snapshot_file"); got != "snapshots/sid-pending.txt" {
 		t.Errorf("re-keyed snapshot_file = %q", got)
+	}
+}
+
+// A Claude session resumed in another directory: the hook reports the
+// transcript at its original location, which the scan must record — the
+// directory-derived path would miss, leave the id unbound, and let the GC
+// drop the entry as "transcript gone".
+func TestRestoreScanClaudeTranscriptSidecar(t *testing.T) {
+	amDir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	env := testEnv(t, amDir)
+	_, setPane := fakeTmux(t)
+	if err := os.MkdirAll(env.StateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origDir := filepath.Join(amDir, "orig-copy")
+	newDir := filepath.Join(amDir, "new-copy")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeTranscript(t, home, origDir, "sid-moved", "Fix all issues in the exports")
+	transcript := claudeStandardTranscriptPath(home, origDir, "sid-moved")
+	writeRegistryAtomic(env.RegistryPath(), Registry{Sessions: map[string]Session{
+		"am-new": {Name: "am-new", Directory: newDir, AgentType: "claude"},
+	}})
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-new", "directory": newDir, "agent_type": "claude"})
+	writeFile(t, filepath.Join(env.StateDir, "am-new.sid"), "sid-moved")
+	writeFile(t, filepath.Join(env.StateDir, "am-new.transcript"), transcript)
+	setPane("am-new:.{top-left}", "claude pane\n")
+
+	env.TitleScan(true)
+
+	if got := slogField(t, env.SessionsLog, "am-new", "transcript_path"); got != transcript {
+		t.Errorf("transcript_path bound from sidecar: got %q", got)
+	}
+	if got := slogField(t, env.SessionsLog, "am-new", "session_id"); got != "sid-moved" {
+		t.Errorf("relocated id verified via the transcript path: got %q", got)
+	}
+	if got := ReadRegistry(env.RegistryPath()).Sessions["am-new"].Task; got != "Fix all issues in the exports" {
+		t.Errorf("title fallback read the relocated transcript: got %q", got)
 	}
 }
 
@@ -549,6 +593,15 @@ func TestGCExtras(t *testing.T) {
 	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-fresh", "session_id": "", "directory": liveDir, "agent_type": "claude", "created_at": recent})
 	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-old-noid", "session_id": "", "directory": liveDir, "agent_type": "claude", "created_at": "2026-04-01T00:00:00Z"})
 	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-shell", "session_id": "", "directory": liveDir, "agent_type": "bash", "created_at": "2026-04-01T00:00:00Z"})
+	// Sessions resumed in another directory: the transcript stays in the
+	// original directory's store. One row knows the path (hook sidecar
+	// recorded), one does not (killed before a hook fired) — both stay.
+	movedDir := t.TempDir()
+	writeClaudeTranscript(t, home, liveDir, "sid-moved", "resumed elsewhere, path known")
+	writeClaudeTranscript(t, home, liveDir, "sid-moved-blind", "resumed elsewhere, path unknown")
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-moved", "session_id": "sid-moved", "directory": movedDir, "agent_type": "claude", "created_at": "2026-04-01T00:00:00Z",
+		"transcript_path": claudeStandardTranscriptPath(home, liveDir, "sid-moved")})
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-moved-blind", "session_id": "sid-moved-blind", "directory": movedDir, "agent_type": "claude", "created_at": "2026-04-01T00:00:00Z"})
 	// A line this version does not understand survives untouched.
 	f, _ := os.OpenFile(env.SessionsLog, os.O_APPEND|os.O_WRONLY, 0o644)
 	f.WriteString("not json at all\n")
@@ -573,7 +626,7 @@ func TestGCExtras(t *testing.T) {
 	}
 
 	got := strings.Join(slogNames(t, env.SessionsLog), " ")
-	if got != "am-kept am-fresh am-shell " {
+	if got != "am-kept am-fresh am-shell am-moved am-moved-blind " {
 		t.Errorf("sessions log after gc: %q", got)
 	}
 	if b, _ := os.ReadFile(env.SessionsLog); !strings.Contains(string(b), "not json at all") {

@@ -334,19 +334,17 @@ func writeRegistryAtomic(path string, reg Registry) {
 
 // claudeFirstUserMessage backs the bash claude_first_user_message wrapper.
 // Returns the first user-message text (>10 chars) from exactly the Claude
-// JSONL bound to this session (the id the pane's own hook reported), with
-// tags stripped and whitespace collapsed. The directory only locates the
-// per-project transcript store; it never chooses among transcripts, because
-// the store is shared with other am sessions and with agents started outside
-// am. No id → "".
-func claudeFirstUserMessage(directory, sessionID string) string {
+// JSONL bound to this session (the id the pane's own hook reported, at the
+// path the hook reported when known), with tags stripped and whitespace
+// collapsed. The directory only locates the per-project transcript store; it
+// never chooses among transcripts, because the store is shared with other am
+// sessions and with agents started outside am. No id → "".
+func claudeFirstUserMessage(directory, sessionID, transcript string) string {
 	if sessionID == "" {
 		return ""
 	}
-	projectPath := strings.ReplaceAll(directory, "/", "-")
-	projectPath = strings.ReplaceAll(projectPath, ".", "-")
-	target := filepath.Join(homeDir(), ".claude", "projects", projectPath, sessionID+".jsonl")
-	if st, err := os.Stat(target); err != nil || st.IsDir() {
+	target := claudeTranscriptPath(homeDir(), directory, sessionID, transcript)
+	if target == "" {
 		return ""
 	}
 

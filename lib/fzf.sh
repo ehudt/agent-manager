@@ -424,6 +424,15 @@ fzf_restore_picker() {
         [[ -n "$branch" ]] && display="${display}/${branch}"
         display="${display} [${agent}]"
         [[ -n "$task" ]] && display="${display} ${task}"
+        # Enter on a row whose checkout is gone or re-allocated opens the
+        # relocation prompt rather than resuming; say so on the row (the
+        # browser's inactive rows carry the same marker, Go RestoreNote).
+        local problem=""
+        problem=$(am_checkout_check "$dir" "$branch") || true
+        case "$problem" in
+            missing) display="${display} ⚠ dir gone" ;;
+            branch\ *) display="${display} ⚠ on ${problem#branch }" ;;
+        esac
 
         display="${display} ($(format_time_ago "$age"))"
 

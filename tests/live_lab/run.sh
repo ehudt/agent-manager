@@ -43,7 +43,7 @@ export AM_IDENTITY_DIR="$LAB/identities"
 mkdir -p "$AM_STATE_DIR" "$AM_DIR" "$AM_IDENTITY_DIR"
 
 MODEL="${LAB_MODEL:-haiku}"
-SCENARIOS="${LAB_SCENARIOS:-s1 s2 s3 s4 s5 s6 s7}"
+SCENARIOS="${LAB_SCENARIOS:-s1 s2 s3 s4 s5 s6 s7 s8}"
 
 log() { printf '\033[0;36m[live-lab]\033[0m %s\n' "$*" >&2; }
 mark() {  # scenario phase note -> timeline marker + report
@@ -173,6 +173,13 @@ observe() {  # scenario: record title+state+status now
     mark "$1" "observed title='$(pane_title)' hook=$(hook_state) status='$(status_line)'"
 }
 
+# The workspace-trust dialog highlights "No, exit" first (2.1.286; Enter on
+# it exits Claude with rc 1), so move to the "Yes" row before confirming.
+accept_trust() {
+    if pane_text | grep -q '❯ *No, exit'; then press Down; sleep 0.3; fi
+    press Enter
+}
+
 cleanup() {
     echo "STOP" > "$CURRENT_SCENARIO_FILE"
     tmux -L "$SOCKET" kill-server 2>/dev/null || true
@@ -193,7 +200,7 @@ sampler & SAMPLER_PID=$!
 sleep 6
 if pane_text | grep -qi 'trust'; then
     mark boot "trust dialog shown — accepting"
-    press Enter; sleep 3
+    accept_trust; sleep 3
 fi
 wait_pane_contains '❯|>' 30 || { mark boot "FATAL: no input box"; exit 1; }
 sleep 2
@@ -300,6 +307,102 @@ fi
 
 echo "STOP" > "$CURRENT_SCENARIO_FILE"
 wait "$SAMPLER_PID" 2>/dev/null || true
+
+# ── S8: resume by id from another directory (am restore relocation) ─────────
+# `am restore` resumes a closed session in a fresh checkout when its pooled
+# copy was released. That rests on two Claude Code behaviours this scenario
+# checks: `claude --resume <id>` works from a directory other than the one
+# the conversation started in, and the resumed turns append to the ORIGINAL
+# transcript (~/.claude/projects/<encoded-ORIGINAL-dir>/<id>.jsonl), so the
+# payload's session_id and transcript_path are unchanged. Runs after the
+# sampler stops: the first session is exited and a second tmux session (own
+# registry row, own state file) hosts the resume.
+if [[ " $SCENARIOS " == *" s8 "* ]]; then
+    run_scenario s8-resume-elsewhere
+    sid_of() { jq -r 'select(.payload.session_id != null) | .payload.session_id' "$RESULTS/payloads.jsonl" 2>/dev/null | tail -1; }
+    transcript_of() { jq -r --arg sid "$1" 'select(.payload.session_id == $sid and .payload.transcript_path != null) | .payload.transcript_path' "$RESULTS/payloads.jsonl" 2>/dev/null | tail -1; }
+    sid=$(sid_of)
+    if [[ -z "$sid" || ! -s "$(transcript_of "$sid")" ]]; then
+        # Alone (LAB_SCENARIOS=s8): SessionStart already reported an id, but
+        # a conversation with no turn has no transcript to resume (2026-10-01:
+        # `--resume` of such an id exited at once). Run one turn first.
+        send_prompt "Reply with exactly one word: HELLO"
+        wait_hook_state ready 90 || mark s8-resume-elsewhere "NO ready after the seed turn (state=$(hook_state))"
+        sid=$(sid_of)
+    fi
+    if [[ -z "$sid" ]]; then
+        mark s8-resume-elsewhere "FATAL: no session_id in any payload"
+    else
+        orig_transcript=$(transcript_of "$sid")
+        mark s8-resume-elsewhere "original: dir=$WORKDIR sid=$sid transcript=$orig_transcript ($(wc -l < "$orig_transcript" 2>/dev/null | tr -d ' ') lines)"
+        send_prompt "/exit"
+        sleep 4
+        tmux -L "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
+        n_before=$(wc -l < "$RESULTS/payloads.jsonl" | tr -d ' ')
+
+        WORKDIR2="$LAB/work2"; mkdir -p "$WORKDIR2"
+        SESSION="${SESSION}-r"   # probes (pane_text, hook_state) follow the variable
+        tmp_reg=$(mktemp)
+        jq --arg s "$SESSION" --arg d "$WORKDIR2" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '.sessions[$s] = {name: $s, directory: $d, branch: "main", agent_type: "claude", task: "live lab s8", created_at: $t}' \
+            "$AM_REGISTRY" > "$tmp_reg" && mv "$tmp_reg" "$AM_REGISTRY"
+        tmux -L "$SOCKET" new-session -d -s "$SESSION" -c "$WORKDIR2" -x 200 -y 50
+        tmux -L "$SOCKET" set-option -t "$SESSION" allow-rename off
+        # The prompt is piped on stdin, as agent_launch delivers am restore's
+        # move note (cat <file> | claude --resume <id>); the new directory is
+        # untrusted, so the trust dialog has to work with stdin a pipe. No
+        # exec: a resume that exits at once must leave its message in the
+        # pane for the failure snapshot.
+        printf 'Reply with exactly one word: PIPED\n' > "$LAB/s8-prompt"
+        tmux -L "$SOCKET" send-keys -t "$SESSION" -l "export AM_SESSION_NAME=$SESSION AM_AGENT_TYPE=claude AM_REGISTRY=$AM_REGISTRY AM_STATE_DIR=$AM_STATE_DIR AM_DIR=$AM_DIR AM_IDENTITY_DIR=$AM_IDENTITY_DIR AM_HOOK_DEBUG=1; cat $LAB/s8-prompt | claude --model $MODEL --settings $LAB/settings.json --resume $sid; echo lab-s8-claude-exit=\$?"
+        tmux -L "$SOCKET" send-keys -t "$SESSION" Enter
+        s8_snap() { pane_text > "$RESULTS/snapshots/s8-$1.txt"; }
+        sleep 6
+        s8_snap 1-after-launch
+        if pane_text | grep -qi 'trust'; then
+            mark s8-resume-elsewhere "trust dialog shown for the new directory — accepting"
+            accept_trust; sleep 3
+            s8_snap 2-after-trust
+        fi
+        if wait_pane_contains '❯|>' 30; then
+            s8_snap 3-input-box
+            mark s8-resume-elsewhere "resumed in $WORKDIR2: input box up"
+            # The piped prompt runs as the first turn of the resumed session.
+            if wait_hook_state ready 90 && grep -q 'PIPED' "$orig_transcript" 2>/dev/null; then
+                mark s8-resume-elsewhere "piped prompt delivered: PIPED turn in the original transcript"
+            else
+                mark s8-resume-elsewhere "piped prompt NOT delivered (state=$(hook_state), PIPED in transcript: $(grep -c PIPED "$orig_transcript" 2>/dev/null || echo 0))"
+            fi
+            sleep 2
+            send_prompt "Reply with exactly one word: RESUMED"
+            sleep 5; s8_snap 4-after-prompt
+            if wait_hook_state ready 90; then
+                mark s8-resume-elsewhere "turn ended -> ready (hook identified the new session)"
+            else
+                mark s8-resume-elsewhere "NO ready within 90s (state=$(hook_state))"
+            fi
+            new_sid=$(tail -n +"$((n_before + 1))" "$RESULTS/payloads.jsonl" | jq -r 'select(.payload.session_id != null) | .payload.session_id' | tail -1)
+            new_transcript=$(tail -n +"$((n_before + 1))" "$RESULTS/payloads.jsonl" | jq -r 'select(.payload.transcript_path != null) | .payload.transcript_path' | tail -1)
+            same_sid=no; [[ "$new_sid" == "$sid" ]] && same_sid=yes
+            same_transcript=no; [[ "$new_transcript" == "$orig_transcript" ]] && same_transcript=yes
+            mark s8-resume-elsewhere "resumed: sid=$new_sid (same=$same_sid) transcript=$new_transcript (same=$same_transcript) cwd=$(tail -n +"$((n_before + 1))" "$RESULTS/payloads.jsonl" | jq -r 'select(.payload.cwd != null) | .payload.cwd' | tail -1)"
+            [[ -f "$orig_transcript" ]] && mark s8-resume-elsewhere "original transcript still present, $(wc -l < "$orig_transcript" | tr -d ' ') lines"
+            new_store="$HOME/.claude/projects/$(printf '%s' "$WORKDIR2" | sed -E 's#[^A-Za-z0-9]#-#g')"
+            if [[ -e "$new_store/$sid.jsonl" ]]; then
+                mark s8-resume-elsewhere "ALSO a transcript under the new directory's store: $new_store/$sid.jsonl"
+            else
+                mark s8-resume-elsewhere "no transcript under the new directory's store ($new_store)"
+            fi
+            s8_snap 5-end
+            pane_text | grep -q 'lab-s8-claude-exit=' && mark s8-resume-elsewhere "claude EXITED: $(pane_text | grep 'lab-s8-claude-exit=' | tail -1)"
+            observe s8-resume-elsewhere
+        else
+            mark s8-resume-elsewhere "FATAL: no input box after --resume in $WORKDIR2: $(pane_text | grep -v '^[[:space:]]*$' | tail -3 | tr '\n' '|')"
+            pane_text > "$RESULTS/snapshots/s8-no-input-box.txt"
+        fi
+    fi
+fi
+
 mark done "live lab complete; results in $RESULTS"
 agent_ver=$(claude --version 2>/dev/null | head -1 | tr -d '\r')
 printf 'agent_version\tclaude\t%s\n' "${agent_ver:-unknown}" >> "$RESULTS/report.txt"
