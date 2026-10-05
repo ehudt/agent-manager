@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -149,6 +150,8 @@ func newModel() model {
 	ti.PlaceholderStyle = ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
 	ti.CompletionStyle = ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
 	ti.Focus()
+	// A steady cursor, like the new-session form's.
+	ti.Cursor.SetMode(cursor.CursorStatic)
 
 	return model{
 		filter:      ti,
@@ -158,10 +161,7 @@ func newModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
-		textinput.Blink,
-		loadSessions,
-	)
+	return loadSessions
 }
 
 func loadSessions() tea.Msg {

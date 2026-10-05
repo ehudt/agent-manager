@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ehud-tamir/agent-manager/internal/sessions"
@@ -307,5 +308,8 @@ func TestFilterCursorUsesTTYRenderer(t *testing.T) {
 	m.filter.SetCursor(1)
 	if view := m.filter.View(); !strings.Contains(view, "\x1b[7m") {
 		t.Errorf("filter view has no reverse-video cursor: %q", view)
+	}
+	if mode := m.filter.Cursor.Mode(); mode != cursor.CursorStatic {
+		t.Errorf("filter cursor mode = %v, want static (no blink)", mode)
 	}
 }
