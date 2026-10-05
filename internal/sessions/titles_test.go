@@ -90,30 +90,6 @@ func TestRefreshTitlesPreservesRegistryMetadata(t *testing.T) {
 	}
 }
 
-func TestClaudeFirstUserMessage(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	directory := "/some/path/to/project"
-	projectPath := strings.ReplaceAll(directory, "/", "-")
-	projectPath = strings.ReplaceAll(projectPath, ".", "-")
-	claudeDir := filepath.Join(tmp, ".claude", "projects", projectPath)
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// String content form
-	content := `{"type":"user","message":{"content":"Fix the broken login flow in auth"}}` + "\n"
-	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	got := claudeFirstUserMessage(directory, "session", "")
-	if got != "Fix the broken login flow in auth" {
-		t.Errorf("got %q, want %q", got, "Fix the broken login flow in auth")
-	}
-}
-
 func TestClaudeFirstUserMessageArrayContent(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
@@ -135,31 +111,6 @@ func TestClaudeFirstUserMessageArrayContent(t *testing.T) {
 	got := claudeFirstUserMessage(directory, "session", "")
 	if got != "Add JSONL fallback for tasks" {
 		t.Errorf("got %q, want %q", got, "Add JSONL fallback for tasks")
-	}
-}
-
-func TestClaudeFirstUserMessageSkipsShort(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	directory := "/some/path/project3"
-	projectPath := strings.ReplaceAll(directory, "/", "-")
-	projectPath = strings.ReplaceAll(projectPath, ".", "-")
-	claudeDir := filepath.Join(tmp, ".claude", "projects", projectPath)
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// First entry is short; second is real
-	content := `{"type":"user","message":{"content":"ok"}}` + "\n" +
-		`{"type":"user","message":{"content":"This is the real user task description"}}` + "\n"
-	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	got := claudeFirstUserMessage(directory, "session", "")
-	if got != "This is the real user task description" {
-		t.Errorf("got %q, want non-short message", got)
 	}
 }
 
@@ -204,14 +155,6 @@ func TestFirstUserMessageLengthGateCountsRunes(t *testing.T) {
 	}
 }
 
-func TestClaudeFirstUserMessageMissingDir(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	if got := claudeFirstUserMessage("/nonexistent/dir/xyz", "session", ""); got != "" {
-		t.Errorf("got %q, want empty for missing dir", got)
-	}
-}
-
 func TestClaudeFirstUserMessageDisambiguatesBySessionID(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
@@ -252,6 +195,12 @@ func TestClaudeFirstUserMessageDisambiguatesBySessionID(t *testing.T) {
 	// An id whose transcript is not there → nothing, no substitute.
 	if got := claudeFirstUserMessage(directory, "does-not-exist", ""); got != "" {
 		t.Errorf("missing id file: got %q, want empty", got)
+	}
+	// A directory with no store, under a HOME with no store root at all →
+	// nothing; the store-wide fallback search must tolerate the missing root.
+	t.Setenv("HOME", t.TempDir())
+	if got := claudeFirstUserMessage("/nonexistent/dir/xyz", "session", ""); got != "" {
+		t.Errorf("missing dir: got %q, want empty", got)
 	}
 }
 

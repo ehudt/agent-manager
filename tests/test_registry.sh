@@ -375,98 +375,6 @@ test_registry_gc() {
     $SUMMARY_MODE || echo ""
 }
 
-# The bash-only extras half: sessions-log pruning, unreferenced snapshots,
-# and leaked temp files. No tmux server is needed (nothing is live).
-test_registry_gc_extras() {
-    $SUMMARY_MODE || echo "=== Testing registry_gc extras (sessions log, snapshots, temp files) ==="
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/registry.sh"
-
-    setup_isolated_am_dir
-    mkdir -p "$AM_SNAPSHOTS_DIR"
-
-    # A transcript that exists (keeps its entry) and one that never did. The
-    # transcript store is keyed by the symlink-resolved directory.
-    local live_dir
-    live_dir=$(cd "$(mktemp -d)" && pwd -P)
-    local encoded="${live_dir//\//-}"
-    encoded="${encoded//./-}"
-    local claude_dir="$HOME/.claude/projects/$encoded"
-    mkdir -p "$claude_dir"
-    echo '{"type":"user","message":{"role":"user","content":"keep me around please"}}' \
-        > "$claude_dir/sid-kept.jsonl"
-
-    local recent_iso
-    recent_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    {
-        # Stale: claude, has a sid, directory gone, transcript never existed
-        # (the shape of the 703 leftover test-am-* rows observed in the wild).
-        jq -cn --arg d "/tmp/tmp.gone-$$" '{session_name:"test-am-stale-1",session_id:"sid-gone",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"snapshots/sid-gone.txt",transcript_path:""}'
-        jq -cn --arg d "/tmp/tmp.gone-$$" '{session_name:"test-am-stale-2",session_id:"sid-gone-2",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"",transcript_path:""}'
-        # Kept: transcript exists.
-        jq -cn --arg d "$live_dir" '{session_name:"test-am-kept",session_id:"sid-kept",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:"2026-04-01T00:00:00Z",closed_at:null,snapshot_file:"snapshots/sid-kept.txt",transcript_path:""}'
-        # Kept: no sid yet but recent (24h grace for id backfill).
-        jq -cn --arg d "$live_dir" --arg c "$recent_iso" '{session_name:"test-am-fresh",session_id:"",directory:$d,branch:"main",agent_type:"claude",task:"",created_at:$c,closed_at:null,snapshot_file:"",transcript_path:""}'
-    } > "$AM_SESSIONS_LOG"
-
-    # Snapshots: referenced+old (kept), unreferenced+old (removed),
-    # unreferenced+fresh (kept: may be mid-scan), stale entry's own (removed
-    # with its entry).
-    printf 'x\n' > "$AM_SNAPSHOTS_DIR/sid-kept.txt"
-    printf 'x\n' > "$AM_SNAPSHOTS_DIR/orphan-old.txt"
-    printf 'x\n' > "$AM_SNAPSHOTS_DIR/orphan-fresh.txt"
-    printf 'x\n' > "$AM_SNAPSHOTS_DIR/sid-gone.txt"
-    touch -t 202601010000 "$AM_SNAPSHOTS_DIR/sid-kept.txt" "$AM_SNAPSHOTS_DIR/orphan-old.txt"
-
-    # Leaked writer temps and detached repo-scan temps.
-    : > "$AM_DIR/.sessions-log.leakOLD"
-    : > "$AM_DIR/.sessions-log.leakNEW"
-    : > "$AM_DIR/.dir_repo_cache.tmp.111"
-    : > "$AM_DIR/.dir_repo_cache.tmp.222"
-    : > "$AM_DIR/titler.log.AbCdEf"
-    : > "$AM_DIR/titler.log"
-    touch -t 202601010000 "$AM_DIR/.sessions-log.leakOLD" "$AM_DIR/.dir_repo_cache.tmp.111" \
-        "$AM_DIR/titler.log.AbCdEf" "$AM_DIR/titler.log"
-
-    registry_gc 1 >/dev/null 2>&1
-
-    local names
-    names=$(jq -r '.session_name' "$AM_SESSIONS_LOG" | sort | tr '\n' ' ')
-    assert_eq "test-am-fresh test-am-kept " "$names" \
-        "gc extras: sessions_log_gc drops entries whose transcript is gone, keeps live and fresh"
-    assert_cmd_succeeds "gc extras: .gc_extras_last stamped" test -f "$AM_DIR/.gc_extras_last"
-
-    assert_cmd_succeeds "gc extras: referenced old snapshot kept" test -f "$AM_SNAPSHOTS_DIR/sid-kept.txt"
-    assert_cmd_fails "gc extras: unreferenced old snapshot removed" test -f "$AM_SNAPSHOTS_DIR/orphan-old.txt"
-    assert_cmd_succeeds "gc extras: unreferenced fresh snapshot kept (age gate)" test -f "$AM_SNAPSHOTS_DIR/orphan-fresh.txt"
-    assert_cmd_fails "gc extras: pruned entry's snapshot removed" test -f "$AM_SNAPSHOTS_DIR/sid-gone.txt"
-
-    assert_cmd_fails "gc extras: leaked .sessions-log temp older than 60s removed" test -f "$AM_DIR/.sessions-log.leakOLD"
-    assert_cmd_succeeds "gc extras: fresh .sessions-log temp kept (writer may own it)" test -f "$AM_DIR/.sessions-log.leakNEW"
-    assert_cmd_fails "gc extras: stale .dir_repo_cache.tmp removed" test -f "$AM_DIR/.dir_repo_cache.tmp.111"
-    assert_cmd_succeeds "gc extras: fresh .dir_repo_cache.tmp kept" test -f "$AM_DIR/.dir_repo_cache.tmp.222"
-    assert_cmd_fails "gc extras: stale log-cap temp (<log>.XXXXXX) removed" test -f "$AM_DIR/titler.log.AbCdEf"
-    assert_cmd_succeeds "gc extras: the log itself is not swept" test -f "$AM_DIR/titler.log"
-    assert_cmd_succeeds "gc extras: sessions log itself untouched by the temp sweep" test -f "$AM_SESSIONS_LOG"
-
-    # Throttled path: nothing to do and no marker rewrite.
-    local before after
-    before=$(cat "$AM_DIR/.gc_extras_last")
-    : > "$AM_DIR/.sessions-log.leakAGAIN"
-    touch -t 202601010000 "$AM_DIR/.sessions-log.leakAGAIN"
-    assert_eq "0" "$(registry_gc)" "gc extras: throttled call reports 0"
-    after=$(cat "$AM_DIR/.gc_extras_last")
-    assert_eq "$before" "$after" "gc extras: throttled call leaves the marker alone"
-    assert_cmd_succeeds "gc extras: throttled call sweeps nothing" test -f "$AM_DIR/.sessions-log.leakAGAIN"
-
-    rm -rf "$claude_dir" "$live_dir"
-    teardown_isolated_am_dir
-
-    $SUMMARY_MODE || echo ""
-}
-
 # Interrupted sessions-log writers must not leave .sessions-log.* behind:
 # the temp file is created after the lock and removed by the signal guard.
 test_registry_tmp_guard() {
@@ -1195,7 +1103,6 @@ run_registry_tests() {
     _run_test test_registry_get_fields
     _run_test test_registry_gc
     _run_test test_registry_gc_go_path
-    _run_test test_registry_gc_extras
     _run_test test_registry_tmp_guard
     _run_test test_titler_log_gated
     _run_test test_auto_title_scan

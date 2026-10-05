@@ -127,7 +127,7 @@ only (no mutation run).
 | File | Test | Line | Why | What still guards it |
 |---|---|---|---|---|
 | `tests/test_registry.sh` | `test_auto_title_session` | 642 | One assertion: `registry_update` + `registry_get_field` round trip | `test_registry` L29-30; `test_registry_concurrency` L1091-1099; `test_registry_get_fields` L210, 226-227 (`registry_get_fields: updated field (5th field)`, `registry_update: changes field`, `concurrency: no parallel registry_update lost (lost=12 of 12)`) |
-| `tests/test_registry.sh` | `test_registry_gc_extras` | 377 | 16 assertions re-running the Go extras half through `am-core`; Go `TestGCExtras` says in its own comment that it mirrors this test and is a strict superset | `internal/sessions/maintenance_test.go::TestGCExtras` (sessions log names; `sid-gone.txt` exists), `TestGCHalvesAndGrace`, `TestIsLogCapTemp`; `tests/test_standalone_scripts.sh::test_standalone_status_bar` (`tick prunes a sessions-log entry whose transcript is gone`, `tick stamps .gc_extras_last`); `test_registry_tmp_guard`; `test_registry_gc` keeps the bash → `am-core gc` plumbing |
+| `tests/test_registry.sh` | `test_registry_gc_extras` | 377 | 16 assertions re-running the Go extras half through `am-core`; Go `TestGCExtras` says in its own comment that it mirrors this test and is a strict superset | `internal/sessions/maintenance_test.go::TestGCExtras` (sessions log names; `sid-gone.txt` exists), `TestGCHalvesAndGrace`, `TestIsLogCapTemp`; `tests/test_standalone_scripts.sh::test_standalone_status_bar` (`tick prunes a sessions-log entry whose transcript is gone`, `tick sweeps a leaked .sessions-log temp`, `tick stamps .gc_extras_last`); `test_registry_gc` keeps the bash → `am-core gc` plumbing (`test_registry_tmp_guard` was listed here too, but the Batch 2 re-run showed it does not notice a disabled temp sweep: it tests the writer's own signal guard, not GC) |
 | `tests/test_state_hooks.sh` | `test_state_from_hook_reads_file` | 747 | Reads `_state_hook_read` through the test-only shim `_state_from_hook` (`test_helpers.sh:186-190`) | `tests/test_state.sh::test_state` (`_state_hook_read: waiting_user`, `_state_hook_read: background`); `test_state_integration` (`agent_get_state: reads hook file when pane is not shell`) |
 | `tests/test_state_hooks.sh` | `test_state_from_hook_missing_file` | 759 | Same shim | `test_state` (`_state_hook_read: missing file`) |
 | `tests/test_state_hooks.sh` | `test_state_from_hook_stale_file` | 770 | Same shim, 2 assertions | `test_state` (`stale running drops`, `stale file + stale activity drops`, `stale file + empty activity drops`) |
@@ -505,7 +505,8 @@ the removal stands on duplication, not on that mutation.
 **Verify** → three breakages in the extras half of `GC` (the evidence records
 the catchers: the `SessionsLogGC` rule → `TestGCExtras`'s sessions-log names
 and `sid-gone.txt exists`; the leaked-temp sweep → `TestIsLogCapTemp`,
-`test_registry_tmp_guard`; the extras stamp → `test_standalone_status_bar`'s
+`TestGCExtras`, `test_standalone_status_bar`'s `tick sweeps a leaked
+.sessions-log temp`; the extras stamp → `test_standalone_status_bar`'s
 `tick stamps .gc_extras_last` and `tick prunes a sessions-log entry whose
 transcript is gone`). Mutate `ReadRegistry` / `FormatRestorableDisplayBase`
 and expect `TestRegistryRoundTripPreservesKnownAndFutureMetadata` /
@@ -523,6 +524,23 @@ is gone) and expect `TestStoreDispatch` (bare HOME, claude `JSONLExists`),
 `TestStoreDirAndTranscriptPath`,
 `TestRestorableEntriesFollowRelocatedClaudeTranscript` and
 `TestResolveSessionIDSidecarOnly` to fail, plus the merged case itself.
+
+Re-run result (2026-10-05, before the Batch 2 commit): all nine mutations
+(the three GC breakages, `isLogCapTemp`, `ReadRegistry`,
+`FormatRestorableDisplayBase`, `extractContent`'s string branch, the
+`titleWorthy` gate, `claudeStoreSearch` panicking on a missing store root)
+were caught by the named Go tests and status-bar assertions. Two
+attributions were wrong: `test_registry_tmp_guard` stays green with the temp
+sweep disabled (corrected in 3a), and `TestGCHalvesAndGrace` does not notice
+a missing extras stamp (`TestGCExtras` does). The merged missing-directory
+case first stayed green under the store-root panic because the merged test
+had already created a store under its HOME; the case now runs under a fresh
+HOME with no store root, which the panic mutation fails. Of the four other
+tests expected to fail under that mutation, only `TestStoreDispatch` and
+`TestStoreDirAndTranscriptPath` did; the relocation tests all have a store
+root. Bash tests run from a worktree must get `AM_LIB_DIR=<worktree>/lib`,
+or they exec the main checkout's `bin/am-core` and every bash mutation
+result is a false green.
 
 ### Batch 3 — state lab
 

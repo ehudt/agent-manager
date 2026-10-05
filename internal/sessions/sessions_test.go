@@ -53,6 +53,8 @@ func TestFormatDisplay(t *testing.T) {
 	}
 }
 
+// Keep (docs/test-value-plan.md 3c): the only test of FormatDisplayBase's four
+// empty-field branches.
 func TestFormatDisplayDefaults(t *testing.T) {
 	s := TmuxSession{Name: "am-xyz", Activity: 1000}
 	meta := Session{} // empty metadata
@@ -64,19 +66,6 @@ func TestFormatDisplayDefaults(t *testing.T) {
 	}
 }
 
-func TestFormatRestorableDisplayBase(t *testing.T) {
-	log := SessionLogEntry{
-		Directory: "/home/user/my-site",
-		Branch:    "main",
-		AgentType: "claude",
-		Task:      "Fix restore flow",
-	}
-	display := FormatRestorableDisplayBase(log)
-	if display != "my-site/main [claude] Fix restore flow" {
-		t.Errorf("FormatRestorableDisplayBase got: %q", display)
-	}
-}
-
 func TestReadRegistryMissing(t *testing.T) {
 	reg := ReadRegistry("/nonexistent/path.json")
 	if reg.Sessions == nil {
@@ -84,34 +73,6 @@ func TestReadRegistryMissing(t *testing.T) {
 	}
 	if len(reg.Sessions) != 0 {
 		t.Errorf("ReadRegistry should return empty map, got %d entries", len(reg.Sessions))
-	}
-}
-
-func TestReadRegistryValid(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sessions.json")
-
-	reg := Registry{
-		Sessions: map[string]Session{
-			"am-abc": {
-				Name:      "am-abc",
-				Directory: "/tmp/test",
-				Branch:    "dev",
-				AgentType: "claude",
-				Task:      "Test task",
-			},
-		},
-	}
-	data, _ := json.Marshal(reg)
-	os.WriteFile(path, data, 0644)
-
-	got := ReadRegistry(path)
-	if len(got.Sessions) != 1 {
-		t.Fatalf("expected 1 session, got %d", len(got.Sessions))
-	}
-	s := got.Sessions["am-abc"]
-	if s.Task != "Test task" {
-		t.Errorf("expected task 'Test task', got %q", s.Task)
 	}
 }
 
@@ -165,6 +126,8 @@ func registryMetadataDocument(name, task string) map[string]any {
 	}
 }
 
+// Keep (docs/test-value-plan.md 3c): the only test of ReadRegistry's
+// Unmarshal-error branch returning the pre-allocated registry.
 func TestReadRegistryBadJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sessions.json")
@@ -389,6 +352,8 @@ func readJSONDocument(t *testing.T, path string) map[string]any {
 	return document
 }
 
+// Keep (docs/test-value-plan.md 3c): the suite exports every LoadEnv key, so
+// nothing else reaches EnvOr's default branch.
 func TestEnvOr(t *testing.T) {
 	// Unset key should return default
 	os.Unsetenv("__TEST_ENVOR_KEY__")
