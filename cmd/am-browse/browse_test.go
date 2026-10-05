@@ -1,11 +1,14 @@
 package main
 
 import (
+	"io"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ehud-tamir/agent-manager/internal/sessions"
+	"github.com/muesli/termenv"
 )
 
 func TestFuzzyMatch(t *testing.T) {
@@ -287,5 +290,22 @@ func TestCtrlHMovesToInactiveSection(t *testing.T) {
 	got := updated.(model)
 	if got.cursor != 1 {
 		t.Errorf("cursor after Ctrl-H = %d, want 1", got.cursor)
+	}
+}
+
+// The filter cursor is reverse video from the tty renderer: the default
+// renderer probes the captured stdout, sees no colors, and drops it.
+func TestFilterCursorUsesTTYRenderer(t *testing.T) {
+	saved := ttyRenderer
+	defer func() { initStyles(saved) }()
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.ANSI256)
+	initStyles(r)
+
+	m := newModel()
+	m.filter.SetValue("ab")
+	m.filter.SetCursor(1)
+	if view := m.filter.View(); !strings.Contains(view, "\x1b[7m") {
+		t.Errorf("filter view has no reverse-video cursor: %q", view)
 	}
 }

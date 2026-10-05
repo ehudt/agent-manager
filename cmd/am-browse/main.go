@@ -98,11 +98,16 @@ var (
 	keyActionStyle lipgloss.Style
 	separatorStyle lipgloss.Style
 	helpOverlay    lipgloss.Style
+
+	// The renderer the styles come from; newModel builds the filter's
+	// textinput styles from it too.
+	ttyRenderer = lipgloss.DefaultRenderer()
 )
 
 // initStyles creates all styles from a renderer tied to the real tty,
 // so color detection works even when stdout is captured by the caller.
 func initStyles(r *lipgloss.Renderer) {
+	ttyRenderer = r
 	accentStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))                                     // cyan accent bar
 	titleStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))                                      // bright white
 	selectedStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("10")).Background(lipgloss.Color("235")) // green on subtle dark bg
@@ -136,6 +141,13 @@ func newModel() model {
 	ti.Placeholder = "type to filter..."
 	ti.Prompt = "/ "
 	ti.PromptStyle = accentStyle
+	// textinput's own styles come from lipgloss's default renderer, which
+	// probes stdout: captured by the caller, it reports no color support and
+	// the cursor's reverse video is dropped, leaving no visible cursor.
+	ti.Cursor.Style = ttyRenderer.NewStyle()
+	ti.TextStyle = ttyRenderer.NewStyle()
+	ti.PlaceholderStyle = ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
+	ti.CompletionStyle = ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
 	ti.Focus()
 
 	return model{

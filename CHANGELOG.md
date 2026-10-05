@@ -23,6 +23,11 @@ entry unless they changed behaviour a user would notice.
   next frame, and a bracketed paste is inserted as one string with its line
   breaks turned into spaces, so a copied path with a trailing newline no
   longer launches the session halfway through.
+- The session browser's filter shows its cursor. The text input took its
+  styles from lipgloss's default renderer, which probes stdout — captured
+  for the browser's output protocol — found no color support, and dropped
+  the cursor's reverse video; it now uses the `/dev/tty` renderer like the
+  rest of the browser.
 
 ## [0.38.0] - 2026-10-01
 
