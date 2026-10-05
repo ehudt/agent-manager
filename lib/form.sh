@@ -19,6 +19,23 @@ _FORM_HIDE_CURSOR=$'\033[?25l'
 _FORM_SHOW_CURSOR=$'\033[?25h'
 _FORM_BG_NAV=$'\033[48;5;236m'    # dark gray background in navigate mode
 _FORM_BG_EDIT=$'\033[48;5;24m'   # dark blue background in edit mode
+_FORM_PASTE_ON=$'\033[?2004h'     # bracketed paste: a paste arrives as \e[200~ … \e[201~
+_FORM_PASTE_OFF=$'\033[?2004l'
+
+# Terminal width (set by _form_size_to_terminal); long values scroll inside it.
+_FORM_COLS=80
+
+# Input fd on /dev/tty, opened once by _form_run (0 until then).
+_FORM_TTY_FD=0
+
+# Line-editor cursor of the focused text/directory field. _FORM_POS_FIELD and
+# _FORM_POS_VALUE record which field and value the position belongs to: any
+# change made elsewhere (Tab accepting a suggestion, a preset, the prefill)
+# no longer matches, and _form_pos_sync puts the cursor back at the end.
+_FORM_POS=0
+_FORM_POS_FIELD=""
+_FORM_POS_VALUE=""
+_FORM_HSCROLL=0
 
 # Form field definitions (declare -g: stay global when sourced inside a function)
 declare -ga FORM_FIELDS=()
@@ -71,6 +88,10 @@ _form_init() {
     _FORM_OPTIONS_OPEN=false
     _FORM_DIR_HIGHLIGHT=0
     _FORM_DIR_SCROLL_OFFSET=0
+    _FORM_POS=0
+    _FORM_POS_FIELD=""
+    _FORM_POS_VALUE=""
+    _FORM_HSCROLL=0
 
     # Preset picker: only when presets exist, and first so picking one fills
     # the fields below. Field indices for everyone else stay unchanged.
@@ -124,9 +145,12 @@ _form_render_field() {
     case "$type" in
         text|directory)
             if [[ "$focused" == "true" && "$_FORM_MODE" == "edit" ]]; then
-                display="${value}${_FORM_INVERSE} ${_FORM_RESET}"
+                _form_pos_sync
+                _form_value_view "$value" "$_FORM_POS" "$(( _FORM_COLS - 18 ))"
+                display="$_FORM_VIEW"
             else
-                display="$value"
+                _form_value_view "$value" -1 "$(( _FORM_COLS - 18 ))"
+                display="$_FORM_VIEW"
             fi
             ;;
         select)
@@ -155,11 +179,53 @@ _form_render_field() {
         fi
     fi
 
+    local padded
+    printf -v padded '%-14s' "$label:"
     if [[ "$focused" == "true" ]]; then
-        _FORM_BUF+="${prefix}${bg}$(printf '%-14s' "$label:")${_FORM_RESET} ${display}${_FORM_EL}"$'\n'
+        _FORM_BUF+="${prefix}${bg}${padded}${_FORM_RESET} ${display}${_FORM_EL}"$'\n'
     else
-        _FORM_BUF+="${prefix}$(printf '%-14s' "$label:") ${display}${_FORM_EL}"$'\n'
+        _FORM_BUF+="${prefix}${padded} ${display}${_FORM_EL}"$'\n'
     fi
+}
+
+# Fit a field value into <width> columns, into _FORM_VIEW. With pos >= 0 the
+# cell under the cursor is drawn inverse (one past the end when pos is the
+# length) and a value wider than the field scrolls horizontally to keep the
+# cursor in view, `…` marking the hidden side; with pos -1 a long value is
+# cut with a trailing `…`. A field never wraps, which would shift every row
+# below it.
+# Usage: _form_value_view <value> <pos> <width>
+_form_value_view() {
+    local value="$1" pos="$2" width="$3"
+    (( width < 4 )) && width=4
+    local len=${#value}
+
+    if (( pos < 0 )); then
+        if (( len > width )); then
+            _FORM_VIEW="${value:0:width-1}…"
+        else
+            _FORM_VIEW="$value"
+        fi
+        return 0
+    fi
+
+    local cells=$(( len + 1 )) start=0
+    if (( cells > width )); then
+        start=$_FORM_HSCROLL
+        # One cell of margin each side, so a `…` never covers the cursor.
+        (( pos < start + 1 )) && start=$(( pos - 1 ))
+        (( pos > start + width - 2 )) && start=$(( pos - width + 2 ))
+        (( start > cells - width )) && start=$(( cells - width ))
+        (( start < 0 )) && start=0
+    fi
+    _FORM_HSCROLL=$start
+
+    local vis="${value} "
+    vis="${vis:start:width}"
+    (( start > 0 )) && vis="…${vis:1}"
+    (( start + width < cells )) && vis="${vis:0:width-1}…"
+    local rel=$(( pos - start ))
+    _FORM_VIEW="${vis:0:rel}${_FORM_INVERSE}${vis:rel:1}${_FORM_RESET}${vis:rel+1}"
 }
 
 # Load directory suggestions (once, lazily)
@@ -289,39 +355,134 @@ _form_handle_up() {
     fi
 }
 
-# Handle a printable character: append to text/directory fields
-_form_handle_char() {
-    local ch="$1"
+# Attach the line-editor cursor to the focused field: unless it still holds
+# the value the cursor was last placed in, the cursor goes to its end.
+_form_pos_sync() {
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
-    local type="${FORM_TYPES[$name]}"
-
-    case "$type" in
-        text|directory)
-            FORM_VALUES[$name]+="$ch"
-            if [[ "$type" == "directory" ]]; then
-                _FORM_DIR_HIGHLIGHT=0
-                _FORM_DIR_SCROLL_OFFSET=0
-            fi
-            ;;
-    esac
+    local value="${FORM_VALUES[$name]}"
+    if [[ "$name" != "$_FORM_POS_FIELD" || "$value" != "$_FORM_POS_VALUE" ]]; then
+        _FORM_POS=${#value}
+        _FORM_POS_FIELD="$name"
+        _FORM_POS_VALUE="$value"
+        _FORM_HSCROLL=0
+    fi
+    (( _FORM_POS > ${#value} )) && _FORM_POS=${#value}
+    return 0
 }
 
-# Handle backspace: remove last character
-_form_handle_backspace() {
+# Word boundaries for the line editor, into _FORM_WORD_AT. "alnum" words
+# (Alt-B/F/D/Backspace, Ctrl/Alt-arrows) stop at any non-alphanumeric
+# character, so they step through path components; "space" words (Ctrl-W)
+# run to whitespace, as in readline.
+# Usage: _form_word_left <value> <pos> alnum|space
+_form_word_left() {
+    local v="$1" p="$2" kind="$3"
+    local word='[[:alnum:]]'
+    [[ "$kind" == "space" ]] && word='[^[:space:]]'
+    while (( p > 0 )) && [[ ! "${v:p-1:1}" =~ $word ]]; do p=$(( p - 1 )); done
+    while (( p > 0 )) && [[ "${v:p-1:1}" =~ $word ]]; do p=$(( p - 1 )); done
+    _FORM_WORD_AT=$p
+}
+
+# Usage: _form_word_right <value> <pos>
+_form_word_right() {
+    local v="$1" p="$2" len=${#1}
+    while (( p < len )) && [[ ! "${v:p:1}" =~ [[:alnum:]] ]]; do p=$(( p + 1 )); done
+    while (( p < len )) && [[ "${v:p:1}" =~ [[:alnum:]] ]]; do p=$(( p + 1 )); done
+    _FORM_WORD_AT=$p
+}
+
+# Apply one line-editing operation to the focused text/directory field at
+# the cursor. Returns 1 (nothing done) on a select field.
+# Ops: insert <text>, backspace, delete, left, right, home, end, word_left,
+# word_right, kill_word_left (Alt-Backspace), kill_word_right (Alt-D),
+# kill_space_word_left (Ctrl-W), kill_to_start (Ctrl-U), kill_to_end (Ctrl-K).
+# Usage: _form_edit <op> [text]
+_form_edit() {
+    local op="$1" text="${2:-}"
     local name="${FORM_FIELDS[$FORM_CURSOR]}"
     local type="${FORM_TYPES[$name]}"
+    [[ "$type" == "text" || "$type" == "directory" ]] || return 1
 
-    case "$type" in
-        text|directory)
-            local val="${FORM_VALUES[$name]}"
-            if [[ -n "$val" ]]; then
-                FORM_VALUES[$name]="${val%?}"
-                if [[ "$type" == "directory" ]]; then
-                    _FORM_DIR_HIGHLIGHT=0
-                    _FORM_DIR_SCROLL_OFFSET=0
-                fi
-            fi
-            ;;
+    _form_pos_sync
+    local v="${FORM_VALUES[$name]}" p=$_FORM_POS
+    local len=${#v}
+
+    case "$op" in
+        insert)          v="${v:0:p}${text}${v:p}"; p=$(( p + ${#text} )) ;;
+        backspace)       if (( p > 0 )); then v="${v:0:p-1}${v:p}"; p=$(( p - 1 )); fi ;;
+        delete)          if (( p < len )); then v="${v:0:p}${v:p+1}"; fi ;;
+        left)            if (( p > 0 )); then p=$(( p - 1 )); fi ;;
+        right)           if (( p < len )); then p=$(( p + 1 )); fi ;;
+        home)            p=0 ;;
+        end)             p=$len ;;
+        word_left)       _form_word_left "$v" "$p" alnum; p=$_FORM_WORD_AT ;;
+        word_right)      _form_word_right "$v" "$p"; p=$_FORM_WORD_AT ;;
+        kill_word_left)  _form_word_left "$v" "$p" alnum; v="${v:0:_FORM_WORD_AT}${v:p}"; p=$_FORM_WORD_AT ;;
+        kill_space_word_left)
+                         _form_word_left "$v" "$p" space; v="${v:0:_FORM_WORD_AT}${v:p}"; p=$_FORM_WORD_AT ;;
+        kill_word_right) _form_word_right "$v" "$p"; v="${v:0:p}${v:_FORM_WORD_AT}" ;;
+        kill_to_start)   v="${v:p}"; p=0 ;;
+        kill_to_end)     v="${v:0:p}" ;;
+        *)               return 0 ;;
+    esac
+
+    if [[ "$v" != "${FORM_VALUES[$name]}" ]]; then
+        FORM_VALUES[$name]="$v"
+        if [[ "$type" == "directory" ]]; then
+            _FORM_DIR_HIGHLIGHT=0
+            _FORM_DIR_SCROLL_OFFSET=0
+        fi
+    fi
+    _FORM_POS=$p
+    _FORM_POS_VALUE="$v"
+    return 0
+}
+
+# Handle a printable character: insert at the cursor of text/directory fields
+_form_handle_char() {
+    _form_edit insert "$1" || true
+}
+
+# Handle backspace: remove the character before the cursor
+_form_handle_backspace() {
+    _form_edit backspace || true
+}
+
+# Insert pasted text at the cursor (edit mode only). The fields are single
+# lines: trailing line breaks are dropped (a copied path usually ends in
+# one), inner line breaks and tabs become spaces, other control characters
+# are removed.
+# Usage: _form_handle_paste <text>
+_form_handle_paste() {
+    local text="$1"
+    FORM_KEY_RESULT="continue"
+    [[ "$_FORM_MODE" == "edit" ]] || return 0
+    while [[ "$text" == *$'\n' || "$text" == *$'\r' ]]; do text="${text%?}"; done
+    text="${text//$'\r\n'/ }"
+    text="${text//[$'\r\n\t']/ }"
+    text="${text//[[:cntrl:]]/}"
+    [[ -n "$text" ]] || return 0
+    _form_edit insert "$text" || true
+}
+
+# Map the bytes after ESC to a line-editing op (into _FORM_EDIT_OP; empty
+# when the sequence is not an editing key). Covers the xterm/VT encodings of
+# the arrows, Home/End and Delete, their Ctrl/Alt/Cmd-modified forms
+# (1;5 / 1;3 / 1;9), and readline's Alt-letter bindings.
+# Usage: _form_escape_edit_op <seq>
+_form_escape_edit_op() {
+    case "$1" in
+        "[D"|"OD")                          _FORM_EDIT_OP=left ;;
+        "[C"|"OC")                          _FORM_EDIT_OP=right ;;
+        "[H"|"OH"|"[1~"|"[7~")              _FORM_EDIT_OP=home ;;
+        "[F"|"OF"|"[4~"|"[8~")              _FORM_EDIT_OP=end ;;
+        "[3~")                              _FORM_EDIT_OP=delete ;;
+        "[1;3D"|"[1;5D"|"[1;9D"|"Od"|b|B)   _FORM_EDIT_OP=word_left ;;
+        "[1;3C"|"[1;5C"|"[1;9C"|"Oc"|f|F)   _FORM_EDIT_OP=word_right ;;
+        $'\x7f'|$'\b')                      _FORM_EDIT_OP=kill_word_left ;;
+        d|D|"[3;3~"|"[3;5~")                _FORM_EDIT_OP=kill_word_right ;;
+        *)                                  _FORM_EDIT_OP="" ;;
     esac
 }
 
@@ -528,7 +689,12 @@ _form_process_key_edit() {
                         fi
                         FORM_KEY_RESULT="continue"
                         ;;
-                    *) FORM_KEY_RESULT="continue" ;;
+                    *)
+                        # Cursor movement and word deletion
+                        _form_escape_edit_op "$extra"
+                        [[ -n "$_FORM_EDIT_OP" ]] && { _form_edit "$_FORM_EDIT_OP" || true; }
+                        FORM_KEY_RESULT="continue"
+                        ;;
                 esac
             fi
             ;;
@@ -539,6 +705,24 @@ _form_process_key_edit() {
             ;;
         $'\x7f'|$'\b')
             _form_handle_backspace
+            FORM_KEY_RESULT="continue"
+            ;;
+        $'\x01'|$'\x05'|$'\x02'|$'\x06'|$'\x04'|$'\x0b'|$'\x15'|$'\x17')
+            # readline/emacs line editing: Ctrl-A/E home/end, Ctrl-B/F
+            # left/right, Ctrl-D delete, Ctrl-K/U kill to end/start, Ctrl-W
+            # kill the previous word.
+            local _edit_op
+            case "$key" in
+                $'\x01') _edit_op=home ;;
+                $'\x05') _edit_op=end ;;
+                $'\x02') _edit_op=left ;;
+                $'\x06') _edit_op=right ;;
+                $'\x04') _edit_op=delete ;;
+                $'\x0b') _edit_op=kill_to_end ;;
+                $'\x15') _edit_op=kill_to_start ;;
+                $'\x17') _edit_op=kill_space_word_left ;;
+            esac
+            _form_edit "$_edit_op" || true
             FORM_KEY_RESULT="continue"
             ;;
         $'\t')
@@ -616,9 +800,11 @@ _FORM_DIR_FILTER_MAX=50
 # directory field + suggestions + 2 padding rows must stay above the bottom
 # row, or the trailing newline scrolls the popup.
 _form_size_to_terminal() {
-    local rows=""
+    local rows="" cols=""
     rows=$(stty size < /dev/tty 2>/dev/null) || return 0
+    cols="${rows##* }"
     rows="${rows%% *}"
+    [[ "$cols" =~ ^[0-9]+$ ]] && _FORM_COLS=$cols
     [[ "$rows" =~ ^[0-9]+$ ]] || return 0
     if (( rows - 7 > _FORM_DIR_SUGGESTION_LINES )); then
         _FORM_DIR_SUGGESTION_LINES=$(( rows - 7 ))
@@ -630,18 +816,18 @@ _FORM_CONTENT_ROW=4
 
 # Draw a stage-specific header.
 _form_draw_header() {
-    printf '%s' "${_FORM_CUP_PREFIX}0;0H" > /dev/tty
+    local hdr="${_FORM_CUP_PREFIX}0;0H"
     if [[ "$_FORM_OPTIONS_OPEN" == "false" ]]; then
-        printf '%s  New Session%s\n' "${_FORM_BOLD}" "${_FORM_RESET}" > /dev/tty
-        printf '  Enter: launch %s  Ctrl-L: Claude  Ctrl-X: Codex%s\n' \
-            "${FORM_VALUES[agent]}" "${_FORM_EL}" > /dev/tty
-        printf '  Ctrl-R: Cursor  Ctrl-P: Pi  Tab: options  Esc: cancel%s\n' "${_FORM_EL}" > /dev/tty
+        hdr+="${_FORM_BOLD}  New Session${_FORM_RESET}${_FORM_EL}"$'\n'
+        hdr+="  Enter: launch ${FORM_VALUES[agent]}  Ctrl-L: Claude  Ctrl-X: Codex${_FORM_EL}"$'\n'
+        hdr+="  Ctrl-R: Cursor  Ctrl-P: Pi  Tab: options  Esc: cancel${_FORM_EL}"$'\n'
     else
-        printf '%s  New Session — Options%s\n' "${_FORM_BOLD}" "${_FORM_RESET}" > /dev/tty
-        printf '  ↑↓: move  ←→/Space: change  Enter: edit/launch%s\n' "${_FORM_EL}" > /dev/tty
-        printf '  Ctrl-S: launch  Esc: back%s\n' "${_FORM_EL}" > /dev/tty
+        hdr+="${_FORM_BOLD}  New Session — Options${_FORM_RESET}${_FORM_EL}"$'\n'
+        hdr+="  ↑↓: move  ←→/Space: change  Enter: edit/launch${_FORM_EL}"$'\n'
+        hdr+="  Ctrl-S: launch  Esc: back${_FORM_EL}"$'\n'
     fi
-    printf '%s\n' "${_FORM_EL}" > /dev/tty
+    hdr+="${_FORM_EL}"$'\n'
+    printf '%s' "$hdr" > /dev/tty
 }
 
 # Draw the form fields to /dev/tty (not stdout, which may be captured by $()).
@@ -745,35 +931,35 @@ _form_draw() {
 # All rendering and input go through /dev/tty so this works inside $() capture.
 _form_run() {
     _form_size_to_terminal
-    printf '%s' "${_FORM_HIDE_CURSOR}" > /dev/tty
     # Use smcup via tput (only called once, not per-frame)
     tput smcup > /dev/tty 2>/dev/null || true
+    printf '%s%s' "${_FORM_HIDE_CURSOR}" "${_FORM_PASTE_ON}" > /dev/tty
     trap '_form_cleanup' EXIT INT TERM
 
-    # Disable XON/XOFF flow control so Ctrl-S reaches us
+    # Echo stays off for the whole form, not just inside each read: keys that
+    # arrive while a frame is drawn (a paste) were echoed by the terminal
+    # wherever the draw had left the cursor, scribbling over the header.
+    # Non-canonical so Ctrl-U / Ctrl-W reach the editor; -ixon so Ctrl-S
+    # does, -iexten so Ctrl-O / Ctrl-V do.
     local _form_old_stty
     _form_old_stty=$(stty -g < /dev/tty 2>/dev/null) || true
-    stty -ixon < /dev/tty 2>/dev/null || true
+    stty -ixon -echo -icanon -iexten min 1 time 0 < /dev/tty 2>/dev/null || true
+    exec {_FORM_TTY_FD}</dev/tty
 
     while true; do
         _form_draw_header
         _form_draw
 
-        local key=""
-        IFS= read -rsn1 key < /dev/tty
-
-        if [[ "$key" == $'\x1b' ]]; then
-            local seq=""
-            IFS= read -rsn1 -t 0.05 seq < /dev/tty || true
-            if [[ -n "$seq" ]]; then
-                local seq2=""
-                IFS= read -rsn1 -t 0.05 seq2 < /dev/tty || true
-                seq+="$seq2"
-            fi
-            _form_process_key "$key" "$seq"
-        else
-            _form_process_key "$key"
+        if ! _form_read_input; then
+            _form_cleanup
+            return 1
         fi
+        # Handle everything already typed before the next frame: a paste
+        # without bracketed-paste markers is a burst of keys, and a redraw
+        # (plus a provider suggest call) per character made it crawl.
+        while [[ "$FORM_KEY_RESULT" == "continue" ]] && read -t 0 -u "$_FORM_TTY_FD" 2>/dev/null; do
+            _form_read_input || break
+        done
 
         case "$FORM_KEY_RESULT" in
             submit) break ;;
@@ -789,9 +975,99 @@ _form_run() {
 }
 
 _form_cleanup_screen() {
-    { tput rmcup 2>/dev/null || true; printf '%s' "${_FORM_SHOW_CURSOR}"; } > /dev/tty
-    # Restore terminal settings (XON/XOFF)
+    { printf '%s' "${_FORM_PASTE_OFF}"; tput rmcup 2>/dev/null || true; printf '%s' "${_FORM_SHOW_CURSOR}"; } > /dev/tty
+    # Restore terminal settings (echo, canonical mode, XON/XOFF)
     [[ -n "${_form_old_stty:-}" ]] && stty "$_form_old_stty" < /dev/tty 2>/dev/null || true
+    if (( _FORM_TTY_FD > 2 )); then
+        exec {_FORM_TTY_FD}<&-
+        _FORM_TTY_FD=0
+    fi
+    return 0
+}
+
+# Read one key from the tty and dispatch it to _form_process_key. ESC
+# starts a sequence when more bytes follow within 50ms: CSI (`[` … final
+# byte 0x40-0x7E, so `[1;5D` and `[3~` arrive whole), SS3 (`O` + one byte),
+# or Alt+key (the key byte). ESC ESC + sequence is Alt+arrow on some
+# terminals. A bracketed paste (`[200~` … ESC `[201~`) is read in one go and
+# inserted as text, never interpreted as keys. Returns 1 at end of input.
+_form_read_input() {
+    local fd="$_FORM_TTY_FD" key="" ch="" seq="" ord=0 alt=false
+    if ! IFS= read -rsn1 -u "$fd" key; then
+        [[ -n "$key" ]] || return 1
+    fi
+    if [[ "$key" != $'\x1b' ]]; then
+        _form_process_key "$key"
+        return 0
+    fi
+
+    IFS= read -rsn1 -t 0.05 -u "$fd" ch || ch=""
+    if [[ "$ch" == $'\x1b' ]]; then
+        alt=true
+        IFS= read -rsn1 -t 0.05 -u "$fd" ch || ch=""
+    fi
+    case "$ch" in
+        "[")
+            seq="["
+            while IFS= read -rsn1 -t 0.05 -u "$fd" ch; do
+                seq+="$ch"
+                printf -v ord '%d' "'$ch"
+                if (( ord >= 64 && ord <= 126 )); then break; fi
+            done
+            ;;
+        O)
+            seq="O"
+            if IFS= read -rsn1 -t 0.05 -u "$fd" ch; then seq+="$ch"; fi
+            ;;
+        *)
+            seq="$ch"
+            ;;
+    esac
+    if [[ "$alt" == "true" ]]; then
+        case "$seq" in
+            "[C"|"OC") seq="[1;3C" ;;
+            "[D"|"OD") seq="[1;3D" ;;
+        esac
+    fi
+
+    if [[ "$seq" == "[200~" ]]; then
+        _form_read_paste "$fd"
+        _form_handle_paste "$_FORM_PASTE"
+        return 0
+    fi
+    _form_process_key $'\x1b' "$seq"
+}
+
+# Read a bracketed paste body up to its closing ESC [201~ into _FORM_PASTE.
+# An ESC inside the pasted text is kept. Gives up after 2s without input so
+# a terminal that never sends the closing marker cannot hang the form.
+# Usage: _form_read_paste <fd>
+_form_read_paste() {
+    local fd="$1" chunk="" c="" got="" marker="[201~" rc i
+    _FORM_PASTE=""
+    while true; do
+        rc=0
+        IFS= read -rs -d $'\x1b' -t 2 -u "$fd" chunk || rc=$?
+        _FORM_PASTE+="$chunk"
+        (( rc == 0 )) || return 0
+        # After an ESC: the end marker, or text that merely contains an ESC.
+        # Match byte by byte so a mismatch never swallows the real marker.
+        while true; do
+            got=""
+            for ((i = 0; i < ${#marker}; i++)); do
+                c=""
+                IFS= read -rsn1 -d '' -t 0.1 -u "$fd" c || break
+                [[ "$c" == "${marker:i:1}" ]] || break
+                got+="$c"
+            done
+            [[ "$got" == "$marker" ]] && return 0
+            _FORM_PASTE+=$'\x1b'"$got"
+            # The mismatching byte may itself be the ESC that starts the marker.
+            [[ "$c" == $'\x1b' ]] && continue
+            _FORM_PASTE+="$c"
+            break
+        done
+    done
 }
 
 _form_cleanup() {

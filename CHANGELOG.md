@@ -6,6 +6,24 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.38.1] - 2026-10-05
+
+- The new-session form's text fields (Directory, Task) are line editors:
+  a movable cursor, Left/Right, Home/End, Delete, word jumps
+  (Alt-B/F, Ctrl/Alt/Cmd-arrows), word deletion (Ctrl-W back to whitespace,
+  Alt-Backspace / Alt-D by word, which steps through path components), and
+  Ctrl-A/E/B/F/D/K/U. Typing used to append only and Backspace to drop the
+  last character. A value wider than the popup scrolls inside its row
+  instead of wrapping.
+- Pasting into the form is fast and no longer garbles the header. The
+  terminal echoed keys that arrived while a frame was being drawn over
+  whatever row the draw had reached (`New Sessionnnnn…`), and every pasted
+  character cost a full redraw (plus a `dir_provider` call for an `@spec`).
+  Echo now stays off for the whole form, queued keys are handled before the
+  next frame, and a bracketed paste is inserted as one string with its line
+  breaks turned into spaces, so a copied path with a trailing newline no
+  longer launches the session halfway through.
+
 ## [0.38.0] - 2026-10-01
 
 - `am restore` survives a checkout that moved on. Pooled working copies

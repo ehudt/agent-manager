@@ -628,8 +628,244 @@ test_form_provider() {
     $SUMMARY_MODE || echo ""
 }
 
+test_form_line_editing() {
+    $SUMMARY_MODE || echo "=== Testing form line editing ==="
+
+    source "$LIB_DIR/utils.sh"
+    set +u
+    source "$LIB_DIR/config.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    source "$LIB_DIR/agents.sh"
+    source "$LIB_DIR/form.sh"
+    set -u
+    unset AM_DIR_PROVIDER
+    setup_isolated_am_dir
+    am_config_init
+
+    _form_init "/tmp" "claude" "fix the bug"
+    _FORM_OPTIONS_OPEN=true
+    _FORM_MODE="edit"
+    FORM_CURSOR=2  # task
+
+    # The cursor starts at the end of a prefilled value
+    _form_pos_sync
+    assert_eq "11" "$_FORM_POS" "line edit: cursor starts at the end"
+
+    # Left arrow + insert lands mid-value
+    _form_process_key $'\x1b' "[D"
+    _form_process_key $'\x1b' "[D"
+    _form_process_key $'\x1b' "[D"
+    _form_process_key "X"
+    assert_eq "fix the Xbug" "${FORM_VALUES[task]}" "line edit: insert at the cursor"
+    assert_eq "9" "$_FORM_POS" "line edit: cursor follows the insert"
+
+    # Backspace deletes before the cursor, Delete at it
+    _form_process_key $'\x7f'
+    assert_eq "fix the bug" "${FORM_VALUES[task]}" "line edit: backspace before the cursor"
+    _form_process_key $'\x1b' "[3~"
+    assert_eq "fix the ug" "${FORM_VALUES[task]}" "line edit: delete at the cursor"
+    _form_process_key $'\x04'
+    assert_eq "fix the g" "${FORM_VALUES[task]}" "line edit: ctrl-d deletes at the cursor"
+
+    # Home / End in every encoding
+    local seq
+    for seq in "[H" "OH" "[1~" "[7~"; do
+        _form_edit end
+        _form_process_key $'\x1b' "$seq"
+        assert_eq "0" "$_FORM_POS" "line edit: home ($seq)"
+    done
+    for seq in "[F" "OF" "[4~" "[8~"; do
+        _form_edit home
+        _form_process_key $'\x1b' "$seq"
+        assert_eq "9" "$_FORM_POS" "line edit: end ($seq)"
+    done
+    _form_process_key $'\x01'
+    assert_eq "0" "$_FORM_POS" "line edit: ctrl-a goes home"
+    _form_process_key $'\x06'
+    assert_eq "1" "$_FORM_POS" "line edit: ctrl-f moves right"
+    _form_process_key $'\x02'
+    assert_eq "0" "$_FORM_POS" "line edit: ctrl-b moves left"
+    _form_process_key $'\x1b' "[D"
+    assert_eq "0" "$_FORM_POS" "line edit: left clamps at 0"
+    _form_process_key $'\x05'
+    assert_eq "9" "$_FORM_POS" "line edit: ctrl-e goes to the end"
+    _form_process_key $'\x1b' "[C"
+    assert_eq "9" "$_FORM_POS" "line edit: right clamps at the end"
+
+    # Word movement: Alt-B/F, Alt/Ctrl/Cmd-arrows
+    FORM_VALUES[task]="one two-three  four"
+    _form_pos_sync
+    for seq in "b" "[1;3D" "[1;5D" "[1;9D"; do
+        _form_edit end
+        _form_process_key $'\x1b' "$seq"
+        assert_eq "15" "$_FORM_POS" "line edit: word left ($seq)"
+    done
+    _form_process_key $'\x1b' "b"
+    assert_eq "8" "$_FORM_POS" "line edit: word left stops at punctuation"
+    for seq in "f" "[1;3C" "[1;5C" "[1;9C"; do
+        _form_edit home
+        _form_process_key $'\x1b' "$seq"
+        assert_eq "3" "$_FORM_POS" "line edit: word right ($seq)"
+    done
+    _form_process_key $'\x1b' "f"
+    assert_eq "7" "$_FORM_POS" "line edit: word right stops at punctuation"
+
+    # Word deletion
+    FORM_VALUES[task]="cd ~/code/agent-manager"
+    _form_pos_sync
+    _form_process_key $'\x1b' $'\x7f'
+    assert_eq "cd ~/code/agent-" "${FORM_VALUES[task]}" "line edit: alt-backspace kills one path component"
+    _form_process_key $'\x17'
+    assert_eq "cd " "${FORM_VALUES[task]}" "line edit: ctrl-w kills back to whitespace"
+    FORM_VALUES[task]="alpha beta gamma"
+    _form_pos_sync
+    _form_edit home
+    _form_process_key $'\x1b' "d"
+    assert_eq " beta gamma" "${FORM_VALUES[task]}" "line edit: alt-d kills the next word"
+    assert_eq "0" "$_FORM_POS" "line edit: alt-d keeps the cursor"
+
+    # Kill to start / end
+    FORM_VALUES[task]="alpha beta gamma"
+    _form_pos_sync
+    _form_process_key $'\x1b' "b"
+    _form_process_key $'\x15'
+    assert_eq "gamma" "${FORM_VALUES[task]}" "line edit: ctrl-u kills to the start"
+    assert_eq "0" "$_FORM_POS" "line edit: ctrl-u leaves the cursor at 0"
+    _form_process_key $'\x1b' "f"
+    _form_process_key $'\x1b' "b"
+    _form_process_key $'\x06'
+    _form_process_key $'\x0b'
+    assert_eq "g" "${FORM_VALUES[task]}" "line edit: ctrl-k kills to the end"
+
+    # A value replaced from outside puts the cursor back at its end
+    _form_edit home
+    FORM_VALUES[task]="replaced"
+    _form_process_key "!"
+    assert_eq "replaced!" "${FORM_VALUES[task]}" "line edit: outside change resets the cursor to the end"
+
+    # Editing keys never touch a select field
+    FORM_CURSOR=1
+    FORM_VALUES[agent]="claude"
+    _form_process_key $'\x15'
+    _form_process_key $'\x1b' "[1;3D"
+    assert_eq "claude" "${FORM_VALUES[agent]}" "line edit: select field untouched"
+
+    # Directory field: cursor keys move within the text, edits reset the highlight
+    _form_init "/tmp" "claude" ""
+    FORM_VALUES[directory]="/tmp/pro"
+    _FORM_DIR_SUGGESTIONS=("/tmp/project1" "/tmp/project2")
+    _FORM_DIR_SUGGESTIONS_LOADED=true
+    _FORM_DIR_HIGHLIGHT=1
+    _form_process_key $'\x1b' "[D"
+    assert_eq "1" "$_FORM_DIR_HIGHLIGHT" "line edit: cursor move keeps the suggestion highlight"
+    _form_process_key $'\x1b' $'\x7f'
+    assert_eq "/tmp/o" "${FORM_VALUES[directory]}" "line edit: word kill in the directory field"
+    assert_eq "0" "$_FORM_DIR_HIGHLIGHT" "line edit: an edit resets the suggestion highlight"
+
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing form rendering with a cursor ==="
+
+    _form_init "/tmp" "claude" "abc"
+    _FORM_OPTIONS_OPEN=true
+    _FORM_MODE="edit"
+    FORM_CURSOR=2
+    _form_edit left
+    _FORM_BUF=""
+    _form_render_field "task" "true"
+    assert_contains "$_FORM_BUF" "ab"$'\033[7m'"c"$'\033[0m' "render: inverse cell sits on the cursor"
+
+    # A value wider than the field scrolls instead of wrapping
+    _FORM_COLS=40   # 22 cells for the value
+    FORM_VALUES[task]="0123456789abcdefghijklmnopqrstuvwxyz"
+    _form_pos_sync
+    _form_value_view "${FORM_VALUES[task]}" "$_FORM_POS" 22
+    local plain="${_FORM_VIEW//$'\033[7m'/}"
+    plain="${plain//$'\033[0m'/}"
+    assert_eq "22" "${#plain}" "render: scrolled view fills the field exactly"
+    assert_eq "…" "${plain:0:1}" "render: left marker when the start is hidden"
+    assert_contains "$plain" "xyz " "render: cursor end in view"
+    _form_edit home
+    _form_value_view "${FORM_VALUES[task]}" "$_FORM_POS" 22
+    plain="${_FORM_VIEW//$'\033[7m'/}"
+    plain="${plain//$'\033[0m'/}"
+    assert_eq "0123456789abcdefghijk…" "$plain" "render: home scrolls back, right marker"
+    _form_value_view "${FORM_VALUES[task]}" -1 22
+    assert_eq "0123456789abcdefghijk…" "$_FORM_VIEW" "render: unfocused long value is cut"
+
+    $SUMMARY_MODE || echo ""
+    $SUMMARY_MODE || echo "=== Testing form input reader and paste ==="
+
+    local inp="$AM_DIR/form_input"
+    _form_init "/tmp" "claude" ""
+    _FORM_OPTIONS_OPEN=true
+    _FORM_MODE="edit"
+    FORM_CURSOR=2
+
+    # Bracketed paste: inserted at the cursor as text, line breaks flattened,
+    # trailing newline dropped, keys inside not interpreted
+    FORM_VALUES[task]="ab"
+    _form_pos_sync
+    _form_edit left
+    printf '\033[200~line one\nline\ttwo\x01\n\033[201~' > "$inp"
+    exec {_FORM_TTY_FD}<"$inp"
+    _form_read_input
+    exec {_FORM_TTY_FD}<&-
+    assert_eq "aline one line twob" "${FORM_VALUES[task]}" "paste: inserted at the cursor, flattened"
+    assert_eq "continue" "$FORM_KEY_RESULT" "paste: does not submit"
+    assert_eq "18" "$_FORM_POS" "paste: cursor after the pasted text"
+
+    # An ESC inside the paste is kept as text
+    FORM_VALUES[task]=""
+    printf '\033[200~a\033b\033[201~' > "$inp"
+    exec {_FORM_TTY_FD}<"$inp"
+    _form_read_input
+    exec {_FORM_TTY_FD}<&-
+    assert_eq "ab" "${FORM_VALUES[task]}" "paste: embedded ESC does not end the paste (control chars dropped)"
+
+    # Paste outside edit mode is ignored
+    _FORM_MODE="navigate"
+    FORM_VALUES[task]=""
+    printf '\033[200~xyz\033[201~' > "$inp"
+    exec {_FORM_TTY_FD}<"$inp"
+    _form_read_input
+    exec {_FORM_TTY_FD}<&-
+    assert_eq "" "${FORM_VALUES[task]}" "paste: ignored in navigate mode"
+    _FORM_MODE="edit"
+
+    # Multi-byte CSI sequences arrive whole
+    FORM_VALUES[task]="one two"
+    _form_pos_sync
+    printf '\033[1;5D' > "$inp"
+    exec {_FORM_TTY_FD}<"$inp"
+    _form_read_input
+    exec {_FORM_TTY_FD}<&-
+    assert_eq "4" "$_FORM_POS" "reader: ctrl-left read as one sequence"
+    printf '\033[3~' > "$inp"
+    exec {_FORM_TTY_FD}<"$inp"
+    _form_read_input
+    exec {_FORM_TTY_FD}<&-
+    assert_eq "one wo" "${FORM_VALUES[task]}" "reader: delete key read as one sequence"
+    printf '\033\033[D' > "$inp"
+    _form_edit end
+    exec {_FORM_TTY_FD}<"$inp"
+    _form_read_input
+    exec {_FORM_TTY_FD}<&-
+    assert_eq "4" "$_FORM_POS" "reader: ESC ESC [D is alt-left"
+    printf '\033' > "$inp"
+    exec {_FORM_TTY_FD}<"$inp"
+    _form_read_input
+    exec {_FORM_TTY_FD}<&-
+    assert_eq "navigate" "$_FORM_MODE" "reader: lone ESC is escape"
+    _FORM_TTY_FD=0
+
+    teardown_isolated_am_dir
+    $SUMMARY_MODE || echo ""
+}
+
 run_form_tests() {
     _run_test test_form_core
+    _run_test test_form_line_editing
     _run_test test_form_provider
     _run_test test_form_loop
     _run_test test_form_modes
