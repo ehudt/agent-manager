@@ -11,7 +11,7 @@ Use `/babysitter:call` to orchestrate complex, multi-step workflows for this pro
 **Recommended processes**:
 - `cli-unit-integration-testing` -- unit and integration tests for CLI commands
 - `shell-script-development` -- structured shell script implementation
-- `interactive-form-implementation` -- tput/fzf form features
+- `interactive-form-implementation` -- new-session form features (Go, bubbletea, in `cmd/am-browse`)
 - `error-handling-user-feedback` -- user-facing error paths and messages
 
 **Recommended skills**:

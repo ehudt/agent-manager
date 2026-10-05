@@ -23,6 +23,13 @@ var (
 	killCmd    string
 	clientName string
 	benchmark  bool
+
+	// --new: run only the new-session form (am new with no arguments). The
+	// prefill flags seed its fields.
+	newOnly  bool
+	newDir   string
+	newAgent string
+	newTask  string
 )
 
 func init() {
@@ -30,6 +37,10 @@ func init() {
 	flag.StringVar(&killCmd, "kill-cmd", "", "Script to run for kill (ctrl-x)")
 	flag.StringVar(&clientName, "client-name", "", "tmux client name (for kill-and-switch)")
 	flag.BoolVar(&benchmark, "benchmark", false, "Print time-to-first-frame and exit")
+	flag.BoolVar(&newOnly, "new", false, "Show only the new-session form")
+	flag.StringVar(&newDir, "dir", "", "Prefill the form's directory")
+	flag.StringVar(&newAgent, "agent", "", "Prefill the form's agent type")
+	flag.StringVar(&newTask, "task", "", "Prefill the form's task")
 }
 
 func main() {
@@ -58,6 +69,9 @@ func main() {
 	initStyles(lipgloss.NewRenderer(tty))
 
 	m := newModel()
+	if newOnly {
+		m.openForm(newDir, newAgent, newTask, true)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(tty))
 
 	result, err := p.Run()
@@ -100,7 +114,13 @@ var (
 	separatorStyle lipgloss.Style
 	helpOverlay    lipgloss.Style
 
-	// The renderer the styles come from; newModel builds the filter's
+	// New-session form (newform.go)
+	formLabelEditStyle lipgloss.Style // focused label while editing
+	formLabelNavStyle  lipgloss.Style // focused label while navigating
+	formSelectedStyle  lipgloss.Style // the chosen option of a select field
+	formErrorStyle     lipgloss.Style
+
+	// The renderer the styles come from; newModel and the form build their
 	// textinput styles from it too.
 	ttyRenderer = lipgloss.DefaultRenderer()
 )
@@ -118,6 +138,10 @@ func initStyles(r *lipgloss.Renderer) {
 	keyActionStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                             // dim
 	separatorStyle = r.NewStyle().Foreground(lipgloss.Color("8"))
 	helpOverlay = r.NewStyle().Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
+	formLabelEditStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))                                // blue: editing
+	formLabelNavStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))                                  // gray: navigating
+	formSelectedStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("14")) // black on cyan
+	formErrorStyle = r.NewStyle().Foreground(lipgloss.Color("9"))                                                // red
 }
 
 // --- Model ---
@@ -135,6 +159,16 @@ type model struct {
 	height      int
 	output      string // what to print on exit
 	loading     bool
+	form        *newForm // the new-session form while it is open (Ctrl-N, --new)
+}
+
+// openForm shows the new-session form over the list. standalone (--new)
+// makes Esc quit the program instead of returning to the list.
+func (m *model) openForm(dir, agent, task string, standalone bool) {
+	env := sessions.LoadEnv()
+	f := newNewForm(sessions.LoadConfig(env.AmDir), env.AmDir, env.Home, dir, agent, task, standalone)
+	f.width, f.height = m.width, m.height
+	m.form = &f
 }
 
 func newModel() model {
@@ -161,6 +195,9 @@ func newModel() model {
 }
 
 func (m model) Init() tea.Cmd {
+	if m.form != nil && m.form.standalone {
+		return m.form.init()
+	}
 	return loadSessions
 }
 
@@ -240,6 +277,37 @@ func killSession(sessionName string) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// The form owns every message while it is open, except the size (which
+	// both screens need) and the list reload that may land underneath it.
+	if m.form != nil {
+		switch msg := msg.(type) {
+		case tea.WindowSizeMsg:
+			m.width, m.height = msg.Width, msg.Height
+		case sessionsLoadedMsg:
+			m.entries = msg.entries
+			m.loading = false
+			m.applyFilter()
+			return m, nil
+		case recoveryTickMsg, previewLoadedMsg, killDoneMsg:
+			return m, nil
+		}
+		f, cmd, res := m.form.update(msg)
+		switch res {
+		case formSubmit:
+			m.output = f.output
+			return m, tea.Quit
+		case formCancel:
+			if f.standalone {
+				m.output = ""
+				return m, tea.Quit
+			}
+			m.form = nil
+			return m, m.requestPreview()
+		}
+		m.form = &f
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -301,8 +369,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyCtrlN:
-			m.output = "__NEW__"
-			return m, tea.Quit
+			m.openForm("", "", "", false)
+			return m, m.form.init()
 
 		case tea.KeyCtrlH:
 			if m.moveToFirstKind(sessions.EntryInactive) {
@@ -604,6 +672,9 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
+	if m.form != nil {
+		return m.form.view()
+	}
 
 	var b strings.Builder
 
@@ -832,7 +903,7 @@ func helpText() string {
     Up/Down     Move selection
     Enter       Open, restore, or retry selected session
     Esc/q       Exit without action
-    Ctrl-N      Create new session
+    Ctrl-N      New session form (Esc returns here)
     Ctrl-X      Kill active or forget blocked session
     Ctrl-R      Refresh session list
     ?           Show this help

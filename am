@@ -15,7 +15,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.38.1"
+AM_VERSION="0.39.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -241,9 +241,8 @@ source "$AM_LIB_DIR/agents.sh"
 source "$AM_LIB_DIR/fzf.sh"
 source "$AM_LIB_DIR/presets.sh"
 
-# Lazy-loaders: state.sh, form.sh and doctor.sh are deferred for faster startup
+# Lazy-loaders: state.sh and doctor.sh are deferred for faster startup
 _ensure_state() { [[ "$(type -t agent_get_state)" == "function" ]] || source "$AM_LIB_DIR/state.sh"; }
-_ensure_form() { [[ "$(type -t _form_run)" == "function" ]] || source "$AM_LIB_DIR/form.sh"; }
 _ensure_doctor() { _ensure_state; [[ "$(type -t doctor_main)" == "function" ]] || source "$AM_LIB_DIR/doctor.sh"; }
 _ensure_review() { [[ "$(type -t review_diff_main)" == "function" ]] || source "$AM_LIB_DIR/review.sh"; }
 
@@ -888,16 +887,20 @@ cmd_new() {
         _cmd_new_apply_preset "$preset_name" true || return 1
     fi
 
-    # Directory-first launcher for fully interactive new-session creation
+    # Directory-first launcher for fully interactive new-session creation:
+    # the new-session form of am-browse, alone (`--new`). It prints one
+    # __NEW_SESSION__<US>directory<US>agent<US>flags<US>task line, or nothing
+    # when cancelled.
     if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && ${#agent_args[@]} -eq 0 ]]; then
-        _ensure_form
-        local form_values flags
-        if ! form_values=$(am_new_session_form "$directory" "$(am_default_agent)" "$task"); then
+        local browse_cmd form_values flags _tag
+        browse_cmd=$(fzf_browse_bin) || return 1
+        form_values=$("$browse_cmd" --new --dir "$directory" --agent "$(am_default_agent)" --task "$task") || return 1
+        if [[ "$form_values" != $'__NEW_SESSION__\x1f'* ]]; then
             log_info "Cancelled"
             return 0
         fi
 
-        IFS=$'\x1f' read -r directory agent_type task flags <<< "$form_values"
+        IFS=$'\x1f' read -r _tag directory agent_type flags task <<< "$form_values"
         launch_source=form
         # shellcheck disable=SC2206
         agent_args=($flags)

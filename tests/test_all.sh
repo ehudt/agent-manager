@@ -170,7 +170,7 @@ run_go_tests() {
 # Worker plan — balanced by measured runtime
 #
 # Solo times (ms):
-#   utils=393 config=437 form=441 fzf=419 install=636
+#   utils=393 config=437 fzf=419 install=636
 #   registry=2486 tmux=1108 agents=7490 state=7632
 #   cli=6980 bin_helpers=4768 standalone_scripts=5028
 #
@@ -183,7 +183,7 @@ run_go_tests() {
 # ============================================
 
 WORKER_PLAN=(
-    "1:run_utils_tests run_config_tests run_form_tests run_presets_tests run_fzf_tests run_install_tests run_state_hooks_tests"
+    "1:run_utils_tests run_config_tests run_presets_tests run_fzf_tests run_install_tests run_state_hooks_tests"
     "2:run_registry_tests run_tmux_tests run_recovery_tests"
     "3:run_agents_tests"
     "4:run_state_tests run_state_lab_tests run_doctor_tests"

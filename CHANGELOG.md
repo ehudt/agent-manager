@@ -6,28 +6,40 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
-## [0.38.1] - 2026-10-05
+## [0.39.0] - 2026-10-05
 
-- The new-session form's text fields (Directory, Task) are line editors:
-  a movable cursor, Left/Right, Home/End, Delete, word jumps
-  (Alt-B/F, Ctrl/Alt/Cmd-arrows), word deletion (Ctrl-W back to whitespace,
-  Alt-Backspace / Alt-D by word, which steps through path components), and
+- The new-session form is part of the session browser (Go) instead of a
+  bash/tput script. `Ctrl-N` opens it in place and `Esc` returns to the
+  list (it used to quit the browser and start a second program); `am new`
+  with no arguments runs the same form alone (`am-browse --new`). The two
+  stages are unchanged — directory-first launcher with `Enter` / `Ctrl-S` /
+  `Ctrl-L,X,R,P,O` and `Tab` for the options (Preset, Directory, Agent,
+  Task) — and so is what reaches `am`: `--preset=<name>` still carries a
+  preset's agent args and shell flag. `lib/form.sh` and its tests are gone;
+  `cmd/am-browse/newform_test.go` covers the form.
+- The form's text fields (Directory, Task) are real line editors: a
+  movable cursor, Left/Right, Home/End, Delete, word jumps (Alt-B/F,
+  Ctrl/Alt-arrows), word deletion (Ctrl-W, Alt-Backspace / Alt-D), and
   Ctrl-A/E/B/F/D/K/U. Typing used to append only and Backspace to drop the
-  last character. A value wider than the popup scrolls inside its row
-  instead of wrapping.
-- Pasting into the form is fast and no longer garbles the header. The
-  terminal echoed keys that arrived while a frame was being drawn over
+  last character.
+- Pasting into the form is instant and no longer garbles the header. The
+  bash form echoed keys that arrived while a frame was being drawn over
   whatever row the draw had reached (`New Sessionnnnn…`), and every pasted
   character cost a full redraw (plus a `dir_provider` call for an `@spec`).
-  Echo now stays off for the whole form, queued keys are handled before the
-  next frame, and a bracketed paste is inserted as one string with its line
-  breaks turned into spaces, so a copied path with a trailing newline no
+  A bracketed paste is now inserted as one string, inner line breaks as
+  spaces and a trailing newline dropped, so a copied path with a newline no
   longer launches the session halfway through.
-- The session browser's filter shows its cursor. The text input took its
-  styles from lipgloss's default renderer, which probes stdout — captured
-  for the browser's output protocol — found no color support, and dropped
-  the cursor's reverse video; it now uses the `/dev/tty` renderer like the
-  rest of the browser.
+- Directory suggestions for a path-like query (`/`, `~`, `.`) list the
+  directory you typed first, then frecent matches, then its children or
+  completions, so `Enter` on an existing path never picks a child of it.
+  `@spec` suggestions load off the UI thread: the form stays responsive
+  while a provider thinks, and a slow one is cut off at
+  `AM_DIR_SUGGEST_TIMEOUT` (0.3s) as before.
+- The session browser's filter shows its cursor, steady rather than
+  blinking. The text input took its styles from lipgloss's default renderer,
+  which probes stdout — captured for the browser's output protocol — found
+  no color support, and dropped the cursor's reverse video; it now uses the
+  `/dev/tty` renderer like the rest of the browser.
 
 ## [0.38.0] - 2026-10-01
 

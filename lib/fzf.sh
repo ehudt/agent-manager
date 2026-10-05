@@ -183,39 +183,38 @@ fzf_pick_directory() {
     fi
 }
 
+# Path of the am-browse binary, which is both the session browser and the
+# new-session form (`am-browse --new`). AM_BROWSE_CMD swaps in a stand-in
+# that prints a protocol line (tests drive the hand-off paths through it).
+# Requires a non-zero size so test_install's fake-go stub doesn't fire.
+# Usage: fzf_browse_bin
+fzf_browse_bin() {
+    local browse_cmd="${AM_BROWSE_CMD:-$_FZF_LIB_DIR/../bin/am-browse}"
+    if [[ ! -x "$browse_cmd" || ! -s "$browse_cmd" ]]; then
+        log_error "bin/am-browse is not built. Run 'make' (or 'am install') to build it."
+        return 1
+    fi
+    export AM_TMUX_SOCKET AM_DIR AM_SESSION_PREFIX
+    echo "$browse_cmd"
+}
+
 # Main interactive browser entry point (compiled Go TUI)
 # Usage: fzf_main
 fzf_main() {
     # Get the path to this script's directory for the preview command
     local lib_dir="${AM_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
-    # Require non-zero size so test_install's fake-go stub doesn't fire.
-    # AM_BROWSE_CMD swaps in a stand-in that prints a protocol line (tests
-    # drive the browser's hand-off paths through it).
-    local browse_cmd="${AM_BROWSE_CMD:-$lib_dir/../bin/am-browse}"
-    if [[ ! -x "$browse_cmd" || ! -s "$browse_cmd" ]]; then
-        log_error "bin/am-browse is not built. Run 'make' (or 'am install') to build it."
-        return 1
-    fi
+    local browse_cmd
+    browse_cmd=$(fzf_browse_bin) || return 1
 
-    export AM_TMUX_SOCKET AM_DIR AM_SESSION_PREFIX
     local result
     result=$("$browse_cmd" \
         --preview-cmd="$lib_dir/preview" \
         --kill-cmd="$lib_dir/../bin/kill-and-switch") || return
 
+    # __NEW_SESSION__ lines (Ctrl-N form, submitted inside the browser) pass
+    # through the default branch to cmd_browse.
     case "$result" in
-        __NEW__)
-            # Delegate to bash form (still needs tput/fzf)
-            [[ "$(type -t am_new_session_form)" != "function" ]] && source "$_FZF_LIB_DIR/form.sh"
-            local form_values directory agent_type task flags
-            if ! form_values=$(am_new_session_form); then
-                fzf_main
-                return $?
-            fi
-            IFS=$'\x1f' read -r directory agent_type task flags <<< "$form_values"
-            printf "__NEW_SESSION__\x1f%s\x1f%s\x1f%s\x1f%s\n" "$directory" "$agent_type" "$flags" "$task"
-            ;;
         __RESTORE__)
             local restore_result
             if ! restore_result=$(fzf_restore_picker); then

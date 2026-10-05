@@ -275,7 +275,9 @@ Several tests hard-code the agent set; update them or the suite fails:
 - `tests/test_helpers.sh` — `setup_integration_env`: symlink the new command
   name to `tests/stub_agent` under `$TEST_STUB_BIN` and add
   `AGENT_COMMANDS[<type>]`.
-- `tests/test_form.sh` — the directory-launcher `launch_agents` list.
+- `cmd/am-browse/newform.go` — `launchShortcuts` if the new type gets a
+  one-key launch in the form's launcher (and its hint line in `view`);
+  `TestFormLauncherKeys` in `newform_test.go` lists the same keys.
 - Add focused Go tests for a new `store`/title parser
   (`titles_test.go`, `agents_test.go`).
 
