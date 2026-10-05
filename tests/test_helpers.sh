@@ -182,13 +182,6 @@ registry_count() {
     jq '.sessions | length' "$AM_REGISTRY"
 }
 
-# Stdout wrapper around _state_hook_read (lib/state.sh) for tests.
-_state_from_hook() {
-    local _hs
-    _state_hook_read "$1" _hs
-    [[ -n "$_hs" ]] && echo "$_hs"
-}
-
 # Build size-1 bulk fixtures and call _state_pane_is_shell_bulk (lib/state.sh).
 # Used by tests that probe single sessions directly. Returns: 0 if shell, 1 otherwise.
 _state_pane_is_shell() {

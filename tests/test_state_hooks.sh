@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # tests/test_state_hooks.sh - Tests for lib/hooks/state-hook.sh
 
+# Keep whole (docs/test-value-plan.md 3c): the hub test of the hook. The
+# "no pane signal: Cursor stop in the launch dir leaves cursor session
+# untouched" assertion is the only guard against re-adding a directory guess
+# for Cursor payloads (workspace_roots[0], removed in 5f7bd47 after the
+# Obsidian-terminal incident).
 test_state_hooks() {
     $SUMMARY_MODE || echo "=== Testing lib/hooks/state-hook.sh ==="
 
@@ -733,81 +738,6 @@ test_state_hooks() {
     $SUMMARY_MODE || echo ""
 }
 
-_ensure_state_lib_sourced() {
-    if [[ "$(type -t _state_hook_read)" != "function" ]]; then
-        set +u
-        source "$LIB_DIR/utils.sh"
-        source "$LIB_DIR/tmux.sh"
-        source "$LIB_DIR/registry.sh"
-        source "$LIB_DIR/state.sh"
-        set -u
-    fi
-}
-
-test_state_from_hook_reads_file() {
-    _ensure_state_lib_sourced
-    local state_dir
-    state_dir=$(mktemp -d)
-    printf 'waiting_user' > "$state_dir/am-test01"
-
-    local result
-    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
-    assert_eq "waiting_user" "$result" "_state_from_hook reads state file"
-    rm -rf "$state_dir"
-}
-
-test_state_from_hook_missing_file() {
-    _ensure_state_lib_sourced
-    local state_dir
-    state_dir=$(mktemp -d)
-
-    local result
-    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-nonexist")
-    assert_eq "" "$result" "_state_from_hook returns empty for missing file"
-    rm -rf "$state_dir"
-}
-
-test_state_from_hook_stale_file() {
-    _ensure_state_lib_sourced
-    local state_dir
-    state_dir=$(mktemp -d)
-    local backdated
-    backdated=$(date -v-5M '+%Y%m%d%H%M.%S' 2>/dev/null \
-        || date -d '5 minutes ago' '+%Y%m%d%H%M.%S')
-
-    # Terminal waiting states are persistent — an idle session can sit at
-    # ready for hours without firing a new hook. The staleness gate
-    # must not drop these.
-    printf 'ready' > "$state_dir/am-test01"
-    touch -t "$backdated" "$state_dir/am-test01"
-    local result
-    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
-    assert_eq "ready" "$result" \
-        "_state_from_hook trusts stale ready (terminal state)"
-
-    # Running implies an in-progress turn; missing PostToolUse/Stop for
-    # >3 min means the agent likely crashed. Pane fallback should take over.
-    printf 'running' > "$state_dir/am-test02"
-    touch -t "$backdated" "$state_dir/am-test02"
-    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test02")
-    assert_eq "" "$result" \
-        "_state_from_hook drops stale running (>3m) so pane fallback runs"
-
-    rm -rf "$state_dir"
-}
-
-test_state_from_hook_invalid_state() {
-    _ensure_state_lib_sourced
-    local state_dir
-    state_dir=$(mktemp -d)
-    printf 'bogus_state' > "$state_dir/am-test01"
-
-    local result
-    result=$(AM_STATE_DIR="$state_dir" _state_from_hook "am-test01")
-    assert_eq "" "$result" "_state_from_hook rejects invalid state values"
-    rm -rf "$state_dir"
-}
-
 test_pi_durable_identity_guard() {
     $SUMMARY_MODE || echo "=== Testing pi durable identity guard ==="
 
@@ -869,6 +799,9 @@ test_pi_durable_identity_guard() {
 
 # The hook records the payload cwd — Claude's tracked Bash-tool cwd — in a .cwd
 # sidecar so the title scan can relabel a session that moved to another checkout.
+# Keep (docs/test-value-plan.md 3c): the only test that notices the hook no
+# longer dropping .title_scan_last after a .cwd change (the tab would relabel
+# a minute late instead of on the next tick).
 test_state_hook_cwd_sidecar() {
     $SUMMARY_MODE || echo "=== Testing state-hook .cwd sidecar ==="
 
@@ -1009,6 +942,8 @@ test_state_hook_notify() {
 # which turned every `·` in the title into `¬∑` and any curly quote or dash in
 # the task into mojibake. The static check runs everywhere; the round trip
 # only where osascript exists.
+# Keep (docs/test-value-plan.md 3c): the `on run argv` check is the only guard
+# against an inline-interpolation rewrite of the osascript call.
 test_state_hook_notify_osascript_utf8() {
     $SUMMARY_MODE || echo "=== Testing state-hook osascript UTF-8 path ==="
 
@@ -1213,6 +1148,9 @@ test_state_hook_events() {
 # restore when the conversation resumes in another checkout), a PreToolUse
 # whose tool_input reaches under <old> is denied (permissionDecision JSON on
 # stdout) and logged; everything else leaves stdout empty.
+# Keep, timing assertion included (docs/test-value-plan.md 3c): a per-occurrence
+# `${rest#*…}` loop in _fence_hit went quadratic (27-33s per hook run) and only
+# the timing assertion caught it.
 test_state_hook_fence() {
     $SUMMARY_MODE || echo "=== Testing state-hook relocation fence ==="
 
@@ -1332,10 +1270,6 @@ test_state_hook_fence() {
 run_state_hooks_tests() {
     _run_test test_state_hooks
     _run_test test_state_hook_events
-    _run_test test_state_from_hook_reads_file
-    _run_test test_state_from_hook_missing_file
-    _run_test test_state_from_hook_stale_file
-    _run_test test_state_from_hook_invalid_state
     _run_test test_pi_durable_identity_guard
     _run_test test_state_hook_cwd_sidecar
     _run_test test_state_hook_fence

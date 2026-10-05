@@ -244,6 +244,9 @@ test_registry_get_fields() {
     $SUMMARY_MODE || echo ""
 }
 
+# Keep (docs/test-value-plan.md 3c): looks like a twin of Go TestGCHalvesAndGrace,
+# but it is the only test where bash writes created_at and the Go reaper parses
+# it as RFC3339 — a format drift means no grace window, and only this notices.
 test_registry_gc() {
     $SUMMARY_MODE || echo "=== Testing Integration: Registry GC ==="
 
@@ -527,6 +530,9 @@ test_registry_tmp_guard() {
 
 # Titler tracing is opt-in (AM_TITLER_DEBUG=1) and the throttled no-op path
 # never logs; the debug logs are capped from the unthrottled scan path.
+# Keep (docs/test-value-plan.md 3c): Go TestTitlerLogGatedAndCapped covers the
+# logic, but only this test catches am_core dropping the exported variable on
+# its way into the binary (mutation: `env -u AM_TITLER_DEBUG` in am_core).
 test_titler_log_gated() {
     $SUMMARY_MODE || echo "=== Testing titler log gating and log caps ==="
 
@@ -635,33 +641,6 @@ test_registry_gc_go_path() {
     [[ -n "$live_session" ]] && agent_kill "$live_session" 2>/dev/null
     rm -rf "$test_dir"
     teardown_integration_env
-
-    $SUMMARY_MODE || echo ""
-}
-
-test_auto_title_session() {
-    $SUMMARY_MODE || echo ""
-    $SUMMARY_MODE || echo "=== Auto-Title Session Tests ==="
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/registry.sh"
-
-    setup_isolated_am_dir
-
-    # Title validation (length, newlines, the bare "Claude Code" placeholder)
-    # and normalization (reconnecting / " - <dirname>" suffixes) live in Go
-    # only: internal/sessions titleValid / normalizeTitle, covered by
-    # TestTitleValid and TestNormalizeTitle.
-
-    # --- Integration - registry update on successful title ---
-    registry_add "test-title-reg" "/tmp/test" "main" "claude" ""
-    registry_update "test-title-reg" "task" "Refactor API layer"
-    local stored_task
-    stored_task=$(registry_get_field "test-title-reg" "task")
-    assert_eq "Refactor API layer" "$stored_task" \
-        "title_gen: registry_update persists title"
-
-    teardown_isolated_am_dir
 
     $SUMMARY_MODE || echo ""
 }
@@ -1137,6 +1116,9 @@ test_registry_concurrency() {
 # ============================================
 # Test: auto_title_scan refreshes workdir + branch
 # ============================================
+# Keep (docs/test-value-plan.md 3c): Go TestRefreshTitlesWorkdirAndBranch covers
+# the refresh; this is the only test that reads the `workdir` JSON key Go writes
+# back through bash, so a key rename on either side fails here first.
 test_auto_title_scan_workdir() {
     $SUMMARY_MODE || echo ""
     $SUMMARY_MODE || echo "=== Auto-Title Scan: workdir + branch refresh ==="
@@ -1216,7 +1198,6 @@ run_registry_tests() {
     _run_test test_registry_gc_extras
     _run_test test_registry_tmp_guard
     _run_test test_titler_log_gated
-    _run_test test_auto_title_session
     _run_test test_auto_title_scan
     _run_test test_agent_kill_sid_binding
     _run_test test_auto_title_scan_workdir

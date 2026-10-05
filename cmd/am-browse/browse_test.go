@@ -122,6 +122,8 @@ func TestApplyFilterKeepsActiveInactiveSplit(t *testing.T) {
 	}
 }
 
+// Keep (docs/test-value-plan.md 3c): reads like a wording pin, but the Ctrl-R
+// line is the only thing that notices the help text drifting from the key map.
 func TestHelpText(t *testing.T) {
 	h := helpText()
 	if h == "" {
@@ -151,15 +153,6 @@ func findSubstring(s, sub string) bool {
 		}
 	}
 	return false
-}
-
-// Test output protocol: model.output values
-func TestOutputProtocol(t *testing.T) {
-	// New model should have empty output
-	m := newModel()
-	if m.output != "" {
-		t.Errorf("new model output = %q, want empty", m.output)
-	}
 }
 
 func TestEnterInactiveOutputsRestoreProtocol(t *testing.T) {

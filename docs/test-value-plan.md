@@ -129,7 +129,7 @@ only (no mutation run).
 | `tests/test_registry.sh` | `test_auto_title_session` | 642 | One assertion: `registry_update` + `registry_get_field` round trip | `test_registry` L29-30; `test_registry_concurrency` L1091-1099; `test_registry_get_fields` L210, 226-227 (`registry_get_fields: updated field (5th field)`, `registry_update: changes field`, `concurrency: no parallel registry_update lost (lost=12 of 12)`) |
 | `tests/test_registry.sh` | `test_registry_gc_extras` | 377 | 16 assertions re-running the Go extras half through `am-core`; Go `TestGCExtras` says in its own comment that it mirrors this test and is a strict superset | `internal/sessions/maintenance_test.go::TestGCExtras` (sessions log names; `sid-gone.txt` exists), `TestGCHalvesAndGrace`, `TestIsLogCapTemp`; `tests/test_standalone_scripts.sh::test_standalone_status_bar` (`tick prunes a sessions-log entry whose transcript is gone`, `tick stamps .gc_extras_last`); `test_registry_tmp_guard`; `test_registry_gc` keeps the bash → `am-core gc` plumbing |
 | `tests/test_state_hooks.sh` | `test_state_from_hook_reads_file` | 747 | Reads `_state_hook_read` through the test-only shim `_state_from_hook` (`test_helpers.sh:186-190`) | `tests/test_state.sh::test_state` (`_state_hook_read: waiting_user`, `_state_hook_read: background`); `test_state_integration` (`agent_get_state: reads hook file when pane is not shell`) |
-| `tests/test_state_hooks.sh` | `test_state_from_hook_missing_file` | 759 | Same shim | `test_state` (`_state_hook_read: missing file (expected empty)`) |
+| `tests/test_state_hooks.sh` | `test_state_from_hook_missing_file` | 759 | Same shim | `test_state` (`_state_hook_read: missing file`) |
 | `tests/test_state_hooks.sh` | `test_state_from_hook_stale_file` | 770 | Same shim, 2 assertions | `test_state` (`stale running drops`, `stale file + stale activity drops`, `stale file + empty activity drops`) |
 | `tests/test_state_hooks.sh` | `test_state_from_hook_invalid_state` | 799 | Same shim | `test_state` (`_state_hook_read: invalid state rejected`) |
 | `internal/sessions/sessions_test.go` | `TestFormatRestorableDisplayBase` | 67 | One-row formatter check | `TestRestorableEntriesFromLog` (sessions_test.go:276), `TestRestoreNote` |
@@ -484,6 +484,15 @@ and expect `TestBrowserCtrlNOpensFormAndEscReturns` to fail at
 guard is still in place: delete `m.output = f.output` at `main.go:297` and
 expect `TestBrowserFormSubmitQuitsWithLine` (:677) to fail;
 `TestBrowserCtrlNOpensFormAndEscReturns` never submits and will not.
+
+Re-run result (2026-10-05, before the Batch 1 commit): 6 of 7 mutations
+reproduced. The "accept an invalid value" mutation (drop the
+`_state_normalize` call) is an equivalent mutant: the `case` in
+`_state_hook_read` has arms only for the valid states, so a bogus value falls
+through to empty either way and no test can distinguish the two. The removed
+`test_state_from_hook_invalid_state` asserted exactly what `test_state`'s
+`_state_hook_read: invalid state rejected` asserts, on the same function, so
+the removal stands on duplication, not on that mutation.
 
 ### Batch 2 — confirmed duplicates, Go and bash ↔ Go
 
