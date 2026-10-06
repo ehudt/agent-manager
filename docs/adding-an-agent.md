@@ -275,9 +275,8 @@ Several tests hard-code the agent set; update them or the suite fails:
 - `tests/test_helpers.sh` — `setup_integration_env`: symlink the new command
   name to `tests/stub_agent` under `$TEST_STUB_BIN` and add
   `AGENT_COMMANDS[<type>]`.
-- `cmd/am-browse/newform.go` — `launchShortcuts` if the new type gets a
-  one-key launch in the form's launcher (and its hint line in `view`);
-  `TestFormLauncherKeys` in `newform_test.go` lists the same keys.
+- Nothing in `cmd/am-browse`: the browser's agent choice for new sessions
+  (Tab) cycles through `sessions.AgentTypes()`, the manifest order.
 - Add focused Go tests for a new `store`/title parser
   (`titles_test.go`, `agents_test.go`).
 

@@ -183,8 +183,9 @@ fzf_pick_directory() {
     fi
 }
 
-# Path of the am-browse binary, which is both the session browser and the
-# new-session form (`am-browse --new`). AM_BROWSE_CMD swaps in a stand-in
+# Path of the am-browse binary: the session browser, whose New session
+# section launches sessions too (`am-browse --new` starts there, for `am
+# new`). AM_BROWSE_CMD swaps in a stand-in
 # that prints a protocol line (tests drive the hand-off paths through it).
 # Requires a non-zero size so test_install's fake-go stub doesn't fire.
 # Usage: fzf_browse_bin
@@ -212,8 +213,8 @@ fzf_main() {
         --preview-cmd="$lib_dir/preview" \
         --kill-cmd="$lib_dir/../bin/kill-and-switch") || return
 
-    # __NEW_SESSION__ lines (Ctrl-N form, submitted inside the browser) pass
-    # through the default branch to cmd_browse.
+    # __NEW_SESSION__ lines (a New session row) pass through the default
+    # branch to cmd_browse.
     case "$result" in
         __RESTORE__)
             local restore_result

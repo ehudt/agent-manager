@@ -24,12 +24,12 @@ var (
 	clientName string
 	benchmark  bool
 
-	// --new: run only the new-session form (am new with no arguments). The
-	// prefill flags seed its fields.
-	newOnly  bool
-	newDir   string
-	newAgent string
-	newTask  string
+	// --new: open with the cursor on the New session section (am new with no
+	// arguments). The prefill flags seed the query, the agent, and the task.
+	newOnly   bool
+	newPrefix string
+	newAgent  string
+	newTask   string
 )
 
 func init() {
@@ -37,10 +37,10 @@ func init() {
 	flag.StringVar(&killCmd, "kill-cmd", "", "Script to run for kill (ctrl-x)")
 	flag.StringVar(&clientName, "client-name", "", "tmux client name (for kill-and-switch)")
 	flag.BoolVar(&benchmark, "benchmark", false, "Print time-to-first-frame and exit")
-	flag.BoolVar(&newOnly, "new", false, "Show only the new-session form")
-	flag.StringVar(&newDir, "dir", "", "Prefill the form's directory")
-	flag.StringVar(&newAgent, "agent", "", "Prefill the form's agent type")
-	flag.StringVar(&newTask, "task", "", "Prefill the form's task")
+	flag.BoolVar(&newOnly, "new", false, "Start on the New session section")
+	flag.StringVar(&newPrefix, "dir", "", "Prefill the query with a directory")
+	flag.StringVar(&newAgent, "agent", "", "Agent for new sessions")
+	flag.StringVar(&newTask, "task", "", "Task passed through with a new session")
 }
 
 func main() {
@@ -69,8 +69,12 @@ func main() {
 	initStyles(lipgloss.NewRenderer(tty))
 
 	m := newModel()
+	env := sessions.LoadEnv()
+	m.launch = newLauncher(sessions.LoadConfig(env.AmDir), env.AmDir, env.Home, newAgent, newTask)
 	if newOnly {
-		m.openForm(newDir, newAgent, newTask, true)
+		m.startNew = true
+		m.filter.SetValue(newPrefix)
+		m.filter.CursorEnd()
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(tty))
 
@@ -113,14 +117,9 @@ var (
 	keyActionStyle lipgloss.Style
 	separatorStyle lipgloss.Style
 	helpOverlay    lipgloss.Style
+	errorStyle     lipgloss.Style
 
-	// New-session form (newform.go)
-	formLabelEditStyle lipgloss.Style // focused label while editing
-	formLabelNavStyle  lipgloss.Style // focused label while navigating
-	formSelectedStyle  lipgloss.Style // the chosen option of a select field
-	formErrorStyle     lipgloss.Style
-
-	// The renderer the styles come from; newModel and the form build their
+	// The renderer the styles come from; newModel builds the filter's
 	// textinput styles from it too.
 	ttyRenderer = lipgloss.DefaultRenderer()
 )
@@ -138,19 +137,21 @@ func initStyles(r *lipgloss.Renderer) {
 	keyActionStyle = r.NewStyle().Foreground(lipgloss.Color("8"))                                             // dim
 	separatorStyle = r.NewStyle().Foreground(lipgloss.Color("8"))
 	helpOverlay = r.NewStyle().Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14"))
-	formLabelEditStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))                                // blue: editing
-	formLabelNavStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))                                  // gray: navigating
-	formSelectedStyle = r.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("14")) // black on cyan
-	formErrorStyle = r.NewStyle().Foreground(lipgloss.Color("9"))                                                // red
+	errorStyle = r.NewStyle().Foreground(lipgloss.Color("9")) // red
 }
 
 // --- Model ---
 
 type model struct {
 	entries     []sessions.Entry
-	filtered    []int // indices into entries
+	filtered    []int      // indices into entries matching the query: active, interrupted, inactive
+	items       []listItem // the selectable rows in display order; the cursor indexes it
 	cursor      int
+	place       bool // the cursor follows the best match, until the user moves it
+	startNew    bool // --new: under an empty query the cursor starts on the New session section
 	filter      textinput.Model
+	launch      launcher // the New session section (newrows.go)
+	errMsg      string   // a launch the section refused; cleared by the next key
 	preview     string
 	previewFor  string // preview key whose content is loaded
 	showPreview bool
@@ -159,21 +160,21 @@ type model struct {
 	height      int
 	output      string // what to print on exit
 	loading     bool
-	form        *newForm // the new-session form while it is open (Ctrl-N, --new)
 }
 
-// openForm shows the new-session form over the list. standalone (--new)
-// makes Esc quit the program instead of returning to the list.
-func (m *model) openForm(dir, agent, task string, standalone bool) {
-	env := sessions.LoadEnv()
-	f := newNewForm(sessions.LoadConfig(env.AmDir), env.AmDir, env.Home, dir, agent, task, standalone)
-	f.width, f.height = m.width, m.height
-	m.form = &f
+// listItem is one selectable row: a session entry, or a launch target of
+// the New session section.
+type listItem struct {
+	entry int // index into entries; -1 for a New session row
+	row   newRow
+	tier  int // match quality against the query
 }
+
+func (it listItem) isNew() bool { return it.entry < 0 }
 
 func newModel() model {
 	ti := textinput.New()
-	ti.Placeholder = "type to filter..."
+	ti.Placeholder = "type to filter, or a path / @spec for a new session..."
 	ti.Prompt = "/ "
 	ti.PromptStyle = accentStyle
 	// textinput's own styles come from lipgloss's default renderer, which
@@ -184,21 +185,19 @@ func newModel() model {
 	ti.PlaceholderStyle = ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
 	ti.CompletionStyle = ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
 	ti.Focus()
-	// A steady cursor, like the new-session form's.
 	ti.Cursor.SetMode(cursor.CursorStatic)
 
 	return model{
 		filter:      ti,
+		launch:      newLauncher(sessions.Config{}, "", "", "", ""),
+		place:       true,
 		showPreview: true,
 		loading:     true,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	if m.form != nil && m.form.standalone {
-		return m.form.init()
-	}
-	return loadSessions
+	return tea.Batch(loadSessions, m.launch.loadFrecent())
 }
 
 func loadSessions() tea.Msg {
@@ -256,6 +255,30 @@ func loadPreview(entry sessions.Entry) tea.Cmd {
 	}
 }
 
+// loadNewPreview describes a New session row (launcher.describe), listing
+// the sessions, running or closed, that worked in its directory.
+func (m model) loadNewPreview(r newRow) tea.Cmd {
+	l := m.launch
+	var here []string
+	if r.kind == newDir {
+		path := l.expand(r.value)
+		for _, e := range m.entries {
+			if e.Meta.EffectiveDir() != path && e.Meta.Directory != path {
+				continue
+			}
+			mark := "running"
+			if e.Kind != sessions.EntryActive {
+				mark = "closed "
+			}
+			here = append(here, mark+"  "+e.Display)
+		}
+	}
+	key := r.key()
+	return func() tea.Msg {
+		return previewLoadedMsg{key: key, content: l.describe(r, here)}
+	}
+}
+
 func killSession(sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		if killCmd == "" || sessionName == "" {
@@ -277,37 +300,6 @@ func killSession(sessionName string) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// The form owns every message while it is open, except the size (which
-	// both screens need) and the list reload that may land underneath it.
-	if m.form != nil {
-		switch msg := msg.(type) {
-		case tea.WindowSizeMsg:
-			m.width, m.height = msg.Width, msg.Height
-		case sessionsLoadedMsg:
-			m.entries = msg.entries
-			m.loading = false
-			m.applyFilter()
-			return m, nil
-		case recoveryTickMsg, previewLoadedMsg, killDoneMsg:
-			return m, nil
-		}
-		f, cmd, res := m.form.update(msg)
-		switch res {
-		case formSubmit:
-			m.output = f.output
-			return m, tea.Quit
-		case formCancel:
-			if f.standalone {
-				m.output = ""
-				return m, tea.Quit
-			}
-			m.form = nil
-			return m, m.requestPreview()
-		}
-		m.form = &f
-		return m, cmd
-	}
-
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -318,12 +310,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsLoadedMsg:
 		m.entries = msg.entries
 		m.loading = false
-		m.applyFilter()
-		cmds := []tea.Cmd{m.requestPreview()}
+		cmds := []tea.Cmd{m.applyFilter(), m.requestPreview()}
 		if hasRestoringEntries(m.entries) {
 			cmds = append(cmds, recoveryTick())
 		}
 		return m, tea.Batch(cmds...)
+
+	case frecentMsg:
+		m.launch.frecent = msg.paths
+		m.launch.frecentLoaded = true
+		return m, tea.Batch(m.applyFilter(), m.requestPreview())
+
+	case providerMsg:
+		m.launch.providerCache[msg.query] = msg.rows
+		delete(m.launch.providerPending, msg.query)
+		if m.filter.Value() == msg.query {
+			return m, tea.Batch(m.applyFilter(), m.requestPreview())
+		}
+		return m, nil
 
 	case recoveryTickMsg:
 		return m, loadSessions
@@ -341,97 +345,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadSessions
 
 	case tea.KeyMsg:
-		// Help overlay captures all keys
-		if m.showHelp {
-			m.showHelp = false
-			return m, nil
-		}
-
-		switch msg.Type {
-		case tea.KeyEsc:
-			m.output = ""
-			return m, tea.Quit
-
-		case tea.KeyEnter:
-			if entry, ok := m.selectedEntry(); ok {
-				switch entry.Kind {
-				case sessions.EntryInactive:
-					m.output = "__RESTORE__\x1f" + entry.Meta.Directory + "\x1f" + entry.RestoreSessionID + "\x1f" + entry.Meta.AgentType
-				case sessions.EntryBlocked:
-					m.output = "__RETRY_RECOVERY__\x1f" + entry.Meta.LogicalID
-				case sessions.EntryRestoring:
-					return m, nil
-				default:
-					m.output = entry.Name
-				}
-				return m, tea.Quit
-			}
-			return m, nil
-
-		case tea.KeyCtrlN:
-			m.openForm("", "", "", false)
-			return m, m.form.init()
-
-		case tea.KeyCtrlH:
-			if m.moveToFirstKind(sessions.EntryInactive) {
-				return m, m.requestPreview()
-			}
-			return m, nil
-
-		case tea.KeyCtrlX:
-			if entry, ok := m.selectedEntry(); ok &&
-				(entry.Kind == sessions.EntryBlocked || entry.Kind == sessions.EntryRestoring) {
-				m.output = "__FORGET_RECOVERY__\x1f" + entry.Meta.LogicalID
-				return m, tea.Quit
-			}
-			if s := m.selectedSession(); s != "" {
-				return m, killSession(s)
-			}
-			return m, nil
-
-		case tea.KeyCtrlR:
-			m.loading = true
-			return m, loadSessions
-
-		case tea.KeyCtrlP:
-			m.showPreview = !m.showPreview
-			return m, nil
-
-		case tea.KeyUp:
-			if m.cursor > 0 {
-				m.cursor--
-				return m, m.requestPreview()
-			}
-			return m, nil
-
-		case tea.KeyDown:
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-				return m, m.requestPreview()
-			}
-			return m, nil
-
-		case tea.KeyRunes:
-			if msg.String() == "q" && m.filter.Value() == "" {
-				m.output = ""
-				return m, tea.Quit
-			}
-			if msg.String() == "?" && m.filter.Value() == "" {
-				m.showHelp = true
-				return m, nil
-			}
-			// Fall through to textinput
-		}
-
-		// Update text input for filter
-		oldVal := m.filter.Value()
-		var cmd tea.Cmd
-		m.filter, cmd = m.filter.Update(msg)
-		if m.filter.Value() != oldVal {
-			m.applyFilter()
-			return m, tea.Batch(cmd, m.requestPreview())
-		}
-		return m, cmd
+		return m.handleKey(msg)
 	}
 
 	// Pass other messages to textinput
@@ -440,22 +354,163 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *model) applyFilter() {
-	query := strings.ToLower(m.filter.Value())
-	m.filtered = m.filtered[:0]
+func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Help overlay captures all keys
+	if m.showHelp {
+		m.showHelp = false
+		return m, nil
+	}
+	m.errMsg = ""
 
-	// Empty query: keep the canonical order (active by activity, then inactive),
-	// which already places all actives before all inactives for the divider.
-	if query == "" {
-		for i := range m.entries {
-			m.filtered = append(m.filtered, i)
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.output = ""
+		return m, tea.Quit
+
+	case tea.KeyEnter:
+		return m.enter()
+
+	case tea.KeyTab, tea.KeyShiftTab:
+		step := 1
+		if msg.Type == tea.KeyShiftTab {
+			step = -1
 		}
-		m.clampCursor()
-		return
+		m.launch.cycleAgent(step)
+		return m, m.applyFilter() // preset rows without an agent name it
+
+	case tea.KeyCtrlN:
+		cmd := m.jumpNew()
+		return m, tea.Batch(cmd, m.requestPreview())
+
+	case tea.KeyCtrlH:
+		if m.moveToFirstKind(sessions.EntryInactive) {
+			m.place = false
+			return m, m.requestPreview()
+		}
+		return m, nil
+
+	case tea.KeyCtrlX:
+		if entry, ok := m.selectedEntry(); ok &&
+			(entry.Kind == sessions.EntryBlocked || entry.Kind == sessions.EntryRestoring) {
+			m.output = "__FORGET_RECOVERY__\x1f" + entry.Meta.LogicalID
+			return m, tea.Quit
+		}
+		if s := m.selectedSession(); s != "" {
+			m.place = false
+			return m, killSession(s)
+		}
+		return m, nil
+
+	case tea.KeyCtrlR:
+		m.loading = true
+		return m, loadSessions
+
+	case tea.KeyCtrlP:
+		m.showPreview = !m.showPreview
+		return m, nil
+
+	case tea.KeyUp:
+		if m.cursor > 0 {
+			m.cursor--
+			m.place = false
+			return m, m.requestPreview()
+		}
+		return m, nil
+
+	case tea.KeyDown:
+		if m.cursor < len(m.items)-1 {
+			m.cursor++
+			m.place = false
+			return m, m.requestPreview()
+		}
+		return m, nil
+
+	case tea.KeyRunes:
+		if msg.String() == "q" && m.filter.Value() == "" {
+			m.output = ""
+			return m, tea.Quit
+		}
+		if msg.String() == "?" && m.filter.Value() == "" {
+			m.showHelp = true
+			return m, nil
+		}
+		// Fall through to textinput
 	}
 
-	// Rank active, interrupted, and inactive as independent lists so section
-	// boundaries remain stable under filtering.
+	// Update text input for filter
+	oldVal := m.filter.Value()
+	var cmd tea.Cmd
+	m.filter, cmd = m.filter.Update(trimPaste(msg))
+	if m.filter.Value() != oldVal {
+		m.launch.seed = ""
+		m.place = true
+		return m, tea.Batch(cmd, m.applyFilter(), m.requestPreview())
+	}
+	return m, cmd
+}
+
+// enter performs the selected row's action: switch to a running session,
+// restore a closed one, retry an interrupted one, or launch a new one.
+func (m model) enter() (tea.Model, tea.Cmd) {
+	it, ok := m.selectedItem()
+	if !ok {
+		if q := m.filter.Value(); isPathQuery(q) {
+			m.errMsg = "Directory does not exist: " + q
+		}
+		return m, nil
+	}
+	if it.isNew() {
+		out, errMsg := m.launch.launch(it.row)
+		if errMsg != "" {
+			m.errMsg = errMsg
+			return m, nil
+		}
+		m.output = out
+		return m, tea.Quit
+	}
+	entry := m.entries[it.entry]
+	switch entry.Kind {
+	case sessions.EntryInactive:
+		m.output = "__RESTORE__\x1f" + entry.Meta.Directory + "\x1f" + entry.RestoreSessionID + "\x1f" + entry.Meta.AgentType
+	case sessions.EntryBlocked:
+		m.output = "__RETRY_RECOVERY__\x1f" + entry.Meta.LogicalID
+	case sessions.EntryRestoring:
+		return m, nil
+	default:
+		m.output = entry.Name
+	}
+	return m, tea.Quit
+}
+
+// jumpNew moves the cursor to the New session section. On a session row it
+// first pins that session's directory as the section's first row, so Ctrl-N
+// Enter starts another session where the highlighted one works.
+func (m *model) jumpNew() tea.Cmd {
+	if it, ok := m.selectedItem(); ok && !it.isNew() {
+		if dir := m.entries[it.entry].Meta.EffectiveDir(); dir != "" {
+			m.launch.seed = dir
+		}
+	}
+	cmd := m.applyFilter()
+	if i := m.firstNew(); i >= 0 {
+		m.cursor = i
+		m.place = false
+	}
+	return cmd
+}
+
+// applyFilter rebuilds the list for the query: the matching sessions per
+// section, the New session rows, and their order (running, interrupted, new,
+// inactive). With m.place the cursor goes to the best match; otherwise it
+// stays on the row it was on. The Cmd is a dir_provider fetch, if one is due.
+func (m *model) applyFilter() tea.Cmd {
+	raw := m.filter.Value()
+	query := strings.ToLower(raw)
+	prev := ""
+	if !m.place {
+		prev = m.selectedPreviewKey()
+	}
+
 	type hit struct {
 		idx  int
 		tier int
@@ -463,14 +518,7 @@ func (m *model) applyFilter() {
 	}
 	var active, interrupted, inactive []hit
 	for i, e := range m.entries {
-		haystack := strings.ToLower(e.Display)
-		switch e.Kind {
-		case sessions.EntryInactive:
-			haystack += " inactive restore closed"
-		case sessions.EntryRestoring, sessions.EntryBlocked:
-			haystack += " interrupted recovery restoring blocked"
-		}
-		tier := matchTier(haystack, query)
+		tier := m.entryTier(e, query)
 		if tier == 0 {
 			continue
 		}
@@ -484,35 +532,154 @@ func (m *model) applyFilter() {
 			active = append(active, h)
 		}
 	}
-
-	byScore := func(s []hit) func(a, b int) bool {
-		return func(a, b int) bool {
-			if s[a].tier != s[b].tier {
-				return s[a].tier > s[b].tier
+	// An empty query keeps the canonical order (active by activity, then
+	// inactive); a query ranks each section by tier, then recency, so the
+	// section boundaries stay put.
+	if query != "" {
+		byScore := func(s []hit) func(a, b int) bool {
+			return func(a, b int) bool {
+				if s[a].tier != s[b].tier {
+					return s[a].tier > s[b].tier
+				}
+				return s[a].rec > s[b].rec
 			}
-			return s[a].rec > s[b].rec
+		}
+		sort.SliceStable(active, byScore(active))
+		sort.SliceStable(interrupted, byScore(interrupted))
+		sort.SliceStable(inactive, byScore(inactive))
+	}
+
+	newRows, cmd := m.launch.rows(raw, m.liveDirs())
+	m.filtered = m.filtered[:0]
+	items := make([]listItem, 0, len(active)+len(interrupted)+len(newRows)+len(inactive))
+	for _, s := range [][]hit{active, interrupted} {
+		for _, h := range s {
+			m.filtered = append(m.filtered, h.idx)
+			items = append(items, listItem{entry: h.idx, tier: h.tier})
 		}
 	}
-	sort.SliceStable(active, byScore(active))
-	sort.SliceStable(interrupted, byScore(interrupted))
-	sort.SliceStable(inactive, byScore(inactive))
-
-	for _, h := range active {
-		m.filtered = append(m.filtered, h.idx)
-	}
-	for _, h := range interrupted {
-		m.filtered = append(m.filtered, h.idx)
+	for _, r := range newRows {
+		items = append(items, listItem{entry: -1, row: r, tier: r.tier})
 	}
 	for _, h := range inactive {
 		m.filtered = append(m.filtered, h.idx)
+		items = append(items, listItem{entry: h.idx, tier: h.tier})
 	}
-	m.clampCursor()
+	m.items = items
+
+	if m.place {
+		m.cursor = m.bestItem(raw)
+	} else {
+		m.cursor = m.findKey(prev)
+	}
+	return cmd
 }
 
-func (m *model) clampCursor() {
-	if m.cursor >= len(m.filtered) {
-		m.cursor = maxInt(0, len(m.filtered)-1)
+// entryTier is a session's match quality for the (lowercased) query. A
+// plain query matches the display string; an @spec query matches its spec
+// text there by substring (a session already on that branch or PR); a path
+// query matches the sessions working in or under that path.
+func (m model) entryTier(e sessions.Entry, query string) int {
+	if query == "" {
+		return 4
 	}
+	if isPathQuery(query) {
+		p := strings.ToLower(m.launch.absPath(query))
+		if strings.HasPrefix(strings.ToLower(e.Meta.Directory), p) ||
+			(e.Meta.Workdir != "" && strings.HasPrefix(strings.ToLower(e.Meta.Workdir), p)) {
+			return 2
+		}
+		return 0
+	}
+	haystack := strings.ToLower(e.Display)
+	switch e.Kind {
+	case sessions.EntryInactive:
+		haystack += " inactive restore closed"
+	case sessions.EntryRestoring, sessions.EntryBlocked:
+		haystack += " interrupted recovery restoring blocked"
+	}
+	if strings.HasPrefix(query, "@") {
+		spec := query[1:]
+		if spec == "" {
+			return 0
+		}
+		if tier := displayTier(e, haystack, spec); tier >= 2 {
+			return tier
+		}
+		return 0
+	}
+	return displayTier(e, haystack, query)
+}
+
+// displayTier matches a session's haystack. A running session's display
+// starts with its tmux name (am-xxxxxx); the text after it is scored too,
+// so a project name ranks a running session the way it ranks the closed
+// ones (which lack the name) and the directory rows (their basename).
+func displayTier(e sessions.Entry, haystack, query string) int {
+	tier := matchTier(haystack, query)
+	if e.Name != "" {
+		if rest := strings.TrimPrefix(haystack, strings.ToLower(e.Name)+" "); rest != haystack {
+			tier = maxInt(tier, matchTier(rest, query))
+		}
+	}
+	return tier
+}
+
+// liveDirs counts the running sessions per working directory.
+func (m model) liveDirs() map[string]int {
+	live := map[string]int{}
+	for _, e := range m.entries {
+		if e.Kind == sessions.EntryActive {
+			if dir := e.Meta.EffectiveDir(); dir != "" {
+				live[dir]++
+			}
+		}
+	}
+	return live
+}
+
+// bestItem is where the cursor goes for a query: the New session section
+// for a path or @spec (and for an empty query under --new), else the first
+// row with the best match tier — so on a tie an existing session wins over
+// starting a duplicate.
+func (m model) bestItem(raw string) int {
+	if isPlaceQuery(raw) || (raw == "" && m.startNew) {
+		if i := m.firstNew(); i >= 0 {
+			return i
+		}
+	}
+	best, at := 0, 0
+	for i, it := range m.items {
+		if it.tier > best {
+			best, at = it.tier, i
+		}
+	}
+	return at
+}
+
+// findKey is the position of the row with the given key, else the cursor
+// clamped to the list.
+func (m model) findKey(key string) int {
+	if key != "" {
+		for i, it := range m.items {
+			if m.itemKey(it) == key {
+				return i
+			}
+		}
+	}
+	if m.cursor >= len(m.items) {
+		return maxInt(0, len(m.items)-1)
+	}
+	return m.cursor
+}
+
+func (m model) firstNew() int {
+	for i, it := range m.items {
+		if it.isNew() {
+			return i
+		}
+	}
+	return -1
 }
 
 // matchTier returns a coarse match quality for query against text (both already
@@ -558,18 +725,44 @@ func maxInt(a, b int) int {
 	return b
 }
 
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// rowsThroughNew is how many list rows (dividers included) the list needs
+// to show everything down to the last New session row; 0 without any.
+func (m model) rowsThroughNew() int {
+	rows, _ := m.listRows()
+	for i := len(rows) - 1; i >= 0; i-- {
+		if !rows[i].divider && m.items[rows[i].item].isNew() {
+			return i + 1
+		}
+	}
+	return 0
+}
+
 type listRow struct {
-	divider     bool
-	label       string
-	entryIndex  int
-	filteredPos int
+	divider bool
+	label   string
+	item    int // index into items
+}
+
+func (m model) selectedItem() (listItem, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.items) {
+		return listItem{}, false
+	}
+	return m.items[m.cursor], true
 }
 
 func (m model) selectedEntry() (sessions.Entry, bool) {
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	it, ok := m.selectedItem()
+	if !ok || it.isNew() {
 		return sessions.Entry{}, false
 	}
-	return m.entries[m.filtered[m.cursor]], true
+	return m.entries[it.entry], true
 }
 
 func (m model) selectedSession() string {
@@ -581,11 +774,18 @@ func (m model) selectedSession() string {
 }
 
 func (m model) selectedPreviewKey() string {
-	entry, ok := m.selectedEntry()
+	it, ok := m.selectedItem()
 	if !ok {
 		return ""
 	}
-	return previewKey(entry)
+	return m.itemKey(it)
+}
+
+func (m model) itemKey(it listItem) string {
+	if it.isNew() {
+		return it.row.key()
+	}
+	return previewKey(m.entries[it.entry])
 }
 
 func previewKey(entry sessions.Entry) string {
@@ -608,8 +808,8 @@ func previewKey(entry sessions.Entry) string {
 }
 
 func (m *model) moveToFirstKind(kind sessions.EntryKind) bool {
-	for pos, idx := range m.filtered {
-		if m.entries[idx].Kind == kind {
+	for pos, it := range m.items {
+		if !it.isNew() && m.entries[it.entry].Kind == kind {
 			m.cursor = pos
 			return true
 		}
@@ -634,46 +834,91 @@ func (m model) entryCounts() (active, restoring, blocked, inactive int) {
 }
 
 func (m model) listRows() ([]listRow, int) {
-	rows := make([]listRow, 0, len(m.filtered)+1)
+	rows := make([]listRow, 0, len(m.items)+3)
 	cursorRow := -1
 	recoveryDividerAdded := false
+	newDividerAdded := false
 	inactiveDividerAdded := false
-	for pos, idx := range m.filtered {
-		kind := m.entries[idx].Kind
-		if (kind == sessions.EntryRestoring || kind == sessions.EntryBlocked) && !recoveryDividerAdded {
-			rows = append(rows, listRow{divider: true, label: "Interrupted sessions"})
-			recoveryDividerAdded = true
-		}
-		if kind == sessions.EntryInactive && !inactiveDividerAdded {
-			rows = append(rows, listRow{divider: true, label: "Inactive sessions"})
-			inactiveDividerAdded = true
+	for pos, it := range m.items {
+		if it.isNew() {
+			if !newDividerAdded {
+				rows = append(rows, listRow{divider: true, label: "New " + m.launch.agent + " session"})
+				newDividerAdded = true
+			}
+		} else {
+			kind := m.entries[it.entry].Kind
+			if (kind == sessions.EntryRestoring || kind == sessions.EntryBlocked) && !recoveryDividerAdded {
+				rows = append(rows, listRow{divider: true, label: "Interrupted sessions"})
+				recoveryDividerAdded = true
+			}
+			if kind == sessions.EntryInactive && !inactiveDividerAdded {
+				rows = append(rows, listRow{divider: true, label: "Inactive sessions"})
+				inactiveDividerAdded = true
+			}
 		}
 		if pos == m.cursor {
 			cursorRow = len(rows)
 		}
-		rows = append(rows, listRow{entryIndex: idx, filteredPos: pos})
+		rows = append(rows, listRow{item: pos})
 	}
 	return rows, cursorRow
 }
 
 func (m model) requestPreview() tea.Cmd {
-	entry, ok := m.selectedEntry()
+	it, ok := m.selectedItem()
 	if !ok {
 		return nil
 	}
-	key := previewKey(entry)
+	key := m.itemKey(it)
 	if key == "" || key == m.previewFor {
 		return nil
 	}
-	return loadPreview(entry)
+	if it.isNew() {
+		return m.loadNewPreview(it.row)
+	}
+	return loadPreview(m.entries[it.entry])
+}
+
+// enterAction names what Enter does on the selected row, for the key pills.
+func (m model) enterAction() string {
+	it, ok := m.selectedItem()
+	if !ok {
+		return "open"
+	}
+	if it.isNew() {
+		return "launch"
+	}
+	switch m.entries[it.entry].Kind {
+	case sessions.EntryInactive:
+		return "restore"
+	case sessions.EntryBlocked:
+		return "retry"
+	case sessions.EntryRestoring:
+		return "wait"
+	}
+	return "switch"
+}
+
+// rowText is a row's two columns: the base (the session display, or the
+// launch target) and the right-hand part (the age, or the target's label).
+func (m model) rowText(it listItem) (base, right string) {
+	if !it.isNew() {
+		entry := m.entries[it.entry]
+		return entry.DisplayBase, "(" + entry.TimeAgo + ")"
+	}
+	r := it.row
+	switch r.kind {
+	case newPreset:
+		return "+ ★ " + r.preset, r.label
+	case newSpec:
+		return "+ " + r.value, r.label
+	}
+	return "+ " + m.launch.abbrev(m.launch.expand(r.value)), r.label
 }
 
 func (m model) View() string {
 	if m.width == 0 {
 		return "Loading..."
-	}
-	if m.form != nil {
-		return m.form.view()
 	}
 
 	var b strings.Builder
@@ -709,7 +954,7 @@ func (m model) View() string {
 	// Keybind pills
 	b.WriteString("   ")
 	keys := []struct{ key, action string }{
-		{"?", "help"}, {"⏎", "open"}, {"^N", "new"}, {"^X", "kill"}, {"^R", "refresh"},
+		{"?", "help"}, {"⏎", m.enterAction()}, {"⇥", "agent"}, {"^N", "new"}, {"^X", "kill"}, {"^R", "refresh"},
 	}
 	for i, k := range keys {
 		b.WriteString(keyPillStyle.Render(" " + k.key + " "))
@@ -720,11 +965,15 @@ func (m model) View() string {
 	}
 	b.WriteByte('\n')
 
-	// Filter input
+	// Filter input, then a blank line or the error a launch was refused with
 	b.WriteByte('\n')
 	b.WriteString("   ")
 	b.WriteString(m.filter.View())
-	b.WriteString("\n\n")
+	b.WriteByte('\n')
+	if m.errMsg != "" {
+		b.WriteString("   " + errorStyle.Render(truncRunesTo(m.errMsg, m.width-4)))
+	}
+	b.WriteByte('\n')
 
 	// Calculate layout: list gets 25% of space, preview gets 75% (like fzf config)
 	// 8 = blank + title + separator + keybinds + blank + filter + blank,
@@ -738,6 +987,11 @@ func (m model) View() string {
 	previewHeight := 0
 	if m.showPreview && available > 6 {
 		listHeight = maxInt(3, available/4)
+		// Room for the sessions above the New section and the section itself,
+		// up to half the screen; the inactive sessions below it scroll.
+		if want := m.rowsThroughNew(); want > listHeight {
+			listHeight = maxInt(listHeight, minInt(want, available/2))
+		}
 		previewHeight = available - listHeight
 	}
 
@@ -750,13 +1004,13 @@ func (m model) View() string {
 	}
 
 	// Session list
-	if m.loading && len(m.entries) == 0 {
-		b.WriteString(dimStyle.Render("  Loading sessions..."))
-		b.WriteByte('\n')
-	} else if len(m.filtered) == 0 {
-		if m.filter.Value() != "" {
+	if len(m.items) == 0 {
+		switch {
+		case m.loading:
+			b.WriteString(dimStyle.Render("  Loading sessions..."))
+		case m.filter.Value() != "":
 			b.WriteString(dimStyle.Render("  No matches"))
-		} else {
+		default:
 			b.WriteString(dimStyle.Render("  No sessions"))
 		}
 		b.WriteByte('\n')
@@ -773,18 +1027,24 @@ func (m model) View() string {
 			end = len(rows)
 		}
 
-		// Find longest base display among visible entries to set time column position
-		maxBaseLen := 0
+		// Find the longest base among visible rows to set the right column's
+		// position: one column for the sessions' ages, one for the New rows'
+		// labels (which are longer, and would be cut at the age column).
+		maxBaseLen, maxNewLen := 0, 0
 		for i := start; i < end; i++ {
 			row := rows[i]
 			if row.divider {
 				continue
 			}
-			if n := len(m.entries[row.entryIndex].DisplayBase); n > maxBaseLen {
-				maxBaseLen = n
+			base, _ := m.rowText(m.items[row.item])
+			n := len([]rune(base))
+			if m.items[row.item].isNew() {
+				maxNewLen = maxInt(maxNewLen, n)
+			} else {
+				maxBaseLen = maxInt(maxBaseLen, n)
 			}
 		}
-		// Time column starts 2 tabs (16 chars) after the longest base, capped to terminal width
+		// Right column starts 2 tabs (16 chars) after the longest base, capped to terminal width
 		timeCol := maxBaseLen + 16 // 16 ≈ two tabs of breathing room
 		maxTimeCol := m.width - 14 // leave room for "(XXh XXm ago)"
 		if maxTimeCol < 10 {
@@ -792,6 +1052,10 @@ func (m model) View() string {
 		}
 		if timeCol > maxTimeCol {
 			timeCol = maxTimeCol
+		}
+		labelCol := maxNewLen + 6
+		if maxLabelCol := maxInt(10, m.width-24); labelCol > maxLabelCol {
+			labelCol = maxLabelCol
 		}
 
 		for i := start; i < end; i++ {
@@ -802,37 +1066,45 @@ func (m model) View() string {
 				continue
 			}
 
-			entry := m.entries[row.entryIndex]
-			base := entry.DisplayBase
-			timeAgo := "(" + entry.TimeAgo + ")"
+			it := m.items[row.item]
+			base, right := m.rowText(it)
+			selected := row.item == m.cursor
 
 			prefix := "  "
-			if row.filteredPos == m.cursor {
+			if selected {
 				prefix = "> "
 			}
 
-			// Truncate base if it would overlap the time column
-			maxBase := timeCol - 2 // 2 = prefix width
+			col := timeCol
+			if it.isNew() {
+				col = labelCol
+			}
+			// Truncate base if it would overlap the right column
+			maxBase := col - 2 // 2 = prefix width
 			if maxBase < 10 {
 				maxBase = 10
 			}
-			if len(base) > maxBase {
-				base = base[:maxBase]
+			if len([]rune(base)) > maxBase {
+				base = string([]rune(base)[:maxBase])
 			}
-			gap := timeCol - len(base)
+			gap := col - len([]rune(base))
 			if gap < 2 {
 				gap = 2
 			}
-			line := prefix + base + strings.Repeat(" ", gap) + timeAgo
+			lead := prefix + base + strings.Repeat(" ", gap)
+			right = truncRunesTo(right, m.width-len([]rune(lead)))
 
-			if row.filteredPos == m.cursor {
+			if selected {
 				// Pad to full width for background highlight
-				if len(line) < m.width {
-					line += strings.Repeat(" ", m.width-len(line))
+				line := lead + right
+				if n := len([]rune(line)); n < m.width {
+					line += strings.Repeat(" ", m.width-n)
 				}
 				b.WriteString(selectedStyle.Render(line))
+			} else if it.isNew() {
+				b.WriteString(normalStyle.Render(lead) + dimStyle.Render(right))
 			} else {
-				b.WriteString(normalStyle.Render(line))
+				b.WriteString(normalStyle.Render(lead + right))
 			}
 			b.WriteByte('\n')
 		}
@@ -855,14 +1127,20 @@ func (m model) View() string {
 			previewContent = dimStyle.Render("Loading preview...")
 		}
 
-		// Show tail of preview (most recent output), leave 1 line for separator
+		// A session shows the tail of its pane (the most recent output), a
+		// launch target its description from the top. Leave 1 line for the
+		// separator.
 		lines := strings.Split(previewContent, "\n")
 		maxLines := previewHeight - 1
 		if maxLines < 1 {
 			maxLines = 1
 		}
 		if len(lines) > maxLines {
-			lines = lines[len(lines)-maxLines:]
+			if it, ok := m.selectedItem(); ok && it.isNew() {
+				lines = lines[:maxLines]
+			} else {
+				lines = lines[len(lines)-maxLines:]
+			}
 		}
 		// Truncate lines by visible width (skip ANSI escapes when counting)
 		for i, line := range lines {
@@ -901,19 +1179,25 @@ func helpText() string {
 
   Keybindings
     Up/Down     Move selection
-    Enter       Open, restore, or retry selected session
+    Enter       Switch to, restore, or retry a session; launch a new one
+    Tab         Agent for new sessions (Shift-Tab: back)
     Esc/q       Exit without action
-    Ctrl-N      New session form (Esc returns here)
+    Ctrl-N      New session section (on a session: a new one in its dir)
+    Ctrl-H      Jump to the inactive sessions
     Ctrl-X      Kill active or forget blocked session
     Ctrl-R      Refresh session list
+    Ctrl-P      Toggle the preview
     ?           Show this help
 
-  Type to filter sessions (fuzzy match)
+  Type to filter sessions and new-session targets
+    text        sessions, recent directories, presets
+    / ~ .       a path: the sessions under it, the directory, completions
+    @spec       the dir_provider's suggestions
 
   In tmux session
     Prefix + 1-9  Jump to sidebar slot N
     Prefix + a  Switch to last am session
-    Prefix + n  Open new-session popup
+    Prefix + n  Open the browser on New session
     Prefix + s  Open am browser popup
     Prefix + x  Kill current am session
     Prefix + d  Detach from session

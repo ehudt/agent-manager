@@ -15,7 +15,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.39.0"
+AM_VERSION="0.40.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -303,7 +303,15 @@ cmd_browse() {
 
     local result
     result=$(fzf_main)
+    _browse_result "$result"
+}
 
+# Act on one am-browse output line: attach a session, restore or retry one,
+# or launch a new one. Shared by the browser and `am new` with no arguments,
+# whose list offers the same rows.
+# Usage: _browse_result <line>
+_browse_result() {
+    local result="$1"
     if [[ "$result" == $'__RESTORE__\x1f'* ]]; then
         # Parse: __RESTORE__<US>directory<US>session_id<US>agent_type
         local directory session_id restore_agent
@@ -848,7 +856,7 @@ cmd_new() {
             -h|--help)
                 echo "Usage: am new [options] <directory|@spec> [-- extra-args...]"
                 echo ""
-                echo "If no directory specified, opens interactive picker."
+                echo "If no directory specified, opens the browser on its New session section."
                 echo "A directory starting with @ is resolved by the configured dir_provider"
                 echo "(am config set dir_provider wp): @48351, @my-branch, or bare @."
                 echo ""
@@ -863,7 +871,7 @@ cmd_new() {
                 echo "  --              Pass remaining args to agent command"
                 echo ""
                 echo "Examples:"
-                echo "  am new                          # Interactive directory-first launcher"
+                echo "  am new                          # Browser, cursor on New session"
                 echo "  am new ~/project                # Specific directory"
                 echo "  am new @48351                   # Directory from the provider (dir_provider)"
                 echo "  printf 'Fix bug\n' | am new --detach ~/project"
@@ -887,24 +895,29 @@ cmd_new() {
         _cmd_new_apply_preset "$preset_name" true || return 1
     fi
 
-    # Directory-first launcher for fully interactive new-session creation:
-    # the new-session form of am-browse, alone (`--new`). It prints one
-    # __NEW_SESSION__<US>directory<US>agent<US>flags<US>task line, or nothing
-    # when cancelled.
+    # Fully interactive: the browser with the cursor on its New session
+    # section (`am-browse --new`). A launch prints one
+    # __NEW_SESSION__<US>directory<US>agent<US>flags<US>task line; a session
+    # row picked from the same list prints what the browser prints, handled
+    # as the browser does; nothing when cancelled.
     if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && ${#agent_args[@]} -eq 0 ]]; then
         local browse_cmd form_values flags _tag
         browse_cmd=$(fzf_browse_bin) || return 1
         form_values=$("$browse_cmd" --new --dir "$directory" --agent "$(am_default_agent)" --task "$task") || return 1
-        if [[ "$form_values" != $'__NEW_SESSION__\x1f'* ]]; then
+        if [[ -z "$form_values" ]]; then
             log_info "Cancelled"
             return 0
+        fi
+        if [[ "$form_values" != $'__NEW_SESSION__\x1f'* ]]; then
+            _browse_result "$form_values"
+            return
         fi
 
         IFS=$'\x1f' read -r _tag directory agent_type flags task <<< "$form_values"
         launch_source=form
         # shellcheck disable=SC2206
         agent_args=($flags)
-        # The form's preset choice arrives as --preset=<name>; it is for us,
+        # A preset row arrives as --preset=<name>; it is for us,
         # not the agent.
         local _flag _kept=() _form_preset=""
         for _flag in "${agent_args[@]}"; do
@@ -914,7 +927,7 @@ cmd_new() {
             esac
         done
         agent_args=("${_kept[@]}")
-        # The form already copied the preset's fields; merge its agent args
+        # The line already carries the preset's fields; merge its agent args
         # and shell flag here.
         if [[ -n "$_form_preset" ]]; then
             _cmd_new_apply_preset "$_form_preset" false || return 1

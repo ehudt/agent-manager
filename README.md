@@ -60,7 +60,7 @@ That's it. You're in a tmux session with Claude running full-screen. Press ``Pre
 | **fzf** | 0.40+ | `brew install fzf` / `apt install fzf` / `pacman -S fzf` |
 | **jq** | 1.6+ | `brew install jq` / `apt install jq` / `pacman -S jq` |
 | **git** | any | Required for branch display |
-| **[zoxide](https://github.com/ajeetdsouza/zoxide)** | any | Frecent directory ranking in the session creation form |
+| **[zoxide](https://github.com/ajeetdsouza/zoxide)** | any | Frecent directory ranking in the browser's New session rows |
 
 ### Platform support
 
@@ -166,15 +166,16 @@ am new @48351 -n "review"            # a PR number, a branch, whatever the provi
 printf 'Review PR 48351\n' | am new --detach --print-session @48351
 ```
 
-In the interactive form, typing `@` into Directory switches the suggestion
-list to the provider's candidates (`@483` lists everything the provider
-matches on `483`; Enter or Tab takes the highlighted one). Suggestions are
-cut off after `AM_DIR_SUGGEST_TIMEOUT` seconds (default 0.3), so a slow
-provider degrades to "resolve what you typed" instead of stalling the form.
+In the browser, a query starting with `@` lists the provider's candidates
+as New session rows (`@483` lists everything the provider matches on
+`483`, under any running session whose branch or task contains `483`;
+Enter launches the highlighted one). Suggestions are cut off after
+`AM_DIR_SUGGEST_TIMEOUT` seconds (default 0.3), so a slow provider degrades
+to "resolve what you typed" instead of stalling the browser.
 
-Running `am new` with no arguments opens an interactive form where you pick a directory, agent type, and task:
-
-<!-- TODO: Screenshot — the one-page new session form showing directory picker with zoxide suggestions, agent type selector, and task field. -->
+Running `am new` with no arguments opens the session browser with the
+cursor on its New session section (see below): Enter starts a session in
+the highlighted directory, `Tab` picks the agent.
 
 ### Interactive session browser
 
@@ -202,12 +203,23 @@ Run `am` to open the session browser:
 | Key | Action |
 |-----|--------|
 | `Up/Down` | Move selection |
-| `Enter` | Attach an active session or restore an inactive session |
+| `Enter` | Switch to an active session, restore an inactive one, or launch a New session row |
+| `Tab` / `Shift-Tab` | Change the agent new sessions launch with |
 | `Esc/q` | Exit without action |
-| `Ctrl-N` | Create new session |
+| `Ctrl-N` | Jump to New session (on a session row: a new one in its directory first) |
 | `Ctrl-X` | Kill selected active session |
 | `Ctrl-R` | Refresh session list |
 | `?` | Show inline help |
+
+The browser is also the launcher: below the running sessions, a **New
+session** section lists recent directories (three, plus your presets, until
+you type). One query filters both, so typing `wekapp` shows the sessions
+already working there above the directories you could start a new one in,
+and the cursor goes to the best match, an existing session on a tie. A
+query starting with `/`, `~` or `.` is a path (the directory, then its
+completions; the sessions under it stay listed above), and one starting
+with `@` asks the `dir_provider` for suggestions. Directory rows show their
+branch and how many sessions run there.
 
 ### Inside a session
 
@@ -234,7 +246,7 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix + 1-9` | Jump to sidebar slot N |
 | `Prefix + ←/→` | Previous / next session tab |
 | `Prefix + a` | Switch to last used am session |
-| `Prefix + n` | Open new-session popup |
+| `Prefix + n` | Open the browser popup on New session |
 | `Prefix + s` (or `h`) | Open am browser popup |
 | `Prefix + x` | Kill current session and switch to next |
 | `Prefix + d` | Detach from session |
@@ -245,8 +257,9 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | mouse click | Click a tab in the bottom bar to switch to it |
 | `:am` | Open am browser as a tmux command |
 
-Inside the browser: `Enter` attaches (or restores an inactive session),
-`Ctrl-N` opens the new-session form, `Ctrl-X` kills, `Ctrl-R` refreshes,
+Inside the browser: `Enter` attaches (or restores an inactive session, or
+launches a New session row), `Tab` changes the agent of new sessions,
+`Ctrl-N` jumps to New session, `Ctrl-X` kills, `Ctrl-R` refreshes,
 `Ctrl-P` toggles the preview pane, `Ctrl-H` jumps to the first restorable
 session, and typing filters.
 
@@ -435,7 +448,8 @@ am kill --state idle -y            # sweep finished workers
 
 ### Presets
 
-Save a launch shape once and reuse it from the CLI or the new-session form:
+Save a launch shape once and reuse it from the CLI or the browser, which
+lists every preset as a New session row:
 
 ```bash
 am preset save review @ -- --model opus --effort high    # provider default dir + agent flags

@@ -13,8 +13,8 @@
 # back as directory `@<branch>`.
 #
 # `am new -p review` applies the preset as defaults; explicit flags win. The
-# new-session form shows a Preset field when any preset exists and fills the
-# other fields when one is picked. Managed with `am preset save|list|show|rm`.
+# browser lists every preset as a row of its New session section; Enter
+# launches it. Managed with `am preset save|list|show|rm`.
 
 _PRESETS_LIB_DIR="${AM_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
@@ -185,7 +185,7 @@ Usage: am preset <save|list|show|rm> ...
 
 Apply with `am new -p <name> [overrides...]`; explicit flags win over the
 preset, and agent args after `--` are appended to the preset's. The
-new-session form offers a Preset field once any preset exists.
+browser (`am`, `am new`) lists each preset as a New session row.
 
 Examples:
   am preset save review @ -- --model opus --effort high

@@ -6,6 +6,35 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.40.0] - 2026-10-06
+
+- The session browser and the new-session form are one list. Below the
+  running and interrupted sessions, a **New session** section lists launch
+  targets: three recent directories and every preset under an empty query;
+  under a query, the matching directories and presets, a path's directory
+  and completions (`/`, `~`, `.`), or the `dir_provider`'s suggestions
+  (`@…`). One query filters sessions and targets together, and Enter does
+  the row's action: switch, restore, retry, or launch (the `⏎` pill names
+  it).
+- The cursor goes to the best match, and an existing session wins a tie, so
+  typing a project's name lands on the session already working there
+  rather than starting a duplicate. A path or `@spec` query lands on the
+  New section but keeps the sessions working under that path, or on that
+  branch / PR, listed above it; each directory row shows its branch and how
+  many sessions run there. The preview of a New row shows the directory's
+  branch, uncommitted files, last commits, and the sessions that worked
+  there.
+- `Tab` / `Shift-Tab` pick the agent new sessions launch with (a preset row
+  keeps its own). `Ctrl-N` jumps to the New section; on a session row it
+  first adds that session's directory there, so `Ctrl-N Enter` starts
+  another session where the highlighted one works.
+- `am new` with no arguments, and `prefix+n`, open the same browser with the
+  cursor on the New section (the popup is now the browser's size); picking a
+  session there switches to it. The form's options screen (Preset,
+  Directory, Agent, Task) and the one-key launches `Ctrl-L/X/R/P/O` are
+  gone: `Ctrl-X` kills and `Ctrl-R` refreshes in the one list. A preset's
+  task still reaches the session; there is no task field to type one.
+
 ## [0.39.0] - 2026-10-05
 
 - The new-session form is part of the session browser (Go) instead of a
