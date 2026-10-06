@@ -897,6 +897,25 @@ func (m model) enterAction() string {
 	return "switch"
 }
 
+type keyPill struct{ key, action string }
+
+// keyPills are the header's key hints for the selected row: Ctrl-N only on
+// a session row (on a New row the cursor is already there), Ctrl-X only on
+// a row it kills or forgets.
+func (m model) keyPills() []keyPill {
+	pills := []keyPill{{"?", "help"}, {"⏎", m.enterAction()}, {"⇥", "agent"}}
+	if entry, ok := m.selectedEntry(); ok {
+		pills = append(pills, keyPill{"^N", "new here"})
+		switch entry.Kind {
+		case sessions.EntryActive:
+			pills = append(pills, keyPill{"^X", "kill"})
+		case sessions.EntryBlocked, sessions.EntryRestoring:
+			pills = append(pills, keyPill{"^X", "forget"})
+		}
+	}
+	return append(pills, keyPill{"^R", "refresh"})
+}
+
 // rowText is a row's two columns: the base (the session display, or the
 // launch target) and the right-hand part (the age, or the target's label).
 func (m model) rowText(it listItem) (base, right string) {
@@ -951,9 +970,7 @@ func (m model) View() string {
 
 	// Keybind pills
 	b.WriteString("   ")
-	keys := []struct{ key, action string }{
-		{"?", "help"}, {"⏎", m.enterAction()}, {"⇥", "agent"}, {"^N", "new"}, {"^X", "kill"}, {"^R", "refresh"},
-	}
+	keys := m.keyPills()
 	for i, k := range keys {
 		b.WriteString(keyPillStyle.Render(" " + k.key + " "))
 		b.WriteString(keyActionStyle.Render(" " + k.action))

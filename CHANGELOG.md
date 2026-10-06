@@ -27,7 +27,9 @@ entry unless they changed behaviour a user would notice.
 - `Tab` / `Shift-Tab` pick the agent new sessions launch with (a preset row
   keeps its own). `Ctrl-N` jumps to the New section; on a session row it
   first adds that session's directory there, so `Ctrl-N Enter` starts
-  another session where the highlighted one works.
+  another session where the highlighted one works. The header shows `^N
+  new here` and `^X kill` / `forget` only on the rows they act on (on a New
+  row, where `am new` starts, neither does anything).
 - `am new` with no arguments, and `prefix+n`, open the same browser with the
   cursor on the New section (the popup is now the browser's size); picking a
   session there switches to it. The form's options screen (Preset,

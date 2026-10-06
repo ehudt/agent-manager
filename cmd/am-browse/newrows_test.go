@@ -618,9 +618,15 @@ func TestNewRowKeys(t *testing.T) {
 	}
 	m = update(m, frecentMsg{paths: []string{sub}})
 	v := m.View()
-	for _, want := range []string{"switch", "+ ~/code/proj", "New claude session"} {
+	for _, want := range []string{"switch", "+ ~/code/proj", "New claude session", "new here", "kill"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view lacks %q:\n%s", want, v)
 		}
+	}
+	// On a New row Ctrl-N and Ctrl-X do nothing, so their pills go.
+	m = press(m, key(tea.KeyDown))
+	v = m.View()
+	if !strings.Contains(v, "launch") || strings.Contains(v, "^N") || strings.Contains(v, "kill") {
+		t.Errorf("pills on a new row:\n%s", v)
 	}
 }
