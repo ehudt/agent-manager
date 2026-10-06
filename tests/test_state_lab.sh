@@ -2,13 +2,16 @@
 # tests/test_state_lab.sh - State-detection lab regression gate
 #
 # Runs every script under tests/state_lab/cases/*.sh and asserts they all
-# pass. Each lab case is a self-contained scenario that exercises the
-# state-detection layers (hook / pane / resolver) via the harness in
-# tests/state_lab/lab.sh.
+# pass. Each lab case is a self-contained scenario that drives the real hook
+# script and the real resolver via the harness in tests/state_lab/lab.sh.
 #
-# Current cases: 04 (hook Stop-then-tool race), 09 (duplicate-cwd
-# resolution), 12 (unknown state fallback).
+# Current cases: 12 (hook-silent agent -> unknown; the non-bulk resolver
+# path), 13 (background work through the real hook, read by the real
+# resolver).
 
+# Keep (docs/test-value-plan.md 3c): case 12 is the sole guard of the
+# non-bulk display-message failure path, and case 13 the only place the
+# hook's written state meets the resolver's read.
 test_state_lab_cases() {
     local lab_runner="$SCRIPT_DIR/state_lab/run.sh"
     local output

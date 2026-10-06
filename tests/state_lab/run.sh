@@ -3,7 +3,7 @@
 #
 # Usage:
 #   tests/state_lab/run.sh                       # run all cases
-#   tests/state_lab/run.sh 01-jsonl-newest       # run by prefix match
+#   tests/state_lab/run.sh 12-unknown            # run by prefix match
 #   tests/state_lab/run.sh --list                # list cases
 #   LAB_KEEP=true tests/state_lab/run.sh CASE    # keep LAB_DIR after run
 #   LAB_VERBOSE=true ...                         # extra logging

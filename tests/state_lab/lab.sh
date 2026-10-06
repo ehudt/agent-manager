@@ -33,7 +33,7 @@ LAB_TESTS_PASSED=0
 LAB_TESTS_FAILED=0
 LAB_FAIL_DETAILS=()
 
-_C_RED='\033[0;31m'; _C_GREEN='\033[0;32m'; _C_YELLOW='\033[0;33m'
+_C_RED='\033[0;31m'; _C_GREEN='\033[0;32m'
 _C_DIM='\033[0;90m'; _C_RESET='\033[0m'
 
 lab_log() { printf '%b\n' "${_C_DIM}[lab]${_C_RESET} $*" >&2; }
@@ -51,20 +51,6 @@ lab_assert() {
         printf '       expected: %q\n' "$expected" >&2
         printf '       actual:   %q\n' "$actual" >&2
         LAB_FAIL_DETAILS+=("$msg | want=$expected got=$actual")
-    fi
-}
-
-# Records XFAIL when assertion fails (expected), XPASS when it passes
-# unexpectedly (bug fixed — promote to lab_assert).
-lab_xfail() {
-    local expected="$1" actual="$2" msg="${3:-}"
-    LAB_TESTS_RUN=$((LAB_TESTS_RUN+1))
-    if [[ "$expected" == "$actual" ]]; then
-        printf '%b\n' "${_C_YELLOW}XPASS${_C_RESET} $msg (expected to fail — promote to lab_assert)" >&2
-        LAB_TESTS_PASSED=$((LAB_TESTS_PASSED+1))
-    else
-        printf '%b\n' "${_C_YELLOW}XFAIL${_C_RESET} $msg" >&2
-        printf '       want: %q got: %q\n' "$expected" "$actual" >&2
     fi
 }
 
@@ -181,22 +167,10 @@ probe_hook() {
     head -1 "$f"
 }
 
-probe_agent_get_state() {
-    agent_get_state "$1" 2>/dev/null || true
-}
-
+# Non-bulk path: the resolver forks tmux/ps itself (the lab's tmux
+# overrides answer for the virtual session).
 probe_resolve() {
     _state_resolve "$1" "$2" "$3" 2>/dev/null || true
-}
-
-# Bulk path — builds empty fixtures; with no top pid in the map, the bulk
-# shell check returns false and the resolver advances to the hook layer.
-probe_resolve_bulk() {
-    declare -A __PB_TOP=() __PB_COMM=() __PB_CHILD=()
-    local __PB_NOW
-    __PB_NOW=$(date +%s)
-    _state_resolve "$1" "$2" "$3" \
-        __PB_TOP __PB_COMM __PB_CHILD "$__PB_NOW" 2>/dev/null || true
 }
 
 # Bulk path with an injected pane title (Claude's self-maintained glyph

@@ -137,7 +137,7 @@ only (no mutation run).
 | `internal/sessions/titles_test.go` | `TestClaudeFirstUserMessage` | 93 | The id-pinned reader is tested harder by its siblings | `TestClaudeFirstUserMessageDisambiguatesBySessionID`, `TestClaudeFirstUserMessageRequiresBoundID`, `TestClaudeFirstUserMessageFollowsRelocatedTranscript`, `TestRefreshTitlesTitleSources` (eight Go tests failed with the candidate skipped; `tests/test_utils.sh` passed under the same mutation, so the bash test is not a guard here) |
 | `internal/sessions/titles_test.go` | `TestClaudeFirstUserMessageSkipsShort` | 141 | The length gate is one function, `titleWorthy` | `TestFirstUserMessageLengthGateCountsRunes`; `tests/test_utils.sh` L104-109 (`skips XML-only messages`) |
 | `cmd/am-browse/browse_test.go` | `TestOutputProtocol` | 157 | Tautology: `newModel` never assigns `output`, so it asserts a zero value | `cmd/am-browse/newform_test.go::TestBrowserCtrlNOpensFormAndEscReturns` (:662, :673) for the two breakages applied; the submit hand-off itself (`main.go:297`) is guarded by `TestBrowserFormSubmitQuitsWithLine` (:677), see 3c |
-| `tests/state_lab/cases/13-background-wait.sh` | via `tests/test_state_lab.sh::test_state_lab_cases` | — | 9 `lab_assert`s on the ✳ × background decision rows | `tests/test_state.sh::test_state_title_glyph` (`resolve: ✳ + background -> background (hook read)`, `✳ + fresh running -> running`, `✳ + stale running + stale activity -> running`, `✳ + no hook file + ephemeral/durable .sid -> unknown`, `busy + background -> running (wrap-up turn live)`); `tests/test_state_hooks.sh::test_state_hooks` (`Stop re-fire keeps background`, `Stop re-fire over background: mtime pinned`, `Stop + running subagent/shell/monitor/owned/orphaned shell: writes background`) |
+| `tests/state_lab/cases/13-background-wait.sh` (steps 3-7 only; steps 1-2 kept, see the decision below) | via `tests/test_state_lab.sh::test_state_lab_cases` | — | 9 `lab_assert`s on the ✳ × background decision rows, 6 of them resolver-only rows fed by `printf` | `tests/test_state.sh::test_state_title_glyph` (`resolve: ✳ + background -> background (hook read)`, `✳ + fresh running -> running`, `✳ + stale running + stale activity -> running`, `✳ + no hook file + ephemeral/durable .sid -> unknown`, `busy + background -> running (wrap-up turn live)`); `tests/test_state_hooks.sh::test_state_hooks` (`Stop re-fire keeps background`, `Stop re-fire over background: mtime pinned`, `Stop + running subagent/shell/monitor/owned/orphaned shell: writes background`) |
 | `tests/state_lab/cases/04-hook-stop-then-tool-race.sh` | via `test_state_lab_cases` | — | 6 `lab_assert`s on the Stop → PostToolUse grace window | `test_state_hooks` (`PostToolUse: flips aged ready to running (resumed turn)`, `PostToolUse: does not clobber fresh ready`), `test_state_hook_notify`, `test_state_hook_events` |
 | `tests/state_lab/cases/09-dup-cwd-resolution.sh` | via `test_state_lab_cases` | — | 5 `lab_assert`s: two rows share a cwd, `AM_SESSION_NAME` picks one, no pane signal writes nothing | `test_state_hooks` (`AM_SESSION_NAME: targeted session updated` / `first session untouched`, `No pane signal: no state file written`, the `stranger:` block), `test_state_hook_cwd_sidecar` (`hook: unmanaged process in the launch dir writes no state` / `no sidecar`) |
 
@@ -154,11 +154,15 @@ where the real hook writes the file the real `_state_resolve` reads"; the
 mutation pass on case 13 found every breakage applied caught elsewhere, and
 the drift the skeptic describes is a two-sided edit (hook output changes,
 `test_state_hooks` updated, `lib/state.sh` not) that no single mutation
-samples. This plan follows the mutation result and deletes case 13; the
-wrapper is then kept for case 12 only, and the two-sided drift is an accepted
-gap (section 8 lists keeping case 13 steps 2-3 as the alternative). Either
-way fix the header at `tests/test_state_lab.sh:9-10`, which lists three cases
-while four exist.
+samples. Decided 2026-10-06 (Batch 3): case 13 keeps the two steps where
+the real hook writes and the real resolver reads (steps 1-2 of the file:
+Stop with a running `background_tasks` entry → `background`, the re-fired
+Stop with an empty array → `ready`); the five resolver-only rows it also
+carried (busy glyph, non-Claude agent, hook silent with and without a glyph,
+stale running) are deleted as duplicates of `test_state_title_glyph`. The
+wrapper is kept for cases 12 and 13, and the header at
+`tests/test_state_lab.sh:9-10` (which listed three cases while four existed)
+names the two that remain.
 
 ### 3b. Simplify and merge (9, all M)
 
@@ -259,7 +263,7 @@ regression only this test would catch; the pipeline did not apply it.
 | `tests/test_state_hooks.sh::test_state_hooks` | 4 | simplify | Re-adding a directory guess for Cursor payloads (`workspace_roots[0]`, removed in 5f7bd47), caught by line 568 |
 | `tests/test_state_hooks.sh::test_state_hook_notify_osascript_utf8` | 1012 | simplify | Inline interpolation replacing `on run argv` in the osascript call (`state-hook.sh:213-215`); line 1018-1019 is the only assertion that fails |
 | `tests/test_state_hooks.sh::test_state_hook_fence` | 1216 | simplify | A per-occurrence `${rest#*…}` loop in `_fence_hit` (`state-hook.sh:645-648`): 27-33s per hook run, caught only by the timing assertion at 1308 |
-| `tests/test_state_lab.sh::test_state_lab_cases` | 12 | remove | Hook writer (`state-hook.sh:477-499`, `:104-109`, `:780`) ↔ resolver reader state-vocabulary contract. The skeptic located this in case 13 steps 2-3, which 3a removes on mutation evidence; after batch 3 the wrapper is kept because case 12 is a mutation-confirmed sole guard, not for this argument |
+| `tests/test_state_lab.sh::test_state_lab_cases` | 12 | remove | Hook writer (`state-hook.sh:477-499`, `:104-109`, `:780`) ↔ resolver reader state-vocabulary contract. The skeptic located this in case 13's hook-written steps; Batch 3 keeps those two steps, so the wrapper is kept for both case 12 (mutation-confirmed sole guard) and this argument |
 | `tests/test_state.sh::test_state` | 4 | simplify | Dropping the activity term from `_state_hook_read` (`lib/state.sh:239-242`), line 58; `background` dropped from the persistent case (`:236`), line 32 |
 | `tests/test_state.sh::test_agent_wait_state_stable_idle` | 555 | merge | The reset branch of the stable-polls arm (`lib/state.sh:586-592`) no longer re-recording `last_match_activity` |
 | `tests/test_tmux.sh::test_tmux_binding_snippets` | 98 | simplify | Dropping the index from `command-alias[100]` (`lib/tmux.sh:106`), line 127 |
@@ -546,9 +550,14 @@ result is a false green.
 
 | File | Change |
 |---|---|
-| `tests/state_lab/cases/` | delete `04-hook-stop-then-tool-race.sh`, `09-dup-cwd-resolution.sh`, `13-background-wait.sh` |
-| `tests/test_state_lab.sh` | fix the header (9-10); the wrapper keeps running case 12 |
-| optional, same or next commit | port case 12's three `lab_assert`s (non-bulk `display-message` failure → `idle` short-circuit) into `tests/test_state.sh`'s non-bulk block, then delete `tests/test_state_lab.sh`, `tests/state_lab/`, and `run_state_lab_tests` from `WORKER_PLAN` worker 4 (`tests/test_all.sh:189`) |
+| `tests/state_lab/cases/` | delete `04-hook-stop-then-tool-race.sh`, `09-dup-cwd-resolution.sh`; trim `13-background-wait.sh` to its two hook-written steps (decision above) |
+| `tests/test_state_lab.sh` | fix the header (9-10): cases 12 and 13; keep-comment on the wrapper |
+| `tests/state_lab/` | the lab stays as the opt-in repro harness: `README.md` rewritten for the hook + resolver harness (it still described the JSONL and pane drivers removed in 476d563), the dead helpers `lab_xfail`, `probe_agent_get_state`, `probe_resolve_bulk` removed from `lab.sh`, `run.sh`'s usage example updated |
+
+The optional port-and-delete (case 12's assertions into `tests/test_state.sh`,
+then drop the wrapper, the lab, and `run_state_lab_tests` from worker 4) is
+not taken: with case 13 kept the lab holds an integration check that has no
+home in `tests/test_state.sh`.
 
 **Verify** → (1) mutate `lib/hooks/state-hook.sh`'s Stop → PostToolUse grace
 window; expect `test_state_hooks`' `PostToolUse: flips aged ready to running
@@ -568,6 +577,26 @@ and never runs the hook; then break the ✳ + background pass-through in
 running (wrap-up turn live)` to fail. Case 09 is the guard for a live
 incident and only the mutation result makes it removable; re-run (2) before
 committing.
+
+Re-run result (2026-10-06, before the Batch 3 commit): every mutation was
+caught. (1) The disabled grace window fails only `PostToolUse: does not
+clobber fresh ready` — the `flips aged ready` assertion cannot fail under a
+mutation that only makes flipping easier. (2) All three session-resolution
+breakages (AM_SESSION_NAME overridden by a cwd match; the no-pane-signal
+exit falling back to a cwd match; that exit writing only a `.sid` sidecar)
+fail the named `test_state_hooks` assertions; the sidecar-only variant is
+caught by the `stranger: sid sidecar untouched` assertion, not by
+`test_state_hook_cwd_sidecar`'s `writes no sidecar` (which checks the
+`.cwd` sidecar). (3) Ignoring `background_tasks` on Stop fails seven
+`test_state_hooks` assertions and both of case 13's hook-written steps;
+breaking the ✳ + background pass-through fails `test_state_title_glyph`'s
+`✳ + background -> background` and case 13's `passes through`. The
+two-sided drift the kept case exists for was also run: the hook writing `bg`
+instead of `background` with every expected `background` in
+`test_state_hooks.sh` renamed to match, `lib/state.sh` untouched —
+`test_state.sh` and `test_standalone_scripts.sh` stayed green and only case
+13 failed on its own terms (`hook file background` got `bg`; `passes
+through` got `ready`, the resolver not recognising the word).
 
 ### Batch 4 — simplifications and merges
 
@@ -712,16 +741,11 @@ tests.
 
 **Not decided.**
 
-- Case `13-background-wait.sh`: this plan deletes it on the mutation result.
-  The alternative is to keep steps 2-3 as the one place the real hook writes
-  the file the real `_state_resolve` reads (the skeptic's two-sided-drift
-  argument for the wrapper). If the lab is later ported and deleted (batch 3's
-  optional step), that integration check goes with it either way.
-- `tests/state_lab/` as a whole: opt-in repro harness with case 12 (then fix
-  `tests/state_lab/README.md`, which still describes JSONL and pane probes
-  removed in 476d563, and the dead helpers `lab_xfail`,
-  `probe_agent_get_state`, `probe_resolve_bulk` in `lab.sh`), or port and
-  delete.
+- Case `13-background-wait.sh` and `tests/state_lab/` as a whole: decided
+  2026-10-06, see 3a and Batch 3 — case 13 keeps its two hook-written
+  steps as the one place the real hook writes the file the real
+  `_state_resolve` reads, and the lab stays (README rewritten, dead helpers
+  removed) rather than being ported and deleted.
 - `test_cursor_first_user_message` (`tests/test_utils.sh`): cluster, low
   confidence — port the standard-layout (220-222, `AM_CURSOR_PROJECTS_DIR`
   with a dotted project name) and missing-session cases into
