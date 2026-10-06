@@ -235,11 +235,6 @@ test_state_hooks() {
     assert_eq "resumed-conv" "$(cat "$identity_dir/am-cur456.sid" 2>/dev/null || echo)" \
         "Cursor hook without transcript: keeps last complete durable identity pair"
 
-    AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
-        "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"cursor-conv-1\",\"status\":\"completed\",\"loop_count\":0,\"workspace_roots\":[\"$real_project_dir\"]}"
-    assert_eq "ready" "$(cat "$state_dir/am-cur456" 2>/dev/null || echo)" \
-        "Cursor stop: writes ready"
-
     rm -f "$state_dir/am-cur456"
     AM_REGISTRY="$cursor_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-cur456" \
         "$hook_script" <<< "{\"hook_event_name\":\"preToolUse\",\"conversation_id\":\"cursor-conv-1\",\"tool_name\":\"Read\",\"cwd\":\"$real_project_dir\"}"
@@ -284,16 +279,11 @@ test_state_hooks() {
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "PostToolUse: flips aged ready to running (resumed turn)"
 
-    # --- PostToolUse does NOT clobber background, fresh OR aged ---
+    # --- PostToolUse does NOT clobber background, however old ---
     # A background subagent's own tool calls fire PreToolUse/PostToolUse in
     # this session for as long as it runs (minutes), so background is
     # guarded unconditionally — no grace window. Stop re-fires when the work
     # completes, so the state cannot stick.
-    printf 'background' > "$state_dir/am-abc123"
-    run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
-    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "background" "$state" "PostToolUse: does not clobber fresh background"
-
     printf 'background' > "$state_dir/am-abc123"
     touch -t 202601010000 "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"PostToolUse\",\"cwd\":\"$real_project_dir\"}"
@@ -316,12 +306,6 @@ test_state_hooks() {
     run_hook "{\"hook_event_name\":\"PreToolUse\",\"cwd\":\"$real_project_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "running" "$state" "PreToolUse: transitions waiting_user -> running"
-
-    # --- UserPromptSubmit DOES override ready (explicit user action) ---
-    printf 'ready' > "$state_dir/am-abc123"
-    run_hook "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
-    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "running" "$state" "UserPromptSubmit: overrides ready"
 
     # --- UserPromptSubmit DOES override background too ---
     printf 'background' > "$state_dir/am-abc123"
@@ -362,11 +346,6 @@ test_state_hooks() {
     # no completion that would ever re-fire Stop. Observed live: two finished
     # sessions pinned at background for an hour by one artifact watch each.
     monitor_task='{"id":"st7gmduau","type":"monitor","status":"running","description":"live updates for artifact https://claude.ai/code/artifact/e0b2165b-1449-4cf1-8873-a373b3281ecc (auto-armed on publish)"}'
-    rm -f "$state_dir/am-abc123"
-    run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[$monitor_task]}"
-    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "ready" "$state" "Stop + running monitor only: writes ready"
-
     printf 'background' > "$state_dir/am-abc123"
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\",\"background_tasks\":[$monitor_task]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
@@ -416,13 +395,6 @@ test_state_hooks() {
     run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\",\"background_tasks\":[]}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "ready" "$state" "Notification[idle_prompt] + empty background_tasks: downgrades to ready"
-
-    # Field-less idle_prompt over plain ready is still a same-state
-    # no-op write path (nothing to protect).
-    printf 'ready' > "$state_dir/am-abc123"
-    run_hook "{\"hook_event_name\":\"Notification\",\"notification_type\":\"idle_prompt\",\"cwd\":\"$real_project_dir\"}"
-    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "ready" "$state" "Notification[idle_prompt] without background_tasks over ready: unchanged"
 
     # --- Orphaned leftover shells do not pin background ---
     # A --fork-session / parent-Claude exit reparents still-running
@@ -505,22 +477,14 @@ test_state_hooks() {
     kill "$orphan_pid" 2>/dev/null || true
     rm -f "$state_dir/am-abc123.bg"
 
-    # --- Duplicate cwd: AM_SESSION_NAME disambiguates which session to update ---
-    # Two am sessions can share a cwd (e.g., multiple Claude instances in the
-    # same repo). Without AM_SESSION_NAME the hook would blindly pick the first
-    # match and keep overwriting the wrong session's state file forever.
+    # --- Duplicate cwd: two am sessions share a cwd (e.g., multiple Claude
+    # instances in the same repo); the hook never picks one by directory.
     local dup_registry="$tmp_dir/dup.json"
     jq -n --arg dir "$real_project_dir" \
         '{sessions: {
             "am-first":  {name: "am-first",  directory: $dir, branch: "main", agent_type: "claude", task: "t1"},
             "am-second": {name: "am-second", directory: $dir, branch: "main", agent_type: "claude", task: "t2"}
          }}' > "$dup_registry"
-
-    rm -f "$state_dir/am-first" "$state_dir/am-second"
-    AM_REGISTRY="$dup_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="am-second" \
-        "$hook_script" <<< "{\"hook_event_name\":\"UserPromptSubmit\",\"cwd\":\"$real_project_dir\"}"
-    assert_eq ""        "$(cat "$state_dir/am-first"  2>/dev/null || echo)" "AM_SESSION_NAME: first session untouched"
-    assert_eq "running" "$(cat "$state_dir/am-second" 2>/dev/null || echo)" "AM_SESSION_NAME: targeted session updated"
 
     # --- AM_SESSION_NAME pointing at non-existent session → no write ---
     rm -f "$state_dir/am-first" "$state_dir/am-second"
@@ -564,20 +528,14 @@ test_state_hooks() {
         "pane-resolved Cursor stop establishes the durable recovery identity"
 
     # No AM_SESSION_NAME and no TMUX_PANE: not an am pane. The directory
-    # hosts two am sessions, and neither may be written — by either family.
+    # hosts two am sessions, and neither may be written. Keep: the only
+    # guard against a Cursor directory guess (workspace_roots[0], removed in
+    # 5f7bd47); the Claude side is the stranger block below.
     rm -f "$state_dir/am-pi" "$state_dir/am-cur"
     AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" TMUX_PANE="" \
         "$hook_script" <<< "{\"hook_event_name\":\"stop\",\"conversation_id\":\"conv-y\",\"transcript_path\":\"$cursor_transcript\",\"workspace_roots\":[\"$real_project_dir\"]}"
-    assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
-        "no pane signal: Cursor stop in the launch dir leaves pi session untouched"
     assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
         "no pane signal: Cursor stop in the launch dir leaves cursor session untouched"
-    AM_REGISTRY="$fam_registry" AM_STATE_DIR="$state_dir" AM_SESSION_NAME="" TMUX_PANE="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
-    assert_eq "" "$(cat "$state_dir/am-pi"  2>/dev/null || echo)" \
-        "no pane signal: Claude Stop in the launch dir leaves pi session untouched"
-    assert_eq "" "$(cat "$state_dir/am-cur" 2>/dev/null || echo)" \
-        "no pane signal: Claude Stop in the launch dir leaves cursor session untouched"
 
     # AM_SESSION_NAME inherited by a foreign agent (e.g. cursor-agent run
     # manually inside a pi session's shell pane): wrong family → exit; the
@@ -716,15 +674,6 @@ test_state_hooks() {
     run_hook "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$other_dir\"}"
     state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
     assert_eq "ready" "$state" "Pane-resolved hook writes state whatever the cwd"
-
-    # --- No pane signal (no AM_SESSION_NAME, no TMUX_PANE) → nothing written,
-    #     even from the registered directory ---
-    rm -f "$state_dir/am-abc123"
-    AM_DIR="$tmp_dir/am" AM_REGISTRY="$registry" AM_STATE_DIR="$state_dir" \
-        AM_IDENTITY_DIR="$identity_dir" AM_SESSION_NAME="" TMUX_PANE="" \
-        "$hook_script" <<< "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"cwd\":\"$real_project_dir\"}"
-    state=$(cat "$state_dir/am-abc123" 2>/dev/null || echo "")
-    assert_eq "" "$state" "No pane signal: no state file written"
 
     # --- Unknown event → no state file written ---
     rm -f "$state_dir/am-abc123"
@@ -940,8 +889,7 @@ test_state_hook_notify() {
 # The macOS notifier must hand its strings to osascript as script arguments:
 # AppleScript's `system attribute` decodes environment variables as MacRoman,
 # which turned every `·` in the title into `¬∑` and any curly quote or dash in
-# the task into mojibake. The static check runs everywhere; the round trip
-# only where osascript exists.
+# the task into mojibake.
 # Keep (docs/test-value-plan.md 3c): the `on run argv` check is the only guard
 # against an inline-interpolation rewrite of the osascript call.
 test_state_hook_notify_osascript_utf8() {
@@ -950,14 +898,8 @@ test_state_hook_notify_osascript_utf8() {
     local hook_script="$PROJECT_DIR/lib/hooks/state-hook.sh"
     assert_cmd_fails "notify: osascript never reads strings via system attribute" \
         grep -q 'system attribute "' "$hook_script"
-    assert_cmd_succeeds "notify: osascript receives title and body as argv" \
-        grep -q 'item 2 of argv) with title (item 1 of argv)' "$hook_script"
-
-    if command -v osascript >/dev/null 2>&1; then
-        local input="am · agent-manager/feat · needs you — ‘Fix’ ✓" out
-        out=$(osascript -e 'on run argv' -e 'return item 1 of argv' -e 'end run' "$input" 2>/dev/null || true)
-        assert_eq "$input" "$out" "notify: osascript argv round-trips UTF-8"
-    fi
+    assert_cmd_succeeds "notify: osascript receives its strings as argv" \
+        grep -q 'on run argv' "$hook_script"
 }
 
 # Review signals from the hook's detached tail: tool events touch the .dirty

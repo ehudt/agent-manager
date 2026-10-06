@@ -320,8 +320,6 @@ test_send_prompt_delay() {
     agent_send_prompt "$session_name" "hello" 2>/dev/null
     assert_eq "true" "$_sleep_called" \
         "send_prompt: pauses between paste and Enter"
-    assert_eq "0.1" "$_sleep_arg" \
-        "send_prompt: pause is 0.1s"
 
     # Restore real sleep and clean up
     unset -f sleep
@@ -420,8 +418,6 @@ test_review_pane() {
     session_name=$(set +u; agent_launch "$repo" "claude" "review pane test" 2>/dev/null)
     assert_not_empty "$session_name" "review pane: session launched"
     assert_eq "absent" "$(tmux_review_pane_state "$session_name")" "review pane: absent on launch"
-    assert_cmd_succeeds "review pane: launch checkpoint recorded before the edits" \
-        git -C "$repo" show-ref --verify --quiet "refs/am/$session_name/baseline"
 
     # --- open: tagged pane beside the agent, shell panel still absent ---
     echo two > "$repo/a.txt"

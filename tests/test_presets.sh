@@ -25,18 +25,15 @@ test_presets() {
     # Save from flags, including agent args after --
     local out
     out=$(preset_main save review -t claude @ -- --model opus --effort high 2>&1)
-    assert_contains "$out" "Saved preset review" "presets: save reports"
     assert_eq "review" "$(am_preset_names)" "presets: name listed after save"
     assert_eq "claude" "$(am_preset_field review agent)" "presets: agent field"
     assert_eq "@" "$(am_preset_field review directory)" "presets: a @spec is stored as the directory"
+    # Keep: the only check that the -- sentinel stays out of the stored args.
     assert_eq "--model
 opus
 --effort
 high" "$(am_preset_field review args)" "presets: args preserved in order"
     assert_eq "false" "$(am_preset_field review shell)" "presets: shell defaults false"
-
-    # Other config keys are untouched
-    assert_eq "claude" "$(am_default_agent)" "presets: config keys survive preset writes"
 
     # Second preset with directory + task + shell; ~ expands
     preset_main save scratch -t pi -n "poke around" --shell "~/tools" >/dev/null 2>&1
@@ -48,7 +45,6 @@ scratch" "$(am_preset_names)" "presets: names sorted"
 
     # list renders an equivalent am new line
     out=$(preset_main list)
-    assert_contains "$out" "review" "presets: list shows names"
     assert_contains "$out" "review           am new -t claude @ --" "presets: list renders the @spec directory"
 
     # A preset saved before 0.24 (workspace + branch) reads back as @<branch>

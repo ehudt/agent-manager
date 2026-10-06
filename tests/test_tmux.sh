@@ -120,10 +120,9 @@ test_tmux_binding_snippets() {
         "tmux config: enables focus-events for hosted agents"
     assert_contains "$rendered_conf" "display-popup -E -w 160 -h 32 \"$PROJECT_DIR/am new\"" \
         "tmux config: prefix+n opens new-session popup"
-    assert_contains "$rendered_conf" "display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
-        "tmux config: prefix+s opens agent manager popup"
     assert_contains "$rendered_conf" "bind h display-popup -E -w 90% -h 80% \"$PROJECT_DIR/am\"" \
         "tmux config: prefix+h opens merged session switcher"
+    # Keep: the only pin on the alias index (command-alias[100]).
     assert_contains "$rendered_conf" "command-alias[100] am=" \
         "tmux config: registers :am command alias"
     assert_cmd_fails "tmux config: no am-* guard (dedicated server)" \

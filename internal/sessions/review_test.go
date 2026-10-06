@@ -367,9 +367,7 @@ func TestReviewRebaseSuggestion(t *testing.T) {
 	git(t, dir2, "commit", "-q", "-m", "upstream")
 	git(t, dir2, "checkout", "-q", "feature")
 	git(t, dir2, "rebase", "-q", "main")
-	if kind, _, _ := ReviewSync(dir2, "am-new"); kind != "rebase" {
-		t.Fatalf("kind %q", kind)
-	}
+	ReviewSync(dir2, "am-new") // records the rebase checkpoint (TestReviewSyncRebase)
 	st2, _ := ReviewRead(dir2, "am-new")
 	if _, ok := ReviewRebaseSuggestion(dir2, st2); ok {
 		t.Fatalf("suggestion on a chain with a rebase checkpoint")
@@ -519,12 +517,9 @@ func TestRefreshTitlesReviewCount(t *testing.T) {
 		t.Fatalf("count after marker moved: %+v", got)
 	}
 
-	// Ack through the Env path zeroes the row.
-	if _, err := ReviewAck(dir, "am-cnt"); err != nil {
-		t.Fatal(err)
-	}
+	// Recording a zero stat (what an ack does) zeroes the row.
 	testEnv(t, amDir).ReviewRecord("am-cnt", ReviewStat{}, time.Now())
 	if got = ReadRegistry(regPath).Sessions["am-cnt"]; got.ReviewFiles != 0 || got.ReviewAdded != 0 {
-		t.Fatalf("ack did not zero the row: %+v", got)
+		t.Fatalf("zero record did not zero the row: %+v", got)
 	}
 }

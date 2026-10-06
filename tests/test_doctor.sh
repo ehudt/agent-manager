@@ -108,7 +108,6 @@ test_doctor_versions_minimums() {
     printf '#!/usr/bin/env bash\necho "jq-1.7.1"\n' > "$fake_bin/jq"
     chmod +x "$fake_bin"/*
     out=$(PATH="$fake_bin:$PATH" _doc_versions 2>&1)
-    assert_contains "$out" "tmux 3.1a" "doctor versions: prints the tmux version"
     assert_contains "$out" "tmux 3.1a is below the 3.2 am needs" "doctor versions: warns on old tmux"
     assert_contains "$out" "fzf 0.30.0 is below the 0.40 am needs" "doctor versions: warns on old fzf"
     assert_not_contains "$out" "jq-1.7.1 is below" "doctor versions: no warning for a recent jq"
@@ -140,7 +139,6 @@ test_doctor_drift() {
     out=$(PATH="$fake_bin:/usr/bin:/bin" AM_VERIFIED_FILE="$verified" _doc_drift 2>&1)
     assert_contains "$out" "claude 9.9.9 (Claude Code) is newer than the last live-lab verified 2.1.237" "drift: newer install warns"
     assert_contains "$out" "run tests/live_lab/run.sh" "drift: warning names the lab to run"
-    assert_contains "$out" "pi" "drift: unpinned agent is listed"
     assert_contains "$out" "no verified pin; run tests/live_lab/run_pi.sh" "drift: unpinned agent names its lab"
     assert_contains "$out" "codex-cli 0.1.0 (no live lab" "drift: agent without a lab is reported, not nagged"
     assert_not_contains "$out" "cursor-agent" "drift: absent agent is skipped"

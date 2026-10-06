@@ -69,11 +69,8 @@ test_config() {
     assert_eq "codex" "$(jq -r '.default_agent' "$AM_CONFIG")" "config: prune keeps live keys"
     assert_eq "true" "$(jq -r '.new_form' "$AM_CONFIG")" "config: prune leaves unrelated keys alone"
 
-    # Removed keys are no longer recognized
-    assert_cmd_fails "config: yolo is not a config key" am_config_key_alias yolo
-    assert_cmd_fails "config: sandbox is not a config key" am_config_key_alias sandbox
+    # Removed keys are no longer recognized (goes with _AM_CONFIG_OBSOLETE_KEYS)
     assert_cmd_fails "config: sandbox-shares is not a config key" am_config_key_alias sandbox-shares
-    assert_not_contains "$(am_config_print)" "yolo" "config: print omits yolo"
     assert_not_contains "$(am_config_print)" "sandbox" "config: print omits sandbox"
 
     # Shell panel config

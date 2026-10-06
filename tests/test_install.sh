@@ -343,12 +343,6 @@ test_install() {
     install_help=$("$PROJECT_DIR/am" install --help 2>&1)
     assert_contains "$install_help" "First-time setup" "am install --help: shows description"
 
-    # Test version comparison (production helper extracted from am)
-    eval "$(sed -n '/^_install_version_ge()/,/^}/p' "$PROJECT_DIR/am")"
-    assert_cmd_succeeds "_install_version_ge: 3.4 >= 3.0" _install_version_ge "3.0" "3.4"
-    assert_cmd_fails "_install_version_ge: 0.35 < 0.40" _install_version_ge "0.40" "0.35"
-    assert_cmd_succeeds "_install_version_ge: 0.40 == 0.40" _install_version_ge "0.40" "0.40"
-
     # Test full install in temp environment
     local temp_root
     temp_root=$(mktemp -d)
@@ -480,7 +474,6 @@ EOF
     assert_cmd_succeeds "install: am binary installed" test -e "$temp_prefix/am"
 
     # Verify dependency check output
-    assert_contains "$install_output" "tmux" "install: checks tmux"
     assert_contains "$install_output" "fzf" "install: checks fzf"
     assert_contains "$install_output" "jq" "install: checks jq"
     assert_contains "$install_output" "git" "install: checks git"
@@ -879,7 +872,6 @@ test_install_refresh_stamp() {
     local AM_SCRIPT_DIR="$PROJECT_DIR" AM_VERSION
     AM_VERSION=$(grep -E '^AM_VERSION=' "$PROJECT_DIR/am" | head -1 | cut -d'"' -f2)
     AM_DIR="$am_dir"
-    assert_eq "false" "$(_install_is_stale && echo true || echo false)" "install stamp: matches right after refresh"
     printf 'stale\n' > "$am_dir/.install_stamp"
     assert_eq "true" "$(_install_is_stale && echo true || echo false)" "install stamp: a different stamp is stale"
     assert_eq "$stamp1" "$(_install_fingerprint)" "install fingerprint: recomputes the same value"

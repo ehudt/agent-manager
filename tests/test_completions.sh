@@ -40,8 +40,11 @@ test_completions_print() {
     rc=0; out=$("$PROJECT_DIR/am" completions fish 2>&1) || rc=$?
     assert_eq "1" "$rc" "completions fish: exits 1"
     assert_contains "$out" "bash|zsh" "completions fish: names the supported shells"
+    # The message check is what catches a "${2:-}" → "$2" regression in the
+    # completions arm: under set -u the rc is 1 either way.
     rc=0; out=$("$PROJECT_DIR/am" completions 2>&1) || rc=$?
     assert_eq "1" "$rc" "completions (no shell): exits 1"
+    assert_contains "$out" "bash|zsh" "completions (no shell): names the supported shells"
 
     assert_cmd_succeeds "completions bash: parses" bash -n "$PROJECT_DIR/completions/am.bash"
     if command -v zsh >/dev/null 2>&1; then
@@ -62,20 +65,15 @@ test_completions_bash() {
 
     out=$(_complete_bash "$fake" am "")
     assert_contains "$out" "new" "bash: bare am lists subcommands"
-    assert_contains "$out" "uninstall" "bash: uninstall is a subcommand"
 
     out=$(_complete_bash "$fake" am send "")
     assert_contains "$out" "am-abc123" "bash: send completes live session names"
-    assert_contains "$out" "am-def456" "bash: every session offered"
     out=$(_complete_bash "$fake" am send am-d)
     assert_contains "$out" "am-def456" "bash: session prefix filters"
     assert_not_contains "$out" "am-abc123" "bash: non-matching session dropped"
 
     out=$(_complete_bash "$fake" am send --)
     assert_contains "$out" "--wait" "bash: send flags"
-    assert_contains "$out" "--queue" "bash: send flags (queue)"
-    out=$(_complete_bash "$fake" am wait "")
-    assert_contains "$out" "am-abc123" "bash: wait completes sessions"
     out=$(_complete_bash "$fake" am kill --)
     assert_contains "$out" "--all" "bash: kill flags"
 

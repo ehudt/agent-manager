@@ -132,12 +132,11 @@ func TestRestoreScanBindsIDFromSidecarOnly(t *testing.T) {
 		"am-sidecar": {Name: "am-sidecar", Directory: proj, AgentType: "claude"},
 		"am-pending": {Name: "am-pending", Directory: proj, AgentType: "claude"},
 		"am-wrong":   {Name: "am-wrong", Directory: proj, Workdir: filepath.Join(proj, "elsewhere"), AgentType: "claude", Task: "task w", Branch: "feat"},
-		"am-shared":  {Name: "am-shared", Directory: proj, AgentType: "claude"},
 		"am-nolog":   {Name: "am-nolog", Directory: proj, AgentType: "claude"},
 		"am-bash":    {Name: "am-bash", Directory: proj, AgentType: "bash"},
 	}}
 	writeRegistryAtomic(env.RegistryPath(), reg)
-	for _, n := range []string{"am-stale", "am-sidecar", "am-pending", "am-wrong", "am-shared", "am-bash"} {
+	for _, n := range []string{"am-stale", "am-sidecar", "am-pending", "am-wrong", "am-bash"} {
 		slogAppend(t, env.SessionsLog, map[string]any{"session_name": n, "directory": proj, "agent_type": reg.Sessions[n].AgentType})
 		setPane(n+":.{top-left}", "snapshot for "+n+"\n")
 	}
@@ -190,9 +189,6 @@ func TestRestoreScanBindsIDFromSidecarOnly(t *testing.T) {
 	}
 	if got := slogField(t, env.SessionsLog, "am-wrong", "branch"); got != "launch-br" {
 		t.Errorf("log branch is the launch directory's, not the workdir's: got %q, want launch-br", got)
-	}
-	if got := slogField(t, env.SessionsLog, "am-shared", "session_id"); got != "" {
-		t.Errorf("shared directory: no guess, got %q", got)
 	}
 	if got := slogField(t, env.SessionsLog, "am-bash", "snapshot_file"); got != "" {
 		t.Errorf("non-resumable agent is not scanned, got %q", got)
@@ -345,8 +341,6 @@ func TestRefreshTitlesTitleSources(t *testing.T) {
 	proj8 := "/tmp/jsonl-fallback-test-8"
 	writeClaudeTranscript(t, home, proj8, "test", "Investigate JSONL fallback path")
 	writeClaudeTranscript(t, home, proj8, "stranger", "A stranger conversation in the same dir")
-	proj9 := "/tmp/jsonl-fallback-test-9"
-	writeClaudeTranscript(t, home, proj9, "test", "Should not appear")
 
 	writeRegistryAtomic(env.RegistryPath(), Registry{Sessions: map[string]Session{
 		"am-1": {Name: "am-1", Directory: "/tmp/project", AgentType: "claude"},
@@ -355,7 +349,6 @@ func TestRefreshTitlesTitleSources(t *testing.T) {
 		"am-6": {Name: "am-6", Directory: "/tmp/project", AgentType: "claude", Task: "Existing Title"},
 		"am-7": {Name: "am-7", Directory: "/tmp/project", AgentType: "claude"},
 		"am-8": {Name: "am-8", Directory: proj8, AgentType: "claude"},
-		"am-9": {Name: "am-9", Directory: proj9, AgentType: "codex"},
 		"am-h": {Name: "am-h", Directory: "/tmp/project", AgentType: "claude", Task: "Keep me"},
 	}})
 	setTitle("am-1:.{top-left}", "Fix the login bug in auth\n")
@@ -374,7 +367,6 @@ func TestRefreshTitlesTitleSources(t *testing.T) {
 		"am-6": "Existing Title",
 		"am-7": "Clean up the mess",
 		"am-8": "", // transcript exists but no bound id
-		"am-9": "",
 		"am-h": "Keep me",
 	}
 	for name, task := range want {
@@ -383,12 +375,9 @@ func TestRefreshTitlesTitleSources(t *testing.T) {
 		}
 	}
 
-	// Throttled: a new title does not land; forced: it does.
+	// A forced scan lands a new title (throttling is
+	// TestRestoreScanThrottleIndependentOfTitleMarker's).
 	setTitle("am-3:.{top-left}", "Throttle test title\n")
-	RefreshTitles(env, false)
-	if got := ReadRegistry(env.RegistryPath()).Sessions["am-3"].Task; got != "" {
-		t.Errorf("throttled scan applied a title: %q", got)
-	}
 	writeFile(t, filepath.Join(env.StateDir, "am-8.sid"), "test\n")
 	RefreshTitles(env, true)
 	reg = ReadRegistry(env.RegistryPath())

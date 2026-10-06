@@ -55,15 +55,11 @@ test_utils_extended() {
     assert_eq "hi" "$(truncate 'hi' 10)" "truncate: shorter than limit"
     assert_eq "0123456789" "$(truncate '0123456789' 10)" "truncate: exact limit length"
 
-    # generate_hash: consistency
-    local h1
+    # generate_hash: determinism is test_utils' check; different inputs SHOULD
+    # produce different hashes (not guaranteed but overwhelmingly likely)
+    local h1 h3
     h1=$(generate_hash "same-input")
-    local h2
-    h2=$(generate_hash "same-input")
-    local h3
     h3=$(generate_hash "different-input")
-    assert_eq "$h1" "$h2" "generate_hash: same input same output"
-    # Different inputs SHOULD produce different hashes (not guaranteed but overwhelmingly likely)
     assert_cmd_succeeds "generate_hash: different inputs different output" \
         test "$h1" != "$h3"
 
@@ -90,12 +86,8 @@ test_claude_first_user_message() {
     local claude_dir="$HOME/.claude/projects/$project_path"
     mkdir -p "$claude_dir"
 
-    # Test: no JSONL for the bound id returns empty
-    local result
-    result=$(claude_first_user_message "$test_dir" session1)
-    assert_eq "" "$result" "claude_first_msg: empty when no JSONL"
-
     # Test: JSONL with string content
+    local result
     echo '{"type":"user","message":{"role":"user","content":"Fix the login bug in the auth module"}}' \
         > "$claude_dir/session1.jsonl"
     result=$(claude_first_user_message "$test_dir" session1)
@@ -310,22 +302,8 @@ test_git_head_branch() {
     }
     assert_eq "" "$(_ghb_bounded "$root/plain" sub)" \
         "git_head_branch: relative name outside a repo terminates and is empty"
-    assert_eq "" "$(_ghb_bounded "$root/plain" ./sub)" \
-        "git_head_branch: ./relative outside a repo terminates and is empty"
-    assert_eq "" "$(_ghb_bounded "$root/plain/sub" ..)" \
-        "git_head_branch: .. outside a repo terminates and is empty"
-    assert_eq "" "$(_ghb_bounded "$root/plain" .)" \
-        "git_head_branch: . outside a repo is empty"
     assert_eq "rel-branch" "$(_ghb_bounded "$repo" sub/deep)" \
         "git_head_branch: relative path inside a repo walks up to the cwd's .git"
-    assert_eq "rel-branch" "$(_ghb_bounded "$repo" sub)" \
-        "git_head_branch: bare relative name resolves when the cwd holds .git"
-    assert_eq "rel-branch" "$(_ghb_bounded "$repo" .)" \
-        "git_head_branch: . resolves when the cwd holds .git"
-    # Like Go (filepath.Dir("deep") == "."), the relative walk ends at the
-    # cwd and does not continue into the cwd's absolute parents.
-    assert_eq "" "$(_ghb_bounded "$repo/sub" deep)" \
-        "git_head_branch: relative walk stops at the cwd (Go parity)"
     unset -f _ghb_bounded
 
     rm -rf "$root"
@@ -355,8 +333,6 @@ test_first_user_message_char_length() {
 
     local short="אבגדהו"          # 6 letters, 12 bytes
     local long="אבגדהוזחטיכ"      # 11 letters, 22 bytes
-    assert_eq "6" "$(LC_ALL="$loc" bash -c 'printf %s "${#1}"' _ "$short")" \
-        "char length: fixture sanity — 6 Hebrew letters"
 
     # Claude
     local test_dir project_path claude_dir
@@ -452,13 +428,13 @@ test_file_mtime_and_log_cap() {
 test_utils_dep_minimums() {
     $SUMMARY_MODE || echo "=== Testing dependency minimums ==="
     source "$LIB_DIR/utils.sh"
+    # tmux, fzf and go minimums are pinned by the doctor and install tests;
+    # jq's only here.
     assert_eq "4.4" "$(am_dep_min bash)" "dep_min: bash 4.4"
-    assert_eq "3.2" "$(am_dep_min tmux)" "dep_min: tmux 3.2"
-    assert_eq "0.40" "$(am_dep_min fzf)" "dep_min: fzf 0.40"
     assert_eq "1.6" "$(am_dep_min jq)" "dep_min: jq 1.6"
-    assert_eq "1.19" "$(am_dep_min go)" "dep_min: go 1.19"
     assert_eq "" "$(am_dep_min perl)" "dep_min: unknown tool is empty"
     assert_cmd_succeeds "version_ge: 3.4 >= 3.2" am_version_ge 3.2 3.4
+    assert_cmd_succeeds "version_ge: 0.40 >= 0.40 (equal)" am_version_ge 0.40 0.40
     assert_cmd_succeeds "version_ge: 3.2a >= 3.2" am_version_ge 3.2 3.2a
     assert_cmd_fails "version_ge: 3.1a < 3.2" am_version_ge 3.2 3.1a
     assert_cmd_fails "version_ge: 0.30.0 < 0.40" am_version_ge 0.40 0.30.0

@@ -4,8 +4,7 @@
 test_cli() {
     $SUMMARY_MODE || echo "=== Testing am CLI ==="
 
-    # Test help — one smoke assertion per command's help, plus the behavioral
-    # hidden-flag checks (hidden flags must stay hidden).
+    # Test help — one smoke assertion per command's help.
     local help_output
     help_output=$("$PROJECT_DIR/am" help)
     assert_contains "$help_output" "Agent Manager" "am help: shows title"
@@ -16,19 +15,14 @@ test_cli() {
     assert_contains "$new_help" "-t, --type" "am new --help: shows flags"
     assert_contains "$new_help" "cursor" "am new --help: lists Cursor agent"
     assert_contains "$new_help" "dir_provider" "am new --help: explains @spec directories"
-    assert_not_contains "$new_help" "--workspace" "am new --help: the -W flag is gone"
-    assert_not_contains "$new_help" "--yolo" "am new --help: no yolo flag"
-    assert_not_contains "$new_help" "--sandbox" "am new --help: no sandbox flag"
-    assert_not_contains "$new_help" "--worktree" "am new --help: no worktree flag"
-    assert_not_contains "$help_output" "sandbox" "am help: no sandbox command"
 
-    # Removed manager flags are rejected rather than silently forwarded
-    local rc=0
-    "$PROJECT_DIR/am" new --sandbox /tmp </dev/null >/dev/null 2>&1 || rc=$?
+    # An unknown flag is rejected rather than silently forwarded, and the
+    # message names it (cmd_new's -*) arm; pinned nowhere else).
+    local rc=0 err
+    err=$("$PROJECT_DIR/am" new --sandbox /tmp 2>&1 >/dev/null </dev/null) || rc=$?
     assert_eq "1" "$rc" "am new --sandbox: unknown option"
-    rc=0
-    "$PROJECT_DIR/am" new -w /tmp </dev/null >/dev/null 2>&1 || rc=$?
-    assert_eq "1" "$rc" "am new -w: unknown option"
+    assert_contains "$err" "Unknown option: --sandbox" "am new --sandbox: the message names the flag"
+    # Keep: the only unknown-*command* run (main's default arm).
     rc=0
     "$PROJECT_DIR/am" sb ps </dev/null >/dev/null 2>&1 || rc=$?
     assert_eq "1" "$rc" "am sb: unknown command"
@@ -39,7 +33,6 @@ test_cli() {
     local interrupt_help
     interrupt_help=$("$PROJECT_DIR/am" interrupt --help)
     assert_contains "$interrupt_help" "-i|--interactive" "am interrupt --help: documents -i/--interactive"
-    assert_not_contains "$interrupt_help" "--confirm" "am interrupt --help: --confirm is a hidden alias"
     local flag interrupt_err
     for flag in -i --interactive --confirm; do
         interrupt_err=$("$PROJECT_DIR/am" interrupt "$flag" 2>&1 >/dev/null </dev/null || true)
@@ -48,18 +41,9 @@ test_cli() {
     done
 
     # Bash version gate: 4.4 is the floor (namerefs in lib/state.sh, ${var@Q}
-    # in lib/agents.sh). Exercised for real where an older bash exists
-    # (macOS ships 3.2 at /bin/bash); the static check runs everywhere.
-    local old_bash_major
-    old_bash_major=$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 9)
-    if (( old_bash_major < 4 )); then
-        local gate_err gate_rc=0
-        gate_err=$(/bin/bash "$PROJECT_DIR/am" --version 2>&1 >/dev/null) || gate_rc=$?
-        assert_eq "1" "$gate_rc" "am under bash 3.2: refuses to run"
-        assert_contains "$gate_err" "bash >= 4.4" "am under bash 3.2: names the 4.4 floor"
-    else
-        skip_test "bash version gate under bash 3.2 (no bash < 4 at /bin/bash)"
-    fi
+    # in lib/agents.sh). The live run under /bin/bash 3.2 is
+    # test_standalone_bash_version_gate; this static check is the only pin on
+    # the minor clause (f3fd196 shipped the gate major-only).
     assert_contains "$(head -12 "$PROJECT_DIR/am")" "BASH_VERSINFO[1] < 4" \
         "am: version gate checks the minor version"
 
@@ -70,8 +54,6 @@ test_cli() {
     assert_contains "$send_help" "--timeout" "am send --help: documents timeout flag"
     assert_contains "$send_help" "ready" \
         "am send --help: --wait promises the canonical ready state"
-    assert_not_contains "$send_help" "waiting_permission" \
-        "am send --help: does not call a permission dialog ready"
 
     local wait_help
     wait_help=$("$PROJECT_DIR/am" wait --help)
@@ -82,15 +64,10 @@ test_cli() {
     local peek_help
     peek_help=$("$PROJECT_DIR/am" peek --help)
     assert_contains "$peek_help" "--pane" "am peek --help: shows pane flag"
-    assert_not_contains "$peek_help" "--json" "am peek --help: hides json flag"
-    assert_not_contains "$peek_help" "--history" "am peek --help: hides history flag"
-    assert_not_contains "$peek_help" "--grep" "am peek --help: hides grep flag"
 
     local status_help
     status_help=$("$PROJECT_DIR/am" status --help)
     assert_contains "$status_help" "--json" "am status --help: shows json flag"
-    assert_not_contains "$status_help" "--wait" "am status --help: does not show unrelated flags"
-    assert_not_contains "$status_help" "--timeout" "am status --help: does not show unrelated flags"
 
     # Test version
     local version_output
@@ -155,6 +132,12 @@ test_cli_extended() {
         "am list --json: preserves agent_type when branch is empty"
     assert_eq "" "$(echo "$json_output" | jq -r '.[0].branch')" \
         "am list --json: preserves empty branch field"
+    # The only pins on the directory and task columns of the bash list row
+    # (fzf_list_json's field indices).
+    assert_eq "$test_dir" "$(echo "$json_output" | jq -r '.[0].directory')" \
+        "am list --json: directory column"
+    assert_eq "cli test" "$(echo "$json_output" | jq -r '.[0].task')" \
+        "am list --json: task column"
 
     # --- Test: list helpers share one row collection shape ---
     set +u
@@ -163,23 +146,6 @@ test_cli_extended() {
     local row_output
     row_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" _fzf_session_rows 2>/dev/null || true)
     assert_contains "$row_output" "$session_name" "list row collector: contains session"
-
-    local row_line
-    row_line=$(printf '%s\n' "$row_output" | head -n1)
-    assert_not_empty "$row_line" "list row collector: emits a row"
-
-    local row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir row_review
-    IFS=$'\x1f' read -r row_name row_state row_dir row_branch row_agent row_task row_activity row_created row_workdir row_review <<< "$row_line"
-    assert_eq "$session_name" "$row_name" "list row collector: name field"
-    assert_not_empty "$row_state" "list row collector: state field"
-    assert_eq "$test_dir" "$row_dir" "list row collector: directory field"
-    assert_eq "" "$row_branch" "list row collector: branch field"
-    assert_eq "claude" "$row_agent" "list row collector: agent field"
-    assert_eq "cli test" "$row_task" "list row collector: task field"
-    assert_not_empty "$row_activity" "list row collector: activity field"
-    assert_not_empty "$row_created" "list row collector: created field"
-    assert_eq "" "$row_workdir" "list row collector: workdir empty until the agent moves"
-    assert_eq "0 0 0" "$row_review" "list row collector: review counts zero for a non-repo session"
 
     # --- Test: am list-internal returns session list for the browser ---
     if [[ -x "$PROJECT_DIR/bin/am-list-internal" && -s "$PROJECT_DIR/bin/am-list-internal" ]]; then
@@ -196,8 +162,6 @@ test_cli_extended() {
     info_output=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" info "$session_name" 2>/dev/null)
     assert_contains "$info_output" "Directory:" "am info: shows directory"
     assert_contains "$info_output" "Agent:" "am info: shows agent type"
-    assert_not_contains "$info_output" "Yolo:" "am info: no yolo line"
-    assert_not_contains "$info_output" "Sandbox:" "am info: no sandbox line"
 
     # --- Test: am peek snapshots agent and shell panes ---
     local peek_output
@@ -296,9 +260,6 @@ test_cli_extended() {
         "am config set agent: canonicalizes cursor-agent alias"
     assert_eq "cursor" "$(jq -r '.default_agent' "$TEST_AM_DIR/config.json")" \
         "am config set agent: stores canonical Cursor type"
-
-    config_get=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" AM_DEFAULT_AGENT="claude" "$PROJECT_DIR/am" config get agent 2>/dev/null)
-    assert_eq "claude" "$config_get" "am config get agent: env override wins"
 
     # --- Test: removed config keys are rejected ---
     local config_rc=0
@@ -506,12 +467,6 @@ test_cli_workspace_and_id() {
     err=$(env "${am_env[@]}" AM_DIR_PROVIDER= "$PROJECT_DIR/am" new @48351 --detach --print-session -t "$TEST_STUB_DIR/stub_agent" 2>&1 </dev/null) || rc=$?
     assert_eq "1" "$rc" "am new @spec: fails when dir_provider is unset"
     assert_contains "$err" "dir_provider" "am new @spec: error names the config key"
-
-    # --- -W is gone ---
-    rc=0
-    err=$(env "${am_env[@]}" "$PROJECT_DIR/am" new -W feature-x --detach 2>&1 </dev/null) || rc=$?
-    assert_eq "1" "$rc" "am new -W: no longer accepted"
-    assert_contains "$err" "Unknown option: -W" "am new -W: reported as an unknown option"
 
     # --- am new @spec: the provider's resolve verb supplies the directory ---
     local prov_env=(FAKE_PROVIDER_DIR="$test_dir" AM_DIR_PROVIDER="$TEST_STUB_DIR/fake_dir_provider")
@@ -1160,13 +1115,9 @@ test_cli_diff() {
     assert_eq "1" "$rc" "am diff: rejects unknown options"
     assert_contains "$(env "${am_env[@]}" "$PROJECT_DIR/am" diff --help 2>&1)" "Usage: am diff" "am diff --help: prints usage"
 
-    # Refs survive removal from the registry (restore needs them).
-    registry_remove "test-am-diff1"
-    assert_cmd_succeeds "am diff: checkpoint refs survive registry removal" \
-        git -C "$repo" show-ref --verify --quiet refs/am/test-am-diff1/baseline
-
     am_tmux kill-session -t test-am-diff1 2>/dev/null || true
     am_tmux kill-session -t test-am-diff2 2>/dev/null || true
+    registry_remove "test-am-diff1" 2>/dev/null || true
     registry_remove "test-am-diff2" 2>/dev/null || true
     teardown_integration_env
     rm -rf "$state_dir" "$repo" "$plain"

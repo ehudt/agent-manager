@@ -85,14 +85,6 @@ test_registry_extended() {
         "registry_add: duplicate overwrites agent_type"
     assert_eq "1" "$(registry_count)" "registry_add: duplicate doesn't increase count"
 
-    # Test: rapid sequential adds don't corrupt
-    registry_add "rapid-1" "/tmp/r1" "main" "claude" ""
-    registry_add "rapid-2" "/tmp/r2" "main" "codex" ""
-    registry_add "rapid-3" "/tmp/r3" "main" "codex" ""
-    assert_eq "4" "$(registry_count)" "registry: rapid adds all persisted"
-    assert_eq "/tmp/r1" "$(registry_get_field rapid-1 directory)" "registry: rapid-1 correct"
-    assert_eq "/tmp/r3" "$(registry_get_field rapid-3 directory)" "registry: rapid-3 correct"
-
     # --- pi sessions-log helpers ---
     local enc_root
     enc_root=$(mktemp -d)
@@ -460,8 +452,6 @@ test_titler_log_gated() {
 
     AM_TITLER_DEBUG=1 auto_title_scan 1 >/dev/null 2>&1
     assert_cmd_succeeds "titler: AM_TITLER_DEBUG=1 creates titler.log" test -s "$AM_DIR/titler.log"
-    assert_contains "$(cat "$AM_DIR/titler.log")" "scan start" "titler: enabled log records the scan"
-    assert_not_contains "$(cat "$AM_DIR/titler.log")" "throttled" "titler: no throttled-path line"
     local lines_before lines_after
     lines_before=$(wc -l < "$AM_DIR/titler.log")
     AM_TITLER_DEBUG=1 auto_title_scan >/dev/null 2>&1

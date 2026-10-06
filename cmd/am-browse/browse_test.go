@@ -126,18 +126,10 @@ func TestApplyFilterKeepsActiveInactiveSplit(t *testing.T) {
 // line is the only thing that notices the help text drifting from the key map.
 func TestHelpText(t *testing.T) {
 	h := helpText()
-	if h == "" {
-		t.Error("helpText should not be empty")
-	}
 	// Should contain public key bindings
 	for _, want := range []string{"Up/Down", "Enter", "Esc/q", "Ctrl-N", "Ctrl-X", "Ctrl-R", "?", "Prefix + 1-9"} {
 		if !containsStr(h, want) {
 			t.Errorf("helpText missing %q", want)
-		}
-	}
-	for _, hidden := range []string{"Ctrl-H", "Ctrl-P"} {
-		if containsStr(h, hidden) {
-			t.Errorf("helpText should not advertise %q", hidden)
 		}
 	}
 }

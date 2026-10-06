@@ -669,6 +669,55 @@ part of the same commit. The nine line-level re-run candidates from 3c
 377/388-391, `TestHelpText` 127-129/136-140) go here too, each re-run with the
 same breakages 3c records and only the drop_lines removed.
 
+Applied (2026-10-06). Every 3d row and every 3c line-level candidate was
+taken, with these deviations from the table (survey-time line numbers):
+
+| Row | What was done instead |
+|---|---|
+| `test_config` 19 | Kept. Line 19 opens the three-line key-set assertion whose label line (21) the same row says must stay with `_AM_CONFIG_OBSOLETE_KEYS`; the two readings conflict, so the statement stays (rule 4) |
+| `test_cli` 25-28 | Rewritten, not dropped: the `--sandbox` run now captures stderr and carries the `Unknown option: <flag>` message check moved from `test_cli_workspace_and_id` L514 (the flag is `--sandbox`, no longer `-W`) |
+| `test_cli_diff` 1163 | The in-process `registry_remove test-am-diff1` moved to the cleanup lines rather than deleted |
+| `test_install` 346-350 | The whole block went (`_install_version_ge` is a one-line wrapper over `am_version_ge`); the equal-pair compare lives in `test_utils_dep_minimums` as `version_ge: 0.40 >= 0.40 (equal)` |
+| `test_completions_bash` 78 | Line 77 (the `am wait` completion run that fed only 78) went with it |
+| `test_standalone_preview` 84 | Lines 80-83 (the corrupted-JSONL run that fed only 84) went with it |
+| `test_state_hooks` (11 lines) | Each dropped assertion's own hook run went with it where nothing else read its result (Cursor stop → ready, PostToolUse over fresh background, UserPromptSubmit over ready, Stop + monitor over no state, idle_prompt over ready, the AM_SESSION_NAME targeted write, the Claude no-pane-signal Stop in the family block, the no-pane-signal Stop at 722). The dup-cwd registry fixture stays for the bogus-name run; the osascript argv round trip (platform canary) went with 1024 and the phrase grep is now `on run argv` |
+| `test_utils_extended` 65 | The `h2` hash lines went with it |
+| `test_claude_first_user_message` 96 | The no-JSONL run went; `local result` stays |
+| `test_git_head_branch` 313-327 | The Go-parity comment (325-326) went with 327 |
+| `TestRestoreScanBindsIDFromSidecarOnly` 194-196 | The `am-shared` registry row and its log/pane entries went with the assertion |
+| `TestRefreshTitlesTitleSources` 377, 388-391 | The `am-9` row and the proj9 transcript went with the want entry; the throttle check went (guarded by `TestRestoreScanThrottleIndependentOfTitleMarker`), the `setTitle` stays for the forced-scan check |
+| `TestReviewRebaseSuggestion` 374 | The kind check became a bare `ReviewSync` call; `TestReviewSyncRebase` owns the kind |
+| `TestRefreshTitlesReviewCount` 523-525 | The `ReviewAck` call went; the zero-stat `ReviewRecord` check stays |
+| `test_send_prompt_delay` 353-354 | Dropped as cleared; the caveat (a retune would have failed it) is the reason |
+
+Full suite after the batch: 1493 assertions (1571 before), one skip.
+
+Re-run result (2026-10-06, before the Batch 5 commit): forty mutations in
+three groups — the 3c breakages against each test's kept lines (19), the
+breakages aimed at what the cleared lines asserted against the named sibling
+(10), and the nine line-level candidates with their 3c breakages (11) — and
+no surviving mutation concerns a dropped line. Three records need
+correcting. `test_doctor_drift`: the manifest field is `lab`, so the
+breakage is doctor reading a renamed field, not the manifest renaming one
+(the test fails either way). `test_state_hooks` Cursor no-pane: the kept
+assertion catches only a family-aware directory fallback; a family-blind
+one writes the pi row first and is caught by the stranger and
+unmanaged-process assertions instead. `test_git_head_branch`: the
+`findGitDir` `cur == "/"` mutation is caught only as a suite hang —
+`_ghb_bounded` kills its subshell but the orphan `am-core` keeps the
+command-substitution pipe open, so the `TIMEOUT` branch never reports —
+and the Go `TestGitHeadBranch` has no relative-name case; the dropped lines
+(313-327) were not the guard, so the drop stands, and the watchdog is
+listed in section 8. Two gaps outside this batch: `TestStoreDispatch`
+cannot tell codex reading the claude store from codex having no store (both
+return the empty string in an empty `TempDir`), and the bash "empty for an
+unknown id" lines of `test_claude_first_user_message` do not catch a
+newest-jsonl fallback that `TestClaudeFirstUserMessageDisambiguatesBySessionID`
+does (the dropped line 96 was the same path). Two breakages fail more than
+their record names: the rebase tree-dedup loop also fails
+`TestReviewSyncRebaseNoOwnCommits`; `ReviewAdopt` leaving the old refs
+behind also fails `TestReviewAdoptAndDrop`.
+
 ### Order and stopping
 
 Batches 1 → 2 → 3 → 4 → 5. Stop at any batch whose mutation re-run does not
@@ -728,6 +777,15 @@ lines 24, 27, 28) that costs most of the file's 4.5s; the skeptic kept it as
 the only direct-path invocation of the script. Both can be true. The fix is
 a rewrite that checks the attached client moved (`display-message -p -c
 <client> '#{session_name}'`), not a keep as is.
+
+**Weak guards found by the Batch 5 re-run (not fixed).** `_ghb_bounded` in
+`tests/test_utils.sh::test_git_head_branch` kills only its subshell, so a
+spinning `am-core branch` hangs the suite instead of printing `TIMEOUT`; it
+should run the call in its own process group and kill the group. Go
+`TestGitHeadBranch` has no relative-name case, so the bash test is the only
+guard of the `findGitDir` termination. `TestStoreDispatch`'s codex line
+cannot distinguish "no store" from "the claude store" in an empty `HOME`;
+a claude transcript planted under the codex directory would.
 
 **Limits of the method.**
 

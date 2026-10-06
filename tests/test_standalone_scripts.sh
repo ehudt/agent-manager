@@ -77,12 +77,6 @@ EOF
     assert_eq "0" "$rc" "preview: exits 0 with valid JSONL"
     assert_contains "$output" "first user message" "preview: extracts first user message"
 
-    echo "corrupted json" > "$claude_dir/session.jsonl"
-    rc=0
-    output=$(AM_REGISTRY="$AM_REGISTRY" AM_TMUX_SOCKET="$AM_TMUX_SOCKET" \
-        "$LIB_DIR/preview" "$session_name" 2>&1) || rc=$?
-    assert_eq "0" "$rc" "preview: exits 0 with corrupted JSONL"
-
     rm -rf "$claude_dir"
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
     rm -rf "$test_dir"
