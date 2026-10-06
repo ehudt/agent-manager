@@ -32,8 +32,13 @@ entry unless they changed behaviour a user would notice.
   cursor on the New section (the popup is now the browser's size); picking a
   session there switches to it. The form's options screen (Preset,
   Directory, Agent, Task) and the one-key launches `Ctrl-L/X/R/P/O` are
-  gone: `Ctrl-X` kills and `Ctrl-R` refreshes in the one list. A preset's
-  task still reaches the session; there is no task field to type one.
+  gone: `Ctrl-X` kills and `Ctrl-R` refreshes in the one list.
+- The task label is no longer an input: `am new -n/--name/--task` and
+  `am preset save -n` are unknown options now, and a preset's saved
+  `"task"` is ignored. A session's title comes from the agent (its pane
+  title, else your first message), as it already did once the agent named
+  the conversation. The registry still stores it as `task` (`am status
+  --json` keeps the key).
 
 ## [0.39.0] - 2026-10-05
 

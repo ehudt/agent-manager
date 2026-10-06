@@ -496,7 +496,7 @@ test_cli_workspace_and_id() {
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
     # --- a preset whose directory is a @spec resolves the same way ---
-    env "${am_env[@]}" "$PROJECT_DIR/am" preset save wsx -n "preset task" @feature-z >/dev/null 2>&1 </dev/null || true
+    env "${am_env[@]}" "$PROJECT_DIR/am" preset save wsx @feature-z >/dev/null 2>&1 </dev/null || true
     session_name=$(env "${am_env[@]}" "${prov_env[@]}" "$PROJECT_DIR/am" new -p wsx --detach --print-session -t "$TEST_STUB_DIR/stub_agent" </dev/null 2>/dev/null)
     assert_not_empty "$session_name" "am new -p <@spec preset>: session created"
     assert_eq "$test_dir/ws-feature-z" "$(registry_get_field "$session_name" directory)" \
@@ -514,13 +514,13 @@ test_cli_workspace_and_id() {
     assert_contains "$err" "could not resolve @fail" "am new @spec: reports the provider failure"
     assert_contains "$err" "cannot resolve fail" "am new @spec: provider stderr reaches the user"
 
-    # --- the browser's Ctrl-N form path resolves @spec and presets too ---
-    # A stand-in browser prints the form hand-off line straight away (fzf_main
+    # --- the browser's New session rows resolve @spec and presets too ---
+    # A stand-in browser prints the hand-off line straight away (fzf_main
     # echoes unknown results verbatim, cmd_browse parses __NEW_SESSION__). The
     # trailing attach fails without a tty, so the session is found by directory.
     env "${am_env[@]}" "$PROJECT_DIR/am" preset save brw -- --stub-extra >/dev/null 2>&1 </dev/null || true
     local fake_browse="$test_dir/fake_browse"
-    printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f@feature-w\\x1f%s\\x1f--preset=brw\\x1f\\n"\n' \
+    printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f@feature-w\\x1f%s\\x1f--preset=brw\\n"\n' \
         "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
     chmod +x "$fake_browse"
     env "${am_env[@]}" "${prov_env[@]}" AM_BROWSE_CMD="$fake_browse" AM_NO_INSTALL_REFRESH=1 AM_AUTO_RESTORE=false \
@@ -943,19 +943,20 @@ test_cli_dispatch() {
     assert_eq "0" "$(jq 'length' <<< "$out")" "am list --json --state: empty array when nothing matches"
 
     # --- am new -p (preset) ---
-    env "${am_env[@]}" "$PROJECT_DIR/am" preset save qa -t claude -n "preset task" -- --flag-from-preset >/dev/null 2>&1
+    env "${am_env[@]}" "$PROJECT_DIR/am" preset save qa -t claude -- --flag-from-preset >/dev/null 2>&1
     assert_contains "$(env "${am_env[@]}" "$PROJECT_DIR/am" preset list 2>/dev/null)" "qa" "am preset: dispatch reaches preset_main"
     local s3
     s3=$(env "${am_env[@]}" "$PROJECT_DIR/am" new --detach --print-session -p qa "$test_dir" 2>/dev/null </dev/null)
     assert_not_empty "$s3" "am new -p: launches"
-    assert_eq "preset task" "$(registry_get_field "$s3" task)" "am new -p: preset fills the task"
     pane_output=$(wait_for_text "stub-agent-argv" am_tmux capture-pane -pt "$s3:.{top}")
     assert_contains "$pane_output" "--flag-from-preset" "am new -p: preset agent args reach the agent"
     local s4
-    s4=$(env "${am_env[@]}" "$PROJECT_DIR/am" new --detach --print-session -p qa -n "explicit wins" "$test_dir" -- --extra 2>/dev/null </dev/null)
-    assert_eq "explicit wins" "$(registry_get_field "$s4" task)" "am new -p: explicit -n overrides the preset"
+    s4=$(env "${am_env[@]}" "$PROJECT_DIR/am" new --detach --print-session -p qa "$test_dir" -- --extra 2>/dev/null </dev/null)
     pane_output=$(wait_for_text "stub-agent-argv" am_tmux capture-pane -pt "$s4:.{top}")
     assert_contains "$pane_output" "--flag-from-preset --extra" "am new -p: preset args first, CLI args appended"
+    rc=0
+    env "${am_env[@]}" "$PROJECT_DIR/am" new --detach -n "a label" "$test_dir" >/dev/null 2>&1 </dev/null || rc=$?
+    assert_eq "1" "$rc" "am new: -n (task label) is not an option"
     rc=0
     env "${am_env[@]}" "$PROJECT_DIR/am" new --detach -p nosuch "$test_dir" >/dev/null 2>&1 </dev/null || rc=$?
     assert_eq "1" "$rc" "am new -p: unknown preset is an error"

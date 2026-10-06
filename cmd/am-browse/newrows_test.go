@@ -32,7 +32,7 @@ func testModel(t *testing.T, cfg sessions.Config, entries []sessions.Entry, frec
 	t.Helper()
 	m := newModel()
 	m.width, m.height = 100, 30
-	m.launch = newLauncher(cfg, t.TempDir(), t.TempDir(), "claude", "")
+	m.launch = newLauncher(cfg, t.TempDir(), t.TempDir(), "claude")
 	m.launch.suggest = func(string) []sessions.DirSuggestion { return nil }
 	m = update(m, sessionsLoadedMsg{entries: entries})
 	return update(m, frecentMsg{paths: frecent})
@@ -110,24 +110,24 @@ func selected(t *testing.T, m model) listItem {
 	return it
 }
 
-func splitOutput(t *testing.T, out string) (dir, agent, flags, task string) {
+func splitOutput(t *testing.T, out string) (dir, agent, flags string) {
 	t.Helper()
 	parts := strings.Split(out, "\x1f")
-	if len(parts) != 5 || parts[0] != "__NEW_SESSION__" {
-		t.Fatalf("output = %q, want __NEW_SESSION__ + 4 fields", out)
+	if len(parts) != 4 || parts[0] != "__NEW_SESSION__" {
+		t.Fatalf("output = %q, want __NEW_SESSION__ + 3 fields", out)
 	}
-	return parts[1], parts[2], parts[3], parts[4]
+	return parts[1], parts[2], parts[3]
 }
 
 func TestNewAgentChoice(t *testing.T) {
 	t.Setenv("AM_DEFAULT_AGENT", "")
-	if l := newLauncher(sessions.Config{DefaultAgent: "pi"}, "", "", "", ""); l.agent != "pi" {
+	if l := newLauncher(sessions.Config{DefaultAgent: "pi"}, "", "", ""); l.agent != "pi" {
 		t.Errorf("agent = %q, want the configured default", l.agent)
 	}
-	if l := newLauncher(sessions.Config{}, "", "", "cursor-agent", ""); l.agent != "cursor" {
+	if l := newLauncher(sessions.Config{}, "", "", "cursor-agent"); l.agent != "cursor" {
 		t.Errorf("agent = %q, want the alias normalized", l.agent)
 	}
-	l := newLauncher(sessions.Config{}, "", "", "nosuch", "")
+	l := newLauncher(sessions.Config{}, "", "", "nosuch")
 	if l.agent != l.agents[0] {
 		t.Errorf("agent = %q, want the first type for an unknown prefill", l.agent)
 	}
@@ -157,8 +157,8 @@ func TestNewAgentChoice(t *testing.T) {
 		t.Errorf("divider does not name %s:\n%s", second, m.View())
 	}
 	m = press(m, key(tea.KeyEnter))
-	if gotDir, agent, flags, task := splitOutput(t, m.output); gotDir != dir || agent != second || flags != "" || task != "" {
-		t.Errorf("output = %q %q %q %q", gotDir, agent, flags, task)
+	if gotDir, agent, flags := splitOutput(t, m.output); gotDir != dir || agent != second || flags != "" {
+		t.Errorf("output = %q %q %q", gotDir, agent, flags)
 	}
 }
 
@@ -215,7 +215,7 @@ func TestNewOnlyStartsOnNewSection(t *testing.T) {
 	m := newModel()
 	m.width, m.height = 100, 30
 	m.startNew = true
-	m.launch = newLauncher(sessions.Config{}, t.TempDir(), t.TempDir(), "claude", "")
+	m.launch = newLauncher(sessions.Config{}, t.TempDir(), t.TempDir(), "claude")
 	// The recent list arrives before the sessions; the cursor stays on the
 	// New section when they land.
 	m = update(m, frecentMsg{paths: []string{dir}})
@@ -227,7 +227,7 @@ func TestNewOnlyStartsOnNewSection(t *testing.T) {
 		t.Error("enter pill does not say launch")
 	}
 	m = press(m, key(tea.KeyEnter))
-	if gotDir, _, _, _ := splitOutput(t, m.output); gotDir != dir {
+	if gotDir, _, _ := splitOutput(t, m.output); gotDir != dir {
 		t.Errorf("dir = %q, want %q", gotDir, dir)
 	}
 
@@ -323,7 +323,7 @@ func TestPlaceQueryShowsWhoIsThere(t *testing.T) {
 		t.Errorf("label = %q, want 2 running", it.row.label)
 	}
 	m = press(m, key(tea.KeyEnter))
-	if gotDir, _, _, _ := splitOutput(t, m.output); gotDir != proj {
+	if gotDir, _, _ := splitOutput(t, m.output); gotDir != proj {
 		t.Errorf("dir = %q", gotDir)
 	}
 }
@@ -385,7 +385,7 @@ func TestNewValidation(t *testing.T) {
 	m = testModel(t, sessions.Config{DirProvider: "true"}, nil, nil)
 	m = typeText(m, "@48351")
 	m = press(m, key(tea.KeyEnter))
-	if dir, _, flags, _ := splitOutput(t, m.output); dir != "@48351" || flags != "" {
+	if dir, _, flags := splitOutput(t, m.output); dir != "@48351" || flags != "" {
 		t.Errorf("@spec output dir=%q flags=%q", dir, flags)
 	}
 
@@ -396,7 +396,7 @@ func TestNewValidation(t *testing.T) {
 	}
 	m = typeText(m, "~/proj")
 	m = press(m, key(tea.KeyEnter))
-	if dir, _, _, _ := splitOutput(t, m.output); dir != filepath.Join(m.launch.home, "proj") {
+	if dir, _, _ := splitOutput(t, m.output); dir != filepath.Join(m.launch.home, "proj") {
 		t.Errorf("~ dir = %q", dir)
 	}
 
@@ -429,7 +429,7 @@ func TestNewPathQuery(t *testing.T) {
 		t.Errorf("children = %v", rows[1:])
 	}
 	m = press(m, key(tea.KeyEnter))
-	if dir, _, _, _ := splitOutput(t, m.output); dir != filepath.Join(root, "alpha") {
+	if dir, _, _ := splitOutput(t, m.output); dir != filepath.Join(root, "alpha") {
 		t.Errorf("dir = %q", dir)
 	}
 	// A prefix completes against the parent.
@@ -479,7 +479,7 @@ func TestNewProvider(t *testing.T) {
 	if len(m.items) != 2 {
 		t.Errorf("bare @ lists sessions: %d items", len(m.items))
 	}
-	if dir, _, _, _ := splitOutput(t, press(m, key(tea.KeyEnter)).output); dir != "@" {
+	if dir, _, _ := splitOutput(t, press(m, key(tea.KeyEnter)).output); dir != "@" {
 		t.Errorf("bare @ output dir = %q", dir)
 	}
 
@@ -510,7 +510,7 @@ func TestNewProvider(t *testing.T) {
 	if rows := newRows(m); len(rows) != 1 || rows[0].value != "@zzz" {
 		t.Fatalf("no match: %v", rows)
 	}
-	if dir, _, _, _ := splitOutput(t, press(m, key(tea.KeyEnter)).output); dir != "@zzz" {
+	if dir, _, _ := splitOutput(t, press(m, key(tea.KeyEnter)).output); dir != "@zzz" {
 		t.Errorf("fallback dir = %q", dir)
 	}
 
@@ -566,7 +566,7 @@ func TestNewPresetRows(t *testing.T) {
 	tools := existingDir(t)
 	cfg := sessions.Config{Presets: map[string]sessions.Preset{
 		"review":  {Agent: "claude", Directory: "@", Args: []string{"--model", "opus"}},
-		"scratch": {Agent: "pi", Directory: tools, Task: "poke around", Shell: true},
+		"scratch": {Agent: "pi", Directory: tools, Shell: true},
 	}}
 	m := testModel(t, cfg, nil, nil)
 	m = typeText(m, "scr")
@@ -579,9 +579,9 @@ func TestNewPresetRows(t *testing.T) {
 	}
 	// The preset's own agent wins over the list's choice.
 	m = press(m, key(tea.KeyTab), key(tea.KeyEnter))
-	dir, agent, flags, task := splitOutput(t, m.output)
-	if dir != tools || agent != "pi" || flags != "--preset=scratch" || task != "poke around" {
-		t.Errorf("output = %q %q %q %q", dir, agent, flags, task)
+	dir, agent, flags := splitOutput(t, m.output)
+	if dir != tools || agent != "pi" || flags != "--preset=scratch" {
+		t.Errorf("output = %q %q %q", dir, agent, flags)
 	}
 }
 

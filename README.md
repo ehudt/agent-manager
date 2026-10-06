@@ -144,7 +144,6 @@ am new ~/code/myproject              # New Claude session in a directory
 am new -t codex ~/code/project       # Use Codex instead
 am new -t cursor ~/code/project      # Use Cursor Agent
 am new -t opencode ~/code/project    # Use opencode
-am new -n "fix auth bug" .           # Session with a task description
 am new ~/code/proj -- --resume       # Anything after -- goes to the agent verbatim
 am new @48351                        # Directory from a provider you configure (below)
 ```
@@ -162,7 +161,7 @@ nothing about what a spec means; the provider does. It is called two ways:
 ```bash
 am config set dir_provider wp
 am new @                             # the provider's default (e.g. a fresh copy on trunk)
-am new @48351 -n "review"            # a PR number, a branch, whatever the provider accepts
+am new @48351                        # a PR number, a branch, whatever the provider accepts
 printf 'Review PR 48351\n' | am new --detach --print-session @48351
 ```
 

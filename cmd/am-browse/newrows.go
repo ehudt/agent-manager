@@ -4,9 +4,8 @@ package main
 // the same query that filters the sessions. Recent directories, path
 // completions, the dir_provider's `@spec` suggestions, and the saved presets
 // are rows; Enter on one prints the protocol line
-// __NEW_SESSION__␟directory␟agent␟flags␟task, parsed by cmd_browse and
-// cmd_new. flags carries --preset=<name> for a preset row; task is a
-// preset's task, else the --task prefill. A directory or spec row launches
+// __NEW_SESSION__␟directory␟agent␟flags, parsed by cmd_browse and cmd_new.
+// flags carries --preset=<name> for a preset row. A directory or spec row launches
 // with the list's agent (Tab / Shift-Tab), a preset row with its own. `am
 // new` with no arguments (--new) opens the same list with the cursor here.
 // Replaced the two-stage new-session form in 0.40.
@@ -67,7 +66,6 @@ type launcher struct {
 	home   string
 	agents []string // manifest order
 	agent  string   // the agent of directory and @spec rows
-	task   string   // --task prefill, passed through to the protocol line
 	seed   string   // Ctrl-N on a session row: its directory, first until the query changes
 
 	frecent         []string
@@ -80,14 +78,13 @@ type launcher struct {
 
 // newLauncher builds the section's state; agent falls back to the
 // configured default, an unknown one to the first manifest type.
-func newLauncher(cfg sessions.Config, amDir, home, agent, task string) launcher {
+func newLauncher(cfg sessions.Config, amDir, home, agent string) launcher {
 	l := launcher{
 		cfg:             cfg,
 		amDir:           amDir,
 		home:            home,
 		agents:          sessions.AgentTypes(),
-		task:            task,
-		providerCache:   map[string][]sessions.DirSuggestion{},
+		providerCache:  map[string][]sessions.DirSuggestion{},
 		providerPending: map[string]bool{},
 		branches:        map[string]string{},
 	}
@@ -317,7 +314,7 @@ func (l launcher) presetLabel(p sessions.Preset) string {
 // show. An @spec passes unvalidated (cmd_new resolves it) once a
 // dir_provider is configured; a path must exist.
 func (l launcher) launch(r newRow) (output, errMsg string) {
-	agent, flags, task := l.agent, "", l.task
+	agent, flags := l.agent, ""
 	if r.kind == newPreset {
 		p := l.cfg.Presets[r.preset]
 		if p.Directory == "" {
@@ -325,9 +322,6 @@ func (l launcher) launch(r newRow) (output, errMsg string) {
 		}
 		if p.Agent != "" {
 			agent = sessions.NormalizeAgent(p.Agent)
-		}
-		if p.Task != "" {
-			task = p.Task
 		}
 		flags = "--preset=" + r.preset
 	}
@@ -342,7 +336,7 @@ func (l launcher) launch(r newRow) (output, errMsg string) {
 	if _, ok := sessions.Agent(agent); !ok {
 		return "", "Invalid agent type: " + agent
 	}
-	return "__NEW_SESSION__\x1f" + dir + "\x1f" + agent + "\x1f" + flags + "\x1f" + task, ""
+	return "__NEW_SESSION__\x1f" + dir + "\x1f" + agent + "\x1f" + flags, ""
 }
 
 func isDir(path string) bool {
@@ -364,7 +358,6 @@ func (l launcher) describe(r newRow, here []string) string {
 			{"directory", p.Directory},
 			{"agent", p.Agent},
 			{"args", strings.Join(p.Args, " ")},
-			{"task", p.Task},
 		} {
 			if kv[1] != "" {
 				fmt.Fprintf(&b, "  %-10s %s\n", kv[0], kv[1])

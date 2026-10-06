@@ -1,16 +1,16 @@
 # presets.sh - Named launch presets for `am new`
 #
 # A preset is a saved set of `am new` inputs: directory (a path or a `@spec`
-# for the directory provider), agent type, task, shell panel, and extra agent
-# args. It lives under the "presets" key of config.json:
+# for the directory provider), agent type, shell panel, and extra agent args.
+# It lives under the "presets" key of config.json:
 #
 #   "presets": {
-#     "review": {"agent": "claude", "directory": "@", "task": "",
+#     "review": {"agent": "claude", "directory": "@",
 #                "shell": false, "args": ["--model", "opus", "--effort", "high"]}
 #   }
 #
 # Presets saved before 0.24 carried `workspace: true` + `branch`; they read
-# back as directory `@<branch>`.
+# back as directory `@<branch>`. A "task" key saved before 0.40 is ignored.
 #
 # `am new -p review` applies the preset as defaults; explicit flags win. The
 # browser lists every preset as a row of its New session section; Enter
@@ -34,7 +34,7 @@ am_preset_get() {
     printf '%s\n' "$obj"
 }
 
-# One scalar field of a preset (directory|agent|task as strings, shell as
+# One scalar field of a preset (directory|agent as strings, shell as
 # true/false, args newline-separated). Empty when unset.
 # Usage: am_preset_field <name> <field>
 am_preset_field() {
@@ -86,15 +86,14 @@ am_preset_rm() {
 }
 
 # Build a preset object from `am new`-style flags. Prints JSON.
-# Usage: _preset_from_flags [-t agent] [-d dir|@spec] [-n task] [--shell|--no-shell] [-- agent args...]
+# Usage: _preset_from_flags [-t agent] [-d dir|@spec] [--shell|--no-shell] [-- agent args...]
 _preset_from_flags() {
-    local agent="" directory="" task="" shell=false
+    local agent="" directory="" shell=false
     local -a args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -t|--type) agent="${2:-}"; shift 2 ;;
             -d|--dir) directory="${2:-}"; shift 2 ;;
-            -n|--name|--task) task="${2:-}"; shift 2 ;;
             --shell) shell=true; shift ;;
             --no-shell) shell=false; shift ;;
             --) shift; args=("$@"); break ;;
@@ -107,9 +106,9 @@ _preset_from_flags() {
         [[ -n "${AGENT_COMMANDS[$agent]:-}" ]] || { log_error "Unknown agent type: $agent"; return 1; }
     fi
     directory="${directory/#\~/$HOME}"
-    jq -cn --arg agent "$agent" --arg directory "$directory" --arg task "$task" \
+    jq -cn --arg agent "$agent" --arg directory "$directory" \
         --argjson shell "$shell" \
-        --args '{agent: $agent, directory: $directory, task: $task, shell: $shell,
+        --args '{agent: $agent, directory: $directory, shell: $shell,
                  args: $ARGS.positional}
                 | with_entries(select(.value != "" and .value != false and .value != []))' \
         -- "${args[@]}"
@@ -120,17 +119,16 @@ _preset_render() {
     local name="$1"
     local obj
     obj=$(am_preset_get "$name") || return 1
-    local agent shell task directory
+    local agent shell directory
     # \x1f separator: tabs are IFS whitespace and would collapse empty fields
-    IFS=$'\x1f' read -r agent shell task directory < <(
+    IFS=$'\x1f' read -r agent shell directory < <(
         jq -r '[.agent // "",
-                (.shell // false | tostring), .task // "", .directory // ""] | join("")' <<< "$obj")
+                (.shell // false | tostring), .directory // ""] | join("")' <<< "$obj")
     # Pre-0.24 presets stored workspace/branch instead of a @spec directory.
     [[ -n "$directory" ]] || directory=$(am_preset_field "$name" directory)
     local -a parts=()
     [[ -n "$agent" ]] && parts+=("-t" "$agent")
     [[ "$shell" == "true" ]] && parts+=("--shell")
-    [[ -n "$task" ]] && parts+=("-n" "$task")
     [[ -n "$directory" ]] && parts+=("$directory")
     local -a args=()
     mapfile -t args < <(jq -r '.args // [] | .[]' <<< "$obj")
@@ -149,7 +147,7 @@ preset_main() {
     case "$sub" in
         save|add)
             local name="${1:-}"
-            [[ -n "$name" ]] || { echo "Usage: am preset save <name> [-t agent] [-d dir|@spec] [-n task] [--shell] [-- agent-args...]" >&2; return 1; }
+            [[ -n "$name" ]] || { echo "Usage: am preset save <name> [-t agent] [-d dir|@spec] [--shell] [-- agent-args...]" >&2; return 1; }
             shift
             local obj
             obj=$(_preset_from_flags "$@") || return 1
@@ -178,7 +176,7 @@ preset_main() {
             cat <<'EOF'
 Usage: am preset <save|list|show|rm> ...
 
-  am preset save <name> [-t agent] [-d dir|@spec] [-n task] [--shell] [-- agent-args...]
+  am preset save <name> [-t agent] [-d dir|@spec] [--shell] [-- agent-args...]
   am preset list
   am preset show <name>
   am preset rm <name>

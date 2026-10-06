@@ -14,7 +14,7 @@ _am_presets() { am preset list 2>/dev/null | awk 'NF { print $1 }'; }
 _am_flags_for() {
     case "$1" in
         list) echo "--json --state" ;;
-        new) echo "-t --type -p --preset -n --name -d --dir --shell --no-shell --detach --print-session --" ;;
+        new) echo "-t --type -p --preset -d --dir --shell --no-shell --detach --print-session --" ;;
         send) echo "--wait --queue --force -f --timeout" ;;
         peek) echo "--pane --follow -f --lines --history --grep" ;;
         diff) echo "--ack --reset --checkpoint -c --list -l --stat --name-only --numstat -w" ;;
@@ -50,7 +50,7 @@ _am() {
         --pane) COMPREPLY=($(compgen -W "agent shell" -- "$cur")); return ;;
         -d|--dir|--prefix) COMPREPLY=($(compgen -d -- "$cur")); return ;;
         --shell-rc|--tmux-conf) COMPREPLY=($(compgen -f -- "$cur")); return ;;
-        --timeout|--lines|--grep|-n|--name|--checkpoint|-c) return ;;
+        --timeout|--lines|--grep|-n|--checkpoint|-c) return ;;
     esac
 
     if [[ "$cur" == -* ]]; then

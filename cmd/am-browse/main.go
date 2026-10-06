@@ -25,11 +25,10 @@ var (
 	benchmark  bool
 
 	// --new: open with the cursor on the New session section (am new with no
-	// arguments). The prefill flags seed the query, the agent, and the task.
+	// arguments). The prefill flags seed the query and the agent.
 	newOnly   bool
 	newPrefix string
 	newAgent  string
-	newTask   string
 )
 
 func init() {
@@ -40,7 +39,6 @@ func init() {
 	flag.BoolVar(&newOnly, "new", false, "Start on the New session section")
 	flag.StringVar(&newPrefix, "dir", "", "Prefill the query with a directory")
 	flag.StringVar(&newAgent, "agent", "", "Agent for new sessions")
-	flag.StringVar(&newTask, "task", "", "Task passed through with a new session")
 }
 
 func main() {
@@ -70,7 +68,7 @@ func main() {
 
 	m := newModel()
 	env := sessions.LoadEnv()
-	m.launch = newLauncher(sessions.LoadConfig(env.AmDir), env.AmDir, env.Home, newAgent, newTask)
+	m.launch = newLauncher(sessions.LoadConfig(env.AmDir), env.AmDir, env.Home, newAgent)
 	if newOnly {
 		m.startNew = true
 		m.filter.SetValue(newPrefix)
@@ -189,7 +187,7 @@ func newModel() model {
 
 	return model{
 		filter:      ti,
-		launch:      newLauncher(sessions.Config{}, "", "", "", ""),
+		launch:      newLauncher(sessions.Config{}, "", "", ""),
 		place:       true,
 		showPreview: true,
 		loading:     true,

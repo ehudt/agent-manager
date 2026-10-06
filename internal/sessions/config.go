@@ -23,11 +23,11 @@ type Config struct {
 
 // Preset is one saved `am new` input set (lib/presets.sh). Directory is a
 // path or a `@spec`; a pre-0.24 preset (workspace + branch) reads back as
-// `@<branch>`, as am_preset_field does.
+// `@<branch>`, as am_preset_field does. A "task" key saved before 0.40 is
+// ignored.
 type Preset struct {
 	Agent     string
 	Directory string
-	Task      string
 	Shell     bool
 	Args      []string
 }
@@ -45,7 +45,6 @@ func LoadConfig(amDir string) Config {
 		Presets      map[string]struct {
 			Agent     string   `json:"agent"`
 			Directory string   `json:"directory"`
-			Task      string   `json:"task"`
 			Shell     bool     `json:"shell"`
 			Args      []string `json:"args"`
 			Workspace bool     `json:"workspace"`
@@ -67,7 +66,6 @@ func LoadConfig(amDir string) Config {
 			cfg.Presets[name] = Preset{
 				Agent:     p.Agent,
 				Directory: dir,
-				Task:      p.Task,
 				Shell:     p.Shell,
 				Args:      append([]string(nil), p.Args...),
 			}

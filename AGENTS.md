@@ -68,7 +68,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/tmux.sh` | tmux wrappers: create/kill/attach sessions |
 | `lib/agents.sh` | Agent lifecycle: launch, display formatting, kill |
 | `lib/agents.manifest` | Agent adapter table (symlink to `internal/sessions/agents.manifest`, which Go embeds): per agent type, the launch command, aliases, prompt delivery (stdin/argv/argv:<flags>), resume-args template, transcript store layout, title parser, title→state signal, turn-boundary reliability, hook family, restore preflight, version binary, live lab. Bash reads it through `am_agent_field`; Go through `Agent()` / `AgentSpec`. Libs branch on these fields, not on agent names. The state hook resolves each type's `hook_family` from the manifest — the repo copy, or the copy `am install` materializes beside Cursor's out-of-repo hook byte copy (`<cursor hooks>/agents.manifest`) |
-| `cmd/am-browse/newrows.go` | The browser's New session section (`launcher`): launch targets matched by the same query as the sessions — recent directories, path completions, the provider's `@spec` suggestions, presets — and the agent choice (Tab). Enter on one prints `__NEW_SESSION__␟dir␟agent␟flags␟task`. `am new` with no arguments opens the browser here (`am-browse --new`). Replaced the two-stage new-session form (0.39, itself the Go port of `lib/form.sh`) in 0.40 |
+| `cmd/am-browse/newrows.go` | The browser's New session section (`launcher`): launch targets matched by the same query as the sessions — recent directories, path completions, the provider's `@spec` suggestions, presets — and the agent choice (Tab). Enter on one prints `__NEW_SESSION__␟dir␟agent␟flags`. `am new` with no arguments opens the browser here (`am-browse --new`). Replaced the two-stage new-session form (0.39, itself the Go port of `lib/form.sh`) in 0.40 |
 | `internal/sessions/config.go`, `dirs.go`, `provider.go` | The browser's Go readers of what bash owns: `LoadConfig` (default agent, dir_provider, presets — a tolerant reader, `lib/config.sh` / `lib/presets.sh` do every write), `FrecentDirs` / `RepoScanCached` / `PathCompletions` (the New session directory rows; `.dir_repo_cache` is shared with `_dir_repo_scan_cached`), `DirProviderSuggest` (`<provider> suggest <partial>` under the 0.3s timeout, process group killed, `suggest.fail` event) |
 | `lib/presets.sh` | Named launch presets for `am new -p` (stored under `presets` in config.json): `am preset save/list/show/rm` |
 | `lib/review.sh` | `am diff [session] [--ack\|--reset\|--list\|--checkpoint id] [--stat] [-- git args]`: resolves the session (argument, else the caller's pane), asks `am-core review-*` for the baseline/worktree trees and the numstat, prints the header to stderr and runs `git diff <base_tree> <cur_tree>` so the user's pager and diff tools apply. The review lifecycle calls `am-core review-init` / `review-adopt` directly |
@@ -119,7 +119,7 @@ am-core tick → RefreshTitles → refreshedReview (only when .dirty is newer th
 am diff [s] → review_diff_main → am-core review-stat --record → git -C dir diff <base_tree> <cur_tree>; --ack → review-ack (worktree tree becomes the baseline, count zeroed); --reset → review-baseline --reset
 am restore → cmd_restore_internal → am-core review-adopt <old> <new> (refs follow the resumed conversation); sessions_log_gc → ReviewDrop when the entry is dropped
 am new -p name → _cmd_new_apply_preset(name, fill=true) → preset fields where flags left gaps, preset args first → agent_launch()
-browser preset row → its directory, agent, task + --preset=name in the flags field → _cmd_new_apply_preset(name, fill=false) (args + shell only)
+browser preset row → its directory, agent + --preset=name in the flags field → _cmd_new_apply_preset(name, fill=false) (args + shell only)
 am send s "..." → agent_get_state → send now for ready/running/background/unknown (the harness steers on mid-turn input or queues it); refuse waiting_user/starting (exit 4: the text would answer a dialog or miss the TUI) and idle/dead (exit 2: it would run in a shell) unless --wait/--queue/--force
 am send --queue s "..." → $AM_DIR/queue/<s>.XXXXXX (prompt) → detached _send_queue_helper → am send --wait --timeout 0 (ready|background|idle|dead, no deadline) → delivered: rm qfile | failed: mv qfile .failed ; both → one line in $AM_DIR/queue.log
 am wait --all|--any s1 s2 → _wait_many() → one agent_wait_state per session in the background → '<session> <state>' lines
@@ -131,7 +131,7 @@ am install --dry-run → cmd_install plan (config, skill links, Go build, tmux.c
 am uninstall → _uninstall_skills → scripts/install.sh --uninstall (PATH links, rc block, marker-tagged hook entries, Cursor helper copy, pi/opencode links) → --purge: rm -rf $AM_DIR
 bare `am` → _install_refresh_if_stale() → fingerprint of install inputs vs $AM_DIR/.install_stamp → _install_refresh() (skills, Go build if sources newer, tmux.conf)
 Enter on a browser New session row (Ctrl-N jumps there, seeded with the highlighted session's directory) → launcher.launch → am-browse prints the __NEW_SESSION__ line → fzf_main passes it through → cmd_browse → _browse_result → cmd_new_internal (strips --preset=<name> → _cmd_new_apply_preset(name, fill=false), resolves a @spec directory via agent_dir_resolve — the same post-processing as cmd_new's form branch) → agent_launch() ; AM_BROWSE_CMD swaps the browser binary for a stand-in (tests)
-am new (no args, tty) / prefix+n → fzf_browse_bin → am-browse --new --dir --agent --task (the browser, cursor on New session; Esc quits with no output → "Cancelled") → __NEW_SESSION__ line → cmd_new's form branch | any other line (a session row) → _browse_result, as the browser
+am new (no args, tty) / prefix+n → fzf_browse_bin → am-browse --new --dir --agent (the browser, cursor on New session; Esc quits with no output → "Cancelled") → __NEW_SESSION__ line → cmd_new's form branch | any other line (a session row) → _browse_result, as the browser
 prefix+` / am shell → bin/toggle-shell → agent_shell_pane_toggle() → agent_shell_pane_add() (first use) | tmux_shell_pane_hide/show() (park in / rejoin from hidden _amshell window; pane state and shell.log streaming survive)
 prefix+v / am review [s] → bin/toggle-review → agent_review_pane_toggle() → agent_review_pane_add() (split-window -h at the agent's right, @am_role=review, runs bin/am-review) | tmux_review_pane_hide/show() (park in / rejoin from hidden _amreview window)
 am-review tick (1s) → .dirty mtime moved? → ReviewMeasure(record) + ReviewFileStats → ReviewFileDiff(selected) ; 'a' → am diff <s> --ack → re-measure
@@ -543,7 +543,7 @@ am restore
 ## Key Functions
 
 **Session lifecycle:**
-- `agent_launch(dir, type, task, agent_args...)` - Creates session, registers, starts agent. `--shell`/`--no-shell` are consumed here; every other arg reaches the agent verbatim
+- `agent_launch(dir, type, task, agent_args...)` - Creates session, registers, starts agent. `--shell`/`--no-shell` are consumed here; every other arg reaches the agent verbatim. task is internal since 0.40 (no flag sets it): empty from `am new` and the browser; reboot recovery passes the session's last title so the restored tab is named before the agent paints one. The registry's task field is the title store the scan fills
 - `agent_kill(name)` - Kills tmux + removes from registry
 - `agent_kill_all()` - Kill all agent sessions
 - `agent_info(name)` - Show session info
@@ -591,10 +591,10 @@ am restore
 **Presets (lib/presets.sh):**
 - `am_preset_names()` / `am_preset_get(name)` / `am_preset_field(name, field)` - Read presets from config.json (the args field prints one per line; shell prints true/false; directory may be a `@spec`, and a pre-0.24 workspace+branch pair reads back as `@branch`)
 - `am_preset_save(name, json)` / `am_preset_rm(name)` - Write / delete under the presets key of config.json; the key is dropped when empty
-- `_preset_from_flags(flags...)` - Build the JSON object from `am new`-style flags (`-t -d -n --shell -- args`; the positional directory may be a `@spec`)
+- `_preset_from_flags(flags...)` - Build the JSON object from `am new`-style flags (`-t -d --shell -- args`; the positional directory may be a `@spec`; a "task" key saved before 0.40 is ignored everywhere)
 - `_preset_render(name)` - Equivalent `am new` command line, shell-quoted
 - `preset_main(sub, ...)` - Entry for `am preset save|list|show|rm|help`
-- `_cmd_new_apply_preset(name, fill)` (in the am entry point) - Merge a preset into cmd_new's locals; fill=true also supplies directory (path or `@spec`)/agent/task where the flags left gaps
+- `_cmd_new_apply_preset(name, fill)` (in the am entry point) - Merge a preset into cmd_new's locals; fill=true also supplies directory (path or `@spec`)/agent where the flags left gaps
 
 **Dispatch (in the am entry point):**
 - `_wait_many(mode, states, timeout, json, sessions...)` - Multi-session wait behind `am wait --all|--any`; one background `agent_wait_state` per session, results in a private tmpdir, exit 3 when any timed out
@@ -705,8 +705,8 @@ am restore
 - `launcher.rows(query, live)` (`newrows.go`) - The New session rows: the seed; for `@…` the provider's suggestions (`DirProviderSuggest` as the returned Cmd, once per distinct text, `providerCache` / `providerPending`) or the typed spec alone; for `/ ~ .` the named directory first, then recent ones under it, then `PathCompletions` (Enter never picks a child); otherwise the recent directories (`FrecentDirs`: 3 under an empty query, every substring match by tier otherwise) followed by the presets (all, or matching name / directory / agent). Directory rows carry `branch · N running` (the live map counts running sessions by `EffectiveDir`)
 - `launcher.launch(row)` - Validation and the output line: a `@spec` passes unvalidated once `cfg.DirProviderCmd()` is set (the error names the dir_provider config key otherwise), a path must exist (`~` expanded), the agent must be a manifest type. A preset row launches with its own agent and task and `--preset=<name>` in flags (its args and shell flag are merged by `_cmd_new_apply_preset(name, fill=false)`); other rows with `launcher.agent`, cycled by Tab / Shift-Tab (`cycleAgent`, manifest order). A refusal shows under the filter (`m.errMsg`, cleared by the next key)
 - `launcher.describe(row, here)` - The preview of a New row, run off the UI thread: a directory's branch, `git status --short`, last commits, and the sessions (running or closed) that worked there; how an `@spec` resolves; a preset's fields. Shown from the top (sessions show the tail of their pane)
-- Output protocol: session name (attach), `__NEW_SESSION__␟dir␟agent␟flags␟task` (a New row), `__RESTORE__␟…`, `__RETRY_RECOVERY__␟id`, `__FORGET_RECOVERY__␟id`, or empty (cancel)
-- Flags: `--preview-cmd`, `--kill-cmd`, `--client-name`, `--benchmark`; `--new [--dir d] [--agent a] [--task t]` starts with the cursor on the New section (`--dir` prefills the query)
+- Output protocol: session name (attach), `__NEW_SESSION__␟dir␟agent␟flags` (a New row), `__RESTORE__␟…`, `__RETRY_RECOVERY__␟id`, `__FORGET_RECOVERY__␟id`, or empty (cancel)
+- Flags: `--preview-cmd`, `--kill-cmd`, `--client-name`, `--benchmark`; `--new [--dir d] [--agent a]` starts with the cursor on the New section (`--dir` prefills the query)
 
 **fzf helpers (lib/fzf.sh):**
 - `fzf_browse_bin()` - Path of the am-browse binary (`AM_BROWSE_CMD` override for tests; errors when not built), exporting the socket/dir/prefix it reads; shared by `fzf_main` and `cmd_new`'s form branch

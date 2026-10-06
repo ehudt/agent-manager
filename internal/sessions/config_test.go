@@ -38,7 +38,8 @@ func TestLoadConfig(t *testing.T) {
 	if p := cfg.Presets["review"]; p.Directory != "@" || len(p.Args) != 2 || p.Args[1] != "opus" {
 		t.Errorf("review = %+v", p)
 	}
-	if p := cfg.Presets["scratch"]; !p.Shell || p.Task != "poke" || p.Directory != "/tmp/tools" {
+	// A pre-0.40 "task" key is ignored, not an error.
+	if p := cfg.Presets["scratch"]; !p.Shell || p.Directory != "/tmp/tools" {
 		t.Errorf("scratch = %+v", p)
 	}
 	if p := cfg.Presets["legacy"]; p.Directory != "@review-48351" {

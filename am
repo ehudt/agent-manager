@@ -75,8 +75,7 @@ OPTIONS FOR 'list':
 OPTIONS FOR 'new':
     -t, --type      Agent type: claude, codex, cursor, pi, opencode (saved default applies)
     -p, --preset    Apply a saved preset; explicit flags win (see 'am preset')
-    -n, --name      Custom task description
-    -d, --dir       Directory (can also be positional arg)
+    -d, --dir      Directory (can also be positional arg)
     @spec           Directory from the configured dir_provider (am new @48351;
                     bare @ for the provider's default)
     --shell         Open the shell panel at launch (default: agent-only)
@@ -132,20 +131,21 @@ OPTIONS FOR 'log':
     -f              Follow: keep printing new lines
 
 KEYBINDINGS (interactive browser):
-    Enter           Attach active session or restore inactive session
-    Ctrl-N          Create new session (directory-first launcher)
+    Enter           Attach, restore, or launch the selected row
+    Tab             Agent for New session rows (Shift-Tab: back)
+    Ctrl-N          Jump to New session (on a session: a new one in its dir)
     Ctrl-X          Kill selected active session
     Ctrl-R          Refresh session list
     Ctrl-P          Toggle the preview pane
     Ctrl-H          Jump to the first inactive (restorable) session
-    type            Filter sessions (also state:<name>, e.g. state:ready)
+    type            Filter sessions and New session rows (/ ~ . path, @spec)
     ?               Show inline help
 
 KEYBINDINGS (inside tmux session):
     Prefix + 1-9    Jump to the Nth session tab
     Prefix + a      Switch to last am session
     Prefix + ←/→    Previous / next session tab
-    Prefix + n      Open a popup to create a new session
+    Prefix + n      Open the browser popup on New session
     Prefix + s      Open am browser popup (Prefix + h does the same)
     Prefix + x      Kill the current am session
     Prefix + d      Detach from session
@@ -157,12 +157,11 @@ KEYBINDINGS (inside tmux session):
 
 EXAMPLES:
     am                              # Open interactive browser
-    am new                          # New session in current dir (uses defaults)
+    am new                          # Browser, cursor on New session
     am new ~/code/proj              # New session in specific directory
     am new -t codex ~/code/proj     # New codex session
     am new -t cursor ~/code/proj    # New Cursor Agent session
-    am new -n "fix auth" .          # Session with task description
-    am new @48351                   # Directory from the provider (needs dir_provider)
+    am new @48351                  # Directory from the provider (needs dir_provider)
     printf 'Fix auth bug\n' | am new --detach ~/code/proj
     printf 'Run the test suite\n' | am send am-abc123
     am new -p review @48351         # Saved preset (am preset save review @ -- --model opus)
@@ -324,13 +323,13 @@ _browse_result() {
             return 1
         fi
     elif [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
-        # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>task
-        local directory agent_type flags task
-        IFS=$'\x1f' read -r _tag directory agent_type flags task <<< "$result"
+        # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags
+        local directory agent_type flags
+        IFS=$'\x1f' read -r _tag directory agent_type flags <<< "$result"
 
-        # Create new session from form values
+        # Create new session from the New session row
         # shellcheck disable=SC2086
-        cmd_new_internal "$directory" "$agent_type" "$task" $flags
+        cmd_new_internal "$directory" "$agent_type" $flags
     elif [[ "$result" == $'__RETRY_RECOVERY__\x1f'* ]]; then
         local recovery_id="${result#*$'\x1f'}"
         recovery_desired_retry "$recovery_id"
@@ -405,13 +404,12 @@ _dir_free_of_live_session() {
 cmd_new_internal() {
     local directory="$1"
     local agent_type="${2:-$(am_default_agent)}"
-    local task="${3:-}"
-    shift 3 2>/dev/null || shift $#
+    shift 2 2>/dev/null || shift $#
     local agent_args=("$@")
 
-    # The form's values arrive raw, exactly as in cmd_new's interactive
-    # branch: the preset choice is a --preset=<name> flag for us (its args
-    # and shell flag merge here), and a `@spec` directory still has to be
+    # The browser's values arrive raw, exactly as in cmd_new's interactive
+    # branch: a preset row is a --preset=<name> flag for us (its args and
+    # shell flag merge here), and a `@spec` directory still has to be
     # resolved by the provider. Until 0.37 this path launched with both
     # untouched, so Ctrl-N + `@<PR>` died on "Directory does not exist: @…".
     local _flag _kept=() _form_preset=""
@@ -439,7 +437,7 @@ cmd_new_internal() {
 
     local session_name
     _AM_LAUNCH_SOURCE=form
-    if ! session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}"); then
+    if ! session_name=$(agent_launch "$directory" "$agent_type" "" "${agent_args[@]}"); then
         _AM_LAUNCH_SOURCE=""
         _launch_fail_hold form
         return 1
@@ -761,10 +759,10 @@ read_prompt_input() {
 
 # Command: new
 # Apply a saved preset to cmd_new's locals (dynamic scope). With fill=true the
-# preset supplies directory/agent/task where the CLI gave none (the directory
-# may be a `@spec`); the form path passes fill=false because it already copied
-# those fields. Agent args and the shell flag are always merged: preset args
-# first, CLI args after.
+# preset supplies directory/agent where the CLI gave none (the directory may be
+# a `@spec`); the browser path passes fill=false because its preset row already
+# carries those fields. Agent args and the shell flag are always merged: preset
+# args first, CLI args after.
 # Usage: _cmd_new_apply_preset <name> <fill:true|false>
 _cmd_new_apply_preset() {
     local pname="$1" fill="$2" v
@@ -775,8 +773,6 @@ _cmd_new_apply_preset() {
     if [[ "$fill" == true ]]; then
         v=$(am_preset_field "$pname" agent)
         [[ -n "$v" && -z "$agent_type" ]] && agent_type="$v"
-        v=$(am_preset_field "$pname" task)
-        [[ -n "$v" && -z "$task" ]] && task="$v"
         if [[ "$dir_given" == false ]]; then
             v=$(am_preset_field "$pname" directory)
             if [[ -n "$v" ]]; then
@@ -801,7 +797,6 @@ cmd_new() {
     local directory=""
     local dir_given=false
     local agent_type=""
-    local task=""
     local agent_args=()
     local attach_session=true
     local print_session=false
@@ -822,10 +817,6 @@ cmd_new() {
             --preset=*)
                 preset_name="${1#--preset=}"
                 shift
-                ;;
-            -n|--name|--task)
-                task="$2"
-                shift 2
                 ;;
             -d|--dir)
                 directory="$2"
@@ -863,7 +854,6 @@ cmd_new() {
                 echo "Options:"
                 echo "  -t, --type      Agent type (claude, codex, cursor, pi, opencode)"
                 echo "  -p, --preset    Apply a saved preset (am preset list); explicit flags win"
-                echo "  -n, --name      Task description"
                 echo "  --shell         Open the shell panel at launch (default: agent-only)"
                 echo "  --no-shell      Start agent-only even if shell_pane is enabled by default"
                 echo "  --detach        Create the session without attaching"
@@ -897,13 +887,13 @@ cmd_new() {
 
     # Fully interactive: the browser with the cursor on its New session
     # section (`am-browse --new`). A launch prints one
-    # __NEW_SESSION__<US>directory<US>agent<US>flags<US>task line; a session
-    # row picked from the same list prints what the browser prints, handled
-    # as the browser does; nothing when cancelled.
-    if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && -z "$task" && ${#agent_args[@]} -eq 0 ]]; then
+    # __NEW_SESSION__<US>directory<US>agent<US>flags line; a session row
+    # picked from the same list prints what the browser prints, handled as
+    # the browser does; nothing when cancelled.
+    if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && ${#agent_args[@]} -eq 0 ]]; then
         local browse_cmd form_values flags _tag
         browse_cmd=$(fzf_browse_bin) || return 1
-        form_values=$("$browse_cmd" --new --dir "$directory" --agent "$(am_default_agent)" --task "$task") || return 1
+        form_values=$("$browse_cmd" --new --dir "$directory" --agent "$(am_default_agent)") || return 1
         if [[ -z "$form_values" ]]; then
             log_info "Cancelled"
             return 0
@@ -913,7 +903,7 @@ cmd_new() {
             return
         fi
 
-        IFS=$'\x1f' read -r _tag directory agent_type flags task <<< "$form_values"
+        IFS=$'\x1f' read -r _tag directory agent_type flags <<< "$form_values"
         launch_source=form
         # shellcheck disable=SC2206
         agent_args=($flags)
@@ -949,7 +939,7 @@ cmd_new() {
         agent_type="${agent_type:-$(am_default_agent)}"
     fi
 
-    # `@spec` directories are resolved by the configured provider (the form
+    # `@spec` directories are resolved by the configured provider (the browser
     # skips path validation for them, so this is the one place they turn into
     # a real directory).
     if am_dir_is_spec "$directory"; then
@@ -971,7 +961,7 @@ cmd_new() {
     _AM_LAUNCH_PROMPT="$initial_prompt"
     _AM_LAUNCH_SOURCE="$launch_source"
     local session_name
-    if ! session_name=$(agent_launch "$directory" "$agent_type" "$task" "${agent_args[@]}"); then
+    if ! session_name=$(agent_launch "$directory" "$agent_type" "" "${agent_args[@]}"); then
         _AM_LAUNCH_SOURCE=""
         _launch_fail_hold "$launch_source"
         return 1

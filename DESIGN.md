@@ -132,7 +132,6 @@ am list --json          # Output JSON for scripting (includes state field)
 am new                  # Interactive: pick directory, starts claude
 am new /path/to/project # Start claude in specific directory
 am new -t codex         # Start codex instead of claude
-am new --name "my-task" # Custom display name
 am new @48351           # Directory from the configured dir_provider (`@spec`; bare `@` = provider default)
 am new --detach         # Create without attaching
 am new --print-session  # Print session name to stdout

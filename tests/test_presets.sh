@@ -35,13 +35,14 @@ opus
 high" "$(am_preset_field review args)" "presets: args preserved in order"
     assert_eq "false" "$(am_preset_field review shell)" "presets: shell defaults false"
 
-    # Second preset with directory + task + shell; ~ expands
-    preset_main save scratch -t pi -n "poke around" --shell "~/tools" >/dev/null 2>&1
+    # Second preset with directory + shell; ~ expands. There is no task (-n).
+    preset_main save scratch -t pi --shell "~/my tools" >/dev/null 2>&1
     assert_eq "review
 scratch" "$(am_preset_names)" "presets: names sorted"
-    assert_eq "$HOME/tools" "$(am_preset_field scratch directory)" "presets: tilde expanded"
-    assert_eq "poke around" "$(am_preset_field scratch task)" "presets: task stored"
+    assert_eq "$HOME/my tools" "$(am_preset_field scratch directory)" "presets: tilde expanded"
     assert_eq "true" "$(am_preset_field scratch shell)" "presets: shell stored"
+    assert_eq "false" "$(preset_main save x -n "a task" >/dev/null 2>&1 && echo true || echo false)" \
+        "presets: -n (task) is not an option"
 
     # list renders an equivalent am new line
     out=$(preset_main list)
@@ -55,7 +56,7 @@ scratch" "$(am_preset_names)" "presets: names sorted"
     assert_eq "@" "$(am_preset_field legacy2 directory)" "presets: legacy bare workspace → @"
     am_preset_rm legacy; am_preset_rm legacy2
     assert_contains "$out" "-- --model opus --effort high" "presets: list renders agent args"
-    assert_contains "$out" "'poke around'" "presets: list quotes task with spaces"
+    assert_contains "$out" "'$HOME/my tools'" "presets: list quotes a directory with spaces"
 
     # Validation
     assert_eq "false" "$(preset_main save 'bad name' -t claude >/dev/null 2>&1 && echo true || echo false)" \

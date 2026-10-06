@@ -247,9 +247,9 @@ branch.
 
 ```bash
 am kill --all                       # start from an empty strip
-am new --detach -n "Fix the flaky registry lock test" ~/code/agent-manager
-am new --detach -n "Add CSV export to the reports page" ~/code/some-webapp
-am new --detach -n "Review PR 412" ~/code/another-repo
+printf 'Fix the flaky registry lock test\n' | am new --detach ~/code/agent-manager
+printf 'Add CSV export to the reports page\n' | am new --detach ~/code/some-webapp
+printf 'Review PR 412\n' | am new --detach ~/code/another-repo
 ```
 
 Then give each a different state, in this order:
