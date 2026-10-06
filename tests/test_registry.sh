@@ -15,8 +15,10 @@ test_registry() {
     # Test add
     registry_add "test-session" "/tmp/test" "main" "claude" "test task"
     assert_eq "true" "$(registry_exists test-session && echo true || echo false)" "registry_add: session exists"
-    assert_eq "name directory branch agent_type created_at task" \
-        "$(jq -r '.sessions["test-session"] | keys_unsorted | join(" ")' "$AM_REGISTRY")" \
+    # The field set, not the order: a dropped created_at also defeats the GC
+    # grace window (reap.go), which test_registry_gc checks on its own.
+    assert_eq "agent_type branch created_at directory name task" \
+        "$(jq -r '.sessions["test-session"] | keys | join(" ")' "$AM_REGISTRY")" \
         "registry_add: writes only the core fields"
 
     # Test get_field
@@ -619,19 +621,9 @@ test_auto_title_scan() {
     assert_eq "Throttle test title" "$task" \
         "scan: force bypasses throttle"
 
-    # --- Test 5: Sets first title for an untitled session ---
-    registry_add "test-scan-5" "/tmp/scanproject" "dev" "codex" ""
-    auto_title_scan 1
-    task=$(registry_get_field "test-scan-5" "task")
-    assert_eq "First scanned title" "$task" \
-        "scan: sets first title"
-
-    # --- Test 6: Does not update if pane title unchanged ---
-    registry_add "test-scan-6" "/tmp/project" "main" "claude" "Existing Title"
-    auto_title_scan 1
-    task=$(registry_get_field "test-scan-6" "task")
-    assert_eq "Existing Title" "$task" \
-        "scan: no update when pane title matches existing task"
+    # Tests 5 and 6 (first title for an untitled row, no rewrite when the
+    # pane title equals the task) are TestRefreshTitlesTitleSources' am-5 /
+    # am-6 rows in maintenance_test.go (docs/test-value-plan.md 3b).
 
     # --- Test 7: Trims leading non-alphanumeric characters from pane title ---
     registry_add "test-scan-7" "/tmp/project" "main" "claude" ""

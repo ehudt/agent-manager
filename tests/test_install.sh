@@ -838,11 +838,6 @@ test_install_pi_extension() {
     assert_cmd_succeeds "_install_pi_extension: symlink created" test -L "$pi_ext_dir/am-state.ts"
     assert_eq "$PROJECT_DIR/lib/hooks/am-state.ts" "$(readlink "$pi_ext_dir/am-state.ts")" \
         "_install_pi_extension: symlink target"
-    # idempotent re-run
-    _install_pi_extension "$pi_ext_dir" "$PROJECT_DIR/lib/hooks/am-state.ts"
-    assert_cmd_succeeds "_install_pi_extension: idempotent" test -L "$pi_ext_dir/am-state.ts"
-    assert_eq "$PROJECT_DIR/lib/hooks/am-state.ts" "$(readlink "$pi_ext_dir/am-state.ts")" \
-        "_install_pi_extension: idempotent re-run keeps the target"
     rm -rf "$pi_tmp"
 }
 

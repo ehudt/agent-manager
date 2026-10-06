@@ -190,10 +190,7 @@ test_state_integration() {
         skip_test "am list --json: state field (am list --json unavailable in test env)"
     fi
 
-    local wait_state
-    wait_state=$(AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \
-        "$PROJECT_DIR/am" wait --timeout 5 "$session_name" 2>/dev/null || true)
-    assert_not_empty "$wait_state" "am wait: returns a state"
+    # am wait's single-session output is tests/test_cli.sh::test_cli_dispatch.
 
     local interrupt_rc=0
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" \

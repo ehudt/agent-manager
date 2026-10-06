@@ -27,9 +27,6 @@ func TestAgentManifestTypes(t *testing.T) {
 				t.Errorf("%s.%s is empty", typ, name)
 			}
 		}
-		if !spec.Restorable() {
-			t.Errorf("%s: expected restorable", typ)
-		}
 	}
 }
 

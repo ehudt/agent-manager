@@ -171,8 +171,8 @@ names the two that remain.
 | `tests/test_agents.sh` | `test_agents` | 4 | simplify | 14, 15, 25, 27, 28, 35, 36, 39, 40, 41, 42, 43, 46, 47, 48, 51, 52, 57, 58, 59, 60, 61, 62 | Hand-copied manifest facts (command, prompt mode, resume templates per type); every breakage caught by `internal/sessions/agents_test.go::TestAgentManifestFacts` (also `TestAgentAliasesAndUnknown`, `TestAgentManifestSharedWithBash`, `test_agent_manifest`). Keep the bash-reader assertions |
 | `tests/test_install.sh` | `test_install_pi_extension` | 830 | simplify | 841, 842, 843, 844, 845 | The uninstall half; caught by `uninstall: pi extension link removed` in `test_installer_uninstall_reverses_install` |
 | `tests/test_registry.sh` | `test_registry` | 4 | simplify | 18 (loosen, not delete) | Exact field-order pin on `registry_add`'s JSON. Rewrite to compare sorted `keys`: the field *set* is still guarded (a dropped `created_at` also defeats the GC grace window, `reap.go:66`, caught by `test_registry_gc`'s `row younger than the grace window is not reaped`) |
-| `tests/test_registry.sh` | `test_auto_title_scan` | 672 | simplify | 736, 737, 738, 739, 740, 743, 744, 745, 746, 747 | Hysteresis and sidecar-only blocks; caught by `TestRefreshTitlesTitleSources` (maintenance_test.go:382, am-6), `TestRestoreScanBindsIDFromSidecarOnly` (:177, :180), `TestResolveSessionIDSidecarOnly` (titles_test.go:459), and this file's `pi detect id: sidecar without a transcript → empty, no substitute` |
-| `tests/test_state.sh` | `test_state_integration` | 94 | simplify | 196, 201 | `am wait` output and `am list --json --state`; caught by `tests/test_cli.sh::test_cli_dispatch` (`am wait: single-session output is just the state`, `am list --json --state: filters the array`) |
+| `tests/test_registry.sh` | `test_auto_title_scan` | 672 | simplify | 736, 737, 738, 739, 740, 743, 744, 745, 746, 747 | The recorded lines are Tests 5 and 6 (first title for an untitled row; no rewrite when the pane title equals the task), the am-5 / am-6 rows of `TestRefreshTitlesTitleSources`; the "hysteresis and sidecar-only" wording below names the mutations the pipeline ran, caught by `TestRefreshTitlesTitleSources` (maintenance_test.go:382, am-6), `TestRestoreScanBindsIDFromSidecarOnly` (:177, :180), `TestResolveSessionIDSidecarOnly` (titles_test.go:459), and this file's `pi detect id: sidecar without a transcript → empty, no substitute` |
+| `tests/test_state.sh` | `test_state_integration` | 94 | simplify | 196 (201 kept, see Batch 4) | `am wait` output; caught by `tests/test_cli.sh::test_cli_dispatch` (`am wait: single-session output is just the state`). Line 201 is `am interrupt` against a live session, not `am list --json --state` as this row first said; nothing else runs `am interrupt` on a session (`test_cli` covers only its flag parsing), so it stays |
 | `internal/sessions/agents_test.go` | `TestAgentManifestTypes` | 10 | simplify | 30, 31, 32 | The every-type-restorable loop (not the `want` type list); caught by `TestRestorableRawLines`, `TestRestorableEntriesIncludeCodexExactID`, `tests/test_agents.sh::test_agent_manifest` (`no type is missing a load-bearing field`), `cmd/am-browse::TestFormOptionsNavigation` |
 | `tests/test_bin_helpers.sh` | `test_symlinked_kill_and_switch` | 80 | merge | — | One assertion through the stub tmux; fold into `test_kill_and_switch_switches_client_before_kill` (every breakage caught by the `kill-and-switch:` stub assertions, e.g. `switch happens before kill`, `still kills target when no alternate exists`, `legacy one-arg form still works`) |
 | `tests/test_recovery.sh` | `test_recovery_branch_guard_integration` | 668 | merge | — | 3.5s, two `agent_launch` + `recovery_run`; both breakages caught by `test_recovery_preflight_matrix` (`recovery preflight: re-allocated checkout: actionable reason`) and `test_recovery_sidecar_mirror` (`sidecar mirror: launch records the launch-directory branch`). Fold the one live-launch step into `test_recovery_reboot_integration`, which already launches |
@@ -605,7 +605,7 @@ through` got `ready`, the resolver not recognising the word).
 | `tests/test_agents.sh` | `test_agents`: drop lines 14, 15, 25, 27, 28, 35, 36, 39, 40, 41, 42, 43, 46, 47, 48, 51, 52, 57, 58, 59, 60, 61, 62 |
 | `tests/test_install.sh` | `test_install_pi_extension`: drop 841-845 |
 | `tests/test_registry.sh` | `test_registry`: line 18 compares sorted `keys` instead of the exact order; `test_auto_title_scan`: drop 736-740, 743-747 |
-| `tests/test_state.sh` | `test_state_integration`: drop 196, 201 |
+| `tests/test_state.sh` | `test_state_integration`: drop 196 (the `am wait` block); 201 is the only live `am interrupt` run and stays |
 | `internal/sessions/agents_test.go` | `TestAgentManifestTypes`: drop 30-32 |
 | `tests/test_bin_helpers.sh` | fold `test_symlinked_kill_and_switch` (80) into `test_kill_and_switch_switches_client_before_kill` |
 | `tests/test_recovery.sh` | fold `test_recovery_branch_guard_integration` (668) into `test_recovery_reboot_integration`; the preflight outcome stays with `test_recovery_preflight_matrix` |
@@ -632,6 +632,23 @@ branch preflight (two breakages recorded) and expect `recovery preflight:
 re-allocated checkout: actionable reason` and `sidecar mirror: launch records
 the launch-directory branch` to fail. Break the pi extension uninstall and
 expect `uninstall: pi extension link removed` to fail.
+
+Re-run result (2026-10-06, before the Batch 4 commit): twelve mutations,
+every one caught. Two attributions were wrong. A non-restorable pi (blank
+`pi.resume`) is caught by `TestAgentManifestFacts`,
+`TestRestorableEntriesIncludePi` and `test_agent_manifest`'s `no type is
+missing a load-bearing field` — not by `TestRestorableRawLines`,
+`TestRestorableEntriesIncludeCodexExactID` or `TestFormOptionsNavigation`,
+none of which depends on pi's resume template. The hysteresis rule (an
+invalid pane title must not replace an existing task) is guarded by
+`TestRefreshTitlesTitleSources` alone; the bash scan test never checked it
+(its dropped Test 6 covered the title-equals-task case). The folded
+`test_recovery_branch_guard_integration` assertions hold: an unrecorded
+branch fails `sidecar mirror: launch records the launch-directory branch`
+and the new `reboot recovery: launch records the checkout's branch`; a
+preflight that ignores the branch fails `recovery preflight: re-allocated
+checkout: actionable reason`. The folded symlink test holds: a helper that
+no longer resolves its symlink fails every `kill-and-switch:` stub assertion.
 
 ### Batch 5 — argued partial drops (optional; each line needs its own check)
 

@@ -9,57 +9,27 @@ test_agents() {
     source "$LIB_DIR/tmux.sh"
     set +u; source "$LIB_DIR/agents.sh"; set -u
 
-    # Test detect_git_branch
-    # Just check it doesn't error; value is unused
-    detect_git_branch "$PROJECT_DIR" >/dev/null
-    assert_cmd_succeeds "detect_git_branch: runs without error" detect_git_branch "$PROJECT_DIR"
-
     # Test generate_session_name
     local name
     name=$(generate_session_name "/tmp/test")
     assert_contains "$name" "am-" "generate_session_name: has prefix"
     assert_eq 9 "${#name}" "generate_session_name: correct length (am- + 6 chars)"
 
-    # Test agent_get_command
+    # The bash manifest readers, one call each (docs/test-value-plan.md 3b).
+    # The per-type facts — commands, prompt modes, resume templates — are
+    # pinned once, in internal/sessions/agents_test.go::TestAgentManifestFacts.
     assert_eq "claude" "$(agent_get_command claude)" "agent_get_command: claude"
-    assert_eq "codex" "$(agent_get_command codex)" "agent_get_command: codex"
     assert_eq "agent" "$(agent_get_command cursor)" "agent_get_command: cursor"
-    assert_eq "cursor" "$(agent_normalize_type cursor-agent)" \
-        "agent_normalize_type: cursor-agent alias"
 
-    # Test _agent_prompt_as_arg
     assert_eq "true" "$(_agent_prompt_as_arg codex && echo true || echo false)" \
         "_agent_prompt_as_arg: codex uses CLI arg"
     assert_eq "false" "$(_agent_prompt_as_arg claude && echo true || echo false)" \
         "_agent_prompt_as_arg: claude uses stdin"
-    assert_eq "true" "$(_agent_prompt_as_arg cursor && echo true || echo false)" \
-        "_agent_prompt_as_arg: cursor uses CLI arg"
-
-    # --- pi agent type ---
-    assert_eq "pi" "$(agent_get_command pi)" "agent_get_command: pi"
-    assert_eq "true" "$(agent_type_supported pi && echo true || echo false)" \
-        "agent_type_supported: pi"
-    assert_eq "true" "$(_agent_prompt_as_arg pi && echo true || echo false)" \
-        "_agent_prompt_as_arg: pi takes prompt as arg"
-
-    # --- opencode agent type ---
-    assert_eq "opencode" "$(agent_get_command opencode)" "agent_get_command: opencode"
-    assert_eq "true" "$(agent_type_supported opencode && echo true || echo false)" \
-        "agent_type_supported: opencode"
     assert_eq "true" "$(_agent_prompt_as_arg opencode && echo true || echo false)" \
         "_agent_prompt_as_arg: opencode takes prompt as arg"
-    assert_eq "argv:--prompt" "$(_agent_prompt_mode opencode)" \
-        "_agent_prompt_mode: opencode prefixes --prompt"
 
-    # --- agent_resume_args ---
     assert_eq "--resume|abc123" "$(agent_resume_args claude abc123 | paste -sd'|' -)" \
         "agent_resume_args: claude"
-    assert_eq "--resume|abc123" "$(agent_resume_args cursor abc123 | paste -sd'|' -)" \
-        "agent_resume_args: cursor"
-    assert_eq "--session|abc123" "$(agent_resume_args pi abc123 | paste -sd'|' -)" \
-        "agent_resume_args: pi"
-    assert_eq "--session|abc123" "$(agent_resume_args opencode abc123 | paste -sd'|' -)" \
-        "agent_resume_args: opencode"
     assert_eq "resume|abc123" "$(agent_resume_args codex abc123 | paste -sd'|' -)" \
         "agent_resume_args: codex"
 

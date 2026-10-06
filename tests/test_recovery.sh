@@ -610,13 +610,20 @@ test_recovery_reboot_integration() {
     local old_state_dir="${AM_STATE_DIR:-}"
     export AM_STATE_DIR="$AM_DIR/state"
 
+    # The launch directory is a checkout on a branch: the desired record
+    # carries it and the preflight compares it before resuming (the blocked
+    # outcome of a re-allocated checkout is test_recovery_preflight_matrix).
     local test_dir work_dir transcript session_name
     test_dir=$(mktemp -d)
     work_dir=$(mktemp -d)
+    (cd "$test_dir" && git init -q && git checkout -q -b feature-a)
     transcript="$test_dir/sid-reboot.jsonl"
     : > "$transcript"
     session_name=$(set +u; agent_launch "$test_dir" "cursor" "reboot task" 2>/dev/null)
     recovery_desired_identity "$session_name" "sid-reboot" "$transcript" "hook"
+    assert_eq "feature-a" \
+        "$(jq -r --arg id "$session_name" '.sessions[$id].branch' "$AM_DIR/desired_sessions.json")" \
+        "reboot recovery: launch records the checkout's branch"
 
     # The agent moved to another checkout (its hook wrote the .cwd sidecar)
     # and a browser open made that durable before the reboot.
@@ -635,7 +642,7 @@ test_recovery_reboot_integration() {
     recovery_run
 
     assert_eq "true" "$(tmux_session_exists "$session_name" && echo true || echo false)" \
-        "reboot recovery: recreates missing physical session"
+        "reboot recovery: recreates missing physical session (checkout still on its branch)"
     assert_contains "$(tmux_capture_pane "$session_name:.{top}" 20 2>/dev/null || true)" \
         "stub-agent-ready" \
         "reboot recovery: resumed agent process actually starts"
@@ -659,68 +666,6 @@ test_recovery_reboot_integration() {
     [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
 
     rm -rf "$test_dir" "$work_dir"
-    if [[ -n "$old_state_dir" ]]; then export AM_STATE_DIR="$old_state_dir"; else unset AM_STATE_DIR; fi
-    unset AM_BOOT_ID AM_MACHINE_ID
-    teardown_integration_env
-    $SUMMARY_MODE || echo ""
-}
-
-test_recovery_branch_guard_integration() {
-    $SUMMARY_MODE || echo "=== Testing branch guard on re-allocated checkouts ==="
-
-    source "$LIB_DIR/utils.sh"
-    source "$LIB_DIR/tmux.sh"
-    source "$LIB_DIR/registry.sh"
-    set +u; source "$LIB_DIR/agents.sh"; set -u
-    source "$LIB_DIR/recovery.sh"
-
-    setup_integration_env
-    export AM_BOOT_ID="boot-before"
-    export AM_MACHINE_ID="machine-a"
-    local old_state_dir="${AM_STATE_DIR:-}"
-    export AM_STATE_DIR="$AM_DIR/state"
-
-    # Two pooled checkouts on the same branch. After the reboot one still
-    # holds it; the other was released and re-allocated to another branch.
-    local repo_kept repo_moved transcript kept_session moved_session
-    repo_kept=$(mktemp -d)
-    repo_moved=$(mktemp -d)
-    (cd "$repo_kept" && git init -q && git checkout -q -b feature-a)
-    (cd "$repo_moved" && git init -q && git checkout -q -b feature-a)
-    transcript="$repo_kept/sid-branch.jsonl"
-    : > "$transcript"
-    kept_session=$(set +u; agent_launch "$repo_kept" "cursor" "kept task" 2>/dev/null)
-    moved_session=$(set +u; agent_launch "$repo_moved" "cursor" "moved task" 2>/dev/null)
-    recovery_desired_identity "$kept_session" "sid-kept" "$transcript" "hook"
-    recovery_desired_identity "$moved_session" "sid-moved" "$transcript" "hook"
-    assert_eq "feature-a" \
-        "$(jq -r --arg id "$moved_session" '.sessions[$id].branch' "$AM_DIR/desired_sessions.json")" \
-        "branch guard: launch records the checkout's branch"
-
-    am_tmux kill-session -t "$kept_session"
-    am_tmux kill-session -t "$moved_session"
-    rm -rf "$AM_STATE_DIR"
-    (cd "$repo_moved" && git checkout -q -b other-branch)
-
-    export AM_BOOT_ID="boot-after"
-    recovery_run
-
-    assert_eq "true" "$(tmux_session_exists "$kept_session" && echo true || echo false)" \
-        "branch guard: checkout still on its branch is restored"
-    assert_eq "live" \
-        "$(jq -r --arg id "$kept_session" '.sessions[$id].recovery_state' "$AM_DIR/desired_sessions.json")" \
-        "branch guard: unchanged checkout converges to live"
-    assert_eq "false" "$(tmux_session_exists "$moved_session" && echo true || echo false)" \
-        "branch guard: re-allocated checkout is not resumed"
-    assert_eq "blocked" \
-        "$(jq -r --arg id "$moved_session" '.sessions[$id].recovery_state' "$AM_DIR/desired_sessions.json")" \
-        "branch guard: re-allocated checkout is blocked"
-    assert_eq "branch changed: expected feature-a, found other-branch" \
-        "$(jq -r --arg id "$moved_session" '.sessions[$id].recovery_error' "$AM_DIR/desired_sessions.json")" \
-        "branch guard: block reason names expected and found branches"
-
-    [[ -n "$kept_session" ]] && agent_kill "$kept_session" 2>/dev/null
-    rm -rf "$repo_kept" "$repo_moved"
     if [[ -n "$old_state_dir" ]]; then export AM_STATE_DIR="$old_state_dir"; else unset AM_STATE_DIR; fi
     unset AM_BOOT_ID AM_MACHINE_ID
     teardown_integration_env
@@ -912,7 +857,6 @@ run_recovery_tests() {
     _run_test test_recovery_sidecar_mirror
     _run_test test_recovery_native_adapters
     _run_test test_recovery_reboot_integration
-    _run_test test_recovery_branch_guard_integration
     _run_test test_recovery_progressive_start
     _run_test test_recovery_disabled_still_scopes_browser_machine
     _run_test test_recovery_worker_locking

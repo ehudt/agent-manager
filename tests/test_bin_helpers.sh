@@ -77,23 +77,9 @@ _stub_fixture_init() {
     _make_tmux_stub "$bin_dir/tmux"
 }
 
-test_symlinked_kill_and_switch() {
-    $SUMMARY_MODE || echo "=== Testing symlinked kill-and-switch ==="
-
-    local temp_root bin_dir linked_bin am_dir log_file
-    _stub_fixture_init
-
-    ln -s "$PROJECT_DIR/bin/kill-and-switch" "$linked_bin/kill-and-switch"
-    printf '{"sessions":{"am-16fdf3":{"name":"am-16fdf3"}}}\n' > "$am_dir/sessions.json"
-
-    assert_cmd_succeeds "symlinked helper: resolves repo libs and exits cleanly" \
-        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" \
-        "$linked_bin/kill-and-switch" "client-1" "am-16fdf3"
-
-    rm -rf "$temp_root"
-    $SUMMARY_MODE || echo ""
-}
-
+# Runs the helper through a symlink in another directory, so it also covers
+# the repo-lib resolution a PATH-linked install depends on (the separate
+# symlink test was folded in here, docs/test-value-plan.md 3b).
 test_kill_and_switch_switches_client_before_kill() {
     $SUMMARY_MODE || echo "=== Testing kill-and-switch switch ordering ==="
 
@@ -287,7 +273,6 @@ test_standalone_kill_and_switch_errors() {
 }
 
 run_bin_helpers_tests() {
-    _run_test test_symlinked_kill_and_switch
     _run_test test_kill_and_switch_switches_client_before_kill
     _run_test test_kill_and_switch_no_alternate_session
     _run_test test_kill_and_switch_legacy_single_arg
