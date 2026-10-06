@@ -85,21 +85,27 @@ func TestRepoScanCached(t *testing.T) {
 	mkdirs(t, home, "code/a/.git")
 	amDir := t.TempDir()
 	cache := filepath.Join(amDir, ".dir_repo_cache")
+	// waitBuilt waits for a background refresh to rename its result into
+	// place; returning earlier leaves it writing into amDir during cleanup.
+	waitBuilt := func(what string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if data, err := os.ReadFile(cache); err == nil && strings.Contains(string(data), filepath.Join(home, "code", "a")) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("cache was not %s", what)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
 
 	// Cold cache: nothing now, built in the background for the next open.
 	if got := RepoScanCached(amDir, home); len(got) != 0 {
 		t.Errorf("cold cache returned %v", got)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if data, err := os.ReadFile(cache); err == nil && strings.Contains(string(data), filepath.Join(home, "code", "a")) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("cache was not built")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitBuilt("built")
 	// Warm cache: served from the file.
 	got := RepoScanCached(amDir, home)
 	if len(got) != 1 || got[0] != filepath.Join(home, "code", "a") {
@@ -113,6 +119,7 @@ func TestRepoScanCached(t *testing.T) {
 	if got := RepoScanCached(amDir, home); len(got) != 1 || got[0] != "/stale/entry" {
 		t.Errorf("stale cache = %v, want the old list", got)
 	}
+	waitBuilt("refreshed")
 }
 
 func TestFrecentDirsDedups(t *testing.T) {
