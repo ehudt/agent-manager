@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -64,6 +65,24 @@ func TestGitHeadBranch(t *testing.T) {
 	}
 	if got := GitHeadBranch(""); got != "" {
 		t.Errorf("empty arg: got %q, want empty", got)
+	}
+
+	// Relative names: the walk ends where filepath.Dir stops moving, which
+	// for "plain" is "." — a walk that waits for "/" spins there forever.
+	// Bounded so a regression fails here instead of at go test's deadline.
+	t.Chdir(root)
+	done := make(chan string, 1)
+	go func() { done <- GitHeadBranch("plain") }()
+	select {
+	case got := <-done:
+		if got != "" {
+			t.Errorf("relative non-repo: got %q, want empty", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("relative non-repo: the .git walk did not terminate")
+	}
+	if got := GitHeadBranch(filepath.Join("repo", "sub", "deep")); got != "01234567" {
+		t.Errorf("relative walk-up: got %q, want 01234567", got)
 	}
 }
 

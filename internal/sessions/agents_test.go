@@ -109,10 +109,19 @@ func TestAgentManifestSharedWithBash(t *testing.T) {
 
 // FirstMessage and JSONLExists dispatch on the store layout, not the name.
 func TestStoreDispatch(t *testing.T) {
-	if FirstMessage("codex", t.TempDir(), "abc", "") != "" {
-		t.Error("codex has no store; FirstMessage must be empty")
+	// A claude transcript for the id exists, so codex's empty answer proves
+	// it has no store: with an empty store a codex sent to the claude reader
+	// would also answer "".
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeClaudeTranscript(t, home, "/x", "abc", "hello from the claude store")
+	if got := FirstMessage("claude", "/x", "abc", ""); got != "hello from the claude store" {
+		t.Errorf("claude: FirstMessage = %q", got)
 	}
-	if FirstMessage("bogus", t.TempDir(), "abc", "") != "" {
+	if got := FirstMessage("codex", "/x", "abc", ""); got != "" {
+		t.Errorf("codex has no store; FirstMessage = %q, want empty", got)
+	}
+	if FirstMessage("bogus", "/x", "abc", "") != "" {
 		t.Error("unknown agent: FirstMessage must be empty")
 	}
 	e := Env{Home: t.TempDir()}

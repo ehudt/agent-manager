@@ -278,27 +278,27 @@ test_git_head_branch() {
     # Relative paths. A bare name with no .git above it used to loop forever
     # ("${dir%/*}" of "sub" is "sub"). The walk now ends at the cwd, like
     # Go's filepath.Dir("sub") == ".". Each call is bounded by a watchdog so
-    # a regression fails instead of hanging the suite.
+    # a regression fails instead of hanging the suite. The call runs in its
+    # own process group (perl setpgrp + alarm, as agent_dir_suggest does) and
+    # the whole group is killed: killing only a background subshell left the
+    # $(am_core ...) child holding this function's stdout pipe, and a
+    # spinning walk hung the suite instead of printing TIMEOUT.
     mkdir -p "$root/plain/sub"
     echo "ref: refs/heads/rel-branch" > "$repo/.git/HEAD"
     _ghb_bounded() {
         # Usage: _ghb_bounded <cwd> <arg> → prints result, or "TIMEOUT"
-        local out_file
-        out_file=$(mktemp)
-        ( cd "$1" && git_head_branch "$2" > "$out_file" ) &
-        local pid=$! i
-        for (( i = 0; i < 50; i++ )); do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.1
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-            echo "TIMEOUT"
-        else
-            wait "$pid" 2>/dev/null
-            cat "$out_file"
-        fi
-        rm -f "$out_file"
+        local out rc=0
+        out=$(AM_LIB_DIR="$LIB_DIR" perl -e '
+            my $pid = fork;
+            die "fork: $!" unless defined $pid;
+            if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+            $SIG{ALRM} = sub { kill "TERM", -$pid; kill "KILL", -$pid; exit 124 };
+            alarm 5;
+            waitpid $pid, 0;
+            exit($? >> 8);
+        ' "${BASH:-bash}" -c 'source "$AM_LIB_DIR/utils.sh" && cd "$1" && git_head_branch "$2"' \
+            _ "$1" "$2" </dev/null 2>/dev/null) || rc=$?
+        if (( rc == 124 )); then echo "TIMEOUT"; else printf '%s\n' "$out"; fi
     }
     assert_eq "" "$(_ghb_bounded "$root/plain" sub)" \
         "git_head_branch: relative name outside a repo terminates and is empty"

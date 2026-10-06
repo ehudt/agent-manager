@@ -778,14 +778,17 @@ the only direct-path invocation of the script. Both can be true. The fix is
 a rewrite that checks the attached client moved (`display-message -p -c
 <client> '#{session_name}'`), not a keep as is.
 
-**Weak guards found by the Batch 5 re-run (not fixed).** `_ghb_bounded` in
-`tests/test_utils.sh::test_git_head_branch` kills only its subshell, so a
-spinning `am-core branch` hangs the suite instead of printing `TIMEOUT`; it
-should run the call in its own process group and kill the group. Go
-`TestGitHeadBranch` has no relative-name case, so the bash test is the only
-guard of the `findGitDir` termination. `TestStoreDispatch`'s codex line
-cannot distinguish "no store" from "the claude store" in an empty `HOME`;
-a claude transcript planted under the codex directory would.
+**Weak guards found by the Batch 5 re-run (fixed after the batch, same
+day).** `_ghb_bounded` in `tests/test_utils.sh::test_git_head_branch`
+killed only its subshell, so a spinning `am-core branch` hung the suite
+instead of printing `TIMEOUT`; it now runs the call in its own process
+group under a perl alarm (the `agent_dir_suggest` pattern) and kills the
+group — the `cur == "/"` mutation fails in 6s. Go `TestGitHeadBranch` had no
+relative-name case, so the bash test was the only guard of the `findGitDir`
+termination; it now has one, bounded at 5s. `TestStoreDispatch`'s codex
+line could not distinguish "no store" from "the claude store" in an empty
+`HOME`; it now plants a claude transcript for the id first, and a codex
+routed to the claude reader fails it.
 
 **Limits of the method.**
 
