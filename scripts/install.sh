@@ -142,6 +142,23 @@ remove_managed_block() {
     log "Updated $file"
 }
 
+# jq definition shared by the Claude/Codex install and uninstall paths
+# (event -> [{matcher, hooks:[{command}]}]). Removes only the commands that
+# carry the marker; an entry is dropped only when nothing but am commands was
+# in it. Dropping every entry that merely contained an am command deleted
+# user hooks that shared the entry with am's.
+_am_strip_nested_jq() {
+    cat <<'JQ'
+def strip_am($marker):
+    map(
+        if (.hooks // []) | any((.command // "") | contains($marker)) then
+            .hooks |= map(select((.command // "") | contains($marker) | not))
+            | select(.hooks | length > 0)
+        else . end
+    );
+JQ
+}
+
 # Install am state-detection hooks into Claude Code settings.
 # Merges hooks without overwriting user's existing hooks. Idempotent.
 # Usage: _install_claude_hooks <settings_json_path> <hook_script_path>
@@ -164,15 +181,11 @@ _install_claude_hooks() {
 
     # Step 1: Remove any existing am hooks (idempotent)
     # Step 2: Add our hooks to the event arrays
-    jq --arg cmd "$cmd" --arg pre_cmd "$pre_cmd" --arg marker "$marker" '
+    jq --arg cmd "$cmd" --arg pre_cmd "$pre_cmd" --arg marker "$marker" "$(_am_strip_nested_jq)"'
         # Remove existing am hook entries
         .hooks //= {} |
         .hooks |= with_entries(
-            .value |= if type == "array" then
-                map(select(
-                    (.hooks // []) | all((.command // "") | contains($marker) | not)
-                ))
-            else . end
+            .value |= if type == "array" then strip_am($marker) else . end
         ) |
         # Add our hooks
         .hooks.Stop = (.hooks.Stop // []) + [
@@ -260,14 +273,10 @@ _install_codex_hooks() {
     local tmp_file
     tmp_file=$(mktemp)
 
-    jq --arg cmd "$cmd" --arg marker "$marker" '
+    jq --arg cmd "$cmd" --arg marker "$marker" "$(_am_strip_nested_jq)"'
         .hooks //= {} |
         .hooks |= with_entries(
-            .value |= if type == "array" then
-                map(select(
-                    (.hooks // []) | all((.command // "") | contains($marker) | not)
-                ))
-            else . end
+            .value |= if type == "array" then strip_am($marker) else . end
         ) |
         .hooks.PermissionRequest = (.hooks.PermissionRequest // []) + [
             {"matcher": "*", "hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}
@@ -433,14 +442,10 @@ _uninstall_nested_hooks() {
     if $DRY_RUN; then plan "remove the am hook entries from $file"; return 0; fi
     local tmp_file
     tmp_file=$(mktemp)
-    jq --arg marker "$marker" '
+    jq --arg marker "$marker" "$(_am_strip_nested_jq)"'
         if (.hooks | type) == "object" then
             .hooks |= (with_entries(
-                .value |= if type == "array" then
-                    map(select(
-                        (.hooks // []) | all((.command // "") | contains($marker) | not)
-                    ))
-                else . end
+                .value |= if type == "array" then strip_am($marker) else . end
             ) | with_entries(select((.value | type) != "array" or (.value | length) > 0)))
         else . end
     ' "$file" > "$tmp_file" && mv "$tmp_file" "$file"

@@ -536,7 +536,7 @@ _ensure_install_lib_sourced() {
         # the extracted range: give them a silent one. Without it Linux fails
         # with "log: command not found" (macOS was masked by /usr/bin/log).
         [[ "$(type -t log)" == function ]] || log() { :; }
-        eval "$(awk '/^_install_claude_hooks\(\)/ {p=1} /^while \[\[/ {p=0} p {print}' "$PROJECT_DIR/scripts/install.sh")"
+        eval "$(awk '/^_am_strip_nested_jq\(\)/ {p=1} /^while \[\[/ {p=0} p {print}' "$PROJECT_DIR/scripts/install.sh")"
     fi
 }
 
@@ -652,6 +652,55 @@ JSON
     local existing_cmd
     existing_cmd=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$settings")
     assert_eq "echo user-hook" "$existing_cmd" "existing UserPromptSubmit hook unchanged"
+}
+
+# A user hook that shares an entry with am's hook (observed live: a Stop
+# entry holding both am's hook and a commit hook) survives a reinstall and an
+# uninstall; only am's own command leaves the entry.
+test_install_hooks_keeps_user_hook_in_shared_entry() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local settings="$tmp_dir/shared-settings.json"
+    local am_cmd="bash $PROJECT_DIR/lib/hooks/state-hook.sh # am-state-hook"
+    jq -n --arg am "$am_cmd" '{"hooks":{"Stop":[{"matcher":"","hooks":[
+        {"type":"command","command":$am,"timeout":10},
+        {"type":"command","command":"bash commit.sh","timeout":30}]}]}}' > "$settings"
+
+    _install_claude_hooks "$settings" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    assert_eq "1" "$(jq '[.hooks.Stop[].hooks[] | select(.command == "bash commit.sh")] | length' "$settings")" \
+        "reinstall: user hook in a shared Stop entry kept"
+    assert_eq "1" "$(jq '[.hooks.Stop[].hooks[] | select(.command | contains("# am-state-hook"))] | length' "$settings")" \
+        "reinstall: am Stop hook present once"
+
+    local DRY_RUN=false
+    _uninstall_nested_hooks "$settings"
+
+    assert_eq '[["bash commit.sh"]]' "$(jq -c '[.hooks.Stop[] | [.hooks[].command]]' "$settings")" \
+        "uninstall: only the user hook is left, in its own entry"
+
+    rm -rf "$tmp_dir"
+}
+
+test_install_codex_hooks_keeps_user_hook_in_shared_entry() {
+    _ensure_install_lib_sourced
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local hooks="$tmp_dir/hooks.json"
+    local am_cmd="bash $PROJECT_DIR/lib/hooks/state-hook.sh # am-state-hook"
+    jq -n --arg am "$am_cmd" '{"hooks":{"Stop":[{"hooks":[
+        {"type":"command","command":$am,"timeout":5},
+        {"type":"command","command":"echo mine","timeout":5}]}]}}' > "$hooks"
+
+    _install_codex_hooks "$hooks" "$PROJECT_DIR/lib/hooks/state-hook.sh"
+
+    assert_eq "1" "$(jq '[.hooks.Stop[].hooks[] | select(.command == "echo mine")] | length' "$hooks")" \
+        "Codex reinstall: user hook in a shared Stop entry kept"
+    assert_eq "1" "$(jq '[.hooks.Stop[].hooks[] | select(.command | contains("# am-state-hook"))] | length' "$hooks")" \
+        "Codex reinstall: am Stop hook present once"
+
+    rm -rf "$tmp_dir"
 }
 
 test_install_hooks_idempotent() {
@@ -906,6 +955,8 @@ run_install_tests() {
     _run_test test_install_hooks_into_empty_settings
     _run_test test_install_hooks_preserves_existing
     _run_test test_install_hooks_idempotent
+    _run_test test_install_hooks_keeps_user_hook_in_shared_entry
+    _run_test test_install_codex_hooks_keeps_user_hook_in_shared_entry
     _run_test test_install_cursor_hooks_preserves_existing_and_is_idempotent
     _run_test test_enable_cursor_status_indicators
     _run_test test_install_codex_hooks_into_empty_file
