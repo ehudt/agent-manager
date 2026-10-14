@@ -46,6 +46,29 @@ fi
 current="${1:-}"
 AM_STATE_DIR="${AM_STATE_DIR:-/tmp/am-state}"
 
+# In-place busy-tab collapse: non-current running/background tabs fold to
+# compact "idx▸" / "idx⧗" mini-stubs so actionable tabs keep the width budget.
+# Fork-free resolution: env override → runtime toggle marker → config.json → true.
+_COLLAPSE_BUSY=true
+if [[ -n "${AM_COLLAPSE_BUSY:-}" ]]; then
+    [[ "${AM_COLLAPSE_BUSY,,}" =~ ^(1|true|yes|on)$ ]] || _COLLAPSE_BUSY=false
+elif [[ -f "$AM_DIR/.expand_busy" ]]; then
+    _COLLAPSE_BUSY=false
+elif [[ -r "${AM_CONFIG:-$AM_DIR/config.json}" ]]; then
+    _cfg_raw=$(< "${AM_CONFIG:-$AM_DIR/config.json}")
+    [[ "$_cfg_raw" =~ \"collapse_busy\"[[:space:]]*:[[:space:]]*false ]] && _COLLAPSE_BUSY=false
+    unset _cfg_raw
+fi
+
+# True when tab i folds to "idx▸" / "idx⧗" from perspective p_idx.
+# The perspective tab itself (i == p_idx) never collapses so switching to a
+# busy session shows its full label, title, Δ, and age.
+_is_collapsed_tab() {
+    $_COLLAPSE_BUSY || return 1
+    (( $1 != $2 )) || return 1
+    [[ "${S_STATE[$1]}" == "running" || "${S_STATE[$1]}" == "background" ]]
+}
+
 # Layout thresholds (chars; every glyph counts as 1 col).
 # A two-field tab ("label · title") is only worth showing while each field
 # keeps at least BOTH_FLOOR chars — below that both halves are stubs and one
@@ -336,12 +359,16 @@ _tab_fields() {
 # spaces, " · " joins, ages, separators); `_WF_LENS` = natural length of every
 # text field. The strip fits unshrunk iff _FIXED + Σ_WF_LENS ≤ avail.
 _measure() {
-    local labels="$1" tasks="$2" ages="$3" chg="${4:-none}"
+    local labels="$1" tasks="$2" ages="$3" chg="${4:-none}" p_idx="${5:--1}"
     local i idx
     _FIXED=$(( ${#TAB_SEP} * (${#S_NAME[@]} - 1) ))
     _WF_LENS=()
     for i in "${!S_NAME[@]}"; do
         idx=$((i + 1))
+        if _is_collapsed_tab "$i" "$p_idx"; then
+            _FIXED=$(( _FIXED + ${#idx} + 3 ))      # " idx▸ " → pads + glyph
+            continue
+        fi
         _FIXED=$(( _FIXED + ${#idx} + 4 ))          # " idx glyph text " → pads + glyph + space
         _tab_fields "$i" "$labels" "$tasks"
         _WF_LENS+=("${#_F1}")
@@ -393,7 +420,7 @@ _waterfill() {
 # with_tasks=false is the pane-border sidebar (labels only, no ages, no Δ).
 # Writes _FIT_LABELS, _FIT_TASKS, _FIT_AGES, _FIT_CHG, _FIT_CAP.
 _fit_strip() {
-    local avail="$1" with_tasks="$2"
+    local avail="$1" with_tasks="$2" p_idx="${3:--1}"
     local -a ladder
     if [[ "$with_tasks" == true ]]; then
         ladder=(
@@ -412,7 +439,7 @@ _fit_strip() {
     local rung labels tasks ages chg floor sum len
     for rung in "${ladder[@]}"; do
         IFS=: read -r labels tasks ages chg floor <<< "$rung"
-        _measure "$labels" "$tasks" "$ages" "$chg"
+        _measure "$labels" "$tasks" "$ages" "$chg" "$p_idx"
         sum=0
         for len in "${_WF_LENS[@]}"; do sum=$(( sum + len )); done
         if (( _FIXED + sum <= avail )); then
@@ -441,7 +468,12 @@ _use_fit() {
 # the caller can shade it. The unreviewed-change segment sits after the text
 # and before the age: what, then how much changed, then for how long.
 _render_tab() {
-    local i="$1" idx=$(( i + 1 )) text
+    local i="$1" p_idx="${2:--1}" idx=$(( i + 1 )) text
+    if _is_collapsed_tab "$i" "$p_idx"; then
+        _BODY="${idx}${S_GLYPH[$i]}"
+        _AGE_PART=""
+        return
+    fi
     _tab_fields "$i" "$_FIT_LABELS" "$_FIT_TASKS"
     _trunc "$_F1" "$_FIT_CAP"; text="$_T"
     if [[ -n "$_F2" ]]; then
@@ -464,7 +496,7 @@ _build_strip() {
     for i in "${!S_NAME[@]}"; do
         state="${S_STATE[$i]}"
         color="${S_COLOR[$i]}"
-        _render_tab "$i"
+        _render_tab "$i" "$p_idx"
         if (( i == p_idx )); then
             cur_fg='colour16'
             case "$state" in
@@ -488,12 +520,16 @@ _build_strip() {
     _STRIP="$strip"
 }
 
-# Fit once per variant; every perspective shares the layout. status-right
-# renders " <session id> HH:MM " (see lib/tmux.sh), so reserve exactly that.
+# Fit once for the base collapsed set (p_idx=-1: every running/background tab
+# collapsed); perspectives whose own tab is running/background re-fit with
+# their tab expanded so it fits within _AVAIL_WIDTH. status-right renders
+# " <session id> HH:MM " (see lib/tmux.sh), so reserve exactly that.
 _reserve=$(( ${#S_NAME[0]} + 8 ))
-_fit_strip $(( _AVAIL_WIDTH - _reserve )) true
+_left_avail=$(( _AVAIL_WIDTH - _reserve ))
+_side_avail=$(( _AVAIL_WIDTH - 2 ))
+_fit_strip "$_left_avail" true -1
 LEFT_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CHG" "$_FIT_CAP")
-_fit_strip $(( _AVAIL_WIDTH - 2 )) false
+_fit_strip "$_side_avail" false -1
 SIDE_FIT=("$_FIT_LABELS" "$_FIT_TASKS" "$_FIT_AGES" "$_FIT_CHG" "$_FIT_CAP")
 
 # Write per-session options. Each session sees itself as current — switch is
@@ -537,8 +573,13 @@ _batch_add() {
 
 for p_idx in "${!S_NAME[@]}"; do
     p_session="${S_NAME[$p_idx]}"
-    _use_fit "${LEFT_FIT[@]}"; _build_strip "$p_idx" true;  status_left="$_STRIP"
-    _use_fit "${SIDE_FIT[@]}"; _build_strip "$p_idx" false; sidebar="$_STRIP"
+    if $_COLLAPSE_BUSY && [[ "${S_STATE[$p_idx]}" == "running" || "${S_STATE[$p_idx]}" == "background" ]]; then
+        _fit_strip "$_left_avail" true "$p_idx";  _build_strip "$p_idx" true;  status_left="$_STRIP"
+        _fit_strip "$_side_avail" false "$p_idx"; _build_strip "$p_idx" false; sidebar="$_STRIP"
+    else
+        _use_fit "${LEFT_FIT[@]}"; _build_strip "$p_idx" true;  status_left="$_STRIP"
+        _use_fit "${SIDE_FIT[@]}"; _build_strip "$p_idx" false; sidebar="$_STRIP"
+    fi
 
     _batch_add "$p_session" @am_status_left "$status_left"
     _batch_add "$p_session" @am_sidebar "$sidebar"
@@ -556,14 +597,21 @@ if $print_mode; then
             break
         fi
     done
-    _use_fit "${LEFT_FIT[@]}"
+    view_idx=-1
     if (( target_idx >= 0 )); then
-        _build_strip "$target_idx" true
-        printf '%s\n' "$_STRIP"
+        view_idx=$target_idx
     elif [[ -z "$current" ]]; then
         # No specific session requested — print first session's view so callers
         # still see meaningful output.
-        _build_strip 0 true
+        view_idx=0
+    fi
+    if (( view_idx >= 0 )); then
+        if $_COLLAPSE_BUSY && [[ "${S_STATE[$view_idx]}" == "running" || "${S_STATE[$view_idx]}" == "background" ]]; then
+            _fit_strip "$_left_avail" true "$view_idx"
+        else
+            _use_fit "${LEFT_FIT[@]}"
+        fi
+        _build_strip "$view_idx" true
         printf '%s\n' "$_STRIP"
     fi
 fi

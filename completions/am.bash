@@ -6,7 +6,7 @@
 _am_commands="list new send peek attach shell review id cd owner diff kill config preset info status doctor log wait done result interrupt restore install uninstall completions help version"
 _am_agent_types="@AGENT_TYPES@"
 _am_states="ready running waiting_user background starting idle dead unknown"
-_am_config_keys="agent auto_restore logs shell dir_provider notify notify_states notify_cmd"
+_am_config_keys="agent auto_restore logs shell collapse_busy dir_provider notify notify_states notify_cmd"
 
 _am_sessions() { am list --json 2>/dev/null | jq -r '.[].name' 2>/dev/null; }
 _am_presets() { am preset list 2>/dev/null | awk 'NF { print $1 }'; }

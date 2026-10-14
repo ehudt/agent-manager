@@ -15,7 +15,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.40.0"
+AM_VERSION="0.41.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -150,6 +150,8 @@ KEYBINDINGS (inside tmux session):
     Prefix + x      Kill the current am session
     Prefix + d      Detach from session
     Prefix + `      Toggle the shell panel (open on first use, then hide/show)
+    Prefix + v      Toggle the review pane beside the agent
+    Prefix + b      Toggle collapsing busy (running/background) tabs in the bar
     Prefix Up/Down  Switch panes (when the shell panel is open)
     Prefix + [ / ]  Copy mode / paste
     mouse click     Click a tab in the bottom bar to switch to it
@@ -1681,6 +1683,9 @@ cmd_config() {
                 shell_pane)
                     am_shell_pane_enabled && echo true || echo false
                     ;;
+                collapse_busy)
+                    am_collapse_busy_enabled && echo true || echo false
+                    ;;
                 auto_restore)
                     am_auto_restore_enabled && echo true || echo false
                     ;;
@@ -1722,12 +1727,13 @@ cmd_config() {
                 return 1
             fi
             am_config_set "$key" "$value" "$key_type"
+            [[ "$key" == "collapse_busy" ]] && { am_refresh_sidebar_cache >/dev/null 2>&1 || true; }
             am_config_print
             ;;
         unset|rm)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config unset <agent|logs|shell|auto-restore|dir_provider>"
+                log_error "Usage: am config unset <agent|logs|shell|collapse_busy|auto-restore|dir_provider>"
                 return 1
             fi
             local key
@@ -1736,6 +1742,7 @@ cmd_config() {
                 return 1
             fi
             am_config_unset "$key"
+            [[ "$key" == "collapse_busy" ]] && { am_refresh_sidebar_cache >/dev/null 2>&1 || true; }
             am_config_print
             ;;
         help|-h|--help)
@@ -1750,6 +1757,7 @@ Keys:
   agent           Default agent type
   logs            Default pane log streaming (true/false)
   shell           New sessions open with the shell panel visible (true/false)
+  collapse_busy   Collapse non-current running/background tabs in the bottom bar (true/false)
   auto-restore    Recreate open sessions after a reboot (true/false)
   dir_provider    Command behind `@spec` directories (am new @48351, `@` in the form).
                   Called as `<cmd> suggest <partial>` (lines: spec<TAB>label) and

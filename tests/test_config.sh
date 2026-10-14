@@ -87,6 +87,26 @@ test_config() {
     unset AM_SHELL_PANE
     am_config_set "shell_pane" "false" "boolean"
 
+    # Busy-tab collapse config (status bar)
+    unset AM_COLLAPSE_BUSY
+    rm -f "$AM_DIR/.expand_busy"
+    assert_eq "true" "$(am_collapse_busy_enabled && echo true || echo false)" "config: collapse_busy defaults on"
+    assert_eq "collapse_busy" "$(am_config_key_alias collapse)" "config: collapse alias maps to collapse_busy"
+    assert_eq "collapse_busy" "$(am_config_key_alias collapse-busy)" "config: collapse-busy alias maps to collapse_busy"
+    assert_eq "boolean" "$(am_config_key_type collapse_busy)" "config: collapse_busy is boolean"
+    am_config_set "collapse_busy" "false" "boolean"
+    assert_eq "false" "$(am_collapse_busy_enabled && echo true || echo false)" "config: saved collapse_busy=false"
+    assert_contains "$(am_config_print)" "collapse_busy=false" "config: print shows collapse_busy"
+    assert_eq "true" "$(AM_COLLAPSE_BUSY=1 am_collapse_busy_enabled && echo true || echo false)" "config: AM_COLLAPSE_BUSY=1 overrides saved false"
+    am_config_unset "collapse_busy"
+    assert_eq "true" "$(am_collapse_busy_enabled && echo true || echo false)" "config: unset collapse_busy defaults on"
+    : > "$AM_DIR/.expand_busy"
+    assert_eq "false" "$(am_collapse_busy_enabled && echo true || echo false)" "config: .expand_busy marker disables collapse"
+    am_config_set "collapse_busy" "true" "boolean"
+    assert_cmd_fails "config: setting collapse_busy clears .expand_busy marker" test -f "$AM_DIR/.expand_busy"
+    assert_eq "true" "$(am_collapse_busy_enabled && echo true || echo false)" "config: collapse_busy=true re-enables collapse"
+    am_config_unset "collapse_busy"
+
     # Directory provider (am new @spec)
     unset AM_DIR_PROVIDER
     assert_eq "" "$(am_dir_provider)" "config: dir_provider defaults empty"

@@ -500,4 +500,82 @@ func TestFormatDisplayBaseUsesWorkdir(t *testing.T) {
 	if got := FormatDisplayBase(s, meta); got != "am-wd pink-wekapp/pr-42 [claude] fix" {
 		t.Errorf("with workdir: %q", got)
 	}
+	meta.ReviewFiles = 3
+	meta.ReviewAdded = 42
+	meta.ReviewDeleted = 7
+	if got := FormatDisplayBase(s, meta); got != "am-wd pink-wekapp/pr-42 [claude] fix Δ3 +42 −7" {
+		t.Errorf("with review stats: %q", got)
+	}
+}
+
+func TestResolveSessionState(t *testing.T) {
+	stateDir := t.TempDir()
+	idDir := t.TempDir()
+	env := Env{StateDir: stateDir, IdentityDir: idDir}
+	now := int64(2000)
+
+	writeHook := func(name, state string, mtime int64) {
+		p := filepath.Join(stateDir, name)
+		if err := os.WriteFile(p, []byte(state+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ts := time.Unix(mtime, 0)
+		if err := os.Chtimes(p, ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeHook("am-wait", "waiting_user", 1940)
+	writeHook("am-ready", "ready", 1900)
+	writeHook("am-run", "running", 1500)
+	writeHook("am-bg", "background", 1800)
+
+	panes := map[string]PaneInfo{
+		"am-wait":  {PID: "101", Created: 1000, Title: "✳ Ask question"},
+		"am-ready": {PID: "102", Created: 1000, Title: "✳ Done task"},
+		"am-run":   {PID: "103", Created: 1000, Title: "✳ Long tool"},
+		"am-bg":    {PID: "104", Created: 1000, Title: "✳ Waiting on subagent"},
+		"am-fresh": {PID: "105", Created: 1000, Title: "✳ Claude Code"},
+		"am-shell": {PID: "106", Created: 1000, Title: "zsh"},
+		"am-start": {PID: "107", Created: 1998, Title: "zsh"},
+	}
+	procs := ProcTree{
+		Comm: map[string]string{
+			"101": "claude",
+			"102": "claude",
+			"103": "claude",
+			"104": "claude",
+			"105": "claude",
+			"106": "-zsh",
+			"107": "bash",
+		},
+		Children: map[string][]string{},
+	}
+
+	claudeMeta := Session{AgentType: "claude"}
+
+	if st, mt := ResolveSessionState(env, "am-wait", claudeMeta, 1950, now, panes, procs); st != "waiting_user" || mt != 1940 {
+		t.Errorf("am-wait = (%q, %d), want (waiting_user, 1940)", st, mt)
+	}
+	if st, mt := ResolveSessionState(env, "am-ready", claudeMeta, 1950, now, panes, procs); st != "ready" || mt != 1900 {
+		t.Errorf("am-ready = (%q, %d), want (ready, 1900)", st, mt)
+	}
+	// Claude turn_boundary=reliable reads running ungated even >180s after mtime.
+	if st, mt := ResolveSessionState(env, "am-run", claudeMeta, 1500, now, panes, procs); st != "running" || mt != 1500 {
+		t.Errorf("am-run = (%q, %d), want (running, 1500)", st, mt)
+	}
+	if st, mt := ResolveSessionState(env, "am-bg", claudeMeta, 1800, now, panes, procs); st != "background" || mt != 1800 {
+		t.Errorf("am-bg = (%q, %d), want (background, 1800)", st, mt)
+	}
+	// Fresh session with ✳ title, no hook file, and no identity sidecar -> ready.
+	if st, _ := ResolveSessionState(env, "am-fresh", claudeMeta, 1990, now, panes, procs); st != "ready" {
+		t.Errorf("am-fresh = %q, want ready", st)
+	}
+	// Shell pane older than 5s -> idle; younger than 5s -> starting.
+	if st, _ := ResolveSessionState(env, "am-shell", claudeMeta, 1990, now, panes, procs); st != "idle" {
+		t.Errorf("am-shell = %q, want idle", st)
+	}
+	if st, _ := ResolveSessionState(env, "am-start", claudeMeta, 1998, now, panes, procs); st != "starting" {
+		t.Errorf("am-start = %q, want starting", st)
+	}
 }

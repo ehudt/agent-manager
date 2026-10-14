@@ -627,6 +627,78 @@ test_standalone_status_bar_layout() {
     assert_not_contains "$(printf '%s' "$sidebar" | sed -E 's/#\[[^]]*\]//g')" "Δ" \
         "status-bar Δ: sidebar labels never carry the segment"
 
+    # --- In-place collapse of non-current running / background tabs ---
+    # Respawn each pane with a non-shell process (sleep) so _state_resolve
+    # consults the hook state files immediately without waiting on zsh init.
+    am_tmux respawn-pane -k -t "${n1}:.{top-left}" "sleep 300" 2>/dev/null
+    am_tmux respawn-pane -k -t "${n2}:.{top-left}" "sleep 300" 2>/dev/null
+    am_tmux respawn-pane -k -t "${n3}:.{top-left}" "sleep 300" 2>/dev/null
+    registry_update "$n1" agent_type "claude"
+    registry_update "$n2" agent_type "claude"
+    registry_update "$n3" agent_type "claude"
+    registry_update "$n3" task "Sweep open PRs in background"
+    printf 'ready\n' > "$test_state_dir/$n1"
+    printf 'running\n' > "$test_state_dir/$n2"
+    printf 'background\n' > "$test_state_dir/$n3"
+    date +%s | tee "$AM_DIR/.title_scan_last" > "$AM_DIR/.restore_scan_last"
+
+    # Viewing n1 (ready): n1 is expanded in full, while non-current n2 (running)
+    # and n3 (background) fold in-place to "2▸" and "3⧗" stubs.
+    raw=$(AM_STATUS_WIDTH=120 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "1● alpha-repo/feature-branch-one · Investigate the flaky integration test" \
+        "status-bar collapse: ready current tab keeps full dir/branch · title on 120-col bar"
+    assert_contains "$out" " 2▸ " \
+        "status-bar collapse: non-current running tab folds to 2▸ stub"
+    assert_not_contains "$out" "Write release" \
+        "status-bar collapse: non-current running tab hides its title"
+    assert_contains "$out" " 3⧗ " \
+        "status-bar collapse: non-current background tab folds to 3⧗ stub"
+    assert_not_contains "$out" "Sweep open PRs" \
+        "status-bar collapse: non-current background tab hides its title"
+    assert_contains "$raw" "#[range=user|${n2}]" \
+        "status-bar collapse: collapsed stub keeps its mouse click range"
+
+    # Viewing n2 (running): n2 is the current perspective, so it expands in-place
+    # while n3 (background, non-current) stays collapsed to 3⧗ and n1 (ready) stays expanded.
+    raw=$(AM_STATUS_WIDTH=200 "$LIB_DIR/status-bar" --print "$n2" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "2▸ beta-repo · Write release notes for the sprint" \
+        "status-bar collapse: viewing a running tab expands it in place"
+    assert_contains "$out" " 3⧗ " \
+        "status-bar collapse: other busy tab stays collapsed when viewing n2"
+    assert_contains "$out" "1● " \
+        "status-bar collapse: ready tab stays expanded when viewing n2"
+
+    # Auto-uncollapse on state transition: n2 transitions from running → waiting_user.
+    printf 'waiting_user\n' > "$test_state_dir/$n2"
+    raw=$(AM_STATUS_WIDTH=200 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "2⚠ beta-repo · Write release notes for the sprint" \
+        "status-bar collapse: transition to waiting_user auto-expands the tab in place"
+    assert_contains "$out" " 3⧗ " \
+        "status-bar collapse: still-background tab remains collapsed"
+
+    # Toggle expand-all via bin/toggle-collapse and AM_COLLAPSE_BUSY=0:
+    printf 'running\n' > "$test_state_dir/$n2"
+    raw=$(AM_STATUS_WIDTH=240 AM_COLLAPSE_BUSY=0 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "2▸ beta-repo · Write release notes for the sprint" \
+        "status-bar collapse: AM_COLLAPSE_BUSY=0 expands running tabs"
+    assert_contains "$out" "3⧗ gamma-repo/fix/login-timeout · Sweep open PRs in background" \
+        "status-bar collapse: AM_COLLAPSE_BUSY=0 expands background tabs"
+
+    "$LIB_DIR/../bin/toggle-collapse" >/dev/null 2>&1 || true
+    raw=$(AM_STATUS_WIDTH=240 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" "2▸ beta-repo · Write release notes for the sprint" \
+        "status-bar collapse: bin/toggle-collapse expands busy tabs"
+    "$LIB_DIR/../bin/toggle-collapse" >/dev/null 2>&1 || true
+    raw=$(AM_STATUS_WIDTH=240 "$LIB_DIR/status-bar" --print "$n1" 2>/dev/null || true)
+    out=$(printf '%s' "$raw" | sed -E 's/#\[[^]]*\]//g')
+    assert_contains "$out" " 2▸ " \
+        "status-bar collapse: second bin/toggle-collapse folds busy tabs back"
+
     local name
     for name in "$n1" "$n2" "$n3"; do
         am_tmux kill-session -t "$name" 2>/dev/null || true

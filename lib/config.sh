@@ -62,6 +62,7 @@ am_config_set() {
         ". + {(\$key): ($jq_value)}" \
         "$AM_CONFIG" > "$tmp" && mv "$tmp" "$AM_CONFIG" || rc=$?
     (( rc == 0 )) || { rm -f "$tmp"; am_event config.write_fail - "op=set" "key=$key" "rc=$rc"; }
+    [[ "$key" == "collapse_busy" && $rc -eq 0 ]] && rm -f "${AM_DIR:-}/.expand_busy"
     return $rc
 }
 
@@ -72,6 +73,7 @@ am_config_unset() {
     tmp=$(mktemp) || return 1
     jq --arg key "$key" 'del(.[$key])' "$AM_CONFIG" > "$tmp" && mv "$tmp" "$AM_CONFIG" || rc=$?
     (( rc == 0 )) || { rm -f "$tmp"; am_event config.write_fail - "op=unset" "key=$key" "rc=$rc"; }
+    [[ "$key" == "collapse_busy" && $rc -eq 0 ]] && rm -f "${AM_DIR:-}/.expand_busy"
     return $rc
 }
 
@@ -182,12 +184,29 @@ am_notify_states() {
     printf '%s\n' "${configured:-waiting_user}"
 }
 
+# Collapse non-current running/background tabs in the bottom status bar into
+# compact "idx▸" / "idx⧗" mini-stubs. Missing key = enabled; AM_COLLAPSE_BUSY
+# env and $AM_DIR/.expand_busy runtime toggle override.
+am_collapse_busy_enabled() {
+    if [[ -n "${AM_COLLAPSE_BUSY:-}" ]]; then
+        am_bool_is_true "${AM_COLLAPSE_BUSY,,}"
+        return $?
+    fi
+    [[ -f "${AM_DIR:-}/.expand_busy" ]] && return 1
+    local configured
+    configured=$(jq -r 'if has("collapse_busy") then (.collapse_busy | tostring) else "missing" end' \
+        "$AM_CONFIG" 2>/dev/null)
+    [[ "$configured" == "missing" || -z "$configured" ]] && return 0
+    am_bool_is_true "${configured,,}"
+}
+
 am_config_key_alias() {
     case "$1" in
         agent|default-agent|default_agent) echo "default_agent" ;;
         auto-restore|auto_restore|restore-on-startup) echo "auto_restore" ;;
         logs|stream-logs|stream_logs) echo "stream_logs" ;;
         shell|shell-pane|shell_pane) echo "shell_pane" ;;
+        collapse|collapse-busy|collapse_busy) echo "collapse_busy" ;;
         provider|dir-provider|dir_provider) echo "dir_provider" ;;
         notify|notifications) echo "notify" ;;
         notify-states|notify_states) echo "notify_states" ;;
@@ -199,7 +218,7 @@ am_config_key_alias() {
 am_config_key_type() {
     case "$1" in
         default_agent|dir_provider|notify_states|notify_cmd) echo "string" ;;
-        auto_restore|stream_logs|shell_pane|notify) echo "boolean" ;;
+        auto_restore|stream_logs|shell_pane|collapse_busy|notify) echo "boolean" ;;
         *) return 1 ;;
     esac
 }
@@ -211,7 +230,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        auto_restore|stream_logs|shell_pane|notify)
+        auto_restore|stream_logs|shell_pane|collapse_busy|notify)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         notify_states)
@@ -251,9 +270,10 @@ am_config_print() {
     else
         auto_restore_value=false
     fi
-    local dir_provider_value notify_value notify_states_value notify_cmd_value
+    local dir_provider_value notify_value notify_states_value notify_cmd_value collapse_busy_value
     dir_provider_value=$(am_dir_provider)
     if am_notify_enabled; then notify_value=true; else notify_value=false; fi
+    if am_collapse_busy_enabled; then collapse_busy_value=true; else collapse_busy_value=false; fi
     notify_states_value=$(am_notify_states)
     notify_cmd_value=$(am_config_get "notify_cmd")
 
@@ -262,6 +282,7 @@ default_agent=$default_agent_value
 auto_restore=$auto_restore_value
 stream_logs=$stream_logs_value
 shell_pane=$shell_pane_value
+collapse_busy=$collapse_busy_value
 dir_provider=$dir_provider_value
 notify=$notify_value
 notify_states=$notify_states_value

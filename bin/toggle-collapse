@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Toggle in-place collapsing of non-current busy (running / background) tabs
+# in the bottom status bar. Bound to prefix+b by the generated tmux config.
+
+set -euo pipefail
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+    script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+    script_path="$(readlink "$script_path")"
+    [[ "$script_path" != /* ]] && script_path="$script_dir/$script_path"
+done
+script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+repo_dir="$(cd "$script_dir/.." && pwd -P)"
+
+source "$repo_dir/lib/utils.sh"
+source "$repo_dir/lib/config.sh"
+source "$repo_dir/lib/tmux.sh"
+
+mkdir -p "$AM_DIR"
+if am_collapse_busy_enabled; then
+    : > "$AM_DIR/.expand_busy"
+else
+    rm -f "$AM_DIR/.expand_busy"
+    if ! am_collapse_busy_enabled; then
+        am_config_set "collapse_busy" "true" "boolean" >/dev/null 2>&1 || true
+    fi
+fi
+
+"$repo_dir/lib/status-bar" >/dev/null 2>&1 || true
+am_tmux refresh-client -S 2>/dev/null || true

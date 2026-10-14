@@ -514,7 +514,7 @@ func (m *model) applyFilter() tea.Cmd {
 		tier int
 		rec  int64
 	}
-	var active, interrupted, inactive []hit
+	var actionable, working, interrupted, inactive []hit
 	for i, e := range m.entries {
 		tier := m.entryTier(e, query)
 		if tier == 0 {
@@ -527,13 +527,39 @@ func (m *model) applyFilter() tea.Cmd {
 		case sessions.EntryRestoring, sessions.EntryBlocked:
 			interrupted = append(interrupted, h)
 		default:
-			active = append(active, h)
+			if isWorkingState(e.State) {
+				working = append(working, h)
+			} else {
+				actionable = append(actionable, h)
+			}
 		}
 	}
-	// An empty query keeps the canonical order (active by activity, then
-	// inactive); a query ranks each section by tier, then recency, so the
-	// section boundaries stay put.
-	if query != "" {
+	// An empty query groups active sessions by triage priority (waiting_user ->
+	// ready -> idle) above the Working section, while preserving incoming order
+	// for entries with no resolved state; a query ranks each section by tier,
+	// then recency, so section boundaries stay put.
+	if query == "" {
+		sort.SliceStable(actionable, func(a, b int) bool {
+			sa := m.entries[actionable[a].idx].State
+			sb := m.entries[actionable[b].idx].State
+			pa, pb := triagePriority(sa), triagePriority(sb)
+			if pa != pb {
+				return pa > pb
+			}
+			if sa != "" && sb != "" && actionable[a].rec != actionable[b].rec {
+				return actionable[a].rec > actionable[b].rec
+			}
+			return false
+		})
+		sort.SliceStable(working, func(a, b int) bool {
+			sa := m.entries[working[a].idx].State
+			sb := m.entries[working[b].idx].State
+			if sa != "" && sb != "" && working[a].rec != working[b].rec {
+				return working[a].rec > working[b].rec
+			}
+			return false
+		})
+	} else {
 		byScore := func(s []hit) func(a, b int) bool {
 			return func(a, b int) bool {
 				if s[a].tier != s[b].tier {
@@ -542,15 +568,16 @@ func (m *model) applyFilter() tea.Cmd {
 				return s[a].rec > s[b].rec
 			}
 		}
-		sort.SliceStable(active, byScore(active))
+		sort.SliceStable(actionable, byScore(actionable))
+		sort.SliceStable(working, byScore(working))
 		sort.SliceStable(interrupted, byScore(interrupted))
 		sort.SliceStable(inactive, byScore(inactive))
 	}
 
 	newRows, cmd := m.launch.rows(raw, m.liveDirs())
 	m.filtered = m.filtered[:0]
-	items := make([]listItem, 0, len(active)+len(interrupted)+len(newRows)+len(inactive))
-	for _, s := range [][]hit{active, interrupted} {
+	items := make([]listItem, 0, len(actionable)+len(working)+len(interrupted)+len(newRows)+len(inactive))
+	for _, s := range [][]hit{actionable, working, interrupted} {
 		for _, h := range s {
 			m.filtered = append(m.filtered, h.idx)
 			items = append(items, listItem{entry: h.idx, tier: h.tier})
@@ -591,6 +618,18 @@ func (m model) entryTier(e sessions.Entry, query string) int {
 	}
 	haystack := strings.ToLower(e.Display)
 	switch e.Kind {
+	case sessions.EntryActive:
+		if e.State != "" {
+			haystack += " state:" + e.State
+			switch e.State {
+			case "waiting_user":
+				haystack += " state:waiting waiting needs-you"
+			case "ready":
+				haystack += " ready"
+			case "running", "background", "starting":
+				haystack += " state:working working"
+			}
+		}
 	case sessions.EntryInactive:
 		haystack += " inactive restore closed"
 	case sessions.EntryRestoring, sessions.EntryBlocked:
@@ -739,6 +778,11 @@ func (m model) rowsThroughNew() int {
 			return i + 1
 		}
 	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		if !rows[i].divider && m.entries[m.items[rows[i].item].entry].Kind != sessions.EntryInactive {
+			return i + 1
+		}
+	}
 	return 0
 }
 
@@ -815,6 +859,69 @@ func (m *model) moveToFirstKind(kind sessions.EntryKind) bool {
 	return false
 }
 
+func isWorkingState(state string) bool {
+	return state == "running" || state == "background" || state == "starting"
+}
+
+func triagePriority(state string) int {
+	switch state {
+	case "waiting_user":
+		return 3
+	case "ready":
+		return 2
+	case "idle":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func stateGlyph(state string) string {
+	switch state {
+	case "waiting_user":
+		return "⚠"
+	case "ready":
+		return "●"
+	case "running":
+		return "▸"
+	case "background":
+		return "⧗"
+	case "starting":
+		return "◌"
+	case "unknown":
+		return "?"
+	case "dead":
+		return "✕"
+	case "idle":
+		return "○"
+	default:
+		return ""
+	}
+}
+
+func stateGlyphStyle(state string) lipgloss.Style {
+	switch state {
+	case "waiting_user":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("214"))
+	case "ready":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("114"))
+	case "running":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("75"))
+	case "background":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("44"))
+	case "starting":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("221"))
+	case "unknown":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("244"))
+	case "dead":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("196"))
+	case "idle":
+		return ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
+	default:
+		return normalStyle
+	}
+}
+
 func (m model) entryCounts() (active, restoring, blocked, inactive int) {
 	for _, entry := range m.entries {
 		switch entry.Kind {
@@ -831,9 +938,35 @@ func (m model) entryCounts() (active, restoring, blocked, inactive int) {
 	return active, restoring, blocked, inactive
 }
 
+func (m model) activeTriageCounts() (waiting, ready, working, other int) {
+	for _, entry := range m.entries {
+		if entry.Kind != sessions.EntryActive || entry.State == "" {
+			continue
+		}
+		switch entry.State {
+		case "waiting_user":
+			waiting++
+		case "ready":
+			ready++
+		case "running", "background", "starting":
+			working++
+		default:
+			other++
+		}
+	}
+	return waiting, ready, working, other
+}
+
 func (m model) listRows() ([]listRow, int) {
-	rows := make([]listRow, 0, len(m.items)+3)
+	workingCount := 0
+	for _, it := range m.items {
+		if !it.isNew() && m.entries[it.entry].Kind == sessions.EntryActive && isWorkingState(m.entries[it.entry].State) {
+			workingCount++
+		}
+	}
+	rows := make([]listRow, 0, len(m.items)+4)
 	cursorRow := -1
+	workingDividerAdded := false
 	recoveryDividerAdded := false
 	newDividerAdded := false
 	inactiveDividerAdded := false
@@ -844,7 +977,12 @@ func (m model) listRows() ([]listRow, int) {
 				newDividerAdded = true
 			}
 		} else {
-			kind := m.entries[it.entry].Kind
+			entry := m.entries[it.entry]
+			kind := entry.Kind
+			if kind == sessions.EntryActive && isWorkingState(entry.State) && !workingDividerAdded {
+				rows = append(rows, listRow{divider: true, label: fmt.Sprintf("Working (%d)", workingCount)})
+				workingDividerAdded = true
+			}
 			if (kind == sessions.EntryRestoring || kind == sessions.EntryBlocked) && !recoveryDividerAdded {
 				rows = append(rows, listRow{divider: true, label: "Interrupted sessions"})
 				recoveryDividerAdded = true
@@ -921,7 +1059,13 @@ func (m model) keyPills() []keyPill {
 func (m model) rowText(it listItem) (base, right string) {
 	if !it.isNew() {
 		entry := m.entries[it.entry]
-		return entry.DisplayBase, "(" + entry.TimeAgo + ")"
+		base = entry.DisplayBase
+		if entry.Kind == sessions.EntryActive {
+			if g := stateGlyph(entry.State); g != "" {
+				base = g + " " + base
+			}
+		}
+		return base, "(" + entry.TimeAgo + ")"
 	}
 	r := it.row
 	switch r.kind {
@@ -943,7 +1087,24 @@ func (m model) View() string {
 	// Header: accent bar + title + session count
 	b.WriteByte('\n')
 	activeCount, restoringCount, blockedCount, inactiveCount := m.entryCounts()
-	countParts := []string{fmt.Sprintf("%d active", activeCount)}
+	waitingCount, readyCount, workingCount, otherActiveCount := m.activeTriageCounts()
+	var countParts []string
+	if waitingCount+readyCount+workingCount > 0 {
+		if waitingCount > 0 {
+			countParts = append(countParts, fmt.Sprintf("%d waiting", waitingCount))
+		}
+		if readyCount > 0 {
+			countParts = append(countParts, fmt.Sprintf("%d ready", readyCount))
+		}
+		if workingCount > 0 {
+			countParts = append(countParts, fmt.Sprintf("%d working", workingCount))
+		}
+		if otherActiveCount > 0 {
+			countParts = append(countParts, fmt.Sprintf("%d idle", otherActiveCount))
+		}
+	} else {
+		countParts = append(countParts, fmt.Sprintf("%d active", activeCount))
+	}
 	if restoringCount > 0 {
 		countParts = append(countParts, fmt.Sprintf("%d restoring", restoringCount))
 	}
@@ -1119,7 +1280,14 @@ func (m model) View() string {
 			} else if it.isNew() {
 				b.WriteString(normalStyle.Render(lead) + dimStyle.Render(right))
 			} else {
-				b.WriteString(normalStyle.Render(lead + right))
+				entry := m.entries[it.entry]
+				g := stateGlyph(entry.State)
+				if entry.Kind == sessions.EntryActive && g != "" && strings.HasPrefix(base, g+" ") {
+					rest := base[len(g):] + strings.Repeat(" ", gap) + right
+					b.WriteString(normalStyle.Render(prefix) + stateGlyphStyle(entry.State).Render(g) + normalStyle.Render(rest))
+				} else {
+					b.WriteString(normalStyle.Render(lead + right))
+				}
 			}
 			b.WriteByte('\n')
 		}
@@ -1206,6 +1374,7 @@ func helpText() string {
 
   Type to filter sessions and new-session targets
     text        sessions, recent directories, presets
+    state:...   waiting, ready, working, running, background
     / ~ .       a path: the sessions under it, the directory, completions
     @spec       the dir_provider's suggestions
 
@@ -1217,6 +1386,8 @@ func helpText() string {
     Prefix + x  Kill current am session
     Prefix + d  Detach from session
     Prefix + ` + "`" + `  Toggle the shell panel
+    Prefix + v  Toggle the review pane
+    Prefix + b  Toggle collapse of running/background tabs
     Prefix Up/Down
                 Switch panes (panel open)
     :am         Open am browser (tmux command)`

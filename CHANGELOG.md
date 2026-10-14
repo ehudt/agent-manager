@@ -6,6 +6,27 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.41.0] - 2026-10-14
+
+- Non-current `running` (`▸`) and `background` (`⧗`) tabs in the bottom
+  status bar collapse in place by default to `idx▸` / `idx⧗` (e.g. `2▸`,
+  `3⧗`), giving the full horizontal water-fill budget to tabs that need
+  attention (`⚠` waiting, `●` ready, `○` idle, `◌` starting). Slot numbers
+  (`1..N`, `prefix+1-9`, and mouse clicks) stay fixed, the currently viewed
+  session is always expanded in full for its own perspective, and a
+  collapsed tab expands in place as soon as it transitions to `waiting_user`
+  or `ready`. Toggle at any time with `prefix+b` (`bin/toggle-collapse`),
+  `am config set collapse_busy true|false`, or `AM_COLLAPSE_BUSY=0|1`.
+- The session browser (`am`, `prefix+s`) now groups active sessions for
+  triage: actionable sessions (`⚠` waiting for you first, then `●` ready and
+  `○` idle) sit at the top of the list above a **Working (N)** section
+  divider (`▸` running, `⧗` background, `◌` starting). Active rows show
+  their colored state glyph, unreviewed diff summary (`Δ<files> +<add>
+  −<del>`), and time-in-state age; the header breaks out active counts by
+  triage bucket (`1 waiting, 2 ready, 3 working`), and the filter accepts
+  `state:waiting`, `state:ready`, `state:working`, `state:running`, and
+  `state:background`.
+
 ## [0.40.0] - 2026-10-06
 
 - The session browser and the new-session form are one list. Below the

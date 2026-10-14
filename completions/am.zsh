@@ -93,7 +93,7 @@ _am() {
             if (( CURRENT == 3 )); then
                 compadd -- list get set
             elif (( CURRENT == 4 )); then
-                compadd -- agent auto_restore logs shell dir_provider notify notify_states notify_cmd
+                compadd -- agent auto_restore logs shell collapse_busy dir_provider notify notify_states notify_cmd
             fi ;;
         preset)
             if (( CURRENT == 3 )); then

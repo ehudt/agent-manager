@@ -176,6 +176,7 @@ type Entry struct {
 	TmuxSession
 	Meta        Session
 	Kind        EntryKind
+	State       string // canonical lifecycle state for active sessions (waiting_user, ready, running, background, starting, idle, unknown)
 	Display     string // formatted display string (without session_name| prefix)
 	DisplayBase string // display without the trailing time-ago portion
 	TimeAgo     string // e.g. "3m ago" — split out for right-alignment in TUI
@@ -264,6 +265,10 @@ func FormatDisplayBase(s TmuxSession, meta Session) string {
 	if meta.Task != "" {
 		display.WriteByte(' ')
 		display.WriteString(meta.Task)
+	}
+
+	if meta.ReviewFiles > 0 {
+		fmt.Fprintf(&display, " Δ%d +%d −%d", meta.ReviewFiles, meta.ReviewAdded, meta.ReviewDeleted)
 	}
 
 	return display.String()
@@ -365,6 +370,9 @@ func LoadBrowserEntries() []Entry {
 
 	now := time.Now()
 	active := loadActiveEntries(amDir, socket, tmuxSessions, now)
+	env := LoadEnv()
+	env.AmDir, env.Socket, env.Prefix = amDir, socket, prefix
+	EnrichActiveStates(env, active, now.Unix())
 	desiredStore := LoadDesiredStore(amDir)
 	desired := desiredEntriesFromStore(desiredStore, live)
 	inactive := LoadRestorableEntries(amDir, home, live, now)

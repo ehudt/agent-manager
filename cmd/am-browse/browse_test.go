@@ -298,3 +298,128 @@ func TestFilterCursorUsesTTYRenderer(t *testing.T) {
 		t.Errorf("filter cursor mode = %v, want static (no blink)", mode)
 	}
 }
+
+func TestTriageGroupingAndDivider(t *testing.T) {
+	m := newModel()
+	m.width = 90
+	m.height = 25
+	m.loading = false
+	m.entries = []sessions.Entry{
+		{
+			TmuxSession: sessions.TmuxSession{Name: "am-run1"},
+			Kind:        sessions.EntryActive,
+			State:       "running",
+			Display:     "am-run1 app [claude] build (2m ago)",
+			DisplayBase: "am-run1 app [claude] build",
+			TimeAgo:     "2m ago",
+			RecencyUnix: 400,
+		},
+		{
+			TmuxSession: sessions.TmuxSession{Name: "am-ready1"},
+			Kind:        sessions.EntryActive,
+			State:       "ready",
+			Display:     "am-ready1 api [claude] review Δ2 +10 −3 (5m ago)",
+			DisplayBase: "am-ready1 api [claude] review Δ2 +10 −3",
+			TimeAgo:     "5m ago",
+			RecencyUnix: 200,
+		},
+		{
+			TmuxSession: sessions.TmuxSession{Name: "am-bg1"},
+			Kind:        sessions.EntryActive,
+			State:       "background",
+			Display:     "am-bg1 ci [claude] test suite (1m ago)",
+			DisplayBase: "am-bg1 ci [claude] test suite",
+			TimeAgo:     "1m ago",
+			RecencyUnix: 300,
+		},
+		{
+			TmuxSession: sessions.TmuxSession{Name: "am-wait1"},
+			Kind:        sessions.EntryActive,
+			State:       "waiting_user",
+			Display:     "am-wait1 auth [claude] approve deploy (30s ago)",
+			DisplayBase: "am-wait1 auth [claude] approve deploy",
+			TimeAgo:     "30s ago",
+			RecencyUnix: 100,
+		},
+	}
+	m.applyFilter()
+
+	if len(m.filtered) != 4 {
+		t.Fatalf("filtered len = %d, want 4", len(m.filtered))
+	}
+	wantOrder := []string{"am-wait1", "am-ready1", "am-run1", "am-bg1"}
+	for i, want := range wantOrder {
+		if got := m.entries[m.filtered[i]].Name; got != want {
+			t.Errorf("filtered[%d] = %q, want %q", i, got, want)
+		}
+	}
+
+	rows, _ := m.listRows()
+	foundWorkingDivider := false
+	for _, r := range rows {
+		if r.divider && r.label == "Working (2)" {
+			foundWorkingDivider = true
+			break
+		}
+	}
+	if !foundWorkingDivider {
+		t.Errorf("listRows did not include Working (2) divider: %+v", rows)
+	}
+
+	view := m.View()
+	for _, want := range []string{
+		"1 waiting, 1 ready, 2 working",
+		"⚠ am-wait1",
+		"● am-ready1",
+		"Δ2 +10 −3",
+		"Working (2)",
+		"▸ am-run1",
+		"⧗ am-bg1",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTriageStateFilterTokens(t *testing.T) {
+	m := newModel()
+	m.entries = []sessions.Entry{
+		{
+			TmuxSession: sessions.TmuxSession{Name: "am-wait1"},
+			Kind:        sessions.EntryActive,
+			State:       "waiting_user",
+			Display:     "am-wait1 auth [claude] approve (30s ago)",
+			DisplayBase: "am-wait1 auth [claude] approve",
+			TimeAgo:     "30s ago",
+		},
+		{
+			TmuxSession: sessions.TmuxSession{Name: "am-ready1"},
+			Kind:        sessions.EntryActive,
+			State:       "ready",
+			Display:     "am-ready1 api [claude] done (5m ago)",
+			DisplayBase: "am-ready1 api [claude] done",
+			TimeAgo:     "5m ago",
+		},
+		{
+			TmuxSession: sessions.TmuxSession{Name: "am-bg1"},
+			Kind:        sessions.EntryActive,
+			State:       "background",
+			Display:     "am-bg1 ci [claude] subagent (1m ago)",
+			DisplayBase: "am-bg1 ci [claude] subagent",
+			TimeAgo:     "1m ago",
+		},
+	}
+
+	m.filter.SetValue("state:waiting")
+	m.applyFilter()
+	if len(m.filtered) != 1 || m.entries[m.filtered[0]].Name != "am-wait1" {
+		t.Errorf("state:waiting matched %v, want [am-wait1]", m.filtered)
+	}
+
+	m.filter.SetValue("state:working")
+	m.applyFilter()
+	if len(m.filtered) != 1 || m.entries[m.filtered[0]].Name != "am-bg1" {
+		t.Errorf("state:working matched %v, want [am-bg1]", m.filtered)
+	}
+}
