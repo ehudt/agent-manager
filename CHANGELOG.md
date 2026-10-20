@@ -6,6 +6,29 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.42.0] - 2026-10-20
+
+- opencode 2 support. opencode 2 moved plugins into its shared background
+  service, so the old plugin no longer loaded (`Plugin must export a default
+  definition with an id and an effect or setup function`) and state detection
+  stopped. `lib/hooks/opencode-state.js` now default-exports one definition
+  carrying both APIs: `setup(ctx)` for opencode 2 (`session.execution.*`,
+  `session.inbox.enqueued`, `session.idle`, `permission.asked` / `form.*`)
+  and `server()` for opencode 1, so one install serves both.
+- In opencode 2 a session belongs to a *location* (directory), not to a pane,
+  and `AM_SESSION_NAME` in the service describes whichever pane happened to
+  start it. The plugin binds each opencode session to the one live am session
+  registered (`agent_type` opencode) for that directory. A directory with no
+  am session, or with several, is left alone and recorded as
+  `hook.drop reason=unowned|unowned_ambiguous` in `events.log`.
+- The first user message is taken from opencode 2's `session.inbox.enqueued`
+  payload instead of walking message parts, and unchanged states no longer
+  re-nudge the status bar.
+- After upgrading, run `opencode service restart`: the shared service caches
+  the plugin module it imported at startup.
+- The opencode live lab passes `--standalone` on opencode 2 so the lab's
+  `AM_*` environment reaches the plugin instead of the shared service's.
+
 ## [0.41.0] - 2026-10-14
 
 - Non-current `running` (`▸`) and `background` (`⧗`) tabs in the bottom

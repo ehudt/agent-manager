@@ -86,7 +86,7 @@ How to bump: edit `AM_VERSION` in `am` in the same commit as the change that ear
 | `lib/config.sh` | User config: defaults, feature flags, persistent settings |
 | `lib/state.sh` | Session state detection: title glyph + hook file + process tree, wait/poll |
 | `lib/hooks/am-state.ts` | Pi extension: lifecycle events → am state files (session_start/agent_settled → ready, agent_start → running) |
-| `lib/hooks/opencode-state.js` | opencode plugin: server events → am state files (session.status busy/idle → running/ready, permission/question asked/replied → waiting_user/running), plus `.sid`/`.transcript`/`.cwd`/`.dirty` sidecars and the first-user-message mirror (`$AM_DIR/opencode/<sid>.jsonl`, since opencode's conversation store is SQLite) |
+| `lib/hooks/opencode-state.js` | opencode plugin, both APIs in one default export: OpenCode 2 `setup(ctx)` binds sessions to the live am session registered for the session's location directory and maps `session.execution.*`/`inbox.enqueued`/`permission.asked`; OpenCode 1 `server()` maps `session.status`/`permission`/`question` from the pane env; plus `.sid`/`.transcript`/`.cwd`/`.dirty` sidecars and the first-user-message mirror (`$AM_DIR/opencode/<sid>.jsonl`, since opencode's conversation store is SQLite) |
 | `tests/live_lab/run.sh`, `run_cursor.sh`, `run_pi.sh`, `run_opencode.sh` | Empirical state labs for real agent sessions; each prints the installed agent version at the end so `tests/live_lab/VERIFIED` (the per-agent verified-version pins `am doctor` compares against) can be updated |
 | `skills/agent-manager-dispatch/SKILL.md` | Claude/Cursor skill: teaches agents to use am for multi-session dispatch/orchestration |
 | `skills/am-peek/SKILL.md` | Claude Code skill: teaches agents to read another session's full shell scrollback via `am peek --pane shell --history` |
@@ -115,7 +115,7 @@ auto_title_scan / registry_gc / sessions_log_scan / sessions_log_gc / sessions_l
 am list-internal → am-list-internal (Go binary) → stdout
 agent_launch() → am-core review-init → launch checkpoint (refs/am/<session>/{checkpoints,baseline} in the repo; silent outside one)
 tool hook (PostToolUse family) → detached tail: touch /tmp/am-state/<session>.dirty; HEAD ≠ .head sidecar → am-core review-sync (branch checkpoint moves the baseline, head checkpoint does not) → rm .title_scan_last
-opencode plugin (in-process) → session.status busy/idle + permission/question events → $AM_STATE_DIR/<session> state file; .sid/.transcript (.cwd/.dirty) sidecars + $AM_DIR/opencode/<sid>.jsonl first-message mirror
+opencode plugin → V2: session.execution.started/idle + inbox.enqueued + permission.asked, bound to the am session registered for the session's location directory (one plugin instance per location, whole server event stream); V1: session.status busy/idle + permission/question events from the pane env → $AM_STATE_DIR/<session> state file; .sid/.transcript (.cwd/.dirty) sidecars + $AM_DIR/opencode/<sid>.jsonl first-message mirror
 am-core tick → RefreshTitles → refreshedReview (only when .dirty is newer than review_at, or the branch changed) → ReviewMeasure → registry review_files/added/deleted/at → tab "Δ<files> +<add> −<del>"
 am diff [s] → review_diff_main → am-core review-stat --record → git -C dir diff <base_tree> <cur_tree>; --ack → review-ack (worktree tree becomes the baseline, count zeroed); --reset → review-baseline --reset
 am restore → cmd_restore_internal → am-core review-adopt <old> <new> (refs follow the resumed conversation); sessions_log_gc → ReviewDrop when the entry is dropped
@@ -341,24 +341,45 @@ disappearance of the row returns it to `ready`. It cannot override a
 Working title, and task-like text in
 the conversation does not match.
 
-**opencode sessions:** State comes from the in-process plugin
+**opencode sessions:** State comes from the plugin
 `lib/hooks/opencode-state.js`, installed by `am install` as a symlink at
 `~/.config/opencode/plugins/am-state.js` (opencode auto-discovers the global
-plugin dir and loads it with Bun). The plugin maps `session.status`
-(`busy`/`retry` → `running`, `idle` → `ready`), `session.idle` → `ready`, and
-`permission(.v2).asked` / `question(.v2).asked` → `waiting_user` (replied /
-rejected → `running`). State is read ungated (`turn_boundary=reliable`): a
-dead opencode drops the pane to a shell, which the shell-pane check catches.
-Plugin init writes `ready` because a fresh TUI creates no session until the
-first prompt; `message.updated` user messages are **not** turn starts —
-opencode emits a synthetic user message for post-turn title generation after
-`session.idle`, which would otherwise pin the tab at `running`. The plugin
-writes `.sid`/`.transcript` (identity), `.cwd` (tab label), `.dirty` (review
-re-measure), and a first-user-message mirror at `$AM_DIR/opencode/<sid>.jsonl`
-(opencode's real conversation store is SQLite, which am cannot address; the
-mirror backs the title fallback and restore preflight). The TUI's
-`OC | <title>` pane title is parsed by `opencodeTitleExtract`
-(`title_state=none`, so no state comes from the title).
+plugin dir and loads it with Bun). The default export carries both plugin
+APIs: `server()` for OpenCode 1 (the TUI hosts the server, so the pane
+environment names the am session) and `setup(ctx)` for OpenCode 2, whose
+plugins run in the shared background service — there `AM_SESSION_NAME`
+describes whichever pane happened to start that service, never this one.
+State is read ungated (`turn_boundary=reliable`): a dead opencode drops the
+pane to a shell, which the shell-pane check catches.
+
+OpenCode 2 binds each opencode session to the one live am session registered
+(`agent_type` opencode, tmux session present) for the *session's location
+directory* — a session belongs to a location there, not to a pane. Events for
+a directory no live am session owns, or that several own (two am panes in one
+checkout), are dropped with `hook.drop reason=unowned|unowned_ambiguous` in
+`$AM_DIR/events.log`, never guessed. Each location's plugin instance sees the
+whole server stream: events carrying another location are skipped, and
+repeated same-state writes are no-ops so the state mtime still pins the
+transition. V2 event mapping: `session.created` → `ready`,
+`session.inbox.enqueued` (`item.type=user`) → `running` plus the
+first-message mirror, `session.execution.started` → `running`,
+`session.execution.succeeded|failed|interrupted` and `session.idle` →
+`ready`, `permission.asked` / `form.created` → `waiting_user` (replied /
+rejected / cancelled → `running`), and `session.tool|step|text|reasoning.*` →
+`.dirty` only. V1 mapping is unchanged: `session.status` busy/retry → running,
+idle → ready, `session.idle` → ready, `permission(.v2).asked` /
+`question(.v2).asked` → waiting_user. Plugin init writes `ready` because a
+fresh TUI creates no session until the first prompt; V1 `message.updated`
+user messages are **not** turn starts (opencode emits a synthetic user
+message for post-turn title generation, which would pin the tab at
+`running`). The plugin writes `.sid`/`.transcript` (identity), `.cwd` (tab
+label), `.dirty` (review re-measure), and a first-user-message mirror at
+`$AM_DIR/opencode/<sid>.jsonl` (opencode's real conversation store is SQLite,
+which am cannot address; the mirror backs the title fallback and restore
+preflight). The TUI's `OC | <title>` pane title is parsed by
+`opencodeTitleExtract` (`title_state=none`, so no state comes from the title).
+The shared OpenCode 2 service caches the imported module, so after upgrading
+am run `opencode service restart` or the previous plugin code keeps running.
 
 ### Verifying against real agents
 
@@ -376,7 +397,9 @@ the Claude lab when Claude Code updates or when changing `lib/state.sh` /
 question, subagent, stop, resume, and background-task footer behavior.
 `tests/live_lab/run_pi.sh` covers pi. `tests/live_lab/run_opencode.sh` covers
 opencode (o1 fresh ready, o2 prompt round-trip + mirror/identity, o3 200s
-quiet turn stays running, o4 death → idle).
+quiet turn stays running, o4 death → idle); it passes `--standalone` on
+OpenCode 2 so the lab's `AM_*` environment reaches the plugin instead of the
+shared service's.
 
 **Version-drift canary.** Everything above is empirical, so an agent upgrade
 can move the ground without any test failing. Two signals make that visible
@@ -764,4 +787,4 @@ Display: `dirname/branch [agent] task Δ<files> +<add> −<del> (Xm ago)` — di
 | Add new skill (auto-installed) | drop `skills/<name>/SKILL.md`; `am install` loops `skills/*/` |
 | Add restore agent support | `lib/agents.manifest` → `resume` template, `store`, `preflight` (the bash `agent_resume_args` / `agent_restorable` and Go `AgentSpec.ResumeArgs` / `Restorable` read them); a new store layout needs its Go existence check and first-message reader |
 | Change pi state mapping | `lib/hooks/am-state.ts` → event-to-state mapping |
-| Change opencode state mapping or identity/title sidecars | `lib/hooks/opencode-state.js` → event mapping, `bind`/`handlePart`; install/refresh wiring in `scripts/install.sh` + `am` `_install_refresh`; `lib/doctor.sh` `_doc_opencode_plugin` |
+| Change opencode state mapping or identity/title sidecars | `lib/hooks/opencode-state.js` → `onV2Event` / `onV1Event`, `resolveOwner`, `bindIdentity`, `writeMirrorText`; install/refresh wiring in `scripts/install.sh` + `am` `_install_refresh`; `lib/doctor.sh` `_doc_opencode_plugin` |

@@ -88,6 +88,11 @@ test_installer_uninstall_reverses_install() {
         --prefix "$temp_root/bin" --shell-rc "$shell_rc" \
         --tmux-conf "$temp_root/.tmux.conf" -y >/dev/null 2>&1
     assert_cmd_succeeds "uninstall precondition: am linked" test -L "$temp_root/bin/am"
+    assert_cmd_succeeds "uninstall precondition: opencode plugin exports an OpenCode 2 definition" \
+        grep -q 'export default {' "$temp_root/opencode-plugins/am-state.js"
+    assert_cmd_succeeds "uninstall precondition: opencode plugin id + setup(ctx)" \
+        bash -c 'grep -q "id: \"am.state\"" "$1" && grep -q "setup(ctx)" "$1"' _ \
+        "$temp_root/opencode-plugins/am-state.js"
     assert_cmd_succeeds "uninstall precondition: Claude hook present" \
         grep -q am-state-hook "$temp_root/claude-settings.json"
 

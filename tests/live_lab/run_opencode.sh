@@ -22,7 +22,9 @@ RESULTS="${1:-$SCRIPT_DIR/results/opencode-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$RESULTS/snapshots"
 LAB=$(mktemp -d -t am-live-lab-opencode.XXXXXX)
 SOCKET="am-live-lab-opencode-$$"
-SESSION="lab-opencode-1"
+# The OpenCode 2 entrypoint binds a session to the live am session registered
+# for its directory, so the lab session is named like a real one.
+SESSION="am-lab-opencode-1"
 WORKDIR="$LAB/workdir"
 mkdir -p "$WORKDIR"
 
@@ -48,6 +50,13 @@ printf '%s\n' '{"$schema":"https://opencode.ai/config.json","permission":{"bash"
     > "$WORKDIR/opencode.json"
 
 OPENCODE_ARGS="${LAB_OPENCODE_ARGS:-}"
+# OpenCode 2 plugins run in the shared background service, which inherits the
+# environment of whichever pane started it; --standalone gives the lab a
+# private server carrying the lab's AM_* environment (V1 has no such flag, and
+# the plugin's V2 entrypoint binds sessions by location either way).
+if opencode --help 2>&1 | grep -q -- "--standalone"; then
+    OPENCODE_ARGS="--standalone $OPENCODE_ARGS"
+fi
 SCENARIOS="${LAB_SCENARIOS:-o1 o2 o3 o4}"
 
 log() { printf '\033[0;36m[live-lab-opencode]\033[0m %s\n' "$*" >&2; }
