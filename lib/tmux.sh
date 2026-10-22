@@ -167,6 +167,13 @@ set -g mouse on
 # a lone space was too loose (never split key=value).
 set -g word-separators " !\"#%&'()*,:;<=>?@[]^{|}"
 bind -n MouseDown1Status if-shell -F '#{!=:#{mouse_status_range},}' { run-shell "tmux switch-client -t '#{mouse_status_range}' ; tmux refresh-client -S" } { switch-client -t = }
+# A terminal that missed a right-button release (Ghostty, after a context
+# menu) reports every motion as a right-button drag (SGR code 34 instead of
+# 35). tmux is then mid-drag when the left press arrives and turns it into
+# MouseDragEnd1Status, not MouseDown1Status, so the first click on a tab did
+# nothing. Switch on the drag end too; a real drag released over a tab lands
+# there as well.
+bind -n MouseDragEnd1Status if-shell -F '#{!=:#{mouse_status_range},}' { run-shell "tmux switch-client -t '#{mouse_status_range}' ; tmux refresh-client -S" }
 EOF
 )
 

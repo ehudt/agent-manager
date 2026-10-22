@@ -131,6 +131,10 @@ test_tmux_binding_snippets() {
         "tmux config: prefix+[ restored to tmux default copy-mode"
     assert_contains "$rendered_conf" 'bind ] paste-buffer -p' \
         "tmux config: prefix+] restored to tmux default paste-buffer"
+    assert_contains "$rendered_conf" "bind -n MouseDown1Status if-shell -F '#{!=:#{mouse_status_range},}'" \
+        "tmux config: a tab click switches session"
+    assert_contains "$rendered_conf" "bind -n MouseDragEnd1Status if-shell -F '#{!=:#{mouse_status_range},}'" \
+        "tmux config: a click that ends a phantom drag still switches session"
 
     rm -rf "$temp_am_dir"
 

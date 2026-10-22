@@ -6,6 +6,14 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.42.1] - 2026-10-22
+
+- A click on a status-bar tab switches on the first try even when the
+  terminal believes the right mouse button is still held (Ghostty after a
+  missed right-button release): tmux turned that click into the end of a
+  phantom drag, so it took two or three clicks. The drag end over a tab now
+  switches too.
+
 ## [0.42.0] - 2026-10-20
 
 - opencode 2 support. opencode 2 moved plugins into its shared background
