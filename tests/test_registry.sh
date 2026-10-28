@@ -313,8 +313,12 @@ test_registry_gc() {
     registry_add "test-am-stale-fake-3" "/tmp/gone3" "main" "claude" ""
     local extras_state_dir
     extras_state_dir=$(mktemp -d)
+    # test-am-orphan is a closed session of this AM_DIR (sessions-log entry);
+    # test-am-foreign belongs to another AM_DIR sharing the state dir.
+    sessions_log_append "test-am-orphan" "/tmp/gone-orphan" "main" "claude"
     printf 'ready' > "$extras_state_dir/test-am-orphan"
     printf 'uuid-orphan' > "$extras_state_dir/test-am-orphan.sid"
+    printf 'running' > "$extras_state_dir/test-am-foreign"
     # Simulate the Go twin (ReapOrphans) having just stamped .gc_last
     date +%s > "$AM_DIR/.gc_last"
     rm -f "$AM_DIR/.gc_extras_last"
@@ -327,6 +331,10 @@ test_registry_gc() {
         "registry_gc: extras sweep removes orphan .sid sidecar despite fresh .gc_last"
     assert_contains "$(cat "$AM_DIR/gc.log" 2>/dev/null)" "orphan state file removed: $extras_state_dir/test-am-orphan" \
         "registry_gc: gc.log records the removed state file"
+    # A scratch tmux server with its own AM_DIR and a live session swept every
+    # real session's hook file on 2026-10-28: only recorded sessions go.
+    assert_eq "true" "$(test -f "$extras_state_dir/test-am-foreign" && echo true || echo false)" \
+        "registry_gc: extras sweep keeps the state file of a session this AM_DIR never recorded"
     # Wrong-server guard: when tmux lists no session at all (a socket with no
     # server: a mis-pointed AM_TMUX_SOCKET, or a test's stub tmux) the sweep
     # must leave the shared state dir alone — this wiped every live session's

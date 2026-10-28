@@ -30,6 +30,11 @@ entry unless they changed behaviour a user would notice.
   prints) to the clipboard: pbcopy, wl-copy, xclip or xsel when one is
   installed, and the terminal's clipboard over OSC 52 (the route over ssh).
   It also lands in the tmux buffer, so `prefix+]` pastes it.
+- GC removes orphan hook state files only for sessions its own `AM_DIR`
+  recorded (registry or sessions log). A second am setup with its own
+  `AM_DIR` and tmux socket, sharing `/tmp/am-state`, used to delete every
+  other session's state file as soon as it had a session of its own, and
+  those tabs read `unknown` until their next hook event.
 
 ## [0.42.1] - 2026-10-22
 

@@ -665,6 +665,7 @@ func TestGCExtras(t *testing.T) {
 // runs only when tmux lists at least one session: the state dir is shared
 // across AM_DIRs and sockets, and an empty live set usually means the wrong
 // server (a test's stub tmux wiped every live session's hook file, 2026-09-08).
+// Even then it removes only files of sessions this AM_DIR recorded.
 func TestGCHalvesAndGrace(t *testing.T) {
 	amDir := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
@@ -681,9 +682,15 @@ func TestGCHalvesAndGrace(t *testing.T) {
 		"am-old-1": {Name: "am-old-1", Directory: "/tmp/x", AgentType: "claude", CreatedAt: "2020-01-01T00:00:00Z"},
 		"am-old-2": {Name: "am-old-2", Directory: "/tmp/x", AgentType: "claude", CreatedAt: "2020-01-01T00:00:00Z"},
 	}})
+	// am-orphan is a closed session of this AM_DIR (a sessions-log entry, no
+	// registry row); am-foreign belongs to another AM_DIR sharing the state dir.
+	slogAppend(t, env.SessionsLog, map[string]any{"session_name": "am-orphan", "directory": "/tmp/x",
+		"agent_type": "claude", "created_at": now.Format("2006-01-02T15:04:05Z")})
 	writeFile(t, filepath.Join(env.StateDir, "am-orphan"), "ready")
 	writeFile(t, filepath.Join(env.StateDir, "am-orphan.sid"), "uuid-orphan")
 	writeFile(t, filepath.Join(env.StateDir, "am-orphan.cwd"), "/tmp")
+	writeFile(t, filepath.Join(env.StateDir, "am-foreign"), "running")
+	writeFile(t, filepath.Join(env.StateDir, "am-foreign.sid"), "uuid-foreign")
 	writeFile(t, filepath.Join(env.StateDir, "other-prefix"), "ready")
 
 	writeFile(t, filepath.Join(amDir, ".gc_last"), strconv.FormatInt(now.Unix(), 10))
@@ -719,6 +726,13 @@ func TestGCHalvesAndGrace(t *testing.T) {
 	}
 	if !fileExists(filepath.Join(env.StateDir, "other-prefix")) {
 		t.Errorf("state file outside the session prefix removed")
+	}
+	// A scratch server with its own AM_DIR and one live session must not
+	// sweep the sessions of the AM_DIR that owns the files (2026-10-28).
+	for _, n := range []string{"am-foreign", "am-foreign.sid"} {
+		if !fileExists(filepath.Join(env.StateDir, n)) {
+			t.Errorf("extras sweep removed %s, a session this AM_DIR never recorded", n)
+		}
 	}
 	// The audit log names every removal with the caller's environment.
 	logb, err := os.ReadFile(filepath.Join(amDir, "gc.log"))

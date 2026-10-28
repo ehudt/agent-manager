@@ -346,19 +346,24 @@ func (e Env) GC(force bool) int {
 }
 
 // sweepOrphanStateFiles removes hook state files and sidecars whose session
-// (name with any .sid/.transcript/.cwd/.bg/.dirty/.head suffix stripped) is
-// not live.
+// (name with any .sid/.transcript/.cwd/.bg/.dirty/.head/.fence suffix
+// stripped) is not live and is one this AM_DIR recorded: a registry row or a
+// sessions-log entry.
 //
-// It does nothing when tmux lists no session at all. The state dir is shared
-// (the default /tmp/am-state serves every AM_DIR, socket, and prefix), so an
-// am-core run with an empty live set is far more likely to be looking at the
-// wrong server than at a machine with no sessions: a test with a temp AM_DIR
-// and its own socket, or `AM_TMUX_SOCKET=x am list` by hand. Observed
-// 2026-09-08: tests/test_bin_helpers.sh ticked with a stub tmux and wiped
-// every live session's hook file several times a day, so background sessions
-// (no tool events while they wait) showed as ready until their next hook
-// event. With no live session nothing reads these files; the next GC with
-// sessions present sweeps them.
+// The state dir is shared (the default /tmp/am-state serves every AM_DIR,
+// socket, and prefix), so two fences keep a run from sweeping sessions it does
+// not own. It does nothing when tmux lists no session at all: an empty live
+// set is far more likely to be the wrong server than a machine with no
+// sessions (observed 2026-09-08: tests/test_bin_helpers.sh ticked with a stub
+// tmux and wiped every live session's hook file several times a day, so
+// background sessions showed as ready until their next hook event). And it
+// leaves files of sessions this AM_DIR never recorded: a scratch server with
+// its own AM_DIR and socket has a live session of its own, so the first fence
+// passes, but none of the real sessions are its own (observed 2026-10-28: a
+// hand-run end-to-end check attached a client to such a server, its status
+// bar ran GC, and every live session read unknown until its next hook event).
+// Files of a session no AM_DIR records stay until /tmp is cleaned; the rows
+// half already removes those of every row it reaps.
 func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 	if len(live) == 0 {
 		return
@@ -367,6 +372,7 @@ func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 	if err != nil {
 		return
 	}
+	known := e.recordedSessions()
 	for _, de := range entries {
 		if !de.Type().IsRegular() {
 			continue
@@ -382,10 +388,28 @@ func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 		if _, ok := live[session]; ok {
 			continue
 		}
+		if _, ok := known[session]; !ok {
+			continue
+		}
 		if os.Remove(filepath.Join(e.StateDir, name)) == nil {
 			gcLog(e.AmDir, len(live), "orphan state file removed: %s", filepath.Join(e.StateDir, name))
 		}
 	}
+}
+
+// recordedSessions is the set of session names this AM_DIR has recorded:
+// registry rows and sessions-log entries.
+func (e Env) recordedSessions() map[string]struct{} {
+	known := make(map[string]struct{})
+	for name := range ReadRegistry(e.RegistryPath()).Sessions {
+		known[name] = struct{}{}
+	}
+	for _, l := range readSlog(e.SessionsLog) {
+		if name := l.get("session_name"); name != "" {
+			known[name] = struct{}{}
+		}
+	}
+	return known
 }
 
 // SessionsLogGC backs the bash sessions_log_gc wrapper: drop entries whose transcript
