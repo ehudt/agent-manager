@@ -26,6 +26,10 @@ entry unless they changed behaviour a user would notice.
 - `events.log` records `launch.bg`, `launch.bg.ok`, `launch.bg.fail`,
   `launch.bg.retry` and `launch.bg.cancel`; a background launch's own
   `launch.ok` carries `source=background`.
+- `prefix+y` copies the current session id (`am-XXXXXX`, what `am id`
+  prints) to the clipboard: pbcopy, wl-copy, xclip or xsel when one is
+  installed, and the terminal's clipboard over OSC 52 (the route over ssh).
+  It also lands in the tmux buffer, so `prefix+]` pastes it.
 
 ## [0.42.1] - 2026-10-22
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# tests/test_bin_helpers.sh - Tests for bin/kill-and-switch, bin/switch-last
+# tests/test_bin_helpers.sh - Tests for bin/kill-and-switch, bin/switch-last,
+# bin/copy-session-id
 
 # Write a tmux stub binary to PATH_ARG that mimics the handful of tmux
 # commands the bin/ helpers use. Behavior is configured per-invocation via
@@ -185,6 +186,59 @@ test_switch_last_no_alternate_session() {
     $SUMMARY_MODE || echo ""
 }
 
+test_copy_session_id() {
+    $SUMMARY_MODE || echo "=== Testing copy-session-id ==="
+
+    local temp_root bin_dir linked_bin am_dir log_file
+    _stub_fixture_init
+
+    ln -s "$PROJECT_DIR/bin/copy-session-id" "$linked_bin/copy-session-id"
+    # A pbcopy stand-in first on PATH, so the real clipboard is left alone.
+    cat > "$bin_dir/pbcopy" <<EOF
+#!/usr/bin/env bash
+cat > "$temp_root/clipboard"
+EOF
+    chmod +x "$bin_dir/pbcopy"
+
+    assert_cmd_succeeds "copy-session-id: exits 0" \
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" STUB_TMUX_LOG="$log_file" \
+        "$linked_bin/copy-session-id" "client-1" "am-111111"
+
+    local clipboard tmux_log
+    clipboard=$(cat "$temp_root/clipboard" 2>/dev/null; printf x)
+    assert_eq "am-111111" "${clipboard%x}" \
+        "copy-session-id: the clipboard tool gets the id, no trailing newline"
+    tmux_log=$(cat "$log_file")
+    assert_contains "$tmux_log" 'set-buffer -w -t client-1 -- am-111111' \
+        "copy-session-id: id goes to the tmux buffer and, via -w, OSC 52"
+    assert_contains "$tmux_log" 'display-message -c client-1 Copied am-111111' \
+        "copy-session-id: confirms on the invoking client"
+
+    # No clipboard tool: the tmux buffer is still set, and the message says
+    # where the id went. PATH holds only what the helper and its libs run.
+    local min_path="$temp_root/min-bin" tool
+    mkdir -p "$min_path"
+    cp "$bin_dir/tmux" "$min_path/tmux"
+    for tool in bash dirname readlink cat; do
+        ln -s "$(command -v "$tool")" "$min_path/$tool"
+    done
+    : > "$log_file"
+    assert_cmd_succeeds "copy-session-id: exits 0 with no clipboard tool" \
+        env PATH="$min_path" AM_DIR="$am_dir" STUB_TMUX_LOG="$log_file" \
+        "$linked_bin/copy-session-id" "client-1" "am-111111"
+    tmux_log=$(cat "$log_file")
+    assert_contains "$tmux_log" 'set-buffer -w -t client-1 -- am-111111' \
+        "copy-session-id: no clipboard tool still sets the tmux buffer"
+    assert_contains "$tmux_log" 'Copied am-111111 to the tmux buffer' \
+        "copy-session-id: no clipboard tool names the tmux buffer"
+
+    assert_cmd_fails "copy-session-id: exits 1 without a session" \
+        env PATH="$bin_dir:$PATH" AM_DIR="$am_dir" "$linked_bin/copy-session-id" "client-1" ""
+
+    rm -rf "$temp_root"
+    $SUMMARY_MODE || echo ""
+}
+
 test_standalone_switch_last_errors() {
     $SUMMARY_MODE || echo "=== Testing bin/switch-last error handling ==="
     source "$LIB_DIR/utils.sh"
@@ -277,6 +331,7 @@ run_bin_helpers_tests() {
     _run_test test_kill_and_switch_no_alternate_session
     _run_test test_kill_and_switch_legacy_single_arg
     _run_test test_switch_last_no_alternate_session
+    _run_test test_copy_session_id
     _run_test test_standalone_switch_last_errors
     _run_test test_standalone_kill_and_switch_errors
 }

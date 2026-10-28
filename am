@@ -156,6 +156,7 @@ KEYBINDINGS (inside tmux session):
     Prefix + `      Toggle the shell panel (open on first use, then hide/show)
     Prefix + v      Toggle the review pane beside the agent
     Prefix + b      Toggle collapsing busy (running/background) tabs in the bar
+    Prefix + y      Copy the current session id to the clipboard
     Prefix Up/Down  Switch panes (when the shell panel is open)
     Prefix + [ / ]  Copy mode / paste
     mouse click     Click a tab in the bottom bar to switch to it

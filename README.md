@@ -266,6 +266,7 @@ Sessions run on a dedicated tmux socket (`agent-manager`), so am keybindings don
 | `Prefix + d` | Detach from session |
 | ``Prefix + ` `` | Toggle the shell panel (open on first use, then hide/show) |
 | `Prefix + v` | Toggle the review pane: what the agent changed since you last looked |
+| `Prefix + y` | Copy the current session id (`am-XXXXXX`, as `am id` prints it) to the clipboard |
 | `Prefix ↑/↓` | Switch between agent and shell panes (panel open) |
 | `Prefix + [` / `]` | Copy mode / paste (tmux defaults) |
 | mouse click | Click a tab in the bottom bar to switch to it |

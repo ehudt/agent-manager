@@ -1596,6 +1596,7 @@ func helpText() string {
     Prefix + ` + "`" + `  Toggle the shell panel
     Prefix + v  Toggle the review pane
     Prefix + b  Toggle collapse of running/background tabs
+    Prefix + y  Copy the session id to the clipboard
     Prefix Up/Down
                 Switch panes (panel open)
     :am         Open am browser (tmux command)`
