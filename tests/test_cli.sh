@@ -587,6 +587,25 @@ test_cli_workspace_and_id() {
     wait_for_cmd _launches_empty "$launches"
     assert_eq "" "$(ls -A "$launches" 2>/dev/null)" "browser first prompt: no record left after the launch"
 
+    # --- the worker survives the popup closing: am runs as the controlling
+    # process of a terminal that hangs up as soon as it exits (display-popup
+    # -E). With perl started by `&`, the hangup killed it before setsid().
+    if command -v python3 >/dev/null 2>&1; then
+        local popped="$test_dir/popped"
+        mkdir -p "$popped"
+        printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f%s\\x1f%s\\x1f\\x1fstarted from a popup\\n"\n' \
+            "$popped" "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
+        env "${browse_env[@]}" python3 -c 'import pty, sys; pty.spawn(sys.argv[1:])' "$PROJECT_DIR/am" \
+            >/dev/null 2>&1 </dev/null || true
+        session_name=$(_wait_session_in "$popped")
+        assert_not_empty "$session_name" "background launch from a popup: the worker survives the popup closing"
+        [[ -n "$session_name" ]] && agent_kill "$session_name" 2>/dev/null
+        wait_for_cmd _launches_empty "$launches"
+        assert_eq "" "$(ls -A "$launches" 2>/dev/null)" "background launch from a popup: no record left"
+    else
+        skip_test "background launch from a popup: python3 is not installed"
+    fi
+
     # --- a failed background launch keeps its record, error and prompt ---
     printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f@fail\\x1f%s\\x1f\\x1fkeep this prompt\\n"\n' \
         "$TEST_STUB_DIR/stub_agent" > "$fake_browse"

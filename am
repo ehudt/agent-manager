@@ -529,14 +529,21 @@ _launch_bg_start() {
 # Run the worker for a record in its own session (perl's setsid; macOS has
 # no setsid(1)): closing the popup hangs up the popup's terminal, which
 # must not reach it, and Ctrl-X stops the whole tree, provider included,
-# with one group kill (the worker's pid is its process group).
+# with one group kill (the worker's pid is its process group). perl forks
+# and returns only once the child is in its new session: started with `&`,
+# the popup could close while perl was still loading, and the hangup killed
+# it before setsid() ran.
 # Usage: _launch_bg_spawn <id>
 _launch_bg_spawn() {
     local id="$1" dir="$AM_DIR/launches"
-    perl -MPOSIX=setsid -e '$SIG{HUP} = "IGNORE"; setsid(); exec @ARGV or exit 127' \
-        "$AM_SCRIPT_DIR/am" launch-worker "$id" </dev/null >> "$dir/$id.log" 2>&1 &
-    printf '%s\n' "$!" > "$dir/$id.pid"
-    disown 2>/dev/null || true
+    perl -MPOSIX=setsid -e '
+        my $pidfile = shift;
+        pipe(my $r, my $w) or exit 127;
+        my $pid = fork() // exit 127;
+        if (!$pid) { close $r; setsid(); close $w; exec @ARGV or exit 127 }
+        close $w; <$r>;
+        open(my $f, ">", $pidfile) or exit 1; print $f "$pid\n"' \
+        "$dir/$id.pid" "$AM_SCRIPT_DIR/am" launch-worker "$id" </dev/null >> "$dir/$id.log" 2>&1
 }
 
 # Rewrite fields of a record (jq filter, --arg pairs as given) through a
