@@ -155,6 +155,10 @@ const (
 	EntryRestoring EntryKind = "restoring"
 	EntryBlocked   EntryKind = "blocked"
 	EntryInactive  EntryKind = "inactive"
+
+	// Background launches (launches.go): still being set up, or failed.
+	EntryLaunching    EntryKind = "launching"
+	EntryLaunchFailed EntryKind = "launch_failed"
 )
 
 // SessionLogEntry matches one JSONL row from sessions_log.jsonl.
@@ -187,6 +191,13 @@ type Entry struct {
 	SnapshotPath     string
 	RecoveryError    string
 	RestoreNote      string // "dir gone" / "on <branch>": the checkout moved on, see RestoreNote
+
+	// Background launch rows (launches.go).
+	LaunchID     string
+	LaunchTarget string // the directory or @spec, as the browser handed it over
+	LaunchPrompt string // the first prompt, if one was given
+	LaunchLog    string // path of the worker's output
+	LaunchError  string
 }
 
 // ListTmuxSessions runs tmux list-sessions and returns matching sessions.
@@ -384,6 +395,7 @@ func LoadBrowserEntries() []Entry {
 		}
 	}
 	entries := append(active, desired...)
+	entries = append(entries, LoadLaunchEntries(amDir, now)...)
 	return append(entries, filteredInactive...)
 }
 

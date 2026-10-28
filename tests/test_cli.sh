@@ -428,6 +428,24 @@ test_cli_extended() {
     $SUMMARY_MODE || echo ""
 }
 
+# Background launches (am launch-worker) finish after `am` returns: wait for
+# the session registered in <dir> (~10s) and print its name.
+_wait_session_in() {
+    local dir="$1" name="" _i
+    for _i in $(seq 1 50); do
+        name=$(jq -r --arg d "$dir" '.sessions | to_entries[] | select(.value.directory == $d) | .key' \
+            "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+        [[ -n "$name" ]] && break
+        sleep 0.2
+    done
+    printf '%s\n' "$name"
+}
+
+_launches_empty() { [[ -z "$(ls -A "$1" 2>/dev/null)" ]]; }
+
+# True when no process is left in process group <pgid>.
+_no_group() { ! pgrep -g "$1" >/dev/null; }
+
 test_cli_workspace_and_id() {
     $SUMMARY_MODE || echo "=== Testing am new @spec and am id ==="
 
@@ -516,17 +534,18 @@ test_cli_workspace_and_id() {
 
     # --- the browser's New session rows resolve @spec and presets too ---
     # A stand-in browser prints the hand-off line straight away (fzf_main
-    # echoes unknown results verbatim, cmd_browse parses __NEW_SESSION__). The
-    # trailing attach fails without a tty, so the session is found by directory.
+    # echoes unknown results verbatim, cmd_browse parses __NEW_SESSION__). A
+    # @spec row starts in the background (am launch-worker), so the session
+    # is waited for by directory.
     env "${am_env[@]}" "$PROJECT_DIR/am" preset save brw -- --stub-extra >/dev/null 2>&1 </dev/null || true
-    local fake_browse="$test_dir/fake_browse"
+    local fake_browse="$test_dir/fake_browse" launches="$TEST_AM_DIR/launches"
+    local browse_env=("${am_env[@]}" "${prov_env[@]}" AM_BROWSE_CMD="$fake_browse" AM_NO_INSTALL_REFRESH=1 AM_AUTO_RESTORE=false)
     printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f@feature-w\\x1f%s\\x1f--preset=brw\\n"\n' \
         "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
     chmod +x "$fake_browse"
-    env "${am_env[@]}" "${prov_env[@]}" AM_BROWSE_CMD="$fake_browse" AM_NO_INSTALL_REFRESH=1 AM_AUTO_RESTORE=false \
-        "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
-    session_name=$(jq -r --arg d "$test_dir/ws-feature-w" \
-        '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+    env "${browse_env[@]}" "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    session_name=$(_wait_session_in "$test_dir/ws-feature-w")
+    local bg_session="$session_name"
     assert_not_empty "$session_name" "browser Ctrl-N @spec: session created in the resolved directory"
     assert_contains "$(cat "$test_dir/calls.log")" "resolve feature-w" "browser Ctrl-N @spec: provider called with resolve <spec>"
     if [[ -n "$session_name" ]]; then
@@ -535,6 +554,93 @@ test_cli_workspace_and_id() {
         assert_not_contains "$extra_pane" "--preset=" "browser Ctrl-N preset: the --preset flag stays with am"
         agent_kill "$session_name" 2>/dev/null
     fi
+    wait_for_cmd _launches_empty "$launches"
+    assert_eq "" "$(ls -A "$launches" 2>/dev/null)" "browser @spec: the background launch record is gone once the session exists"
+
+    # --- a plain directory with no prompt still opens in the foreground ---
+    local plain_dir="$test_dir/plain" form_session
+    mkdir -p "$plain_dir"
+    printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f%s\\x1f%s\\x1f\\x1f\\n"\n' \
+        "$plain_dir" "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
+    env "${browse_env[@]}" "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    form_session=$(jq -r --arg d "$plain_dir" \
+        '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null | head -n1)
+    assert_not_empty "$form_session" "browser directory, no prompt: session created before am returns"
+    assert_eq "" "$(ls -A "$launches" 2>/dev/null)" "browser directory, no prompt: no background record"
+    [[ -n "$form_session" ]] && agent_kill "$form_session" 2>/dev/null
+
+    # --- a first prompt starts a plain directory in the background too, and
+    # the agent gets the prompt ---
+    local prompted="$test_dir/prompted"
+    mkdir -p "$prompted"
+    printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f%s\\x1f%s\\x1f\\x1ffix the flaky test, then stop\\n"\n' \
+        "$prompted" "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
+    env "${browse_env[@]}" "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    session_name=$(_wait_session_in "$prompted")
+    assert_not_empty "$session_name" "browser first prompt: session started in the background"
+    if [[ -n "$session_name" ]]; then
+        local prompt_pane
+        prompt_pane=$(wait_for_text "stub-agent-input:fix the flaky test" am_tmux capture-pane -pt "$session_name:.{top}" -S -)
+        assert_contains "$prompt_pane" "stub-agent-input:fix the flaky test, then stop" "browser first prompt: the agent receives it"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+    wait_for_cmd _launches_empty "$launches"
+    assert_eq "" "$(ls -A "$launches" 2>/dev/null)" "browser first prompt: no record left after the launch"
+
+    # --- a failed background launch keeps its record, error and prompt ---
+    printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f@fail\\x1f%s\\x1f\\x1fkeep this prompt\\n"\n' \
+        "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
+    env "${browse_env[@]}" "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    local rec id
+    rec=$(ls "$launches"/*.json 2>/dev/null | head -n1)
+    id=$(basename "$rec" .json)
+    assert_not_empty "$id" "failed background launch: a record exists"
+    wait_for_cmd jq -e '.state == "failed"' "$rec"
+    assert_eq "failed" "$(jq -r .state "$rec" 2>/dev/null)" "failed background launch: record marked failed"
+    assert_contains "$(jq -r .error "$rec" 2>/dev/null)" "could not resolve @fail" "failed background launch: the error is recorded"
+    assert_eq "keep this prompt" "$(cat "$launches/$id.prompt" 2>/dev/null)" "failed background launch: the prompt is kept"
+    assert_contains "$(cat "$launches/$id.log" 2>/dev/null)" "cannot resolve fail" "failed background launch: provider output is in the log"
+    assert_contains "$(grep -F "launch.bg.fail" "$ev")" "id=$id" "failed background launch: events log names it"
+
+    # Retry (the cause fixed: the record now names a spec that resolves):
+    # the same record, prompt and all.
+    jq '.target = "@feature-v"' "$rec" > "$rec.new" && mv "$rec.new" "$rec"
+    printf '#!/usr/bin/env bash\nprintf "__RETRY_LAUNCH__\\x1f%s\\n"\n' "$id" > "$fake_browse"
+    env "${browse_env[@]}" "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    session_name=$(_wait_session_in "$test_dir/ws-feature-v")
+    assert_not_empty "$session_name" "retry of a failed launch: session created"
+    if [[ -n "$session_name" ]]; then
+        prompt_pane=$(wait_for_text "stub-agent-input:keep this prompt" am_tmux capture-pane -pt "$session_name:.{top}" -S -)
+        assert_contains "$prompt_pane" "stub-agent-input:keep this prompt" "retry of a failed launch: the kept prompt is delivered"
+        agent_kill "$session_name" 2>/dev/null
+    fi
+    wait_for_cmd _launches_empty "$launches"
+    assert_eq "" "$(ls -A "$launches" 2>/dev/null)" "retry of a failed launch: record removed after the session starts"
+
+    # Cancel a launch still setting up (a slow provider): am returns at once,
+    # and Ctrl-X stops the worker with its provider and drops the record.
+    printf '#!/usr/bin/env bash\nprintf "__NEW_SESSION__\\x1f@slow-x\\x1f%s\\x1f\\x1f\\n"\n' \
+        "$TEST_STUB_DIR/stub_agent" > "$fake_browse"
+    local t0=$SECONDS quick=false
+    env "${browse_env[@]}" "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    (( SECONDS - t0 < 10 )) && quick=true
+    assert_eq "true" "$quick" "background launch: am returns while the provider is still working"
+    rec=$(ls "$launches"/*.json 2>/dev/null | head -n1)
+    id=$(basename "$rec" .json)
+    local worker=""
+    wait_for_cmd test -s "$launches/$id.pid"
+    worker=$(cat "$launches/$id.pid" 2>/dev/null)
+    assert_cmd_succeeds "background launch: the worker runs" kill -0 "$worker"
+    wait_for_cmd grep -q "resolve slow-x" "$test_dir/calls.log"
+    # The browser prints the cancel once, then nothing (cmd_browse reopens it).
+    printf '#!/usr/bin/env bash\n[[ -e %q ]] && exit 0\ntouch %q\nprintf "__FORGET_LAUNCH__\\x1f%s\\n"\n' \
+        "$test_dir/forgot" "$test_dir/forgot" "$id" > "$fake_browse"
+    env "${browse_env[@]}" "$PROJECT_DIR/am" >/dev/null 2>&1 </dev/null || true
+    wait_for_cmd _no_group "$worker"
+    assert_cmd_fails "cancel: the worker and its provider are stopped" pgrep -g "$worker"
+    assert_eq "" "$(ls -A "$launches" 2>/dev/null)" "cancel: the record is dropped"
+    assert_eq "" "$(jq -r --arg d "$test_dir/ws-slow-x" '.sessions | to_entries[] | select(.value.directory == $d) | .key' "$TEST_AM_DIR/sessions.json" 2>/dev/null)" \
+        "cancel: no session was created"
 
     # --- browser restore of a row whose directory is gone: reported, exit 1 ---
     # (the popup hold needs a tty; without one the failure must still surface)
@@ -780,7 +886,9 @@ test_cli_workspace_and_id() {
     assert_contains "$ev_text" $'\tresolve.fail\t-\tspec=@fail rc=1 ' "events: provider failure recorded with rc"
     assert_contains "$ev_text" "err=cannot resolve fail" "events: provider stderr tail recorded"
     assert_contains "$ev_text" "reason=bad_output out=/definitely/missing/" "events: bad provider output recorded"
-    assert_contains "$ev_text" $'\tlaunch.ok\t'"$session_name"$'\tsource=form ' "events: browser form launch attributed to source=form"
+    assert_contains "$ev_text" $'\tlaunch.ok\t'"$form_session"$'\tsource=form ' "events: browser form launch attributed to source=form"
+    assert_contains "$ev_text" $'\tlaunch.ok\t'"$bg_session"$'\tsource=background ' "events: background launch attributed to source=background"
+    assert_contains "$ev_text" $'\tlaunch.bg.ok\t'"$bg_session"$'\t' "events: background launch completion recorded"
     assert_contains "$ev_text" "source=cli dir=$test_dir/ws-feature-x agent=" "events: CLI launch attributed to source=cli"
     assert_contains "$ev_text" $'\tkill\t'"$session_name"$'\t' "events: kill recorded"
     assert_not_contains "$ev_text" $'\tlaunch.ok\t-\t' "events: no launch.ok without a session"

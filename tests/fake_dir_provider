@@ -21,6 +21,8 @@ case "${1:-}" in
         spec="${2:-}"
         [[ "$spec" == fail ]] && { echo "cannot resolve $spec" >&2; exit 1; }
         [[ "$spec" == nowhere ]] && { echo "/definitely/missing/$$"; exit 0; }
+        # A slow allocation (a clone), for cancelling a background launch.
+        [[ "$spec" == slow* ]] && sleep 30
         dir="$root/ws-${spec:-trunk}"
         mkdir -p "$dir"
         # Progress chatter belongs on stderr, like a real allocator's.

@@ -112,11 +112,25 @@ func selected(t *testing.T, m model) listItem {
 
 func splitOutput(t *testing.T, out string) (dir, agent, flags string) {
 	t.Helper()
-	parts := strings.Split(out, "\x1f")
-	if len(parts) != 4 || parts[0] != "__NEW_SESSION__" {
-		t.Fatalf("output = %q, want __NEW_SESSION__ + 3 fields", out)
-	}
+	parts := splitLaunch(t, out)
 	return parts[1], parts[2], parts[3]
+}
+
+// splitLaunch is the __NEW_SESSION__ line's fields: the tag, directory,
+// agent, flags, and first prompt.
+func splitLaunch(t *testing.T, out string) []string {
+	t.Helper()
+	parts := strings.Split(out, "\x1f")
+	if len(parts) != 5 || parts[0] != "__NEW_SESSION__" {
+		t.Fatalf("output = %q, want __NEW_SESSION__ + 4 fields", out)
+	}
+	return parts
+}
+
+// launchNow is Enter on a New row and Enter again in the first-prompt step,
+// with no prompt.
+func launchNow(m model) model {
+	return press(m, key(tea.KeyEnter), key(tea.KeyEnter))
 }
 
 func TestNewAgentChoice(t *testing.T) {
@@ -156,9 +170,70 @@ func TestNewAgentChoice(t *testing.T) {
 	if !strings.Contains(m.View(), "New "+second+" session") {
 		t.Errorf("divider does not name %s:\n%s", second, m.View())
 	}
-	m = press(m, key(tea.KeyEnter))
+	m = launchNow(m)
 	if gotDir, agent, flags := splitOutput(t, m.output); gotDir != dir || agent != second || flags != "" {
 		t.Errorf("output = %q %q %q", gotDir, agent, flags)
+	}
+}
+
+// Enter on a New row asks for a first prompt; Enter there launches with it
+// as the fifth field, Esc goes back to the list.
+func TestFirstPromptStep(t *testing.T) {
+	dir := existingDir(t)
+	m := testModel(t, sessions.Config{DirProvider: "fake"}, nil, []string{dir})
+
+	m = press(m, key(tea.KeyEnter))
+	if !m.prompting || m.output != "" {
+		t.Fatalf("enter on a new row: prompting=%v output=%q, want the prompt step", m.prompting, m.output)
+	}
+	v := m.View()
+	for _, want := range []string{"first prompt (optional)", "open now", "Enter opens it now", "esc"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("prompt step view lacks %q:\n%s", want, v)
+		}
+	}
+	// Typing goes to the prompt, not the filter, and turns Enter into a
+	// background start.
+	m = typeText(m, "fix the flaky test")
+	if m.filter.Value() != "" || m.prompt.Value() != "fix the flaky test" {
+		t.Fatalf("filter=%q prompt=%q", m.filter.Value(), m.prompt.Value())
+	}
+	if v := m.View(); !strings.Contains(v, "start in background") {
+		t.Errorf("pill does not say start in background:\n%s", v)
+	}
+	// q and ? are text here.
+	m = typeText(m, " q?")
+	mm := press(m, key(tea.KeyEnter))
+	parts := splitLaunch(t, mm.output)
+	if parts[1] != dir || parts[4] != "fix the flaky test q?" {
+		t.Errorf("launch fields = %q", parts)
+	}
+
+	// Esc goes back to the list with the query kept; Esc again quits.
+	m = testModel(t, sessions.Config{}, nil, []string{dir})
+	m = typeText(m, filepath.Base(dir))
+	m = press(m, key(tea.KeyEnter), key(tea.KeyEsc))
+	if m.prompting || m.output != "" || m.filter.Value() != filepath.Base(dir) {
+		t.Errorf("esc: prompting=%v output=%q filter=%q", m.prompting, m.output, m.filter.Value())
+	}
+	if mm, cmd := m.Update(key(tea.KeyEsc)); mm.(model).output != "" || cmd == nil {
+		t.Error("second esc did not quit")
+	}
+	// Ctrl-C in the step quits with nothing.
+	m = press(m, key(tea.KeyEnter))
+	if mm, cmd := m.Update(key(tea.KeyCtrlC)); mm.(model).output != "" || cmd == nil {
+		t.Error("ctrl-c in the prompt step did not quit")
+	}
+
+	// An @spec always starts in the background, prompt or not.
+	m = testModel(t, sessions.Config{DirProvider: "fake"}, nil, nil)
+	m = typeText(m, "@48351")
+	m = press(m, key(tea.KeyEnter))
+	if v := m.View(); !strings.Contains(v, "start in background") || !strings.Contains(v, "is set up in the background") {
+		t.Errorf("@spec prompt step:\n%s", v)
+	}
+	if parts := splitLaunch(t, press(m, key(tea.KeyEnter)).output); parts[1] != "@48351" || parts[4] != "" {
+		t.Errorf("@spec launch fields = %q", parts)
 	}
 }
 
@@ -226,7 +301,7 @@ func TestNewOnlyStartsOnNewSection(t *testing.T) {
 	if !strings.Contains(m.View(), "launch") {
 		t.Error("enter pill does not say launch")
 	}
-	m = press(m, key(tea.KeyEnter))
+	m = launchNow(m)
 	if gotDir, _, _ := splitOutput(t, m.output); gotDir != dir {
 		t.Errorf("dir = %q, want %q", gotDir, dir)
 	}
@@ -322,7 +397,7 @@ func TestPlaceQueryShowsWhoIsThere(t *testing.T) {
 	if !strings.Contains(it.row.label, "2 running") {
 		t.Errorf("label = %q, want 2 running", it.row.label)
 	}
-	m = press(m, key(tea.KeyEnter))
+	m = launchNow(m)
 	if gotDir, _, _ := splitOutput(t, m.output); gotDir != proj {
 		t.Errorf("dir = %q", gotDir)
 	}
@@ -343,7 +418,7 @@ func TestCtrlNSeedsTheSessionDirectory(t *testing.T) {
 	if rows := newRows(m); len(rows) != 2 || rows[1].value != other {
 		t.Errorf("seed not deduplicated against the recent list: %v", rows)
 	}
-	if mm := press(m, key(tea.KeyEnter)); !strings.Contains(mm.output, "\x1f"+work+"\x1f") {
+	if mm := launchNow(m); !strings.Contains(mm.output, "\x1f"+work+"\x1f") {
 		t.Errorf("enter output = %q, want %s", mm.output, work)
 	}
 	// Ctrl-N on a New row only moves the cursor; typing drops the seed.
@@ -384,7 +459,7 @@ func TestNewValidation(t *testing.T) {
 	// With a provider the @spec reaches the output untouched, with no flags.
 	m = testModel(t, sessions.Config{DirProvider: "true"}, nil, nil)
 	m = typeText(m, "@48351")
-	m = press(m, key(tea.KeyEnter))
+	m = launchNow(m)
 	if dir, _, flags := splitOutput(t, m.output); dir != "@48351" || flags != "" {
 		t.Errorf("@spec output dir=%q flags=%q", dir, flags)
 	}
@@ -395,7 +470,7 @@ func TestNewValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = typeText(m, "~/proj")
-	m = press(m, key(tea.KeyEnter))
+	m = launchNow(m)
 	if dir, _, _ := splitOutput(t, m.output); dir != filepath.Join(m.launch.home, "proj") {
 		t.Errorf("~ dir = %q", dir)
 	}
@@ -428,7 +503,7 @@ func TestNewPathQuery(t *testing.T) {
 	if rows[1].value != filepath.Join(root, "alpha", "one") || rows[2].value != filepath.Join(root, "alpha", "two") {
 		t.Errorf("children = %v", rows[1:])
 	}
-	m = press(m, key(tea.KeyEnter))
+	m = launchNow(m)
 	if dir, _, _ := splitOutput(t, m.output); dir != filepath.Join(root, "alpha") {
 		t.Errorf("dir = %q", dir)
 	}
@@ -479,7 +554,7 @@ func TestNewProvider(t *testing.T) {
 	if len(m.items) != 2 {
 		t.Errorf("bare @ lists sessions: %d items", len(m.items))
 	}
-	if dir, _, _ := splitOutput(t, press(m, key(tea.KeyEnter)).output); dir != "@" {
+	if dir, _, _ := splitOutput(t, launchNow(m).output); dir != "@" {
 		t.Errorf("bare @ output dir = %q", dir)
 	}
 
@@ -510,7 +585,7 @@ func TestNewProvider(t *testing.T) {
 	if rows := newRows(m); len(rows) != 1 || rows[0].value != "@zzz" {
 		t.Fatalf("no match: %v", rows)
 	}
-	if dir, _, _ := splitOutput(t, press(m, key(tea.KeyEnter)).output); dir != "@zzz" {
+	if dir, _, _ := splitOutput(t, launchNow(m).output); dir != "@zzz" {
 		t.Errorf("fallback dir = %q", dir)
 	}
 
@@ -578,7 +653,7 @@ func TestNewPresetRows(t *testing.T) {
 		t.Errorf("label %q does not name the preset's agent", rows[0].label)
 	}
 	// The preset's own agent wins over the list's choice.
-	m = press(m, key(tea.KeyTab), key(tea.KeyEnter))
+	m = launchNow(press(m, key(tea.KeyTab)))
 	dir, agent, flags := splitOutput(t, m.output)
 	if dir != tools || agent != "pi" || flags != "--preset=scratch" {
 		t.Errorf("output = %q %q %q", dir, agent, flags)

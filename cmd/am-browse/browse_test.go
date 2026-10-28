@@ -201,18 +201,81 @@ func TestBlockedRecoveryActionsUseRecoveryProtocols(t *testing.T) {
 	}
 }
 
-func TestRestoringEntrySchedulesPolling(t *testing.T) {
+func TestInFlightEntriesSchedulePolling(t *testing.T) {
+	for _, kind := range []sessions.EntryKind{sessions.EntryRestoring, sessions.EntryLaunching} {
+		if cmd := reloadTick([]sessions.Entry{{Kind: kind}}); cmd == nil {
+			t.Errorf("%s: no reload scheduled", kind)
+		} else if _, ok := cmd().(reloadTickMsg); !ok {
+			t.Errorf("%s: tick returned %T, want reloadTickMsg", kind, cmd())
+		}
+	}
+	for _, kind := range []sessions.EntryKind{sessions.EntryActive, sessions.EntryBlocked, sessions.EntryLaunchFailed} {
+		if cmd := reloadTick([]sessions.Entry{{Kind: kind}}); cmd != nil {
+			t.Errorf("%s: reload scheduled for a row that does not change on its own", kind)
+		}
+	}
+}
+
+// Background launch rows sit under their own divider; Enter retries a
+// failed one and waits on a running one, Ctrl-X cancels or forgets either.
+func TestLaunchRows(t *testing.T) {
+	starting := sessions.Entry{
+		Kind: sessions.EntryLaunching, Meta: sessions.Session{AgentType: "claude"},
+		LaunchID: "100-aaa", LaunchTarget: "@48351",
+		Display: "◌ @48351 [claude] fix it (starting)", DisplayBase: "◌ @48351 [claude] fix it", TimeAgo: "starting",
+	}
+	failed := sessions.Entry{
+		Kind: sessions.EntryLaunchFailed, Meta: sessions.Session{AgentType: "claude"},
+		LaunchID: "90-bbb", LaunchTarget: "@fail", LaunchError: "cannot resolve fail",
+		Display: "⚠ @fail [claude] (failed) cannot resolve fail", DisplayBase: "⚠ @fail [claude]", TimeAgo: "failed",
+	}
+	active := sessions.Entry{
+		TmuxSession: sessions.TmuxSession{Name: "am-a"}, Kind: sessions.EntryActive, State: "ready",
+		Display: "am-a a [claude] x (1m ago)", DisplayBase: "am-a a [claude] x", TimeAgo: "1m ago",
+	}
 	m := newModel()
-	updated, cmd := m.Update(sessionsLoadedMsg{entries: []sessions.Entry{{Kind: sessions.EntryRestoring}}})
-	if !hasRestoringEntries(updated.(model).entries) {
-		t.Fatal("restoring entry was not retained")
+	m.width, m.height = 100, 30
+	m.loading = false
+	m.entries = []sessions.Entry{active, starting, failed}
+	m.applyFilter()
+
+	v := m.View()
+	for _, want := range []string{"Starting in the background", "◌ @48351 [claude] fix it", "1 starting", "1 failed to start"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("view lacks %q:\n%s", want, v)
+		}
 	}
-	if cmd == nil {
-		t.Fatal("restoring load did not schedule refresh polling")
+	m.cursor = 1 // the starting launch
+	if mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); mm.(model).output != "" {
+		t.Errorf("enter on a starting launch: %q, want nothing", mm.(model).output)
 	}
-	msg := cmd()
-	if _, ok := msg.(recoveryTickMsg); !ok {
-		t.Fatalf("restoring load command returned %T, want recoveryTickMsg", msg)
+	if v := m.View(); !strings.Contains(v, "cancel") || strings.Contains(v, "^N") {
+		t.Errorf("pills on a starting launch:\n%s", v)
+	}
+	if mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX}); mm.(model).output != "__FORGET_LAUNCH__\x1f100-aaa" {
+		t.Errorf("ctrl-x on a starting launch: %q", mm.(model).output)
+	}
+	// Its preview is its growing output: reloaded even when already shown.
+	m.previewFor = m.selectedPreviewKey()
+	if m.requestPreview() == nil {
+		t.Error("a starting launch's preview is not reloaded")
+	}
+	m.cursor = 2 // the failed one
+	if mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); mm.(model).output != "__RETRY_LAUNCH__\x1f90-bbb" {
+		t.Errorf("enter on a failed launch: %q", mm.(model).output)
+	}
+	if mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX}); mm.(model).output != "__FORGET_LAUNCH__\x1f90-bbb" {
+		t.Errorf("ctrl-x on a failed launch: %q", mm.(model).output)
+	}
+	if desc := describeLaunch(failed); !strings.Contains(desc, "cannot resolve fail") || !strings.Contains(desc, "Enter retries") {
+		t.Errorf("failed launch preview:\n%s", desc)
+	}
+
+	// An @spec query lists the launch already starting for it.
+	m.filter.SetValue("@4835")
+	m.applyFilter()
+	if len(m.filtered) != 1 || m.entries[m.filtered[0]].LaunchID != "100-aaa" {
+		t.Errorf("@4835 matched %v, want the starting launch", m.filtered)
 	}
 }
 

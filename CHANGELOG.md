@@ -6,6 +6,27 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.43.0] - 2026-10-28
+
+- New sessions can start in the background. Enter on a New session row now
+  asks for the agent's first prompt; with a prompt, or for a `@spec` row
+  (whose checkout the `dir_provider` may have to fetch or clone), the popup
+  closes at once and the setup runs in a detached `am launch-worker`. The
+  new tab appears when the agent is up, already working on the prompt, and
+  every attached client gets a one-line message when it starts or fails.
+  Until now the popup stayed open, blocking the tmux client, for as long
+  as the provider took. Enter with no prompt on a directory opens the
+  session right away, as before.
+- Background launches in progress, and failed ones, are listed in the
+  browser under "Starting in the background", with the provider's output
+  and the error in the preview. Enter retries a failed launch with the same
+  prompt; Ctrl-X cancels one still being set up (the worker and the
+  provider it runs are stopped) or forgets a failed one. A failed launch
+  keeps its prompt until then.
+- `events.log` records `launch.bg`, `launch.bg.ok`, `launch.bg.fail`,
+  `launch.bg.retry` and `launch.bg.cancel`; a background launch's own
+  `launch.ok` carries `source=background`.
+
 ## [0.42.1] - 2026-10-22
 
 - A click on a status-bar tab switches on the first try even when the

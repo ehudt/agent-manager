@@ -173,8 +173,8 @@ Enter launches the highlighted one). Suggestions are cut off after
 to "resolve what you typed" instead of stalling the browser.
 
 Running `am new` with no arguments opens the session browser with the
-cursor on its New session section (see below): Enter starts a session in
-the highlighted directory, `Tab` picks the agent.
+cursor on its New session section (see below): Enter on a row asks for
+the agent's first prompt, `Tab` picks the agent.
 
 ### Interactive session browser
 
@@ -202,11 +202,11 @@ Run `am` to open the session browser:
 | Key | Action |
 |-----|--------|
 | `Up/Down` | Move selection |
-| `Enter` | Switch to an active session, restore an inactive one, or launch a New session row |
+| `Enter` | Switch to an active session, restore an inactive one, or launch a New session row (after its first-prompt step) |
 | `Tab` / `Shift-Tab` | Change the agent new sessions launch with |
 | `Esc/q` | Exit without action |
 | `Ctrl-N` | Jump to New session (on a session row: a new one in its directory first) |
-| `Ctrl-X` | Kill selected active session |
+| `Ctrl-X` | Kill selected active session; cancel or forget a background launch |
 | `Ctrl-R` | Refresh session list |
 | `?` | Show inline help |
 
@@ -219,6 +219,21 @@ query starting with `/`, `~` or `.` is a path (the directory, then its
 completions; the sessions under it stay listed above), and one starting
 with `@` asks the `dir_provider` for suggestions. Directory rows show their
 branch and how many sessions run there.
+
+Enter on a New session row asks for a first prompt. Type one and press
+Enter, and the session starts in the background: the popup closes, you go
+on working in another session, and the new tab appears when the agent is
+up, already working on the prompt. A `@spec` row always starts in the
+background, prompt or not, because the provider may have to fetch or clone
+the checkout first. Enter with no prompt on a directory opens the session
+right away, as before; Esc goes back to the list.
+
+Launches in progress, and ones that failed, are listed in the browser
+under **Starting in the background**, with the provider's output and the
+error in the preview. Enter retries a failed one with the same prompt,
+`Ctrl-X` cancels one still being set up or forgets a failed one. When a
+background launch finishes or fails, every attached client gets a one-line
+tmux message.
 
 ### Inside a session
 

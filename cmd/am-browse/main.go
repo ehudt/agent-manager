@@ -101,7 +101,9 @@ type previewLoadedMsg struct {
 
 type killDoneMsg struct{}
 
-type recoveryTickMsg struct{}
+// reloadTickMsg reloads the sessions while rows are in flight: an
+// interrupted session being restored, a background launch being set up.
+type reloadTickMsg struct{}
 
 // --- Styles (initialized in initStyles after tty is opened) ---
 
@@ -148,8 +150,11 @@ type model struct {
 	place       bool // the cursor follows the best match, until the user moves it
 	startNew    bool // --new: under an empty query the cursor starts on the New session section
 	filter      textinput.Model
-	launch      launcher // the New session section (newrows.go)
-	errMsg      string   // a launch the section refused; cleared by the next key
+	launch      launcher        // the New session section (newrows.go)
+	errMsg      string          // a launch the section refused; cleared by the next key
+	prompting   bool            // the first-prompt step: Enter on a New row asks for the agent's first prompt
+	prompt      textinput.Model // that prompt
+	promptRow   newRow          // the row it launches
 	preview     string
 	previewFor  string // preview key whose content is loaded
 	showPreview bool
@@ -185,8 +190,18 @@ func newModel() model {
 	ti.Focus()
 	ti.Cursor.SetMode(cursor.CursorStatic)
 
+	pi := textinput.New()
+	pi.Placeholder = "first prompt (optional)"
+	pi.Prompt = "› "
+	pi.PromptStyle = accentStyle
+	pi.Cursor.Style = ttyRenderer.NewStyle()
+	pi.TextStyle = ttyRenderer.NewStyle()
+	pi.PlaceholderStyle = ttyRenderer.NewStyle().Foreground(lipgloss.Color("240"))
+	pi.Cursor.SetMode(cursor.CursorStatic)
+
 	return model{
 		filter:      ti,
+		prompt:      pi,
 		launch:      newLauncher(sessions.Config{}, "", "", ""),
 		place:       true,
 		showPreview: true,
@@ -203,19 +218,31 @@ func loadSessions() tea.Msg {
 	return sessionsLoadedMsg{entries: entries}
 }
 
-func recoveryTick() tea.Cmd {
-	return tea.Tick(350*time.Millisecond, func(time.Time) tea.Msg {
-		return recoveryTickMsg{}
+// reloadTick schedules the next reload while rows are in flight: often for
+// a restore (seconds), less for a background launch (a provider's clone
+// can take a minute, and each reload resolves every session's state).
+func reloadTick(entries []sessions.Entry) tea.Cmd {
+	every := time.Duration(0)
+	for _, entry := range entries {
+		switch entry.Kind {
+		case sessions.EntryRestoring:
+			every = 350 * time.Millisecond
+		case sessions.EntryLaunching:
+			if every == 0 {
+				every = time.Second
+			}
+		}
+	}
+	if every == 0 {
+		return nil
+	}
+	return tea.Tick(every, func(time.Time) tea.Msg {
+		return reloadTickMsg{}
 	})
 }
 
-func hasRestoringEntries(entries []sessions.Entry) bool {
-	for _, entry := range entries {
-		if entry.Kind == sessions.EntryRestoring {
-			return true
-		}
-	}
-	return false
+func isLaunchKind(kind sessions.EntryKind) bool {
+	return kind == sessions.EntryLaunching || kind == sessions.EntryLaunchFailed
 }
 
 func loadPreview(entry sessions.Entry) tea.Cmd {
@@ -243,6 +270,9 @@ func loadPreview(entry sessions.Entry) tea.Cmd {
 				content += "\n\nPress Enter to retry, or Ctrl-X to forget this open session."
 			}
 			return previewLoadedMsg{key: key, content: content}
+		}
+		if isLaunchKind(entry.Kind) {
+			return previewLoadedMsg{key: key, content: describeLaunch(entry)}
 		}
 		if previewCmd == "" || entry.Name == "" {
 			return previewLoadedMsg{key: key, content: ""}
@@ -277,6 +307,47 @@ func (m model) loadNewPreview(r newRow) tea.Cmd {
 	}
 }
 
+// describeLaunch is a background launch row's preview: what it starts, the
+// error it failed with, the first prompt it carries, and the tail of the
+// worker's output (the provider's progress). Reads the log, so it runs off
+// the UI thread.
+func describeLaunch(e sessions.Entry) string {
+	var b strings.Builder
+	agent := e.Meta.AgentType
+	if e.Kind == sessions.EntryLaunchFailed {
+		fmt.Fprintf(&b, "Could not start the %s session for %s.\n", agent, e.LaunchTarget)
+		if e.LaunchError != "" {
+			b.WriteString("  " + e.LaunchError + "\n")
+		}
+	} else {
+		fmt.Fprintf(&b, "Starting a %s session for %s in the background.\n", agent, e.LaunchTarget)
+	}
+	if e.LaunchPrompt != "" {
+		b.WriteString("\nFirst prompt\n")
+		for _, line := range strings.Split(strings.TrimRight(e.LaunchPrompt, "\n"), "\n") {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+	if data, err := os.ReadFile(e.LaunchLog); err == nil {
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if len(lines) > 20 {
+			lines = lines[len(lines)-20:]
+		}
+		if len(lines) > 0 && lines[0] != "" {
+			b.WriteString("\nOutput\n")
+			for _, line := range lines {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+	}
+	if e.Kind == sessions.EntryLaunchFailed {
+		b.WriteString("\nEnter retries; Ctrl-X forgets it, prompt included.")
+	} else {
+		b.WriteString("\nIts tab appears when the agent starts. Ctrl-X cancels.")
+	}
+	return b.String()
+}
+
 func killSession(sessionName string) tea.Cmd {
 	return func() tea.Msg {
 		if killCmd == "" || sessionName == "" {
@@ -303,16 +374,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.prompt.Width = maxInt(10, m.width-8)
 		return m, nil
 
 	case sessionsLoadedMsg:
 		m.entries = msg.entries
 		m.loading = false
-		cmds := []tea.Cmd{m.applyFilter(), m.requestPreview()}
-		if hasRestoringEntries(m.entries) {
-			cmds = append(cmds, recoveryTick())
-		}
-		return m, tea.Batch(cmds...)
+		return m, tea.Batch(m.applyFilter(), m.requestPreview(), reloadTick(m.entries))
 
 	case frecentMsg:
 		m.launch.frecent = msg.paths
@@ -327,7 +395,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case recoveryTickMsg:
+	case reloadTickMsg:
 		return m, loadSessions
 
 	case previewLoadedMsg:
@@ -359,6 +427,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.errMsg = ""
+	if m.prompting {
+		return m.handlePromptKey(msg)
+	}
 
 	switch msg.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
@@ -391,6 +462,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if entry, ok := m.selectedEntry(); ok &&
 			(entry.Kind == sessions.EntryBlocked || entry.Kind == sessions.EntryRestoring) {
 			m.output = "__FORGET_RECOVERY__\x1f" + entry.Meta.LogicalID
+			return m, tea.Quit
+		}
+		// A background launch: cancel it (still setting up) or forget it
+		// (failed); bash stops the worker and drops the record.
+		if entry, ok := m.selectedEntry(); ok && isLaunchKind(entry.Kind) {
+			m.output = "__FORGET_LAUNCH__\x1f" + entry.LaunchID
 			return m, tea.Quit
 		}
 		if s := m.selectedSession(); s != "" {
@@ -448,7 +525,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // enter performs the selected row's action: switch to a running session,
-// restore a closed one, retry an interrupted one, or launch a new one.
+// restore a closed one, retry an interrupted one or a failed launch, or
+// start a new one (through the first-prompt step).
 func (m model) enter() (tea.Model, tea.Cmd) {
 	it, ok := m.selectedItem()
 	if !ok {
@@ -458,13 +536,18 @@ func (m model) enter() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if it.isNew() {
-		out, errMsg := m.launch.launch(it.row)
-		if errMsg != "" {
+		// Refuse a bad row here, before any prompt is typed for it.
+		if _, errMsg := m.launch.launch(it.row); errMsg != "" {
 			m.errMsg = errMsg
 			return m, nil
 		}
-		m.output = out
-		return m, tea.Quit
+		m.prompting = true
+		m.promptRow = it.row
+		m.place = false // a reload keeps the cursor on this row
+		m.prompt.SetValue("")
+		m.prompt.Width = maxInt(10, m.width-8)
+		m.filter.Blur()
+		return m, m.prompt.Focus()
 	}
 	entry := m.entries[it.entry]
 	switch entry.Kind {
@@ -472,12 +555,69 @@ func (m model) enter() (tea.Model, tea.Cmd) {
 		m.output = "__RESTORE__\x1f" + entry.Meta.Directory + "\x1f" + entry.RestoreSessionID + "\x1f" + entry.Meta.AgentType
 	case sessions.EntryBlocked:
 		m.output = "__RETRY_RECOVERY__\x1f" + entry.Meta.LogicalID
-	case sessions.EntryRestoring:
+	case sessions.EntryLaunchFailed:
+		m.output = "__RETRY_LAUNCH__\x1f" + entry.LaunchID
+	case sessions.EntryRestoring, sessions.EntryLaunching:
 		return m, nil
 	default:
 		m.output = entry.Name
 	}
 	return m, tea.Quit
+}
+
+// handlePromptKey runs the first-prompt step. Enter launches the row with
+// the prompt as a fifth protocol field (bash starts it in the background
+// when there is a prompt or a @spec, see backgroundLaunch); Esc goes back
+// to the list; Tab still picks the agent.
+func (m model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		m.output = ""
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.prompting = false
+		m.prompt.Blur()
+		return m, m.filter.Focus()
+	case tea.KeyEnter:
+		out, errMsg := m.launch.launch(m.promptRow)
+		if errMsg != "" {
+			m.errMsg = errMsg
+			return m, nil
+		}
+		m.output = out + "\x1f" + strings.TrimSpace(m.prompt.Value())
+		return m, tea.Quit
+	case tea.KeyTab, tea.KeyShiftTab:
+		step := 1
+		if msg.Type == tea.KeyShiftTab {
+			step = -1
+		}
+		m.launch.cycleAgent(step)
+		return m, m.applyFilter()
+	}
+	var cmd tea.Cmd
+	m.prompt, cmd = m.prompt.Update(msg)
+	return m, cmd
+}
+
+// backgroundLaunch reports whether Enter in the first-prompt step starts
+// the session in the background (bash's rule in _browse_result): with a
+// prompt, or for a @spec, whose checkout the provider may take a while to
+// set up. Otherwise it opens the session now.
+func (m model) backgroundLaunch() bool {
+	return strings.TrimSpace(m.prompt.Value()) != "" ||
+		strings.HasPrefix(m.launch.expand(m.promptRow.value), "@")
+}
+
+// promptHint is the line under the first-prompt input: what Enter will do
+// (the row it launches stays highlighted in the list).
+func (m model) promptHint() string {
+	switch {
+	case strings.HasPrefix(m.launch.expand(m.promptRow.value), "@"):
+		return "The checkout is set up in the background; the tab appears when the agent starts."
+	case m.backgroundLaunch():
+		return "Starts in the background with this prompt; the tab appears when the agent is up."
+	}
+	return "Enter opens it now; type a prompt to start it in the background instead."
 }
 
 // jumpNew moves the cursor to the New session section. On a session row it
@@ -514,7 +654,7 @@ func (m *model) applyFilter() tea.Cmd {
 		tier int
 		rec  int64
 	}
-	var actionable, working, interrupted, inactive []hit
+	var actionable, working, launching, interrupted, inactive []hit
 	for i, e := range m.entries {
 		tier := m.entryTier(e, query)
 		if tier == 0 {
@@ -524,6 +664,8 @@ func (m *model) applyFilter() tea.Cmd {
 		switch e.Kind {
 		case sessions.EntryInactive:
 			inactive = append(inactive, h)
+		case sessions.EntryLaunching, sessions.EntryLaunchFailed:
+			launching = append(launching, h)
 		case sessions.EntryRestoring, sessions.EntryBlocked:
 			interrupted = append(interrupted, h)
 		default:
@@ -570,14 +712,15 @@ func (m *model) applyFilter() tea.Cmd {
 		}
 		sort.SliceStable(actionable, byScore(actionable))
 		sort.SliceStable(working, byScore(working))
+		sort.SliceStable(launching, byScore(launching))
 		sort.SliceStable(interrupted, byScore(interrupted))
 		sort.SliceStable(inactive, byScore(inactive))
 	}
 
 	newRows, cmd := m.launch.rows(raw, m.liveDirs())
 	m.filtered = m.filtered[:0]
-	items := make([]listItem, 0, len(actionable)+len(working)+len(interrupted)+len(newRows)+len(inactive))
-	for _, s := range [][]hit{actionable, working, interrupted} {
+	items := make([]listItem, 0, len(actionable)+len(working)+len(launching)+len(interrupted)+len(newRows)+len(inactive))
+	for _, s := range [][]hit{actionable, working, launching, interrupted} {
 		for _, h := range s {
 			m.filtered = append(m.filtered, h.idx)
 			items = append(items, listItem{entry: h.idx, tier: h.tier})
@@ -634,6 +777,10 @@ func (m model) entryTier(e sessions.Entry, query string) int {
 		haystack += " inactive restore closed"
 	case sessions.EntryRestoring, sessions.EntryBlocked:
 		haystack += " interrupted recovery restoring blocked"
+	case sessions.EntryLaunching:
+		haystack += " launch starting"
+	case sessions.EntryLaunchFailed:
+		haystack += " launch failed"
 	}
 	if strings.HasPrefix(query, "@") {
 		spec := query[1:]
@@ -843,6 +990,9 @@ func previewKey(entry sessions.Entry) string {
 		}
 		return "recovery:" + entry.Meta.LogicalID + ":" + string(entry.Kind)
 	}
+	if isLaunchKind(entry.Kind) {
+		return "launch:" + entry.LaunchID + ":" + string(entry.Kind)
+	}
 	if entry.Name == "" {
 		return ""
 	}
@@ -938,6 +1088,18 @@ func (m model) entryCounts() (active, restoring, blocked, inactive int) {
 	return active, restoring, blocked, inactive
 }
 
+func (m model) launchCounts() (starting, failed int) {
+	for _, entry := range m.entries {
+		switch entry.Kind {
+		case sessions.EntryLaunching:
+			starting++
+		case sessions.EntryLaunchFailed:
+			failed++
+		}
+	}
+	return starting, failed
+}
+
 func (m model) activeTriageCounts() (waiting, ready, working, other int) {
 	for _, entry := range m.entries {
 		if entry.Kind != sessions.EntryActive || entry.State == "" {
@@ -967,6 +1129,7 @@ func (m model) listRows() ([]listRow, int) {
 	rows := make([]listRow, 0, len(m.items)+4)
 	cursorRow := -1
 	workingDividerAdded := false
+	launchDividerAdded := false
 	recoveryDividerAdded := false
 	newDividerAdded := false
 	inactiveDividerAdded := false
@@ -982,6 +1145,10 @@ func (m model) listRows() ([]listRow, int) {
 			if kind == sessions.EntryActive && isWorkingState(entry.State) && !workingDividerAdded {
 				rows = append(rows, listRow{divider: true, label: fmt.Sprintf("Working (%d)", workingCount)})
 				workingDividerAdded = true
+			}
+			if isLaunchKind(kind) && !launchDividerAdded {
+				rows = append(rows, listRow{divider: true, label: "Starting in the background"})
+				launchDividerAdded = true
 			}
 			if (kind == sessions.EntryRestoring || kind == sessions.EntryBlocked) && !recoveryDividerAdded {
 				rows = append(rows, listRow{divider: true, label: "Interrupted sessions"})
@@ -1006,7 +1173,12 @@ func (m model) requestPreview() tea.Cmd {
 		return nil
 	}
 	key := m.itemKey(it)
-	if key == "" || key == m.previewFor {
+	if key == "" {
+		return nil
+	}
+	// A starting launch's preview is its growing output: reload it with the
+	// list, not only when the selection changes.
+	if key == m.previewFor && (it.isNew() || m.entries[it.entry].Kind != sessions.EntryLaunching) {
 		return nil
 	}
 	if it.isNew() {
@@ -1017,6 +1189,12 @@ func (m model) requestPreview() tea.Cmd {
 
 // enterAction names what Enter does on the selected row, for the key pills.
 func (m model) enterAction() string {
+	if m.prompting {
+		if m.backgroundLaunch() {
+			return "start in background"
+		}
+		return "open now"
+	}
 	it, ok := m.selectedItem()
 	if !ok {
 		return "open"
@@ -1027,9 +1205,9 @@ func (m model) enterAction() string {
 	switch m.entries[it.entry].Kind {
 	case sessions.EntryInactive:
 		return "restore"
-	case sessions.EntryBlocked:
+	case sessions.EntryBlocked, sessions.EntryLaunchFailed:
 		return "retry"
-	case sessions.EntryRestoring:
+	case sessions.EntryRestoring, sessions.EntryLaunching:
 		return "wait"
 	}
 	return "switch"
@@ -1041,14 +1219,22 @@ type keyPill struct{ key, action string }
 // a session row (on a New row the cursor is already there), Ctrl-X only on
 // a row it kills or forgets.
 func (m model) keyPills() []keyPill {
+	if m.prompting {
+		return []keyPill{{"⏎", m.enterAction()}, {"⇥", "agent"}, {"esc", "back"}}
+	}
 	pills := []keyPill{{"?", "help"}, {"⏎", m.enterAction()}, {"⇥", "agent"}}
 	if entry, ok := m.selectedEntry(); ok {
-		pills = append(pills, keyPill{"^N", "new here"})
+		// A launch row has no directory yet for Ctrl-N to start in.
+		if !isLaunchKind(entry.Kind) {
+			pills = append(pills, keyPill{"^N", "new here"})
+		}
 		switch entry.Kind {
 		case sessions.EntryActive:
 			pills = append(pills, keyPill{"^X", "kill"})
-		case sessions.EntryBlocked, sessions.EntryRestoring:
+		case sessions.EntryBlocked, sessions.EntryRestoring, sessions.EntryLaunchFailed:
 			pills = append(pills, keyPill{"^X", "forget"})
+		case sessions.EntryLaunching:
+			pills = append(pills, keyPill{"^X", "cancel"})
 		}
 	}
 	return append(pills, keyPill{"^R", "refresh"})
@@ -1111,6 +1297,14 @@ func (m model) View() string {
 	if blockedCount > 0 {
 		countParts = append(countParts, fmt.Sprintf("%d blocked", blockedCount))
 	}
+	if starting, failed := m.launchCounts(); starting+failed > 0 {
+		if starting > 0 {
+			countParts = append(countParts, fmt.Sprintf("%d starting", starting))
+		}
+		if failed > 0 {
+			countParts = append(countParts, fmt.Sprintf("%d failed to start", failed))
+		}
+	}
 	if inactiveCount > 0 {
 		countParts = append(countParts, fmt.Sprintf("%d inactive", inactiveCount))
 	}
@@ -1141,13 +1335,21 @@ func (m model) View() string {
 	}
 	b.WriteByte('\n')
 
-	// Filter input, then a blank line or the error a launch was refused with
+	// Filter input (the first-prompt input during that step), then the error
+	// a launch was refused with, the step's hint, or a blank line
 	b.WriteByte('\n')
 	b.WriteString("   ")
-	b.WriteString(m.filter.View())
+	if m.prompting {
+		b.WriteString(m.prompt.View())
+	} else {
+		b.WriteString(m.filter.View())
+	}
 	b.WriteByte('\n')
-	if m.errMsg != "" {
+	switch {
+	case m.errMsg != "":
 		b.WriteString("   " + errorStyle.Render(truncRunesTo(m.errMsg, m.width-4)))
+	case m.prompting:
+		b.WriteString("   " + dimStyle.Render(truncRunesTo(m.promptHint(), m.width-4)))
 	}
 	b.WriteByte('\n')
 
@@ -1367,7 +1569,13 @@ func helpText() string {
     Esc/q       Exit without action
     Ctrl-N      New session section (on a session: a new one in its dir)
     Ctrl-H      Jump to the inactive sessions
-    Ctrl-X      Kill active or forget blocked session
+    Ctrl-X      Kill active or forget blocked session; cancel or
+                forget a background launch
+
+  New session rows
+    Enter asks for a first prompt. With one, or for an @spec, the
+    session starts in the background and its tab appears when it is up;
+    no prompt on a directory opens the session now (Esc: back).
     Ctrl-R      Refresh session list
     Ctrl-P      Toggle the preview
     ?           Show this help

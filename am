@@ -15,7 +15,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.42.1"
+AM_VERSION="0.43.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -131,10 +131,14 @@ OPTIONS FOR 'log':
     -f              Follow: keep printing new lines
 
 KEYBINDINGS (interactive browser):
-    Enter           Attach, restore, or launch the selected row
+    Enter           Attach, restore, or launch the selected row. On a New
+                    session row it asks for a first prompt: with one, or for
+                    an @spec, the session starts in the background (the
+                    popup closes; the tab appears when the agent is up)
     Tab             Agent for New session rows (Shift-Tab: back)
     Ctrl-N          Jump to New session (on a session: a new one in its dir)
-    Ctrl-X          Kill selected active session
+    Ctrl-X          Kill selected active session; cancel or forget a
+                    background launch
     Ctrl-R          Refresh session list
     Ctrl-P          Toggle the preview pane
     Ctrl-H          Jump to the first inactive (restorable) session
@@ -325,13 +329,27 @@ _browse_result() {
             return 1
         fi
     elif [[ "$result" == $'__NEW_SESSION__\x1f'* ]]; then
-        # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags
-        local directory agent_type flags
-        IFS=$'\x1f' read -r _tag directory agent_type flags <<< "$result"
+        # Parse: __NEW_SESSION__<US>directory<US>agent_type<US>flags<US>prompt
+        # (the first prompt; the browser's input is one line)
+        local directory agent_type flags prompt
+        IFS=$'\x1f' read -r _tag directory agent_type flags prompt <<< "$result"
+        [[ -n "$prompt" ]] && prompt=$(read_prompt_input "$prompt")
 
-        # Create new session from the New session row
+        # Nobody waits on a launch with a first prompt (the user moves on to
+        # another session while it starts) or on a @spec (the provider may
+        # fetch or clone first): those run in the background and the popup
+        # closes now. A plain directory with no prompt opens as before.
+        if [[ -n "$prompt" ]] || am_dir_is_spec "$directory"; then
+            _launch_bg_start "$directory" "$agent_type" "$flags" "$prompt"
+            return
+        fi
         # shellcheck disable=SC2086
         cmd_new_internal "$directory" "$agent_type" $flags
+    elif [[ "$result" == $'__RETRY_LAUNCH__\x1f'* ]]; then
+        _launch_bg_retry "${result#*$'\x1f'}"
+    elif [[ "$result" == $'__FORGET_LAUNCH__\x1f'* ]]; then
+        _launch_bg_forget "${result#*$'\x1f'}"
+        cmd_browse
     elif [[ "$result" == $'__RETRY_RECOVERY__\x1f'* ]]; then
         local recovery_id="${result#*$'\x1f'}"
         recovery_desired_retry "$recovery_id"
@@ -403,7 +421,19 @@ _dir_free_of_live_session() {
     return 1
 }
 
+# Usage: cmd_new_internal [--detach] [--prompt <text>] [--source <s>] <directory> [agent_type] [flags...]
+# --detach prints the session name instead of attaching (the background
+# launch worker); --prompt is the agent's first prompt.
 cmd_new_internal() {
+    local attach=true prompt="" source=form
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --detach) attach=false; shift ;;
+            --prompt) prompt="${2:-}"; shift 2 ;;
+            --source) source="${2:-form}"; shift 2 ;;
+            *) break ;;
+        esac
+    done
     local directory="$1"
     local agent_type="${2:-$(am_default_agent)}"
     shift 2 2>/dev/null || shift $#
@@ -431,24 +461,180 @@ cmd_new_internal() {
             _launch_fail_hold form
             return 1
         fi
-        if ! _dir_free_of_live_session "$directory" "$spec" form; then
+        if ! _dir_free_of_live_session "$directory" "$spec" "$source"; then
             _launch_fail_hold form
             return 1
         fi
     fi
 
     local session_name
-    _AM_LAUNCH_SOURCE=form
+    _AM_LAUNCH_PROMPT="$prompt"
+    _AM_LAUNCH_SOURCE="$source"
     if ! session_name=$(agent_launch "$directory" "$agent_type" "" "${agent_args[@]}"); then
+        _AM_LAUNCH_PROMPT=""
         _AM_LAUNCH_SOURCE=""
         _launch_fail_hold form
         return 1
     fi
+    _AM_LAUNCH_PROMPT=""
     _AM_LAUNCH_SOURCE=""
 
     if [[ -n "$session_name" ]]; then
-        tmux_attach "$session_name"
+        if $attach; then
+            tmux_attach "$session_name"
+        else
+            echo "$session_name"
+        fi
     fi
+}
+
+# --- Background launches ------------------------------------------------------
+# The browser hands over launches nobody waits on (a first prompt, or a
+# @spec the provider may take a while to set up); they run in a detached
+# `am launch-worker` so the popup closes at once. One record per launch in
+# $AM_DIR/launches/: <id>.json (target, agent, flags, state running|failed,
+# error), <id>.pid (the worker), <id>.log (its output: provider progress,
+# launch errors), <id>.prompt (0600). Success removes all four, since the
+# session's own row takes over; a failure keeps them, prompt included, for
+# the browser's "Starting in the background" rows (retry / forget). Only
+# the starter and the record's own worker write it, so no lock.
+
+# Start a launch in the background.
+# Usage: _launch_bg_start <target> <agent> <flags> <prompt>
+_launch_bg_start() {
+    local target="$1" agent="$2" flags="$3" prompt="$4"
+    local dir="$AM_DIR/launches" id now
+    # A retry may run from another cwd.
+    [[ -d "$target" ]] && target=$(abspath "$target")
+    am_mkdir_private "$dir"
+    printf -v now '%(%s)T' -1
+    id="$now-$(generate_hash "$target $agent $RANDOM $$")"
+    if [[ -n "$prompt" ]]; then
+        (umask 077; printf '%s' "$prompt" > "$dir/$id.prompt")
+    fi
+    if ! (umask 077; jq -n --arg id "$id" --arg target "$target" --arg agent "$agent" --arg flags "$flags" \
+            --argjson chars "${#prompt}" --argjson now "$now" \
+            '{id: $id, target: $target, agent: $agent, flags: $flags, prompt_chars: $chars,
+              created_at: $now, state: "running", error: ""}' > "$dir/$id.json"); then
+        log_error "Could not record the background launch for $target"
+        rm -f "$dir/$id.json" "$dir/$id.prompt"
+        _launch_fail_hold form
+        return 1
+    fi
+    _launch_bg_spawn "$id"
+    am_event launch.bg - "id=$id" "target=$target" "agent=$agent" "prompt=${#prompt}"
+    log_info "Starting $agent for $target in the background; its tab appears when the agent is up (progress and errors: am)"
+}
+
+# Run the worker for a record in its own session (perl's setsid; macOS has
+# no setsid(1)): closing the popup hangs up the popup's terminal, which
+# must not reach it, and Ctrl-X stops the whole tree, provider included,
+# with one group kill (the worker's pid is its process group).
+# Usage: _launch_bg_spawn <id>
+_launch_bg_spawn() {
+    local id="$1" dir="$AM_DIR/launches"
+    perl -MPOSIX=setsid -e '$SIG{HUP} = "IGNORE"; setsid(); exec @ARGV or exit 127' \
+        "$AM_SCRIPT_DIR/am" launch-worker "$id" </dev/null >> "$dir/$id.log" 2>&1 &
+    printf '%s\n' "$!" > "$dir/$id.pid"
+    disown 2>/dev/null || true
+}
+
+# Rewrite fields of a record (jq filter, --arg pairs as given) through a
+# temp file; a record that is gone (forgotten meanwhile) stays gone.
+# Usage: _launch_bg_update <id> <jq-filter> [jq args...]
+_launch_bg_update() {
+    local rec="$AM_DIR/launches/$1.json" filter="$2"
+    shift 2
+    [[ -f "$rec" ]] || return 1
+    jq "$@" "$filter" "$rec" > "$rec.tmp" && mv -f "$rec.tmp" "$rec"
+}
+
+# Show a line on every client of the am server for a few seconds. tmux
+# reads the message as a format, so a literal # is doubled.
+# Usage: _launch_bg_notify <message>
+_launch_bg_notify() {
+    local msg="${1//#/##}" client
+    while IFS= read -r client; do
+        [[ -n "$client" ]] || continue
+        am_tmux display-message -c "$client" -d 8000 "$msg" 2>/dev/null || true
+    done < <(am_tmux list-clients -F '#{client_name}' 2>/dev/null || true)
+}
+
+# Internal: the detached half of a background launch. Resolves the target
+# and launches detached with the first prompt (cmd_new_internal --detach);
+# its stdout/stderr is <id>.log.
+# Usage: am launch-worker <id>
+cmd_launch_worker() {
+    local id="${1:-}" dir="$AM_DIR/launches"
+    local rec="$dir/$id.json"
+    if [[ -z "$id" || ! -f "$rec" ]]; then
+        log_error "No background launch record: ${id:-<none>}"
+        return 1
+    fi
+    local target agent flags prompt=""
+    IFS=$'\x1f' read -r target agent flags \
+        < <(jq -r '[.target, .agent, .flags] | map(. // "") | join("\u001f")' "$rec") || true
+    [[ -f "$dir/$id.prompt" ]] && prompt=$(<"$dir/$id.prompt")
+    printf '%(%H:%M:%S)T starting %s for %s\n' -1 "$agent" "$target" >&2
+
+    local session="" rc=0 t0=$SECONDS
+    # shellcheck disable=SC2086
+    session=$(cmd_new_internal --detach --source background --prompt "$prompt" "$target" "$agent" $flags) || rc=$?
+    if (( rc == 0 )) && [[ -n "$session" ]]; then
+        rm -f "$rec" "$dir/$id.pid" "$dir/$id.prompt" "$dir/$id.log"
+        am_event launch.bg.ok "$session" "id=$id" "target=$target" "secs=$((SECONDS - t0))"
+        local what="started"
+        [[ -n "$prompt" ]] && what="started on your prompt"
+        _launch_bg_notify "am: $agent for $target $what ($session)"
+        return 0
+    fi
+
+    # The reason: the last error line of the output, else its last line.
+    local line err="" last=""
+    while IFS= read -r line; do
+        [[ -n "${line// }" ]] || continue
+        last="$line"
+        [[ "$line" == "error: "* ]] && err="${line#error: }"
+    done < "$dir/$id.log"
+    err="${err:-${last:-launch failed (exit $rc)}}"
+    _launch_bg_update "$id" '.state = "failed" | .error = $e' --arg e "$err" || true
+    am_event launch.bg.fail - "id=$id" "target=$target" "rc=$rc" "secs=$((SECONDS - t0))" "err=$err"
+    _launch_bg_notify "am: could not start $agent for $target: $err (am lists it under Starting in the background)"
+    return 1
+}
+
+# Retry a failed background launch: the same record, prompt and all; the
+# output log keeps the earlier attempts.
+# Usage: _launch_bg_retry <id>
+_launch_bg_retry() {
+    local id="$1" dir="$AM_DIR/launches"
+    if ! _launch_bg_update "$id" '.state = "running" | .error = ""'; then
+        log_error "No background launch $id (already started or forgotten)"
+        return 1
+    fi
+    printf '%(%H:%M:%S)T retry\n' -1 >> "$dir/$id.log"
+    _launch_bg_spawn "$id"
+    am_event launch.bg.retry - "id=$id"
+    log_info "Retrying in the background; its tab appears when the agent is up"
+}
+
+# Cancel (a worker still running: its whole process group is stopped) or
+# forget (failed) a background launch, dropping its record and prompt. The
+# pid is only signalled while it still runs this launch's worker, so a
+# recycled pid is never hit.
+# Usage: _launch_bg_forget <id>
+_launch_bg_forget() {
+    local id="$1" dir="$AM_DIR/launches" pid="" cmdline
+    [[ -n "$id" && "$id" != */* ]] || return 1
+    [[ -f "$dir/$id.pid" ]] && pid=$(<"$dir/$id.pid")
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+        cmdline=$(ps -o command= -p "$pid" 2>/dev/null || true)
+        if [[ "$cmdline" == *"launch-worker $id"* ]]; then
+            kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+            am_event launch.bg.cancel - "id=$id"
+        fi
+    fi
+    rm -f "$dir/$id.json" "$dir/$id.json.tmp" "$dir/$id.pid" "$dir/$id.log" "$dir/$id.prompt"
 }
 
 # What to do when a closed session's checkout has moved on (<problem> from
@@ -804,7 +990,6 @@ cmd_new() {
     local print_session=false
     local initial_prompt=""
     local preset_name=""
-    local launch_source=cli
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -888,72 +1073,43 @@ cmd_new() {
     fi
 
     # Fully interactive: the browser with the cursor on its New session
-    # section (`am-browse --new`). A launch prints one
-    # __NEW_SESSION__<US>directory<US>agent<US>flags line; a session row
-    # picked from the same list prints what the browser prints, handled as
-    # the browser does; nothing when cancelled.
+    # section (`am-browse --new`). Whatever it prints — a
+    # __NEW_SESSION__<US>directory<US>agent<US>flags<US>prompt launch, or a
+    # session row picked from the same list — is handled as the browser's
+    # own result; nothing when cancelled.
     if [[ -t 0 && "$dir_given" == false && -z "$agent_type" && ${#agent_args[@]} -eq 0 ]]; then
-        local browse_cmd form_values flags _tag
+        local browse_cmd form_values
         browse_cmd=$(fzf_browse_bin) || return 1
         form_values=$("$browse_cmd" --new --dir "$directory" --agent "$(am_default_agent)") || return 1
         if [[ -z "$form_values" ]]; then
             log_info "Cancelled"
             return 0
         fi
-        if [[ "$form_values" != $'__NEW_SESSION__\x1f'* ]]; then
-            _browse_result "$form_values"
-            return
-        fi
-
-        IFS=$'\x1f' read -r _tag directory agent_type flags <<< "$form_values"
-        launch_source=form
-        # shellcheck disable=SC2206
-        agent_args=($flags)
-        # A preset row arrives as --preset=<name>; it is for us,
-        # not the agent.
-        local _flag _kept=() _form_preset=""
-        for _flag in "${agent_args[@]}"; do
-            case "$_flag" in
-                --preset=*) _form_preset="${_flag#--preset=}" ;;
-                *) _kept+=("$_flag") ;;
-            esac
-        done
-        agent_args=("${_kept[@]}")
-        # The line already carries the preset's fields; merge its agent args
-        # and shell flag here.
-        if [[ -n "$_form_preset" ]]; then
-            _cmd_new_apply_preset "$_form_preset" false || return 1
-        fi
-    else
-        if [[ "$dir_given" == false && -t 0 ]]; then
-            local picked
-            picked=$(fzf_pick_directory)
-            if [[ -n "$picked" ]]; then
-                directory="$picked"
-            else
-                log_info "Cancelled"
-                return 0
-            fi
-        elif [[ "$dir_given" == false ]]; then
-            directory="."
-        fi
-
-        agent_type="${agent_type:-$(am_default_agent)}"
+        _browse_result "$form_values"
+        return
     fi
+
+    if [[ "$dir_given" == false && -t 0 ]]; then
+        local picked
+        picked=$(fzf_pick_directory)
+        if [[ -n "$picked" ]]; then
+            directory="$picked"
+        else
+            log_info "Cancelled"
+            return 0
+        fi
+    elif [[ "$dir_given" == false ]]; then
+        directory="."
+    fi
+    agent_type="${agent_type:-$(am_default_agent)}"
 
     # `@spec` directories are resolved by the configured provider (the browser
     # skips path validation for them, so this is the one place they turn into
     # a real directory).
     if am_dir_is_spec "$directory"; then
         local spec="$directory"
-        if ! directory=$(agent_dir_resolve "$directory"); then
-            _launch_fail_hold "$launch_source"
-            return 1
-        fi
-        if ! _dir_free_of_live_session "$directory" "$spec" "$launch_source"; then
-            _launch_fail_hold "$launch_source"
-            return 1
-        fi
+        directory=$(agent_dir_resolve "$directory") || return 1
+        _dir_free_of_live_session "$directory" "$spec" cli || return 1
     fi
 
     initial_prompt=$(read_prompt_input)
@@ -961,11 +1117,10 @@ cmd_new() {
     # Launch agent (prompt passed via _AM_LAUNCH_PROMPT to avoid tty buffer overflow
     # when piping long prompts through tmux send-keys)
     _AM_LAUNCH_PROMPT="$initial_prompt"
-    _AM_LAUNCH_SOURCE="$launch_source"
+    _AM_LAUNCH_SOURCE=cli
     local session_name
     if ! session_name=$(agent_launch "$directory" "$agent_type" "" "${agent_args[@]}"); then
         _AM_LAUNCH_SOURCE=""
-        _launch_fail_hold "$launch_source"
         return 1
     fi
     _AM_LAUNCH_SOURCE=""
@@ -2927,6 +3082,9 @@ main() {
             ;;
         recover-open)
             cmd_recover_open "$@"
+            ;;
+        launch-worker)
+            cmd_launch_worker "$@"
             ;;
         *)
             # If it looks like a path, treat as "new <path>"
