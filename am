@@ -589,10 +589,9 @@ cmd_launch_worker() {
     session=$(cmd_new_internal --detach --source background --prompt "$prompt" "$target" "$agent" $flags) || rc=$?
     if (( rc == 0 )) && [[ -n "$session" ]]; then
         rm -f "$rec" "$dir/$id.pid" "$dir/$id.prompt" "$dir/$id.log"
+        # No message: the new tab in the status bar says it, and a message
+        # would cover the status bar for its duration.
         am_event launch.bg.ok "$session" "id=$id" "target=$target" "secs=$((SECONDS - t0))"
-        local what="started"
-        [[ -n "$prompt" ]] && what="started on your prompt"
-        _launch_bg_notify "am: $agent for $target $what ($session)"
         return 0
     fi
 

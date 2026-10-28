@@ -232,8 +232,8 @@ Launches in progress, and ones that failed, are listed in the browser
 under **Starting in the background**, with the provider's output and the
 error in the preview. Enter retries a failed one with the same prompt,
 `Ctrl-X` cancels one still being set up or forgets a failed one. When a
-background launch finishes or fails, every attached client gets a one-line
-tmux message.
+background launch fails, every attached client gets a one-line tmux
+message; one that succeeds shows up only as its new tab.
 
 ### Inside a session
 

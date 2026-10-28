@@ -12,8 +12,8 @@ entry unless they changed behaviour a user would notice.
   asks for the agent's first prompt; with a prompt, or for a `@spec` row
   (whose checkout the `dir_provider` may have to fetch or clone), the popup
   closes at once and the setup runs in a detached `am launch-worker`. The
-  new tab appears when the agent is up, already working on the prompt, and
-  every attached client gets a one-line message when it starts or fails.
+  new tab appears when the agent is up, already working on the prompt; if
+  the launch fails, every attached client gets a one-line message.
   Until now the popup stayed open, blocking the tmux client, for as long
   as the provider took. Enter with no prompt on a directory opens the
   session right away, as before.
