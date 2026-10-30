@@ -71,7 +71,7 @@ test_config() {
 
     # Removed keys are no longer recognized (goes with _AM_CONFIG_OBSOLETE_KEYS)
     assert_cmd_fails "config: sandbox-shares is not a config key" am_config_key_alias sandbox-shares
-    assert_not_contains "$(am_config_print)" "sandbox" "config: print omits sandbox"
+    assert_not_contains "$(am_config_print)" "sandbox.shares" "config: print omits the pre-0.18 sandbox.shares"
 
     # Shell panel config
     assert_eq "false" "$(am_shell_pane_enabled && echo true || echo false)" "config: shell panel defaults closed"
@@ -123,6 +123,22 @@ test_config() {
     unset AM_DIR_PROVIDER
     am_config_unset "dir_provider"
     assert_eq "" "$(am_dir_provider)" "config: unset dir_provider is empty again"
+
+    # Sandbox provider + the sandbox default (am new --sandbox)
+    unset AM_SANDBOX_PROVIDER AM_SANDBOX
+    assert_eq "" "$(am_sandbox_provider)" "config: sandbox_provider defaults empty"
+    assert_eq "false" "$(am_sandbox_enabled && echo true || echo false)" "config: sandbox defaults off"
+    assert_eq "sandbox_provider" "$(am_config_key_alias sandbox-provider)" "config: sandbox-provider alias"
+    assert_eq "string" "$(am_config_key_type sandbox_provider)" "config: sandbox_provider is a string"
+    assert_eq "boolean" "$(am_config_key_type sandbox)" "config: sandbox is boolean"
+    am_config_set "sandbox_provider" '/Opt/Box run' "string"
+    am_config_set "sandbox" "true" "boolean"
+    assert_eq '/Opt/Box run' "$(am_sandbox_provider)" "config: saved sandbox_provider keeps its case"
+    assert_eq "true" "$(am_sandbox_enabled && echo true || echo false)" "config: saved sandbox default"
+    assert_contains "$(am_config_print)" 'sandbox_provider=/Opt/Box run' "config: print shows sandbox_provider"
+    assert_eq "false" "$(AM_SANDBOX=0 am_sandbox_enabled && echo true || echo false)" "config: AM_SANDBOX overrides"
+    am_config_unset "sandbox_provider"
+    am_config_unset "sandbox"
     assert_eq "true" "$(am_dir_is_spec '@48351' && echo true || echo false)" "config: @48351 is a spec"
     assert_eq "true" "$(am_dir_is_spec '@' && echo true || echo false)" "config: bare @ is a spec"
     assert_eq "false" "$(am_dir_is_spec '/tmp' && echo true || echo false)" "config: a path is not a spec"

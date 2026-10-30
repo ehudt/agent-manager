@@ -149,7 +149,7 @@ agent_launch() {
 
     # Strip am's own launch flags; everything else goes to the agent verbatim.
     local normalized_args=()
-    local wants_shell=""
+    local wants_shell="" sandboxed=""
     local arg
     for arg in "${agent_args[@]}"; do
         case "$arg" in
@@ -159,6 +159,12 @@ agent_launch() {
             --no-shell)
                 wants_shell=false
                 ;;
+            --sandbox)
+                sandboxed=true
+                ;;
+            --no-sandbox)
+                sandboxed=false
+                ;;
             *)
                 normalized_args+=("$arg")
                 ;;
@@ -167,10 +173,26 @@ agent_launch() {
     if [[ -z "$wants_shell" ]]; then
         if am_shell_pane_enabled; then wants_shell=true; else wants_shell=false; fi
     fi
+    if [[ -z "$sandboxed" ]]; then
+        if am_sandbox_enabled; then sandboxed=true; else sandboxed=false; fi
+    fi
     agent_args=("${normalized_args[@]}")
+    launch_kv+=("sandbox=$sandboxed")
 
-    # Check if agent command exists
-    if ! command -v "$agent_cmd" &>/dev/null; then
+    local sandbox_provider=""
+    if $sandboxed; then
+        sandbox_provider=$(am_sandbox_provider)
+        if [[ -z "$sandbox_provider" ]]; then
+            log_error "No sandbox provider configured"
+            echo "Set one with, e.g.: am config set sandbox_provider <am checkout>/scripts/sandbox/sbx" >&2
+            am_event launch.fail - "${launch_kv[@]}" "reason=no_sandbox_provider"
+            return 1
+        fi
+    fi
+
+    # Check if agent command exists. A sandboxed agent runs inside the
+    # sandbox, which brings its own binary: the host may have none.
+    if ! $sandboxed && ! command -v "$agent_cmd" &>/dev/null; then
         log_error "Agent command not found: $agent_cmd"
         am_event launch.fail - "${launch_kv[@]}" "reason=agent_cmd_missing" "cmd=$agent_cmd"
         return 1
@@ -189,14 +211,27 @@ agent_launch() {
         session_name=$(generate_session_name "$directory")
     fi
 
+    # Sandbox preflight, before anything exists: the provider creates or
+    # checks its sandbox (an image pull takes a while; its progress reaches
+    # the user on stderr), and a refusal (tool missing, agent unsupported)
+    # fails the launch with nothing to clean up.
+    local sandbox_hooks=false
+    if $sandboxed; then
+        if ! agent_sandbox_prepare "$session_name" "$directory" "$agent_type" sandbox_hooks; then
+            am_event launch.fail "$session_name" "${launch_kv[@]}" "reason=sandbox_prepare"
+            return 1
+        fi
+    fi
+
     # Create tmux session (with explicit dimensions for sizing workaround).
     # The pane env (AM_SESSION_NAME etc.) is seeded here via tmux -e; see
     # agent_pane_env for why it is never typed into the shell.
     local -a pane_env=()
-    mapfile -t pane_env < <(agent_pane_env "$session_name" "$agent_type")
+    mapfile -t pane_env < <(agent_pane_env "$session_name" "$agent_type" "$sandboxed")
     if ! tmux_create_session "$session_name" "$directory" "${pane_env[@]}"; then
         log_error "Failed to create tmux session"
         am_event launch.fail "$session_name" "${launch_kv[@]}" "reason=tmux_create"
+        $sandboxed && agent_sandbox_stop "$session_name"
         return 1
     fi
 
@@ -208,11 +243,21 @@ agent_launch() {
     # is recorded.
     registry_add "$session_name" "$directory" "$branch" "$agent_type" "$task" \
         || am_event launch.step "$session_name" "step=registry_add" "rc=$?"
+    # Kill (the provider's stop verb), restore and reboot recovery go back
+    # through the sandbox, so the choice is recorded with the session.
+    if $sandboxed; then
+        registry_update "$session_name" "sandbox" "1" \
+            || am_event launch.step "$session_name" "step=registry_sandbox" "rc=$?"
+    fi
 
     # Append to sessions log for restore support.
     if agent_restorable "$agent_type"; then
         sessions_log_append "$session_name" "$directory" "$branch" "$agent_type" "$task" \
             || am_event launch.step "$session_name" "step=sessions_log_append" "rc=$?"
+        if $sandboxed; then
+            sessions_log_update "$session_name" "sandbox" "1" \
+                || am_event launch.step "$session_name" "step=sessions_log_sandbox" "rc=$?"
+        fi
     fi
 
     # Review baseline: snapshot the working copy as the launch checkpoint
@@ -240,6 +285,15 @@ agent_launch() {
         tmux_enable_pipe_pane "$session_name" ".{top-left}" "$log_dir/agent.log"
     fi
     am_mkdir_private "${AM_STATE_DIR:-/tmp/am-state}"
+
+    # A sandbox whose agent hooks never reach the state dir (the provider's
+    # prepare did not print hooks=1): the fresh-session rule (✳ + no hook
+    # file → ready) would then claim ready for the session's whole life, so
+    # the marker turns it off and the session reads unknown instead.
+    if $sandboxed && ! $sandbox_hooks; then
+        : > "${AM_STATE_DIR:-/tmp/am-state}/$session_name.nohooks" \
+            || am_event launch.step "$session_name" "step=nohooks_write" "rc=$?"
+    fi
 
     # Relocation fence (am restore into another checkout, _AM_LAUNCH_FENCE):
     # the directories the resumed conversation used to work in, one
@@ -286,7 +340,21 @@ agent_launch() {
             local quoted_prompt
             printf -v quoted_prompt '%q' "$initial_prompt"
             full_cmd+=" $quoted_prompt"
-        else
+        fi
+    fi
+
+    # Sandboxed: the provider's run verb gets the agent's argv after `--`
+    # and execs it inside the sandbox. A stdin prompt is still piped (below)
+    # into the provider, which hands it on (scripts/sandbox/sbx turns it
+    # into the agent's prompt argument; a host-side wrapper just execs).
+    if $sandboxed; then
+        local sandbox_args=""
+        printf -v sandbox_args '%q %q %q' "$session_name" "$directory" "$agent_type"
+        full_cmd="$sandbox_provider run $sandbox_args -- $full_cmd"
+    fi
+
+    if [[ -n "$initial_prompt" ]]; then
+        if ! _agent_prompt_as_arg "$agent_type"; then
             prompt_file="/tmp/am-prompt-${session_name}"
             (umask 077; printf '%s\n' "$initial_prompt" > "$prompt_file")
             full_cmd="cat ${prompt_file@Q} | $full_cmd; rm -f ${prompt_file@Q}"
@@ -343,9 +411,11 @@ agent_launch() {
 # space-prefixed export lingers as zsh's most recent entry until the next
 # command), the vars exist before the first prompt, and the state hooks can
 # identify the session by AM_SESSION_NAME instead of the ambiguous cwd.
-# Usage: agent_pane_env <session_name> <agent_type>
+# A sandboxed session's panes also carry what the sandbox provider needs to
+# wire the agent's state hooks back to am (agent_sandbox_env).
+# Usage: agent_pane_env <session_name> <agent_type> [sandboxed:true|false]
 agent_pane_env() {
-    local session_name="$1" agent_type="$2"
+    local session_name="$1" agent_type="$2" sandboxed="${3:-false}"
     local identity_dir
     identity_dir=$(_recovery_identity_dir)
     mkdir -p "$identity_dir"
@@ -355,6 +425,88 @@ agent_pane_env() {
     if am_stream_logs_enabled; then
         printf 'AM_LOG_DIR=%s\n' "/tmp/am-logs/${session_name}"
     fi
+    if [[ "$sandboxed" == true ]]; then
+        agent_sandbox_env "$session_name"
+    fi
+}
+
+# What a sandbox provider is told about am, one VAR=VALUE per line: the
+# state dir and AM_DIR the host-side hook writes to, the hooks directory
+# (hook-relay, state-hook.sh), and the session's hook spool — the one
+# directory a container sandbox mounts so the agent's hook events can reach
+# the host (lib/hooks/hook-relay; docs/sandboxes.md). The provider runs with
+# these in its environment for every verb.
+# Usage: agent_sandbox_env <session_name>
+agent_sandbox_env() {
+    local session_name="$1" state_dir="${AM_STATE_DIR:-/tmp/am-state}"
+    printf 'AM_SANDBOX=1\n'
+    printf 'AM_DIR=%s\n' "$AM_DIR"
+    printf 'AM_STATE_DIR=%s\n' "$state_dir"
+    printf 'AM_HOOKS_DIR=%s\n' "$AM_ROOT_DIR/lib/hooks"
+    printf 'AM_HOOK_SPOOL=%s\n' "$state_dir/$session_name.spool"
+}
+
+# Run the configured sandbox provider with a verb and its arguments:
+# `bash -c '<provider> "$@"' _ <verb> <args...>`, with agent_sandbox_env and
+# AM_SESSION_NAME / AM_AGENT_TYPE (when given) in its environment.
+# Usage: _agent_sandbox_run <session_name> <agent_type|-> <verb> [args...]
+_agent_sandbox_run() {
+    local session_name="$1" agent_type="$2" provider
+    shift 2
+    provider=$(am_sandbox_provider)
+    [[ -n "$provider" ]] || return 127
+    local -a env_args=("AM_SESSION_NAME=$session_name")
+    [[ "$agent_type" != "-" ]] && env_args+=("AM_AGENT_TYPE=$agent_type")
+    local line
+    while IFS= read -r line; do
+        env_args+=("$line")
+    done < <(agent_sandbox_env "$session_name")
+    env "${env_args[@]}" "${BASH:-bash}" -c "$provider \"\$@\"" _ "$@"
+}
+
+# The provider's prepare verb, before the session's pane exists: create or
+# check the sandbox. Its stderr reaches the user (an image pull, a missing
+# tool); stdout is key=value lines, of which am reads `hooks=1` (the agent's
+# state hooks reach am, so the fresh-session rule may stay on). A non-zero
+# exit fails the launch.
+# Usage: agent_sandbox_prepare <session_name> <dir> <agent_type> <hooks_out_var>
+agent_sandbox_prepare() {
+    local session_name="$1" dir="$2" agent_type="$3"
+    local -n __hooks="$4"
+    __hooks=false
+    local out rc=0 t0=$SECONDS line
+    am_mkdir_private "${AM_STATE_DIR:-/tmp/am-state}"
+    out=$(_agent_sandbox_run "$session_name" "$agent_type" prepare "$session_name" "$dir" "$agent_type") || rc=$?
+    if (( rc != 0 )); then
+        am_event sandbox.prepare_fail "$session_name" "rc=$rc" "secs=$((SECONDS - t0))" "agent=$agent_type" "dir=$dir"
+        log_error "Sandbox provider refused to prepare $session_name (exit $rc)"
+        return 1
+    fi
+    while IFS= read -r line; do
+        [[ "$line" == "hooks=1" || "$line" == "hooks=true" ]] && __hooks=true
+    done <<< "$out"
+    am_event sandbox.prepare "$session_name" "secs=$((SECONDS - t0))" "agent=$agent_type" "hooks=$__hooks"
+    return 0
+}
+
+# The provider's stop verb after a sandboxed session is killed, detached:
+# stopping a container can take seconds, and a kill from the browser popup
+# must not wait for it (nohup: the popup's hangup must not cut it short). A
+# failure is one events-log line.
+# Usage: agent_sandbox_stop <session_name>
+agent_sandbox_stop() {
+    local session_name="$1"
+    [[ -n "$(am_sandbox_provider)" ]] || {
+        am_event sandbox.stop_fail "$session_name" "reason=no_provider"
+        return 0
+    }
+    (
+        trap '' HUP
+        rc=0
+        _agent_sandbox_run "$session_name" - stop "$session_name" </dev/null >/dev/null 2>&1 || rc=$?
+        (( rc == 0 )) || am_event sandbox.stop_fail "$session_name" "rc=$rc"
+    ) >/dev/null 2>&1 &
+    return 0
 }
 
 # Run the configured directory provider (`am config set dir_provider <cmd>`)
@@ -728,9 +880,9 @@ agent_kill() {
     recovery_desired_remove "$session_name" 2>/dev/null || true
 
     # Bulk-read registry fields (one jq call instead of three)
-    local agent_type dir created_at
-    IFS='|' read -r agent_type dir created_at \
-        <<< "$(registry_get_fields "$session_name" agent_type directory created_at)"
+    local agent_type dir created_at sandbox
+    IFS='|' read -r agent_type dir created_at sandbox \
+        <<< "$(registry_get_fields "$session_name" agent_type directory created_at sandbox)"
 
     # Final snapshot + close timestamp for session restore (before killing tmux)
     if agent_restorable "$agent_type" && tmux_session_exists "$session_name"; then
@@ -806,6 +958,9 @@ agent_kill() {
 
     tmux_kill_session "$session_name" || rc=$?
     (( rc == 0 )) || am_event kill.step "$session_name" "step=tmux_kill" "rc=$rc"
+    # The pane is gone, so the sandbox client exited with it; the provider
+    # stops (or removes) the sandbox itself.
+    [[ "$sandbox" == "1" ]] && agent_sandbox_stop "$session_name"
 
     # Always clean up registry and hook state file
     registry_remove "$session_name" \
@@ -818,10 +973,12 @@ agent_kill() {
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.dirty" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.head" \
           "${AM_STATE_DIR:-/tmp/am-state}/$session_name.fence" \
+          "${AM_STATE_DIR:-/tmp/am-state}/$session_name.nohooks" \
           "$(_recovery_identity_dir)/$session_name.sid" \
           "$(_recovery_identity_dir)/$session_name.transcript" \
           "$(_recovery_identity_dir)/$session_name.rebind" \
           "$AM_DIR/results/$session_name.txt"
+    rm -rf "${AM_STATE_DIR:-/tmp/am-state}/$session_name.spool"
 
     # Rebuild sidebar cache for surviving sessions so the killed entry
     # disappears from every pane-border immediately.

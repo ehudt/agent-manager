@@ -380,6 +380,16 @@ test_state_title_glyph() {
     rm -rf "$tmp_identity_dir"
     assert_eq "ready" "$(_resolve am-g claude)" \
         "resolve: ✳ + no hook file + no identity -> ready (fresh session again)"
+    # A sandbox whose hooks never reach the state dir (.nohooks, written by
+    # agent_launch when the provider's prepare did not print hooks=1) never
+    # gets a hook file: ✳ proves nothing there, so it reads unknown.
+    : > "$tmp_state_dir/am-g.nohooks"
+    assert_eq "unknown" "$(_resolve am-g claude)" \
+        "resolve: ✳ + no hook file + .nohooks (blind sandbox) -> unknown"
+    printf 'running' > "$tmp_state_dir/am-g"
+    assert_eq "running" "$(_resolve am-g claude)" \
+        "resolve: .nohooks does not override a hook file that did arrive"
+    rm -f "$tmp_state_dir/am-g" "$tmp_state_dir/am-g.nohooks"
 
     # no glyph signal (claude still booting / titles unavailable): same
     # ungated hook read; without even a hook file there is nothing -> unknown

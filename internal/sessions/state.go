@@ -153,6 +153,18 @@ func (e Env) hasIdentitySidecar(session string) bool {
 	return false
 }
 
+// hooksBlind reports a sandboxed session whose agent hooks cannot reach the
+// state dir (the `.nohooks` marker agent_launch writes when the sandbox
+// provider's prepare did not print hooks=1): no hook file there proves
+// nothing about a fresh prompt, so `✳` must not read as ready.
+func (e Env) hooksBlind(session string) bool {
+	if e.StateDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(e.StateDir, session+".nohooks"))
+	return err == nil
+}
+
 func claudeTitleSignal(title string) string {
 	for _, r := range title {
 		if r == '✳' {
@@ -206,7 +218,7 @@ func ResolveSessionState(env Env, name string, meta Session, activity, now int64
 				}
 				return "running", mtime
 			case "attention":
-				if raw == "" && !env.hasIdentitySidecar(name) {
+				if raw == "" && !env.hasIdentitySidecar(name) && !env.hooksBlind(name) {
 					return "ready", 0
 				}
 			}

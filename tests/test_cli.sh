@@ -19,9 +19,19 @@ test_cli() {
     # An unknown flag is rejected rather than silently forwarded, and the
     # message names it (cmd_new's -*) arm; pinned nowhere else).
     local rc=0 err
-    err=$("$PROJECT_DIR/am" new --sandbox /tmp 2>&1 >/dev/null </dev/null) || rc=$?
-    assert_eq "1" "$rc" "am new --sandbox: unknown option"
-    assert_contains "$err" "Unknown option: --sandbox" "am new --sandbox: the message names the flag"
+    err=$("$PROJECT_DIR/am" new --yolo /tmp 2>&1 >/dev/null </dev/null) || rc=$?
+    assert_eq "1" "$rc" "am new --yolo: unknown option"
+    assert_contains "$err" "Unknown option: --yolo" "am new --yolo: the message names the flag"
+    # --sandbox is a flag again (0.44, docs/sandboxes.md): without a provider
+    # the launch is refused with the config hint.
+    assert_contains "$new_help" "--sandbox" "am new --help: lists --sandbox"
+    rc=0
+    local nobox_dir
+    nobox_dir=$(mktemp -d)
+    err=$(AM_DIR="$nobox_dir" AM_SANDBOX_PROVIDER= "$PROJECT_DIR/am" new --sandbox /tmp 2>&1 >/dev/null </dev/null) || rc=$?
+    rm -rf "$nobox_dir"
+    assert_eq "1" "$rc" "am new --sandbox without a provider: refused"
+    assert_contains "$err" "am config set sandbox_provider" "am new --sandbox without a provider: names the config key"
     # Keep: the only unknown-*command* run (main's default arm).
     rc=0
     "$PROJECT_DIR/am" sb ps </dev/null >/dev/null 2>&1 || rc=$?
@@ -263,8 +273,8 @@ test_cli_extended() {
 
     # --- Test: removed config keys are rejected ---
     local config_rc=0
-    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set sandbox true >/dev/null 2>&1 || config_rc=$?
-    assert_eq "1" "$config_rc" "am config set sandbox: unknown key"
+    AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config set sb_network_restrict true >/dev/null 2>&1 || config_rc=$?
+    assert_eq "1" "$config_rc" "am config set sb_network_restrict: unknown key"
     config_rc=0
     AM_DIR="$TEST_AM_DIR" AM_SESSION_PREFIX="test-am-" "$PROJECT_DIR/am" config get yolo >/dev/null 2>&1 || config_rc=$?
     assert_eq "1" "$config_rc" "am config get yolo: unknown key"

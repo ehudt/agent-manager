@@ -172,6 +172,20 @@ Enter launches the highlighted one). Suggestions are cut off after
 `AM_DIR_SUGGEST_TIMEOUT` seconds (default 0.3), so a slow provider degrades
 to "resolve what you typed" instead of stalling the browser.
 
+A **sandbox provider** does the same for isolation: a command that starts
+the agent inside a container or jail (Docker Sandboxes' `sbx`, bubblewrap,
+`sandbox-exec`, ...). am calls `<provider> prepare|run|stop` and stays out
+of the details; the contract is in [docs/sandboxes.md](docs/sandboxes.md).
+
+```bash
+am config set sandbox_provider <am checkout>/scripts/sandbox/sbx
+am new --sandbox ~/project           # this session in a Docker sandbox
+am config set sandbox true           # every new session (--no-sandbox opts out)
+```
+
+The `sbx` adapter wires Claude's state hooks out of the container, so a
+sandboxed tab tracks running / waiting / ready like any other.
+
 Running `am new` with no arguments opens the session browser with the
 cursor on its New session section (see below): Enter on a row asks for
 the agent's first prompt, `Tab` picks the agent.
@@ -523,6 +537,7 @@ am config set agent codex          # Default to Codex
 am config set logs true            # Enable pane log streaming
 am config set shell true           # Open the shell panel at launch
 am config set dir_provider wp      # Backs `am new @spec` (suggest/resolve verbs)
+am config set sandbox_provider <am checkout>/scripts/sandbox/sbx   # Backs `am new --sandbox`
 am config set notify false         # No desktop notifications
 am config set notify_states waiting_user,ready   # Also announce finished turns
 am config get agent                # Read a single value
@@ -541,6 +556,8 @@ opinion and stay as they are; each key is a one-line change.
 | `notify_states` | `waiting_user` | Comma-separated states that notify. Add `ready` to hear about finished turns |
 | `notify_cmd` | unset | Your own notifier instead of osascript / notify-send; runs with `AM_NOTIFY_SESSION`, `AM_NOTIFY_STATE`, `AM_NOTIFY_TITLE`, `AM_NOTIFY_BODY` in the environment. Env: `AM_NOTIFY_CMD` |
 | `dir_provider` | unset | Command behind `am new @spec` (`suggest <partial>` / `resolve <spec>` verbs). Env: `AM_DIR_PROVIDER`; `AM_DIR_SUGGEST_TIMEOUT` caps the suggest call (0.3s) |
+| `sandbox_provider` | unset | Command that runs agents in a sandbox (`prepare` / `run` / `stop` verbs, [docs/sandboxes.md](docs/sandboxes.md)); `scripts/sandbox/sbx` drives Docker Sandboxes. Env: `AM_SANDBOX_PROVIDER` |
+| `sandbox` | `false` | Launch every new session in the sandbox provider (`am new --sandbox` / `--no-sandbox` per launch). Env: `AM_SANDBOX` |
 
 Presets (`am preset save`) are stored in the same file under `presets`.
 

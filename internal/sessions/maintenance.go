@@ -374,15 +374,18 @@ func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 	}
 	known := e.recordedSessions()
 	for _, de := range entries {
-		if !de.Type().IsRegular() {
+		name := de.Name()
+		// A sandboxed session's hook spool (lib/hooks/hook-relay) is the
+		// one directory under the state dir; everything else is a file.
+		spool := de.IsDir() && strings.HasSuffix(name, ".spool")
+		if !de.Type().IsRegular() && !spool {
 			continue
 		}
-		name := de.Name()
 		if e.Prefix != "" && !strings.HasPrefix(name, e.Prefix) {
 			continue
 		}
 		session := name
-		for _, suffix := range []string{".sid", ".transcript", ".cwd", ".bg", ".dirty", ".head", ".fence"} {
+		for _, suffix := range []string{".sid", ".transcript", ".cwd", ".bg", ".dirty", ".head", ".fence", ".nohooks", ".spool"} {
 			session = strings.TrimSuffix(session, suffix)
 		}
 		if _, ok := live[session]; ok {
@@ -391,7 +394,11 @@ func (e Env) sweepOrphanStateFiles(live map[string]struct{}) {
 		if _, ok := known[session]; !ok {
 			continue
 		}
-		if os.Remove(filepath.Join(e.StateDir, name)) == nil {
+		remove := os.Remove
+		if spool {
+			remove = os.RemoveAll
+		}
+		if remove(filepath.Join(e.StateDir, name)) == nil {
 			gcLog(e.AmDir, len(live), "orphan state file removed: %s", filepath.Join(e.StateDir, name))
 		}
 	}

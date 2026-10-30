@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# scripts/sandbox/sbx - am sandbox provider for Docker Sandboxes (`sbx`).
+#
+#   am config set sandbox_provider <am checkout>/scripts/sandbox/sbx
+#   am new --sandbox ~/project          # or: am config set sandbox true
+#
+# The contract (docs/sandboxes.md), as this adapter implements it:
+#   prepare <session> <dir> <agent>   create the sandbox `<session>` with the
+#                                      launch directory and the session's hook
+#                                      spool as workspaces (sbx mounts them at
+#                                      the same absolute paths), then register
+#                                      the spool hook in the sandbox's Claude
+#                                      settings; prints hooks=1 when it did
+#   run <session> <dir> <agent> -- <agent argv...>
+#                                      start the host-side hook relay, then
+#                                      exec `sbx run --name <session>` with the
+#                                      agent's arguments (argv[0] is dropped:
+#                                      the sandbox brings its own binary)
+#   stop <session>                     `sbx stop` (AM_SBX_ON_KILL=rm: `sbx rm`)
+#
+# Settings (environment, e.g. in your shell rc):
+#   AM_SBX_CREATE_ARGS   extra `sbx create` arguments, word-split
+#                        (e.g. "--memory 8g /path/to/docs:ro")
+#   AM_SBX_ON_KILL       stop (default: the sandbox stays, `sbx prune` clears
+#                        stopped ones) | rm (remove it with the session)
+#
+# State detection: Claude sessions get am's full state hooks through the
+# spool (lib/hooks/spool-hook.sh inside, lib/hooks/hook-relay outside).
+# Other agents run without hooks; am shows them as unknown until their pane
+# title says more. Restore: the conversation lives in the sandbox, so a
+# closed session is resumable only while its transcript is reachable from
+# the host (it is not, by default).
+set -euo pipefail
+
+die() { echo "error: sbx sandbox: $*" >&2; exit 1; }
+
+command -v sbx >/dev/null 2>&1 || die "sbx is not installed (https://docs.docker.com/ai/sandboxes/)"
+
+# am agent type → sbx agent name. Both lists are short; anything else is
+# refused at prepare time, before am creates the session.
+_sbx_agent() {
+    case "$1" in
+        claude|codex|cursor|opencode) echo "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+_sbx_exists() {
+    sbx ls -q 2>/dev/null | grep -Fxq -- "$1"
+}
+
+# The spool as sbx mounts it: the physical path (macOS /tmp is a symlink to
+# /private/tmp), so the hook command inside names the directory that exists.
+_spool_dir() {
+    [[ -n "${AM_HOOK_SPOOL:-}" ]] || return 1
+    (umask 077; mkdir -p "$AM_HOOK_SPOOL") || return 1
+    (cd -P "$AM_HOOK_SPOOL" && pwd)
+}
+
+# Register the spool hook for Claude's lifecycle events inside the sandbox
+# (the events am's own installer registers on the host, minus PreToolUse,
+# which exists for the relocation fence a relay cannot enforce).
+_install_claude_hooks() {
+    local session="$1" spool="$2"
+    cp "${AM_HOOKS_DIR:?}/spool-hook.sh" "$spool/spool-hook.sh"
+    chmod 755 "$spool/spool-hook.sh"
+    local cmd="sh $spool/spool-hook.sh # am-state-hook"
+    # shellcheck disable=SC2016 # expanded by the sandbox's bash, not here
+    sbx exec "$session" bash -c '
+        set -e
+        f="$HOME/.claude/settings.json"
+        mkdir -p "$HOME/.claude"
+        [ -s "$f" ] || echo "{}" > "$f"
+        jq --arg cmd "$1" "
+            def h(\$m): [{matcher: \$m, hooks: [{type: \"command\", command: \$cmd, timeout: 5000}]}];
+            .hooks //= {} |
+            .hooks |= with_entries(.value |= map(select((.hooks // []) | all(.command | test(\"# am-state-hook\") | not)))) |
+            .hooks.Stop = (.hooks.Stop // []) + h(\"\") |
+            .hooks.UserPromptSubmit = (.hooks.UserPromptSubmit // []) + h(\"\") |
+            .hooks.PostToolUse = (.hooks.PostToolUse // []) + h(\"\") |
+            .hooks.Notification = (.hooks.Notification // []) + h(\"idle_prompt\") + h(\"permission_prompt\") + h(\"elicitation_dialog\")
+        " "$f" > "$f.am-tmp" && mv "$f.am-tmp" "$f"
+    ' _ "$cmd"
+}
+
+verb="${1:-}"
+shift || true
+case "$verb" in
+    prepare)
+        session="${1:?session}" dir="${2:?dir}" agent="${3:?agent}"
+        sbx_agent=$(_sbx_agent "$agent") || die "agent '$agent' is not supported (sbx agents: claude, codex, cursor, opencode)"
+        spool=$(_spool_dir) || die "AM_HOOK_SPOOL is not set (run through am)"
+        if ! _sbx_exists "$session"; then
+            # shellcheck disable=SC2086 # AM_SBX_CREATE_ARGS is word-split on purpose
+            sbx create --name "$session" ${AM_SBX_CREATE_ARGS:-} "$sbx_agent" "$dir" "$spool" >&2 \
+                || die "sbx create failed for $session"
+        fi
+        if [[ "$agent" == claude ]]; then
+            if _install_claude_hooks "$session" "$spool" >&2; then
+                echo "hooks=1"
+            else
+                echo "warning: sbx sandbox: could not register state hooks in $session; state will read unknown" >&2
+                echo "hooks=0"
+            fi
+        else
+            echo "hooks=0"
+        fi
+        ;;
+    run)
+        session="${1:?session}"
+        shift 3
+        [[ "${1:-}" == "--" ]] && shift
+        shift || true   # argv[0]: the host's agent binary name
+        args=("$@")
+        # A stdin prompt (claude's prompt mode): sbx needs the pane's tty on
+        # stdin, so the prompt becomes the agent's positional argument.
+        if [[ ! -t 0 ]]; then
+            prompt=$(cat)
+            exec </dev/tty
+            [[ -n "$prompt" ]] && args+=("$prompt")
+        fi
+        if [[ -n "${AM_HOOK_SPOOL:-}" && -f "$AM_HOOK_SPOOL/spool-hook.sh" && -x "${AM_HOOKS_DIR:-}/hook-relay" ]]; then
+            "$AM_HOOKS_DIR/hook-relay" --spool "$AM_HOOK_SPOOL" --pid "$$" </dev/null >/dev/null 2>&1 &
+            disown
+        fi
+        exec sbx run --name "$session" -- "${args[@]}"
+        ;;
+    stop)
+        session="${1:?session}"
+        _sbx_exists "$session" || exit 0
+        if [[ "${AM_SBX_ON_KILL:-stop}" == rm ]]; then
+            sbx rm --force "$session" >/dev/null
+        else
+            sbx stop "$session" >/dev/null
+        fi
+        ;;
+    *)
+        echo "usage: sbx {prepare|run|stop} ..." >&2
+        exit 2
+        ;;
+esac

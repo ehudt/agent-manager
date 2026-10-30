@@ -829,6 +829,143 @@ test_agent_manifest() {
     $SUMMARY_MODE || echo ""
 }
 
+# A sandboxed launch (sandbox_provider + --sandbox / the sandbox default):
+# prepare runs before the pane exists, the pane runs `<provider> run ... --
+# <agent argv>`, the registry and sessions log record it, the .nohooks
+# marker follows the provider's hooks= answer, kill calls stop and removes
+# the sidecars, and a refused prepare leaves nothing behind.
+test_sandbox_provider() {
+    $SUMMARY_MODE || echo "=== Testing sandbox provider ==="
+
+    source "$LIB_DIR/utils.sh"
+    source "$LIB_DIR/tmux.sh"
+    source "$LIB_DIR/registry.sh"
+    set +u; source "$LIB_DIR/agents.sh"; set -u
+
+    setup_integration_env
+    local old_state_dir="${AM_STATE_DIR:-}" state_dir fake test_dir
+    state_dir=$(mktemp -d)
+    fake=$(mktemp -d)
+    test_dir=$(mktemp -d)
+    export AM_STATE_DIR="$state_dir"
+    am_config_set sandbox_provider "FAKE_SANDBOX_DIR=$fake $TEST_DIR/fake_sandbox_provider"
+
+    local s test_dir_abs
+    test_dir_abs=$(abspath "$test_dir")
+    s=$(set +u; agent_launch "$test_dir" claude "" --sandbox 2>/dev/null)
+    assert_not_empty "$s" "sandbox: session launched"
+    assert_contains "$(head -1 "$fake/calls.log")" "prepare $s $test_dir_abs claude" \
+        "sandbox: prepare gets session, directory, agent"
+    assert_cmd_succeeds "sandbox: the pane runs the provider's run verb" \
+        wait_for_cmd grep -q "^run $s $test_dir_abs claude -- " "$fake/calls.log"
+    assert_contains "$(grep '^run ' "$fake/calls.log")" "-- $TEST_DIR/stub_agent" \
+        "sandbox: run gets the agent argv after --"
+    local pane
+    pane=$(wait_for_text "stub-agent-ready" am_tmux capture-pane -t "$s:.{top-left}" -p)
+    assert_contains "$pane" "stub-agent-ready" "sandbox: the provider execs the agent in the pane"
+    assert_contains "$(grep '^run ' "$fake/env.log")" "sandbox=1 spool=$state_dir/$s.spool hooks_dir=$PROJECT_DIR/lib/hooks" \
+        "sandbox: run sees AM_SANDBOX, AM_HOOK_SPOOL, AM_HOOKS_DIR"
+    assert_contains "$(grep '^prepare ' "$fake/env.log")" "session=$s agent=claude sandbox=1" \
+        "sandbox: prepare sees the session and agent"
+    assert_eq "1" "$(registry_get_field "$s" sandbox)" "sandbox: registry records it"
+    assert_eq "1" "$(_sessions_log_field "$s" sandbox)" "sandbox: sessions log records it (restore)"
+    assert_cmd_succeeds "sandbox: no hooks=1 → .nohooks marker" test -f "$state_dir/$s.nohooks"
+    mkdir -p "$state_dir/$s.spool"
+    agent_kill "$s" >/dev/null 2>&1 || true
+    assert_cmd_succeeds "sandbox: kill calls the provider's stop" \
+        wait_for_cmd grep -qx "stop $s" "$fake/calls.log"
+    assert_cmd_fails "sandbox: kill removes .nohooks" test -e "$state_dir/$s.nohooks"
+    assert_cmd_fails "sandbox: kill removes the hook spool" test -e "$state_dir/$s.spool"
+
+    # hooks=1: the provider relays hooks, no marker.
+    s=$(set +u; FAKE_SANDBOX_HOOKS=1 agent_launch "$test_dir" claude "" --sandbox 2>/dev/null)
+    assert_not_empty "$s" "sandbox hooks=1: session launched"
+    assert_cmd_fails "sandbox hooks=1: no .nohooks marker" test -e "$state_dir/$s.nohooks"
+    agent_kill "$s" >/dev/null 2>&1 || true
+
+    # A stdin prompt is piped into the provider, which hands it to the agent.
+    s=$(set +u; _AM_LAUNCH_PROMPT="sandboxed hello"; agent_launch "$test_dir" claude "" --sandbox 2>/dev/null)
+    pane=$(wait_for_text "stub-agent-input:sandboxed hello" am_tmux capture-pane -t "$s:.{top-left}" -p)
+    assert_contains "$pane" "stub-agent-input:sandboxed hello" "sandbox: stdin prompt reaches the agent through run"
+    agent_kill "$s" >/dev/null 2>&1 || true
+
+    # A refused prepare fails the launch before any session exists.
+    local before after
+    before=$(tmux_count_am_sessions)
+    : > "$fake/calls.log"
+    local ev="$fake/events.log"
+    s=$(set +u; AM_EVENTS_LOG="$ev" FAKE_SANDBOX_PREPARE_RC=3 agent_launch "$test_dir" claude "" --sandbox 2>/dev/null) || true
+    after=$(tmux_count_am_sessions)
+    assert_eq "" "$s" "sandbox prepare refused: no session name"
+    assert_eq "$before" "$after" "sandbox prepare refused: no tmux session left behind"
+    assert_cmd_fails "sandbox prepare refused: run never called" grep -q '^run ' "$fake/calls.log"
+    assert_contains "$(cat "$ev" 2>/dev/null)" "sandbox.prepare_fail" \
+        "sandbox prepare refused: events log records it"
+
+    # The sandbox default, and --no-sandbox overriding it.
+    am_config_set sandbox true boolean
+    : > "$fake/calls.log"
+    s=$(set +u; agent_launch "$test_dir" claude "" 2>/dev/null)
+    assert_cmd_succeeds "sandbox default: plain launch is sandboxed" grep -q "^prepare $s " "$fake/calls.log"
+    agent_kill "$s" >/dev/null 2>&1 || true
+    : > "$fake/calls.log"
+    s=$(set +u; agent_launch "$test_dir" claude "" --no-sandbox 2>/dev/null)
+    assert_not_empty "$s" "sandbox default: --no-sandbox launches"
+    assert_eq "" "$(cat "$fake/calls.log")" "sandbox default: --no-sandbox never calls the provider"
+    assert_eq "" "$(registry_get_field "$s" sandbox)" "sandbox default: --no-sandbox records no sandbox"
+    agent_kill "$s" >/dev/null 2>&1 || true
+
+    # No provider configured: --sandbox refuses.
+    am_config_unset sandbox_provider
+    s=$(set +u; agent_launch "$test_dir" claude "" --sandbox 2>/dev/null) || true
+    assert_eq "" "$s" "sandbox: --sandbox without a provider fails"
+
+    rm -rf "$state_dir" "$fake" "$test_dir"
+    if [[ -n "$old_state_dir" ]]; then
+        export AM_STATE_DIR="$old_state_dir"
+    else
+        unset AM_STATE_DIR
+    fi
+    teardown_integration_env
+}
+
+# lib/hooks/hook-relay feeds every spooled payload to the hook in arrival
+# order with the relay's AM_SESSION_NAME, drops oversized and symlinked
+# entries, and exits once the watched pid is gone (after a last drain).
+test_hook_relay() {
+    $SUMMARY_MODE || echo "=== Testing sandbox hook relay ==="
+    local spool out hook
+    spool=$(mktemp -d)
+    out=$(mktemp -d)
+    hook="$out/hook.sh"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'printf "%s %s\n" "$AM_SESSION_NAME" "$(cat)" >> "${0%/*}/fed.log"' > "$hook"
+    printf '{"n":2}' > "$spool/2000000000000000000.2.json"
+    printf '{"n":1}' > "$spool/1000000000000000000.1.json"
+    printf '{"n":"big"}' > "$spool/1500000000000000000.3.json"
+    printf 'partial' > "$spool/1600000000000000000.4.tmp"
+    ln -s /etc/hosts "$spool/1700000000000000000.5.json"
+    sleep 30 &
+    local watched=$!
+    AM_SESSION_NAME=am-relaytest AM_HOOK_RELAY_MAX=8 \
+        "$PROJECT_DIR/lib/hooks/hook-relay" --spool "$spool" --pid "$watched" --hook "$hook" &
+    local relay=$!
+    wait_for_cmd test -f "$out/fed.log"
+    sleep 0.5
+    assert_eq $'am-relaytest {"n":1}\nam-relaytest {"n":2}' "$(cat "$out/fed.log" 2>/dev/null)" \
+        "hook relay: payloads fed in order, oversized and symlinked ones dropped"
+    assert_cmd_succeeds "hook relay: an unfinished .tmp is left for its writer" test -f "$spool/1600000000000000000.4.tmp"
+    assert_cmd_fails "hook relay: the symlink is removed" test -L "$spool/1700000000000000000.5.json"
+    printf '{"n":3}' > "$spool/3000000000000000000.6.json"
+    kill "$watched" 2>/dev/null; wait "$watched" 2>/dev/null
+    local i
+    for i in $(seq 1 20); do kill -0 "$relay" 2>/dev/null || break; sleep 0.2; done
+    assert_cmd_fails "hook relay: exits when the watched pid is gone" kill -0 "$relay"
+    assert_contains "$(cat "$out/fed.log" 2>/dev/null)" '{"n":3}' "hook relay: drains what arrived before it exits"
+    kill "$relay" 2>/dev/null || true
+    rm -rf "$spool" "$out"
+}
+
 run_agents_tests() {
     _run_test test_agents
     _run_test test_agents_extended
@@ -841,6 +978,8 @@ run_agents_tests() {
     _run_test test_prompt_injection
     _run_test test_send_prompt_delay
     _run_test test_private_dirs
+    _run_test test_sandbox_provider
+    _run_test test_hook_relay
 }
 
 if [[ -z "${_AM_TEST_RUNNER:-}" ]]; then

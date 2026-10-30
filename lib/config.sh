@@ -151,6 +151,33 @@ am_dir_suggest_timeout() {
     printf '%s\n' "${AM_DIR_SUGGEST_TIMEOUT:-0.3}"
 }
 
+# Sandbox provider: the command that runs an agent inside a sandbox (Docker
+# `sbx`, bubblewrap, sandbox-exec, ...). am calls it with a verb and fixed
+# arguments, via bash -c, like the dir_provider (docs/sandboxes.md):
+#   <provider> prepare <session> <dir> <agent>          host, before the pane
+#   <provider> run <session> <dir> <agent> -- <argv>    in the agent pane
+#   <provider> stop <session>                           after a kill
+# Empty (the default) disables --sandbox. Reference: scripts/sandbox/sbx.
+am_sandbox_provider() {
+    if [[ -n "${AM_SANDBOX_PROVIDER:-}" ]]; then
+        echo "$AM_SANDBOX_PROVIDER"
+        return
+    fi
+    am_config_get "sandbox_provider"
+}
+
+# Whether new sessions launch inside the sandbox provider by default
+# (`sandbox` key, default false; --sandbox / --no-sandbox per launch).
+am_sandbox_enabled() {
+    if [[ -n "${AM_SANDBOX:-}" ]]; then
+        am_bool_is_true "${AM_SANDBOX,,}"
+        return $?
+    fi
+    local configured
+    configured=$(am_config_get "sandbox")
+    am_bool_is_true "${configured,,}"
+}
+
 am_auto_restore_enabled() {
     if [[ -n "${AM_AUTO_RESTORE:-}" ]]; then
         am_bool_is_true "${AM_AUTO_RESTORE,,}"
@@ -208,6 +235,8 @@ am_config_key_alias() {
         shell|shell-pane|shell_pane) echo "shell_pane" ;;
         collapse|collapse-busy|collapse_busy) echo "collapse_busy" ;;
         provider|dir-provider|dir_provider) echo "dir_provider" ;;
+        sandbox) echo "sandbox" ;;
+        sandbox-provider|sandbox_provider) echo "sandbox_provider" ;;
         notify|notifications) echo "notify" ;;
         notify-states|notify_states) echo "notify_states" ;;
         notify-cmd|notify_cmd) echo "notify_cmd" ;;
@@ -217,8 +246,8 @@ am_config_key_alias() {
 
 am_config_key_type() {
     case "$1" in
-        default_agent|dir_provider|notify_states|notify_cmd) echo "string" ;;
-        auto_restore|stream_logs|shell_pane|collapse_busy|notify) echo "boolean" ;;
+        default_agent|dir_provider|sandbox_provider|notify_states|notify_cmd) echo "string" ;;
+        auto_restore|stream_logs|shell_pane|collapse_busy|notify|sandbox) echo "boolean" ;;
         *) return 1 ;;
     esac
 }
@@ -230,7 +259,7 @@ am_config_value_is_valid() {
         default_agent)
             [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
             ;;
-        auto_restore|stream_logs|shell_pane|collapse_busy|notify)
+        auto_restore|stream_logs|shell_pane|collapse_busy|notify|sandbox)
             [[ "$value" =~ ^(1|0|true|false|yes|no|on|off)$ ]]
             ;;
         notify_states)
@@ -243,7 +272,7 @@ am_config_value_is_valid() {
             done
             [[ -n "$value" ]] && $ok
             ;;
-        dir_provider|notify_cmd)
+        dir_provider|sandbox_provider|notify_cmd)
             return 0
             ;;
         *)
@@ -276,6 +305,9 @@ am_config_print() {
     if am_collapse_busy_enabled; then collapse_busy_value=true; else collapse_busy_value=false; fi
     notify_states_value=$(am_notify_states)
     notify_cmd_value=$(am_config_get "notify_cmd")
+    local sandbox_value sandbox_provider_value
+    if am_sandbox_enabled; then sandbox_value=true; else sandbox_value=false; fi
+    sandbox_provider_value=$(am_sandbox_provider)
 
     cat <<EOF
 default_agent=$default_agent_value
@@ -284,6 +316,8 @@ stream_logs=$stream_logs_value
 shell_pane=$shell_pane_value
 collapse_busy=$collapse_busy_value
 dir_provider=$dir_provider_value
+sandbox=$sandbox_value
+sandbox_provider=$sandbox_provider_value
 notify=$notify_value
 notify_states=$notify_states_value
 notify_cmd=$notify_cmd_value

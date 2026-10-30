@@ -15,7 +15,7 @@ fi
 set -euo pipefail
 
 # Version
-AM_VERSION="0.43.0"
+AM_VERSION="0.44.0"
 
 # Determine script directory (resolve symlinks)
 SOURCE="${BASH_SOURCE[0]}"
@@ -339,8 +339,10 @@ _browse_result() {
         # Nobody waits on a launch with a first prompt (the user moves on to
         # another session while it starts) or on a @spec (the provider may
         # fetch or clone first): those run in the background and the popup
-        # closes now. A plain directory with no prompt opens as before.
-        if [[ -n "$prompt" ]] || am_dir_is_spec "$directory"; then
+        # closes now. So does a sandboxed launch (the provider may pull an
+        # image or create a container first). A plain directory with no
+        # prompt opens as before.
+        if [[ -n "$prompt" ]] || am_dir_is_spec "$directory" || _launch_flags_sandboxed "$flags"; then
             _launch_bg_start "$directory" "$agent_type" "$flags" "$prompt"
             return
         fi
@@ -420,6 +422,30 @@ _dir_free_of_live_session() {
     log_error "$spec resolved to $dir, where a live session is already working: $busy"
     echo "Attach it with 'am attach $busy', or pass the directory itself to start a second agent there." >&2
     return 1
+}
+
+# Whether a browser launch's flags end up sandboxed: an explicit
+# --sandbox / --no-sandbox, else a --preset=<name> with its sandbox field,
+# else the `sandbox` config default (the same precedence agent_launch and
+# _cmd_new_apply_preset apply).
+# Usage: _launch_flags_sandboxed <flags>
+_launch_flags_sandboxed() {
+    local f preset=""
+    # shellcheck disable=SC2086 # the browser's flags field is word-split, as at launch
+    for f in $1; do
+        case "$f" in
+            --sandbox) return 0 ;;
+            --no-sandbox) return 1 ;;
+            --preset=*) preset="${f#--preset=}" ;;
+        esac
+    done
+    if [[ -n "$preset" ]]; then
+        case "$(am_preset_field "$preset" sandbox 2>/dev/null)" in
+            true) return 0 ;;
+            false) return 1 ;;
+        esac
+    fi
+    am_sandbox_enabled
 }
 
 # Usage: cmd_new_internal [--detach] [--prompt <text>] [--source <s>] <directory> [agent_type] [flags...]
@@ -775,10 +801,13 @@ cmd_restore_internal() {
     # and a whole-file slurp would fail on one of them and skip the check.
     # `fence` is the relocation fence the closed session carried (newlines
     # travel as RS so the row stays one line).
-    local branch="" head_sha="" old_transcript="" prev_fence=""
+    # `sandbox` says the conversation ran inside the sandbox provider: it
+    # resumes there again (its transcript may exist only in there), and a
+    # host session stays on the host whatever the `sandbox` default says.
+    local branch="" head_sha="" old_transcript="" prev_fence="" sandbox=""
     if [[ -f "$AM_SESSIONS_LOG" ]]; then
-        IFS=$'\x1f' read -r branch head_sha old_transcript prev_fence < <(jq -Rr --arg sid "$session_id" \
-            'fromjson? | select(.session_id == $sid) | [(.branch // ""), (.head_sha // ""), (.transcript_path // ""), (.fence // "" | tostring | gsub("\n"; "\u001e"))] | join("\u001f")' \
+        IFS=$'\x1f' read -r branch head_sha old_transcript sandbox prev_fence < <(jq -Rr --arg sid "$session_id" \
+            'fromjson? | select(.session_id == $sid) | [(.branch // ""), (.head_sha // ""), (.transcript_path // ""), (.sandbox // "" | tostring), (.fence // "" | tostring | gsub("\n"; "\u001e"))] | join("\u001f")' \
             "$AM_SESSIONS_LOG" 2>/dev/null | tail -n1 || true)
         prev_fence="${prev_fence//$'\x1e'/$'\n'}"
     fi
@@ -851,6 +880,7 @@ cmd_restore_internal() {
     fi
     _AM_LAUNCH_FENCE="$fence"
     _AM_LAUNCH_SOURCE=restore
+    if [[ "$sandbox" == "1" ]]; then resume_args+=(--sandbox); else resume_args+=(--no-sandbox); fi
     session_name=$(agent_launch "$launch_dir" "$agent_type" "" "${resume_args[@]}")
     _AM_LAUNCH_SOURCE=""
     _AM_LAUNCH_PROMPT=""
@@ -977,12 +1007,21 @@ _cmd_new_apply_preset() {
     fi
     local -a pargs=()
     mapfile -t pargs < <(am_preset_field "$pname" args)
-    local has_shell=false a
+    local has_shell=false has_sandbox=false a
     for a in "${agent_args[@]}"; do
         [[ "$a" == "--shell" || "$a" == "--no-shell" ]] && has_shell=true
+        [[ "$a" == "--sandbox" || "$a" == "--no-sandbox" ]] && has_sandbox=true
     done
     if [[ "$(am_preset_field "$pname" shell)" == "true" && "$has_shell" == false ]]; then
         pargs=("--shell" "${pargs[@]}")
+    fi
+    # sandbox is tri-state: true / false override the config default, an
+    # unset field leaves it alone.
+    if [[ "$has_sandbox" == false ]]; then
+        case "$(am_preset_field "$pname" sandbox)" in
+            true) pargs=("--sandbox" "${pargs[@]}") ;;
+            false) pargs=("--no-sandbox" "${pargs[@]}") ;;
+        esac
     fi
     agent_args=("${pargs[@]}" "${agent_args[@]}")
     return 0
@@ -1025,6 +1064,14 @@ cmd_new() {
                 agent_args+=("--no-shell")
                 shift
                 ;;
+            --sandbox)
+                agent_args+=("--sandbox")
+                shift
+                ;;
+            --no-sandbox)
+                agent_args+=("--no-sandbox")
+                shift
+                ;;
             --detach|--no-attach)
                 attach_session=false
                 shift
@@ -1050,6 +1097,8 @@ cmd_new() {
                 echo "  -p, --preset    Apply a saved preset (am preset list); explicit flags win"
                 echo "  --shell         Open the shell panel at launch (default: agent-only)"
                 echo "  --no-shell      Start agent-only even if shell_pane is enabled by default"
+                echo "  --sandbox       Run the agent inside the sandbox_provider (docs/sandboxes.md)"
+                echo "  --no-sandbox    Run on the host even if sandbox is enabled by default"
                 echo "  --detach        Create the session without attaching"
                 echo "  --print-session  Print the created session name"
                 echo "  --              Pass remaining args to agent command"
@@ -1827,7 +1876,7 @@ cmd_config() {
         get)
             local raw_key="${1:-}"
             if [[ -z "$raw_key" ]]; then
-                log_error "Usage: am config get <agent|logs|shell|auto-restore|dir_provider|notify|notify_states|notify_cmd>"
+                log_error "Usage: am config get <agent|logs|shell|auto-restore|dir_provider|sandbox|sandbox_provider|notify|notify_states|notify_cmd>"
                 return 1
             fi
             local key
@@ -1853,6 +1902,12 @@ cmd_config() {
                     ;;
                 dir_provider)
                     am_dir_provider
+                    ;;
+                sandbox)
+                    am_sandbox_enabled && echo true || echo false
+                    ;;
+                sandbox_provider)
+                    am_sandbox_provider
                     ;;
                 notify)
                     am_notify_enabled && echo true || echo false
@@ -1883,7 +1938,7 @@ cmd_config() {
             fi
             # A shell command is case-sensitive; everything else is normalized
             # to lowercase.
-            [[ "$key" == "dir_provider" || "$key" == "notify_cmd" ]] || value="${value,,}"
+            [[ "$key" == "dir_provider" || "$key" == "sandbox_provider" || "$key" == "notify_cmd" ]] || value="${value,,}"
             if ! am_config_value_is_valid "$key" "$value"; then
                 log_error "Invalid value for $raw_key: $value"
                 return 1
@@ -1925,6 +1980,11 @@ Keys:
                   Called as `<cmd> suggest <partial>` (lines: spec<TAB>label) and
                   `<cmd> resolve <spec>` (prints a directory), e.g.
                   am config set dir_provider wp
+  sandbox         New sessions run inside the sandbox provider (true/false;
+                  --sandbox / --no-sandbox per launch)
+  sandbox_provider  Command that runs agents in a sandbox, called as
+                  `<cmd> prepare|run|stop ...` (docs/sandboxes.md), e.g.
+                  am config set sandbox_provider <am checkout>/scripts/sandbox/sbx
   notify          Desktop notification when a session needs you (true/false)
   notify_states   States that notify, comma-separated (default waiting_user;
                   add ready to hear about finished turns)

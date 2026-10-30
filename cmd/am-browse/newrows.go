@@ -366,6 +366,13 @@ func (l launcher) describe(r newRow, here []string) string {
 		if p.Shell {
 			fmt.Fprintf(&b, "  %-10s %s\n", "shell", "open")
 		}
+		if p.Sandbox != nil {
+			v := "host (--no-sandbox)"
+			if *p.Sandbox {
+				v = "sandboxed (--sandbox)"
+			}
+			fmt.Fprintf(&b, "  %-10s %s\n", "sandbox", v)
+		}
 		return b.String()
 	case newSpec:
 		fmt.Fprintf(&b, "%s is resolved by the dir_provider at launch:\n\n  %s resolve %s\n",

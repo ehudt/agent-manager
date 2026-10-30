@@ -37,6 +37,9 @@ type Session struct {
 	CreatedAt string `json:"created_at"`
 	LogicalID string `json:"logical_id"`
 	OrderKey  string `json:"order_key"`
+	// Sandbox is "1" when the agent runs inside the configured sandbox
+	// provider (agent_launch --sandbox; docs/sandboxes.md).
+	Sandbox string `json:"sandbox,omitempty"`
 
 	// Unreviewed change since the review baseline (review.go): files touched,
 	// lines added/deleted, and when it was measured (unix seconds). Written by
@@ -270,6 +273,9 @@ func FormatDisplayBase(s TmuxSession, meta Session) string {
 		display.WriteString(meta.AgentType)
 	} else {
 		display.WriteString("unknown")
+	}
+	if meta.Sandbox == "1" {
+		display.WriteString("·sandbox")
 	}
 	display.WriteByte(']')
 

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Fake sandbox provider for the tests (the `sandbox_provider` contract):
+#   fake_sandbox_provider prepare <session> <dir> <agent>   -> key=value lines
+#   fake_sandbox_provider run <session> <dir> <agent> -- <argv...>  -> exec argv
+#   fake_sandbox_provider stop <session>
+# FAKE_SANDBOX_DIR is where every invocation is logged (calls.log, one line
+# per call: verb and arguments; env.log: the am variables each call saw).
+# FAKE_SANDBOX_PREPARE_RC makes prepare fail; FAKE_SANDBOX_HOOKS is printed
+# as hooks=<value> when set.
+set -euo pipefail
+root="${FAKE_SANDBOX_DIR:?FAKE_SANDBOX_DIR must be set}"
+printf '%s\n' "$*" >> "$root/calls.log"
+printf '%s session=%s agent=%s sandbox=%s spool=%s hooks_dir=%s\n' "${1:-}" \
+    "${AM_SESSION_NAME:-}" "${AM_AGENT_TYPE:-}" "${AM_SANDBOX:-}" \
+    "${AM_HOOK_SPOOL:-}" "${AM_HOOKS_DIR:-}" >> "$root/env.log"
+case "${1:-}" in
+    prepare)
+        echo "creating sandbox $2" >&2
+        rc="${FAKE_SANDBOX_PREPARE_RC:-0}"
+        (( rc == 0 )) || { echo "error: no sandbox for you" >&2; exit "$rc"; }
+        [[ -n "${FAKE_SANDBOX_HOOKS:-}" ]] && echo "hooks=$FAKE_SANDBOX_HOOKS"
+        exit 0
+        ;;
+    run)
+        shift 4   # verb, session, dir, agent
+        [[ "${1:-}" == "--" ]] && shift
+        exec "$@"
+        ;;
+    stop)
+        exit 0
+        ;;
+    *)
+        echo "unknown verb: ${1:-}" >&2
+        exit 3
+        ;;
+esac

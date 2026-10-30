@@ -427,7 +427,7 @@ _doc_hook_files() {
             _doc_kv "state file" "missing (no hook event yet, or not a hook-driven agent)"
         fi
     fi
-    for f in sid transcript cwd bg fence; do
+    for f in sid transcript cwd bg fence nohooks; do
         if [[ -f "$state_dir/$name.$f" ]]; then
             v=$(head -c 300 "$state_dir/$name.$f" | tr '\n' ' ')
             _doc_kv ".$f" "$v ($(_doc_age "$(_doc_mtime "$state_dir/$name.$f")" "$now"))"
@@ -435,6 +435,17 @@ _doc_hook_files() {
             _doc_kv ".$f" "-"
         fi
     done
+    # Sandboxed sessions: the provider and the hook spool its relay drains
+    # (a growing spool means the relay is not running).
+    if [[ "$(registry_get_field "$name" sandbox 2>/dev/null)" == "1" ]]; then
+        local spooled=0
+        if [[ -d "$state_dir/$name.spool" ]]; then
+            spooled=$(find "$state_dir/$name.spool" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+        fi
+        _doc_kv "sandbox" "$(am_sandbox_provider 2>/dev/null || true)"
+        _doc_kv "hook spool" "$( [[ -d "$state_dir/$name.spool" ]] && echo "$spooled pending" || echo "-")"
+        (( spooled > 5 )) && _doc_warn "hook spool is backing up: is the sandbox provider's hook-relay running?"
+    fi
     _doc_h2 "durable identity ($id_dir)"
     for f in sid transcript rebind; do
         if [[ -f "$id_dir/$name.$f" ]]; then

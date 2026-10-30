@@ -506,6 +506,10 @@ func TestFormatDisplayBaseUsesWorkdir(t *testing.T) {
 	if got := FormatDisplayBase(s, meta); got != "am-wd pink-wekapp/pr-42 [claude] fix Δ3 +42 −7" {
 		t.Errorf("with review stats: %q", got)
 	}
+	meta.Sandbox = "1"
+	if got := FormatDisplayBase(s, meta); got != "am-wd pink-wekapp/pr-42 [claude·sandbox] fix Δ3 +42 −7" {
+		t.Errorf("sandboxed: %q", got)
+	}
 }
 
 func TestResolveSessionState(t *testing.T) {
@@ -571,6 +575,15 @@ func TestResolveSessionState(t *testing.T) {
 	if st, _ := ResolveSessionState(env, "am-fresh", claudeMeta, 1990, now, panes, procs); st != "ready" {
 		t.Errorf("am-fresh = %q, want ready", st)
 	}
+	// A sandbox whose hooks never reach the state dir (.nohooks): no hook
+	// file proves nothing, so the same picture reads unknown.
+	if err := os.WriteFile(filepath.Join(stateDir, "am-fresh.nohooks"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := ResolveSessionState(env, "am-fresh", claudeMeta, 1990, now, panes, procs); st != "unknown" {
+		t.Errorf("am-fresh with .nohooks = %q, want unknown", st)
+	}
+	_ = os.Remove(filepath.Join(stateDir, "am-fresh.nohooks"))
 	// Shell pane older than 5s -> idle; younger than 5s -> starting.
 	if st, _ := ResolveSessionState(env, "am-shell", claudeMeta, 1990, now, panes, procs); st != "idle" {
 		t.Errorf("am-shell = %q, want idle", st)

@@ -29,7 +29,10 @@ type Preset struct {
 	Agent     string
 	Directory string
 	Shell     bool
-	Args      []string
+	// Sandbox is nil when the preset leaves the `sandbox` config default
+	// alone, else the --sandbox / --no-sandbox it applies.
+	Sandbox *bool
+	Args    []string
 }
 
 // LoadConfig reads config.json under amDir.
@@ -46,6 +49,7 @@ func LoadConfig(amDir string) Config {
 			Agent     string   `json:"agent"`
 			Directory string   `json:"directory"`
 			Shell     bool     `json:"shell"`
+			Sandbox   *bool    `json:"sandbox"`
 			Args      []string `json:"args"`
 			Workspace bool     `json:"workspace"`
 			Branch    string   `json:"branch"`
@@ -67,6 +71,7 @@ func LoadConfig(amDir string) Config {
 				Agent:     p.Agent,
 				Directory: dir,
 				Shell:     p.Shell,
+				Sandbox:   p.Sandbox,
 				Args:      append([]string(nil), p.Args...),
 			}
 		}

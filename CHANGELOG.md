@@ -6,6 +6,25 @@ User-facing changes per release. The version is `AM_VERSION` in `am`
 fails when the two disagree. Patch releases are folded into their minor
 entry unless they changed behaviour a user would notice.
 
+## [0.44.0] - 2026-10-30
+
+- Sessions can run their agent inside a sandbox. Configure a sandbox
+  provider (`am config set sandbox_provider <cmd>`) and launch with
+  `am new --sandbox`, a preset saved with `--sandbox`, or make it the
+  default with `am config set sandbox true` (`--no-sandbox` opts out). The
+  provider is any command answering `prepare`, `run` and `stop`; the
+  contract is in `docs/sandboxes.md`. Sandboxed tabs read `[claude·sandbox]`.
+- A reference provider for Docker Sandboxes ships as `scripts/sandbox/sbx`.
+  Claude sessions in it keep full state detection: their hooks spool events
+  into a directory mounted in the sandbox (`lib/hooks/spool-hook.sh`), and
+  `lib/hooks/hook-relay` feeds them to am's hook on the host.
+- A sandbox that cannot deliver hook events shows `unknown` rather than a
+  permanent `ready`. `am restore` and reboot recovery resume a sandboxed
+  conversation in the sandbox again, and a host one on the host.
+- `am doctor` shows the provider and the hook spool of a sandboxed session;
+  `events.log` records `sandbox.prepare`, `sandbox.prepare_fail` and
+  `sandbox.stop_fail`.
+
 ## [0.43.0] - 2026-10-28
 
 - New sessions can start in the background. Enter on a New session row now

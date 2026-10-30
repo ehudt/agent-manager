@@ -417,7 +417,11 @@ _state_resolve() {
             # the hook read, which reports unknown.
             local raw=""
             _state_hook_raw "$session" raw
-            if [[ -z "$raw" ]] && ! _state_has_identity "$session"; then
+            # A sandbox whose hooks never reach the state dir (.nohooks,
+            # agent_launch) has no hook file at any point: nothing proves
+            # the session is at its first prompt.
+            if [[ -z "$raw" ]] && ! _state_has_identity "$session" \
+                && [[ ! -e "${AM_STATE_DIR:-/tmp/am-state}/$session.nohooks" ]]; then
                 _state_debug "$_dbg_session" "$_dbg_agent" title ready
                 echo "ready"
                 return

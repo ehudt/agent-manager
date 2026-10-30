@@ -41,6 +41,17 @@ high" "$(am_preset_field review args)" "presets: args preserved in order"
 scratch" "$(am_preset_names)" "presets: names sorted"
     assert_eq "$HOME/my tools" "$(am_preset_field scratch directory)" "presets: tilde expanded"
     assert_eq "true" "$(am_preset_field scratch shell)" "presets: shell stored"
+
+    # sandbox is tri-state: --sandbox / --no-sandbox are stored, no flag
+    # leaves the key out so the config default applies.
+    preset_main save boxed --sandbox ~ >/dev/null 2>&1
+    preset_main save hosted --no-sandbox ~ >/dev/null 2>&1
+    assert_eq "true" "$(am_preset_field boxed sandbox)" "presets: --sandbox stored"
+    assert_eq "false" "$(am_preset_field hosted sandbox)" "presets: --no-sandbox stored (false is not missing)"
+    assert_eq "" "$(am_preset_field scratch sandbox)" "presets: no sandbox flag → no key"
+    assert_contains "$(_preset_render boxed)" "--sandbox" "presets: render --sandbox"
+    assert_contains "$(_preset_render hosted)" "--no-sandbox" "presets: render --no-sandbox"
+    am_preset_rm boxed; am_preset_rm hosted
     assert_eq "false" "$(preset_main save x -n "a task" >/dev/null 2>&1 && echo true || echo false)" \
         "presets: -n (task) is not an option"
 

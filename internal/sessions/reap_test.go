@@ -78,6 +78,15 @@ func TestReapOrphansRemovesDeadAndKeepsLive(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(stateDir, n+".transcript"), []byte("/tmp/"+n+".jsonl"), 0o644); err != nil {
 			t.Fatalf("seed transcript sidecar: %v", err)
 		}
+		if err := os.WriteFile(filepath.Join(stateDir, n+".nohooks"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(stateDir, n+".spool"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, n+".spool", "1.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	live := []TmuxSession{{Name: "am-live", Activity: 1}}
@@ -101,6 +110,9 @@ func TestReapOrphansRemovesDeadAndKeepsLive(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stateDir, "am-live.transcript")); err != nil {
 		t.Errorf("live transcript sidecar missing: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(stateDir, "am-live.spool", "1.json")); err != nil {
+		t.Errorf("live hook spool missing: %v", err)
+	}
 	for _, dead := range []string{"am-dead1", "am-dead2"} {
 		if _, err := os.Stat(filepath.Join(stateDir, dead)); !os.IsNotExist(err) {
 			t.Errorf("dead state file %s still present: err=%v", dead, err)
@@ -113,6 +125,12 @@ func TestReapOrphansRemovesDeadAndKeepsLive(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(stateDir, dead+".cwd")); !os.IsNotExist(err) {
 			t.Errorf("dead sidecar %s.cwd still present: err=%v", dead, err)
+		}
+		if _, err := os.Stat(filepath.Join(stateDir, dead+".nohooks")); !os.IsNotExist(err) {
+			t.Errorf("dead sidecar %s.nohooks still present: err=%v", dead, err)
+		}
+		if _, err := os.Stat(filepath.Join(stateDir, dead+".spool")); !os.IsNotExist(err) {
+			t.Errorf("dead hook spool %s.spool still present: err=%v", dead, err)
 		}
 	}
 }

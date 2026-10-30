@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# lib/hooks/hook-relay - Host half of the sandbox hook spool.
+#
+# An agent inside a container sandbox cannot reach am's state dir, so its
+# hooks run lib/hooks/spool-hook.sh, which drops each payload as a .json file
+# into the session's spool ($AM_HOOK_SPOOL, mounted into the sandbox). This
+# relay runs on the host next to the sandbox client, feeds every spooled
+# payload to state-hook.sh in arrival order, and removes it. state-hook.sh
+# then does everything it does for a host agent: state file, sidecars,
+# review sync, notifications.
+#
+# Usage: hook-relay --spool <dir> --pid <pid> [--hook <state-hook.sh>]
+#   --pid   the sandbox client's pid; the relay drains once more and exits
+#           when it is gone (a provider starts the relay with its own $$
+#           right before `exec`ing the client)
+#   --hook  the hook to feed (default: state-hook.sh beside this script)
+#
+# The session comes from AM_SESSION_NAME in the relay's environment (the
+# pane env), never from a payload: what the sandbox writes is untrusted.
+# Payloads over AM_HOOK_RELAY_MAX bytes (default 8MB) are dropped. The
+# hook's stdout is discarded: a relayed PreToolUse cannot deny a call that
+# already ran (the relocation fence does not reach a sandboxed agent).
+set -uo pipefail
+
+spool="" pid="" hook="${BASH_SOURCE[0]%/*}/state-hook.sh"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --spool) spool="${2:-}"; shift 2 ;;
+        --pid) pid="${2:-}"; shift 2 ;;
+        --hook) hook="${2:-}"; shift 2 ;;
+        *) echo "hook-relay: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+[[ -n "$spool" && -d "$spool" ]] || { echo "hook-relay: no spool directory: ${spool:-<unset>}" >&2; exit 2; }
+[[ "$pid" =~ ^[0-9]+$ ]] || { echo "hook-relay: --pid must be a pid" >&2; exit 2; }
+[[ -n "${AM_SESSION_NAME:-}" ]] || { echo "hook-relay: AM_SESSION_NAME is not set" >&2; exit 2; }
+
+max="${AM_HOOK_RELAY_MAX:-8388608}"
+shopt -s nullglob
+
+# One pass over the spool, oldest first (names are <epoch-ns>.<pid>.json,
+# and a glob expands sorted).
+_drain() {
+    local f size
+    for f in "$spool"/*.json; do
+        [[ -f "$f" && ! -L "$f" ]] || { rm -f "$f"; continue; }
+        size=$(wc -c < "$f" 2>/dev/null) || size=0
+        if (( size > 0 && size <= max )); then
+            bash "$hook" < "$f" >/dev/null 2>&1 || true
+        fi
+        rm -f "$f"
+    done
+}
+
+# A fork-free sleep: read with a timeout on a FIFO nobody writes to (opened
+# read-write so the open does not block; macOS refuses `<>` on a
+# process-substitution pipe). The path goes as soon as the fd holds it.
+_fifo=$(mktemp -u "${TMPDIR:-/tmp}/am-relay.XXXXXX")
+if mkfifo -m 600 "$_fifo" 2>/dev/null && exec {_tick}<>"$_fifo"; then
+    rm -f "$_fifo"
+    _nap() { read -r -t "$1" -u "$_tick" _ || true; }
+else
+    rm -f "$_fifo"
+    _nap() { sleep "$1"; }
+fi
+while kill -0 "$pid" 2>/dev/null; do
+    _drain
+    _nap 0.25
+done
+# The client's last events (the final Stop) may land after it exits.
+_nap 0.5
+_drain

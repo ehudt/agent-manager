@@ -689,6 +689,11 @@ func TestGCHalvesAndGrace(t *testing.T) {
 	writeFile(t, filepath.Join(env.StateDir, "am-orphan"), "ready")
 	writeFile(t, filepath.Join(env.StateDir, "am-orphan.sid"), "uuid-orphan")
 	writeFile(t, filepath.Join(env.StateDir, "am-orphan.cwd"), "/tmp")
+	writeFile(t, filepath.Join(env.StateDir, "am-orphan.nohooks"), "")
+	if err := os.MkdirAll(filepath.Join(env.StateDir, "am-orphan.spool"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(env.StateDir, "am-orphan.spool", "1.json"), "{}")
 	writeFile(t, filepath.Join(env.StateDir, "am-foreign"), "running")
 	writeFile(t, filepath.Join(env.StateDir, "am-foreign.sid"), "uuid-foreign")
 	writeFile(t, filepath.Join(env.StateDir, "other-prefix"), "ready")
@@ -719,8 +724,8 @@ func TestGCHalvesAndGrace(t *testing.T) {
 	if _, ok := reg.Sessions["am-young"]; !ok || len(reg.Sessions) != 1 {
 		t.Errorf("after forced gc: %v", reg.Sessions)
 	}
-	for _, n := range []string{"am-orphan", "am-orphan.sid", "am-orphan.cwd"} {
-		if fileExists(filepath.Join(env.StateDir, n)) {
+	for _, n := range []string{"am-orphan", "am-orphan.sid", "am-orphan.cwd", "am-orphan.nohooks", "am-orphan.spool"} {
+		if _, err := os.Stat(filepath.Join(env.StateDir, n)); err == nil {
 			t.Errorf("extras sweep left orphan %s with a live session present", n)
 		}
 	}

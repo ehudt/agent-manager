@@ -293,8 +293,8 @@ test_recovery_coordinator() {
 
     assert_contains "$(cat "$capture")" "name=am-restore" \
         "recovery coordinator: preserves physical session name"
-    assert_eq "args=/tmp cursor resume task --resume sid-restore" "$(sed -n 2p "$capture")" \
-        "recovery coordinator: launch args are directory, agent, task, resume args"
+    assert_eq "args=/tmp cursor resume task --resume sid-restore --no-sandbox" "$(sed -n 2p "$capture")" \
+        "recovery coordinator: launch args are directory, agent, task, resume args (a host session stays on the host)"
     assert_eq "live" "$(jq -r '.sessions["am-restore"].recovery_state' "$AM_DESIRED_SESSIONS")" \
         "recovery coordinator: successful restore becomes live"
     assert_eq "boot-new" "$(jq -r '.sessions["am-restore"].launch_boot_id' "$AM_DESIRED_SESSIONS")" \

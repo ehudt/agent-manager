@@ -625,6 +625,13 @@ recovery_restore_one() {
     # which a reboot wipes; the sessions-log row keeps it (written by the
     # restore that relocated the session and again by agent_kill).
     _AM_LAUNCH_FENCE=$(_sessions_log_field "$id" fence 2>/dev/null || true)
+    # A sandboxed session resumes in the sandbox again, a host one on the
+    # host (the log row records which, agent_launch).
+    if [[ "$(_sessions_log_field "$id" sandbox 2>/dev/null || true)" == "1" ]]; then
+        restore_args+=(--sandbox)
+    else
+        restore_args+=(--no-sandbox)
+    fi
     recovery_desired_is_open "$id" || return 1
     recovery_allow_identity_rebind "$id"
     local restored
